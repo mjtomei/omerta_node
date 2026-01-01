@@ -45,15 +45,68 @@ Omerta allows you to share compute resources (CPU and GPU) with others in a secu
 - **Recommended**: 500GB+ free disk space (VM images can be large)
 
 ### Software
-- macOS 14.0+ (Sonoma or later)
-- Xcode 15.0+
-- Swift 5.9+
-- Protocol Buffer Compiler: `brew install protobuf`
-- WireGuard: `brew install wireguard-tools`
 
-## Quick Start
+#### Runtime Dependencies (Required)
+- **macOS 14.0+** (Sonoma or later) - Required for Virtualization.framework
+- **WireGuard Tools** - Required for VPN routing
+  ```bash
+  brew install wireguard-tools
+  ```
 
-### 1. Build the Project
+#### Build Dependencies (Only for building from source)
+- **Xcode 15.0+** or **Xcode Command Line Tools**
+- **Swift 5.9+**
+- **Protocol Buffer Compiler** (for regenerating protocol files)
+  ```bash
+  brew install protobuf swift-protobuf
+  ```
+
+#### Optional Dependencies
+- **Linux Kernel** - Required for VM execution (auto-downloaded on first run)
+- **Homebrew** - Recommended for easy dependency installation on macOS
+
+## Installation
+
+### Quick Install (Recommended)
+
+Use the automated installation script:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/omerta/omerta/main/Scripts/install.sh | bash
+```
+
+This script will:
+- ✅ Check system requirements (macOS 14+)
+- ✅ Install WireGuard if missing
+- ✅ Set up necessary directories
+- ✅ Install Omerta binaries (if available)
+
+### Manual Installation
+
+#### 1. Install Dependencies
+
+**On macOS:**
+```bash
+# Install Homebrew (if not already installed)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Install WireGuard
+brew install wireguard-tools
+```
+
+**On Linux (for development):**
+```bash
+# Debian/Ubuntu
+sudo apt-get install wireguard-tools
+
+# Fedora/RHEL
+sudo dnf install wireguard-tools
+
+# Arch Linux
+sudo pacman -S wireguard-tools
+```
+
+#### 2. Build from Source
 
 ```bash
 # Clone the repository
@@ -61,10 +114,34 @@ git clone <repository-url>
 cd omerta
 
 # Build the project
-swift build
-
-# Or build in release mode for better performance
 swift build -c release
+
+# Install to system (optional)
+sudo cp .build/release/omerta /usr/local/bin/
+sudo cp .build/release/omertad /usr/local/bin/
+```
+
+#### 3. Verify Installation
+
+```bash
+# Check that Omerta is installed
+omerta status
+
+# Verify all dependencies are satisfied
+omerta check-deps
+```
+
+Expected output:
+```
+Checking system dependencies...
+
+✅ WireGuard Tools
+   Version: wireguard-tools v1.0.20250521
+
+✅ WireGuard Quick
+   Version: wg-quick
+
+✅ All dependencies satisfied
 ```
 
 ### 2. Create a Network
@@ -218,6 +295,95 @@ Configuration is stored in `~/Library/Application Support/Omerta/`:
     └── omerta.log
 ```
 
+### Home Directory Structure
+
+Additional runtime files are stored in `~/.omerta/`:
+
+```
+~/.omerta/
+├── vpn/                 # VPN configuration files
+├── kernel/
+│   └── vmlinuz         # Linux kernel for VMs
+├── jobs/               # Job working directories
+└── logs/               # Execution logs
+```
+
+## Troubleshooting
+
+### Missing Dependencies
+
+If you see an error about missing dependencies:
+
+```bash
+❌ Missing required dependencies:
+  WireGuard Tools
+    Install: brew install wireguard-tools
+```
+
+**Solution:**
+1. Run the installation script: `bash Scripts/install.sh`
+2. Or manually install: `brew install wireguard-tools`
+3. Verify: `omerta check-deps`
+
+### WireGuard Not Found
+
+**Symptom:** `wg: command not found` or similar errors
+
+**Solution:**
+```bash
+# Check if WireGuard is installed
+which wg
+which wg-quick
+
+# If not found, install it
+brew install wireguard-tools
+
+# Verify installation
+wg --version
+```
+
+### macOS Version Too Old
+
+**Symptom:** Error about Virtualization.framework or macOS version
+
+**Solution:** Omerta requires macOS 14 (Sonoma) or later. This is a hard requirement due to Virtualization.framework features. Please upgrade macOS.
+
+### Virtualization Entitlement Missing
+
+**Symptom:** `Error Domain=VZErrorDomain Code=2 "The process doesn't have the 'com.apple.security.virtualization' entitlement"`
+
+**Solution:** The Omerta binary needs to be code-signed with virtualization entitlements. This is automatically done for release builds. If building from source:
+```bash
+# Build with release configuration
+swift build -c release
+
+# Or use a pre-signed release binary
+```
+
+### Linux Kernel Missing
+
+**Symptom:** Error about missing kernel when executing VMs
+
+**Solution:**
+```bash
+# Download Linux kernel for VMs
+mkdir -p ~/.omerta/kernel
+curl -L <kernel-url> -o ~/.omerta/kernel/vmlinuz
+
+# Or let Omerta download it automatically on first run
+```
+
+### Permission Denied Errors
+
+**Symptom:** Permission errors when creating VPN tunnels
+
+**Solution:** WireGuard operations may require root privileges. Omerta will prompt for sudo when needed. Alternatively:
+```bash
+# Allow your user to run wg without sudo (optional, less secure)
+sudo visudo
+# Add: your_username ALL=(ALL) NOPASSWD: /usr/bin/wg, /usr/bin/wg-quick
+```
+
 ## Security
 
 ### VM Isolation
@@ -243,9 +409,9 @@ Configuration is stored in `~/Library/Application Support/Omerta/`:
 
 ## Roadmap
 
-- [x] Phase 0: Project bootstrap (complete)
-- [ ] Phase 1: Core VM management
-- [ ] Phase 2: VPN routing & network isolation
+- [x] Phase 0: Project bootstrap
+- [x] Phase 1: Core VM management
+- [x] Phase 2: VPN routing & network isolation
 - [ ] Phase 3: Provider daemon
 - [ ] Phase 4: Network discovery (DHT)
 - [ ] Phase 5: Consumer client & E2E

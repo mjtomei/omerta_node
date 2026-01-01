@@ -15,7 +15,8 @@ struct OmertaCLI: AsyncParsableCommand {
             Execute.self,
             Submit.self,
             VPN.self,
-            Status.self
+            Status.self,
+            CheckDeps.self
         ],
         defaultSubcommand: Status.self
     )
@@ -53,6 +54,18 @@ struct Execute: AsyncParsableCommand {
 
     mutating func run() async throws {
         print("🚀 Executing job locally with VPN routing...")
+
+        // Check dependencies first
+        let checker = DependencyChecker()
+        do {
+            try await checker.verifyProviderMode()
+        } catch let error as DependencyChecker.MissingDependenciesError {
+            print("\n❌ Missing required dependencies:")
+            print(error.description)
+            print("\nRun setup script to install:")
+            print("  curl -sSL https://raw.githubusercontent.com/omerta/omerta/main/Scripts/install.sh | bash")
+            throw ExitCode.failure
+        }
 
         // Load VPN config
         let wireguardConfig = try String(contentsOfFile: vpnConfig)
@@ -132,6 +145,18 @@ struct Submit: AsyncParsableCommand {
 
     mutating func run() async throws {
         print("📤 Submitting job to network...")
+
+        // Check dependencies first
+        let checker = DependencyChecker()
+        do {
+            try await checker.verifyRequesterMode()
+        } catch let error as DependencyChecker.MissingDependenciesError {
+            print("\n❌ Missing required dependencies:")
+            print(error.description)
+            print("\nRun setup script to install:")
+            print("  curl -sSL https://raw.githubusercontent.com/omerta/omerta/main/Scripts/install.sh | bash")
+            throw ExitCode.failure
+        }
 
         if createVPN {
             print("🔐 Creating ephemeral VPN for job...")
@@ -231,6 +256,9 @@ struct Status: AsyncParsableCommand {
         abstract: "Show Omerta status and version information"
     )
 
+    @Flag(name: .long, help: "Check system dependencies")
+    var checkDeps: Bool = false
+
     mutating func run() async throws {
         print("Omerta Compute Sharing Platform")
         print("Version: 0.2.0")
@@ -240,6 +268,16 @@ struct Status: AsyncParsableCommand {
         print("✅ Phase 2: VPN Routing & Network Isolation - Complete")
         print("⏳ Phase 3: Local Request Processing - Pending")
         print("")
+
+        if checkDeps {
+            print("System Dependencies:")
+            print("===================")
+            print("")
+            let checker = DependencyChecker()
+            await checker.printProviderReport()
+            print("")
+        }
+
         print("Available commands:")
         print("  execute   - Execute job locally with VPN routing")
         print("  submit    - Submit job to remote provider (requires Phase 3)")
@@ -248,5 +286,38 @@ struct Status: AsyncParsableCommand {
         print("")
         print("For help on a specific command, run:")
         print("  omerta <command> --help")
+        print("")
+        print("To check system dependencies:")
+        print("  omerta status --check-deps")
+    }
+}
+
+// MARK: - Check Dependencies Command
+struct CheckDeps: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "check-deps",
+        abstract: "Check system dependencies"
+    )
+
+    mutating func run() async throws {
+        let checker = DependencyChecker()
+        await checker.printProviderReport()
+
+        // Try to verify (will throw if missing)
+        do {
+            try await checker.verifyProviderMode()
+            print("")
+            print("✅ All dependencies satisfied - ready to run!")
+        } catch let error as DependencyChecker.MissingDependenciesError {
+            print("")
+            print("❌ Missing dependencies detected")
+            print("")
+            print("Run the installation script to install missing dependencies:")
+            print("  curl -sSL https://raw.githubusercontent.com/omerta/omerta/main/Scripts/install.sh | bash")
+            print("")
+            print("Or install manually:")
+            print(error.description)
+            throw ExitCode.failure
+        }
     }
 }
