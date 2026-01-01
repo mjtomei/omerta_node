@@ -132,13 +132,13 @@ public actor RogueConnectionDetector {
             if !isVPNTraffic {
                 logger.warning("Suspicious non-VPN connection detected", metadata: [
                     "destination": "\(connection.destinationIP):\(connection.destinationPort)",
-                    "protocol": "\(connection.protocol)"
+                    "protocol": "\(connection.protocolType)"
                 ])
 
                 rogueConnections.append(SuspiciousConnection(
                     destinationIP: connection.destinationIP,
                     destinationPort: connection.destinationPort,
-                    protocol: connection.protocol,
+                    protocolType: connection.protocolType,
                     processName: connection.processName
                 ))
             }
@@ -204,7 +204,7 @@ public actor RogueConnectionDetector {
             connections.append(ActiveConnection(
                 destinationIP: ip,
                 destinationPort: port,
-                protocol: proto,
+                protocolType: proto,
                 processName: nil // Would need lsof for process name
             ))
         }
@@ -293,7 +293,7 @@ public struct NetworkMonitor: Sendable {
 struct ActiveConnection {
     let destinationIP: String
     let destinationPort: String
-    let protocol: String
+    let protocolType: String
     let processName: String?
 }
 
@@ -301,7 +301,7 @@ struct ActiveConnection {
 public struct SuspiciousConnection: Sendable {
     public let destinationIP: String
     public let destinationPort: String
-    public let protocol: String
+    public let protocolType: String
     public let processName: String?
 }
 

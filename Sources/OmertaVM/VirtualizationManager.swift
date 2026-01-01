@@ -60,16 +60,16 @@ public actor VirtualizationManager {
         activeVMs[job.id] = vmInstance
 
         // 7. Start rogue connection monitoring (automatic security)
-        var rogueDetected = false
+        let rogueDetectionState = RogueDetectionState()
         try await rogueDetector.startMonitoring(
             jobId: job.id,
             vpnConfig: job.vpnConfig
-        ) { event in
+        ) { [rogueDetectionState] event in
             self.logger.error("ROGUE CONNECTION DETECTED - Terminating VM immediately!", metadata: [
                 "job_id": "\(event.jobId)",
                 "destination": "\(event.connection.destinationIP):\(event.connection.destinationPort)"
             ])
-            rogueDetected = true
+            rogueDetectionState.detected = true
         }
 
         // 8. Wait for VM to complete and capture output
@@ -77,7 +77,7 @@ public actor VirtualizationManager {
             vmInstance,
             job: job,
             startTime: startTime,
-            rogueDetected: &rogueDetected
+            rogueDetectionState: rogueDetectionState
         )
         
         // 9. Cleanup
@@ -288,7 +288,7 @@ public actor VirtualizationManager {
         _ vmInstance: VMInstance,
         job: ComputeJob,
         startTime: Date,
-        rogueDetected: inout Bool
+        rogueDetectionState: RogueDetectionState
     ) async throws -> ExecutionResult {
         
         // Read console output asynchronously
@@ -301,7 +301,7 @@ public actor VirtualizationManager {
         
         while vmInstance.vm.state == .running {
             // Check for rogue connections
-            if rogueDetected {
+            if rogueDetectionState.detected {
                 logger.error("Terminating VM due to rogue connection", metadata: ["job_id": "\(job.id)"])
                 try await vmInstance.vm.stop()
                 throw VMError.rogueConnectionDetected
@@ -435,4 +435,23 @@ public enum VMError: Error {
     case unsupportedWorkloadType(String)
     case rogueConnectionDetected
     case vpnSetupFailed
+}
+
+/// Thread-safe state holder for rogue connection detection
+final class RogueDetectionState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _detected = false
+
+    var detected: Bool {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _detected
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            _detected = newValue
+        }
+    }
 }

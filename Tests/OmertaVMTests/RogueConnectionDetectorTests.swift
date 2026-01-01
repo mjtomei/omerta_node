@@ -49,17 +49,17 @@ final class RogueConnectionDetectorTests: XCTestCase {
             ActiveConnectionTest(
                 destinationIP: "8.8.8.8",
                 destinationPort: "443",
-                protocol: "tcp"
+                protocolType: "tcp"
             ),
             ActiveConnectionTest(
                 destinationIP: "10.99.0.1", // VPN server - should be allowed
                 destinationPort: "51820",
-                protocol: "udp"
+                protocolType: "udp"
             ),
             ActiveConnectionTest(
                 destinationIP: "127.0.0.1", // Localhost - should be allowed
                 destinationPort: "8080",
-                protocol: "tcp"
+                protocolType: "tcp"
             )
         ]
 
@@ -127,7 +127,7 @@ final class RogueConnectionDetectorTests: XCTestCase {
         let connection = SuspiciousConnection(
             destinationIP: "8.8.8.8",
             destinationPort: "443",
-            protocol: "tcp",
+            protocolType: "tcp",
             processName: "curl"
         )
 
@@ -179,7 +179,7 @@ final class RogueConnectionDetectorTests: XCTestCase {
     private struct ActiveConnectionTest {
         let destinationIP: String
         let destinationPort: String
-        let protocol: String
+        let protocolType: String
     }
 
     private func parseTestNetstatOutput(_ output: String) -> [ActiveConnectionTest] {
@@ -208,7 +208,7 @@ final class RogueConnectionDetectorTests: XCTestCase {
                 connections.append(ActiveConnectionTest(
                     destinationIP: ip,
                     destinationPort: port,
-                    protocol: proto
+                    protocolType: proto
                 ))
             }
         }

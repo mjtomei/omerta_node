@@ -24,7 +24,7 @@ final class VMExecutionTests: XCTestCase {
             wireguardConfig: "[Interface]...",
             endpoint: "10.0.0.1:51820",
             publicKey: Data([1, 2, 3]),
-            serverIP: "10.0.0.1"
+            vpnServerIP: "10.0.0.1"
         )
         
         let job = ComputeJob(
@@ -63,7 +63,7 @@ final class VMExecutionTests: XCTestCase {
             wireguardConfig: "[Interface]...",
             endpoint: "10.0.0.1:51820",
             publicKey: Data([1, 2, 3]),
-            serverIP: "10.0.0.1"
+            vpnServerIP: "10.0.0.1"
         )
         
         let job = ComputeJob(

@@ -41,7 +41,7 @@ final class JobTests: XCTestCase {
             wireguardConfig: "[Interface]...",
             endpoint: "10.0.0.1:51820",
             publicKey: Data([1, 2, 3, 4]),
-            serverIP: "10.0.0.1"
+            vpnServerIP: "10.0.0.1"
         )
         
         let script = ScriptWorkload(
