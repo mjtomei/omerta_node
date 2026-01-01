@@ -1,0 +1,225 @@
+import Foundation
+import Virtualization
+import OmertaCore
+import Logging
+
+/// Actor managing VM lifecycle using macOS Virtualization.framework
+public actor VirtualizationManager {
+    private let logger = Logger(label: "com.omerta.vm")
+    private var activeVMs: [UUID: VMInstance] = [:]
+    private let resourceAllocator: ResourceAllocator
+    
+    public init(resourceAllocator: ResourceAllocator = ResourceAllocator()) {
+        self.resourceAllocator = resourceAllocator
+    }
+    
+    /// Execute a compute job in an ephemeral VM
+    public func executeJob(_ job: ComputeJob) async throws -> ExecutionResult {
+        logger.info("Starting job execution", metadata: ["job_id": "\(job.id)"])
+        
+        // 1. Validate resource availability
+        guard await resourceAllocator.canAllocate(job.requirements) else {
+            logger.error("Insufficient resources for job", metadata: ["job_id": "\(job.id)"])
+            throw VMError.insufficientResources
+        }
+        
+        // 2. Create VM configuration
+        let config = try await createVMConfiguration(for: job)
+        
+        // 3. Start VM
+        let vmInstance = try await startVM(config: config, jobId: job.id)
+        activeVMs[job.id] = vmInstance
+        
+        // 4. Execute workload
+        let result = try await executeWorkload(vmInstance, job: job)
+        
+        // 5. Cleanup
+        await destroyVM(vmInstance)
+        activeVMs.removeValue(forKey: job.id)
+        
+        logger.info("Job execution completed", metadata: ["job_id": "\(job.id)", "exit_code": "\(result.exitCode)"])
+        
+        return result
+    }
+    
+    /// Create VM configuration for a job
+    private func createVMConfiguration(for job: ComputeJob) async throws -> VZVirtualMachineConfiguration {
+        let config = VZVirtualMachineConfiguration()
+        
+        // CPU configuration
+        let availableCPUs = ProcessInfo.processInfo.processorCount
+        let requestedCPUs = Int(job.requirements.cpuCores)
+        config.cpuCount = min(requestedCPUs, max(1, availableCPUs - 2)) // Leave 2 cores for host
+        
+        // Memory configuration (in bytes)
+        let memoryBytes = job.requirements.memoryMB * 1024 * 1024
+        config.memorySize = UInt64(memoryBytes)
+        
+        // Bootloader - using Linux kernel for now (simplest for MVP)
+        // Note: For Phase 7 GPU support, we'll need macOS VMs
+        let bootloader = VZLinuxBootLoader(kernelURL: try await getLinuxKernelURL())
+        config.bootLoader = bootloader
+        
+        // Storage - ephemeral disk
+        config.storageDevices = [try createEphemeralDisk()]
+        
+        // Network - isolated NAT
+        config.networkDevices = [createIsolatedNetworkDevice()]
+        
+        // Entropy device for randomness
+        config.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
+        
+        // Serial console for output (simplified for MVP)
+        let serialPort = VZVirtioConsoleDeviceSerialPortConfiguration()
+        let consoleConfig = VZVirtioConsoleDeviceConfiguration()
+        consoleConfig.ports[0] = serialPort as VZVirtioConsolePortConfiguration
+        config.consoleDevices = [consoleConfig]
+        
+        // Validate configuration
+        try config.validate()
+        
+        return config
+    }
+    
+    /// Create ephemeral storage device
+    private func createEphemeralDisk() throws -> VZVirtioBlockDeviceConfiguration {
+        // Create temporary disk image
+        let diskURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("img")
+        
+        // Create 10GB sparse disk image
+        let diskSize: Int64 = 10 * 1024 * 1024 * 1024
+        FileManager.default.createFile(
+            atPath: diskURL.path,
+            contents: nil,
+            attributes: nil
+        )
+        
+        let fileHandle = try FileHandle(forWritingTo: diskURL)
+        try fileHandle.truncate(atOffset: UInt64(diskSize))
+        try fileHandle.close()
+        
+        let diskAttachment = try VZDiskImageStorageDeviceAttachment(
+            url: diskURL,
+            readOnly: false
+        )
+        
+        let diskConfig = VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)
+        return diskConfig
+    }
+    
+    /// Create isolated network device
+    private func createIsolatedNetworkDevice() -> VZVirtioNetworkDeviceConfiguration {
+        let networkDevice = VZVirtioNetworkDeviceConfiguration()
+        
+        // NAT mode for isolation
+        let nat = VZNATNetworkDeviceAttachment()
+        networkDevice.attachment = nat
+        
+        return networkDevice
+    }
+    
+    /// Get Linux kernel URL (placeholder - will need to download/cache kernel)
+    private func getLinuxKernelURL() async throws -> URL {
+        // For MVP, we'll need to provide a Linux kernel
+        // This is a placeholder - will implement proper kernel management
+        let kernelPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".omerta")
+            .appendingPathComponent("vmlinuz")
+        
+        if !FileManager.default.fileExists(atPath: kernelPath.path) {
+            throw VMError.kernelNotFound
+        }
+        
+        return kernelPath
+    }
+    
+    /// Start a VM instance
+    private func startVM(config: VZVirtualMachineConfiguration, jobId: UUID) async throws -> VMInstance {
+        let vm = VZVirtualMachine(configuration: config)
+        
+        let instance = VMInstance(
+            id: jobId,
+            vm: vm,
+            startedAt: Date()
+        )
+        
+        // Start the VM
+        try await vm.start()
+        
+        logger.info("VM started", metadata: ["job_id": "\(jobId)"])
+        
+        return instance
+    }
+    
+    /// Execute workload in VM
+    private func executeWorkload(_ vmInstance: VMInstance, job: ComputeJob) async throws -> ExecutionResult {
+        let startTime = Date()
+        
+        // For MVP Phase 1, we'll simulate execution
+        // Full implementation will inject script and capture output
+        // This is a placeholder for now
+        
+        logger.info("Executing workload in VM", metadata: ["job_id": "\(job.id)"])
+        
+        // Simulate execution time
+        try await Task.sleep(for: .seconds(2))
+        
+        let endTime = Date()
+        let executionTimeMs = UInt64((endTime.timeIntervalSince(startTime)) * 1000)
+        
+        // Placeholder result
+        let metrics = ExecutionMetrics(
+            executionTimeMs: executionTimeMs,
+            cpuTimeMs: executionTimeMs,
+            memoryPeakMB: job.requirements.memoryMB,
+            networkEgressBytes: 0,
+            networkIngressBytes: 0
+        )
+        
+        return ExecutionResult(
+            exitCode: 0,
+            stdout: "Hello from VM\n".data(using: .utf8) ?? Data(),
+            stderr: Data(),
+            metrics: metrics
+        )
+    }
+    
+    /// Destroy VM and cleanup resources
+    private func destroyVM(_ vmInstance: VMInstance) async {
+        logger.info("Destroying VM", metadata: ["job_id": "\(vmInstance.id)"])
+        
+        // Stop VM if still running
+        if vmInstance.vm.state == .running {
+            do {
+                try await vmInstance.vm.stop()
+            } catch {
+                logger.warning("Error stopping VM", metadata: ["error": "\(error)"])
+            }
+        }
+        
+        // Cleanup will happen automatically when VM is deallocated
+        logger.info("VM destroyed", metadata: ["job_id": "\(vmInstance.id)"])
+    }
+    
+    /// Get current active VMs
+    public func getActiveVMs() -> [UUID] {
+        Array(activeVMs.keys)
+    }
+}
+
+/// VM instance wrapper
+struct VMInstance {
+    let id: UUID
+    let vm: VZVirtualMachine
+    let startedAt: Date
+}
+
+/// VM errors
+public enum VMError: Error {
+    case insufficientResources
+    case kernelNotFound
+    case configurationInvalid
+    case executionFailed(String)
+}
