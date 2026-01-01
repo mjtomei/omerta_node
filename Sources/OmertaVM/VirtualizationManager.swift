@@ -8,9 +8,17 @@ public actor VirtualizationManager {
     private let logger = Logger(label: "com.omerta.vm")
     private var activeVMs: [UUID: VMInstance] = [:]
     private let resourceAllocator: ResourceAllocator
-    
-    public init(resourceAllocator: ResourceAllocator = ResourceAllocator()) {
+    private let networkIsolation: NetworkIsolation
+    private let rogueDetector: RogueConnectionDetector
+
+    public init(
+        resourceAllocator: ResourceAllocator = ResourceAllocator(),
+        networkIsolation: NetworkIsolation = NetworkIsolation(),
+        rogueDetector: RogueConnectionDetector = RogueConnectionDetector()
+    ) {
         self.resourceAllocator = resourceAllocator
+        self.networkIsolation = networkIsolation
+        self.rogueDetector = rogueDetector
     }
     
     /// Execute a compute job in an ephemeral VM
@@ -36,23 +44,50 @@ public actor VirtualizationManager {
         
         // 3. Prepare workload initramfs
         let initramfsURL = try await prepareWorkloadInitramfs(for: job)
-        
-        // 4. Create VM configuration
-        let config = try await createVMConfiguration(for: job, initramfsURL: initramfsURL)
-        
-        // 5. Start VM and capture output
+
+        // 4. Configure VPN routing in initramfs
+        let vpnInitramfsURL = try await networkIsolation.configureVPNRouting(
+            initramfsPath: initramfsURL,
+            vpnConfig: job.vpnConfig,
+            jobId: job.id
+        )
+
+        // 5. Create VM configuration with VPN-routed network
+        let config = try await createVMConfiguration(for: job, initramfsURL: vpnInitramfsURL)
+
+        // 6. Start VM and capture output
         let vmInstance = try await startVM(config: config, jobId: job.id)
         activeVMs[job.id] = vmInstance
+
+        // 7. Start rogue connection monitoring (automatic security)
+        var rogueDetected = false
+        try await rogueDetector.startMonitoring(
+            jobId: job.id,
+            vpnConfig: job.vpnConfig
+        ) { event in
+            self.logger.error("ROGUE CONNECTION DETECTED - Terminating VM immediately!", metadata: [
+                "job_id": "\(event.jobId)",
+                "destination": "\(event.connection.destinationIP):\(event.connection.destinationPort)"
+            ])
+            rogueDetected = true
+        }
+
+        // 8. Wait for VM to complete and capture output
+        let result = try await waitForCompletion(
+            vmInstance,
+            job: job,
+            startTime: startTime,
+            rogueDetected: &rogueDetected
+        )
         
-        // 6. Wait for VM to complete and capture output
-        let result = try await waitForCompletion(vmInstance, job: job, startTime: startTime)
-        
-        // 7. Cleanup
+        // 9. Cleanup
+        await rogueDetector.stopMonitoring(jobId: job.id)
         await destroyVM(vmInstance)
         activeVMs.removeValue(forKey: job.id)
-        
-        // Cleanup temp initramfs
+
+        // Cleanup temp initramfs files
         try? FileManager.default.removeItem(at: initramfsURL)
+        try? FileManager.default.removeItem(at: vpnInitramfsURL)
         
         logger.info("Job execution completed", metadata: [
             "job_id": "\(job.id)", 
@@ -252,7 +287,8 @@ public actor VirtualizationManager {
     private func waitForCompletion(
         _ vmInstance: VMInstance,
         job: ComputeJob,
-        startTime: Date
+        startTime: Date,
+        rogueDetected: inout Bool
     ) async throws -> ExecutionResult {
         
         // Read console output asynchronously
@@ -264,17 +300,24 @@ public actor VirtualizationManager {
         let deadline = Date().addingTimeInterval(timeout)
         
         while vmInstance.vm.state == .running {
+            // Check for rogue connections
+            if rogueDetected {
+                logger.error("Terminating VM due to rogue connection", metadata: ["job_id": "\(job.id)"])
+                try await vmInstance.vm.stop()
+                throw VMError.rogueConnectionDetected
+            }
+
             if Date() > deadline {
                 logger.warning("Job timeout", metadata: ["job_id": "\(job.id)"])
                 try await vmInstance.vm.stop()
                 throw VMError.executionTimeout
             }
-            
+
             // Read available output
             if let data = try? outputHandle.availableData, !data.isEmpty {
                 consoleOutput.append(data)
             }
-            
+
             try await Task.sleep(for: .milliseconds(100))
         }
         
@@ -285,9 +328,16 @@ public actor VirtualizationManager {
         
         let endTime = Date()
         let executionTimeMs = UInt64((endTime.timeIntervalSince(startTime)) * 1000)
-        
+
         // Parse output
         let outputString = String(data: consoleOutput, encoding: .utf8) ?? ""
+
+        // Verify VPN was set up correctly
+        if !outputString.contains("=== VPN ROUTING ACTIVE ===") {
+            logger.error("VPN routing was not activated", metadata: ["job_id": "\(job.id)"])
+            throw VMError.vpnSetupFailed
+        }
+
         let (stdout, stderr, exitCode) = parseConsoleOutput(outputString)
         
         let metrics = ExecutionMetrics(
@@ -383,4 +433,6 @@ public enum VMError: Error {
     case executionFailed(String)
     case executionTimeout
     case unsupportedWorkloadType(String)
+    case rogueConnectionDetected
+    case vpnSetupFailed
 }

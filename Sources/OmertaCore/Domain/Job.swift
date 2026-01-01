@@ -82,20 +82,20 @@ public struct VPNConfiguration: Sendable {
     public let endpoint: String  // IP:port
     public let publicKey: Data
     public let allowedIPs: String  // Usually "0.0.0.0/0"
-    public let serverIP: String  // Requester's IP within VPN network
+    public let vpnServerIP: String  // Requester's IP within VPN network
 
     public init(
         wireguardConfig: String,
         endpoint: String,
         publicKey: Data,
         allowedIPs: String = "0.0.0.0/0",
-        serverIP: String
+        vpnServerIP: String
     ) {
         self.wireguardConfig = wireguardConfig
         self.endpoint = endpoint
         self.publicKey = publicKey
         self.allowedIPs = allowedIPs
-        self.serverIP = serverIP
+        self.vpnServerIP = vpnServerIP
     }
 }
 
