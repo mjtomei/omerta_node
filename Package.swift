@@ -8,7 +8,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "omerta", targets: ["OmertaCLI"]),
-        .executable(name: "omertad", targets: ["OmertaProvider"]),
+        .executable(name: "omertad", targets: ["OmertaDaemon"]),
         .library(name: "OmertaCore", targets: ["OmertaCore"]),
     ],
     dependencies: [
@@ -58,17 +58,26 @@ let package = Package(
             path: "Sources/OmertaNetwork"
         ),
 
-        // Provider daemon
-        .executableTarget(
+        // Provider library
+        .target(
             name: "OmertaProvider",
             dependencies: [
                 "OmertaCore",
                 "OmertaVM",
                 "OmertaNetwork",
                 .product(name: "Logging", package: "swift-log"),
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/OmertaProvider"
+        ),
+
+        // Provider daemon executable
+        .executableTarget(
+            name: "OmertaDaemon",
+            dependencies: [
+                "OmertaProvider",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ],
+            path: "Sources/OmertaDaemon"
         ),
 
         // Consumer client
@@ -109,6 +118,11 @@ let package = Package(
             name: "OmertaNetworkTests",
             dependencies: ["OmertaNetwork"],
             path: "Tests/OmertaNetworkTests"
+        ),
+        .testTarget(
+            name: "OmertaProviderTests",
+            dependencies: ["OmertaProvider"],
+            path: "Tests/OmertaProviderTests"
         ),
     ]
 )
