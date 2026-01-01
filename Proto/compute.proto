@@ -1,0 +1,259 @@
+syntax = "proto3";
+
+package omerta.v1;
+
+// ============================================================================
+// Core Compute Messages
+// ============================================================================
+
+message ComputeRequest {
+  string request_id = 1;                    // UUID for tracking
+  RequestMetadata metadata = 2;
+  ResourceRequirements requirements = 3;
+  WorkloadSpec workload = 4;
+  string activity_description = 5;          // Human-readable description (optional but filterable)
+  bytes signature = 6;                      // Cryptographic signature of requester
+  VPNConfiguration vpn = 7;                 // Required VPN configuration
+}
+
+message RequestMetadata {
+  string peer_id = 1;                       // Requester's peer ID
+  string network_id = 2;                    // Which network this request is from
+  uint64 timestamp = 3;                     // Unix timestamp
+  string client_version = 4;                // Client software version
+}
+
+message ResourceRequirements {
+  ResourceType type = 1;
+  uint32 cpu_cores = 2;
+  uint64 memory_mb = 3;
+  GpuRequirements gpu = 4;                  // Optional GPU requirements
+  uint64 max_runtime_seconds = 5;
+}
+
+enum ResourceType {
+  CPU_ONLY = 0;
+  GPU_REQUIRED = 1;
+  GPU_PREFERRED = 2;
+}
+
+message GpuRequirements {
+  uint64 vram_mb = 1;
+  repeated string required_capabilities = 2;  // e.g., "metal3", "neural-engine"
+  bool metal_only = 3;                        // Only Metal workloads supported
+}
+
+// ============================================================================
+// Workload Specifications
+// ============================================================================
+
+message WorkloadSpec {
+  oneof workload_type {
+    ScriptWorkload script = 1;
+    BinaryWorkload binary = 2;
+  }
+}
+
+message ScriptWorkload {
+  string language = 1;                      // e.g., "python", "bash", "swift"
+  string script_content = 2;                // The actual script code
+  repeated string dependencies = 3;         // Package names to install
+  map<string, string> env = 4;              // Environment variables
+}
+
+message BinaryWorkload {
+  string binary_url = 1;                    // URL to download binary (via VPN)
+  string binary_hash = 2;                   // SHA256 for verification
+  repeated string args = 3;
+  map<string, string> env = 4;
+}
+
+// ============================================================================
+// VPN Configuration
+// ============================================================================
+
+message VPNConfiguration {
+  string wireguard_config = 1;              // WireGuard config file content
+  string endpoint = 2;                      // VPN server endpoint (IP:port)
+  bytes public_key = 3;                     // VPN server public key
+  string allowed_ips = 4;                   // IP ranges routed through VPN (usually 0.0.0.0/0)
+  string vpn_server_ip = 5;                 // IP of requester within VPN network
+}
+
+// ============================================================================
+// Compute Response
+// ============================================================================
+
+message ComputeResponse {
+  string request_id = 1;
+  ResponseStatus status = 2;
+  ExecutionResult result = 3;
+  ExecutionMetrics metrics = 4;
+  repeated LogEntry logs = 5;
+  string message = 6;                       // Error message or status info
+}
+
+enum ResponseStatus {
+  SUCCESS = 0;
+  FAILURE = 1;
+  TIMEOUT = 2;
+  REJECTED = 3;
+  ROGUE_CONNECTION_DETECTED = 4;
+  CANCELLED = 5;
+}
+
+message ExecutionResult {
+  int32 exit_code = 1;
+  bytes stdout = 2;
+  bytes stderr = 3;
+}
+
+message ExecutionMetrics {
+  uint64 execution_time_ms = 1;
+  uint64 cpu_time_ms = 2;
+  uint64 memory_peak_mb = 3;
+  uint64 network_egress_bytes = 4;
+  uint64 network_ingress_bytes = 5;
+}
+
+message LogEntry {
+  uint64 timestamp = 1;
+  LogLevel level = 2;
+  string message = 3;
+}
+
+enum LogLevel {
+  DEBUG = 0;
+  INFO = 1;
+  WARNING = 2;
+  ERROR = 3;
+}
+
+// ============================================================================
+// Job Control
+// ============================================================================
+
+message CancelJobRequest {
+  string job_id = 1;
+  uint64 grace_period_seconds = 2;          // Default 30s
+}
+
+message CancelJobResponse {
+  bool cancelled = 1;
+  string message = 2;
+}
+
+message JobStatusRequest {
+  string job_id = 1;
+}
+
+message JobStatusUpdate {
+  string job_id = 1;
+  JobStatus status = 2;
+  string message = 3;
+  uint64 progress_percent = 4;              // 0-100
+}
+
+enum JobStatus {
+  QUEUED = 0;
+  RUNNING = 1;
+  COMPLETED = 2;
+  FAILED = 3;
+  CANCELLED = 4;
+}
+
+// ============================================================================
+// Peer Discovery & Capabilities
+// ============================================================================
+
+message PeerAnnouncement {
+  string peer_id = 1;                       // Public key hash
+  string network_id = 2;                    // Which network this peer is in
+  repeated ResourceCapability capabilities = 3;
+  PeerMetadata metadata = 4;
+  uint64 timestamp = 5;
+  bytes signature = 6;
+  string endpoint = 7;                      // IP:port for direct connection
+}
+
+message ResourceCapability {
+  ResourceType type = 1;
+  uint32 available_cpu_cores = 2;
+  uint64 available_memory_mb = 3;
+  bool has_gpu = 4;
+  GpuCapability gpu = 5;
+  repeated string supported_workload_types = 6;  // ["script", "binary"]
+}
+
+message GpuCapability {
+  string gpu_model = 1;                     // e.g., "Apple M3 Max"
+  uint64 total_vram_mb = 2;
+  uint64 available_vram_mb = 3;
+  repeated string supported_apis = 4;       // ["metal3", "neural-engine"]
+  bool supports_virtualization = 5;
+}
+
+message PeerMetadata {
+  uint32 reputation_score = 1;              // Computed locally
+  uint64 jobs_completed = 2;
+  uint64 jobs_rejected = 3;
+  double average_response_time_ms = 4;
+}
+
+message PeerQuery {
+  string network_id = 1;                    // Search within this network
+  ResourceRequirements requirements = 2;
+  uint32 max_results = 3;
+}
+
+// ============================================================================
+// Network Management
+// ============================================================================
+
+message NetworkKey {
+  bytes network_key = 1;                    // 256-bit symmetric key
+  string network_name = 2;
+  repeated string bootstrap_peers = 3;       // Bootstrap peer addresses
+  uint64 created_at = 4;
+}
+
+message AnnounceRequest {
+  PeerAnnouncement announcement = 1;
+}
+
+message AnnounceResponse {
+  bool success = 1;
+  string message = 2;
+  repeated string dht_nodes = 3;            // List of DHT nodes to connect to
+}
+
+message FindPeersRequest {
+  PeerQuery query = 1;
+}
+
+message FindPeersResponse {
+  repeated PeerAnnouncement peers = 1;
+}
+
+// ============================================================================
+// gRPC Service Definitions
+// ============================================================================
+
+service ComputeService {
+  // Submit a compute request
+  rpc SubmitJob(ComputeRequest) returns (ComputeResponse);
+
+  // Stream job status updates
+  rpc StreamJobStatus(JobStatusRequest) returns (stream JobStatusUpdate);
+
+  // Cancel a running job
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+}
+
+service DiscoveryService {
+  // Announce peer availability
+  rpc Announce(AnnounceRequest) returns (AnnounceResponse);
+
+  // Find peers matching criteria
+  rpc FindPeers(FindPeersRequest) returns (FindPeersResponse);
+}

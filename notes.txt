@@ -1,0 +1,9 @@
+Allows sharing your compute resources without knowing what the user is doing or sharing your internet connection. It allows for higher throughput to be allocated to power users while sharing compute costs more evenly. But it also allows reducing the latency to results even for users with similar utilization, which should increase average productivity.
+
+- starts a new VM for every compute request which gets deleted when its done
+- routes all traffic through VPN served by requester
+- allows filtering and prioritizing sources of requests
+- allows requiring requests include a description of their activity which you can log
+- always monitors for rogue internet connections
+- option to aggressively prioritize user tasks over other work
+- support for checkpoint and restart of VMs
