@@ -413,7 +413,7 @@ sudo visudo
 - [x] Phase 1: Core VM management
 - [x] Phase 2: VPN routing & network isolation
 - [x] Phase 3: Provider daemon (local request processing)
-- [ ] Phase 4: Network discovery (DHT)
+- [x] Phase 4: Network discovery & multi-network support
 - [ ] Phase 5: Consumer client & E2E
 - [ ] Phase 6: Advanced filtering
 - [ ] Phase 7: GPU support (Metal)

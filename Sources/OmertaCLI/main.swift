@@ -10,10 +10,11 @@ struct OmertaCLI: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "omerta",
         abstract: "Omerta compute sharing client",
-        version: "0.2.0 (Phase 2: VPN Routing)",
+        version: "0.4.0 (Phase 4: Network Discovery)",
         subcommands: [
             Execute.self,
             Submit.self,
+            Network.self,
             VPN.self,
             Status.self,
             CheckDeps.self
@@ -183,6 +184,259 @@ struct Submit: AsyncParsableCommand {
     }
 }
 
+// MARK: - Network Command
+struct Network: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        abstract: "Network management commands",
+        subcommands: [
+            NetworkCreate.self,
+            NetworkJoin.self,
+            NetworkList.self,
+            NetworkLeave.self,
+            NetworkShow.self
+        ]
+    )
+}
+
+struct NetworkCreate: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "create",
+        abstract: "Create a new network and get shareable key"
+    )
+
+    @Option(name: .long, help: "Network name")
+    var name: String
+
+    @Option(name: .long, help: "Local endpoint (IP:port) for bootstrap")
+    var endpoint: String
+
+    mutating func run() async throws {
+        print("🌐 Creating new network: \(name)")
+
+        let networkManager = NetworkManager()
+        try await networkManager.loadNetworks()
+
+        let key = await networkManager.createNetwork(
+            name: name,
+            bootstrapEndpoint: endpoint
+        )
+
+        print("\n✅ Network created successfully!")
+        print("")
+        print("Network: \(name)")
+        print("Network ID: \(key.deriveNetworkId())")
+        print("")
+        print("Share this key with others to invite them:")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        do {
+            let encodedKey = try key.encode()
+            print(encodedKey)
+        } catch {
+            print("Error encoding key: \(error)")
+        }
+
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("")
+        print("To join this network:")
+        print("  omerta network join --key <key-above>")
+    }
+}
+
+struct NetworkJoin: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "join",
+        abstract: "Join a network using a shared key"
+    )
+
+    @Option(name: .long, help: "Network key (omerta://join/...)")
+    var key: String
+
+    @Option(name: .long, help: "Optional custom name for the network")
+    var name: String?
+
+    mutating func run() async throws {
+        print("🌐 Joining network...")
+
+        do {
+            let networkKey = try NetworkKey.decode(from: key)
+
+            let networkManager = NetworkManager()
+            try await networkManager.loadNetworks()
+
+            let networkId = try await networkManager.joinNetwork(
+                key: networkKey,
+                name: name
+            )
+
+            print("\n✅ Successfully joined network!")
+            print("")
+            print("Network: \(name ?? networkKey.networkName)")
+            print("Network ID: \(networkId)")
+            print("Bootstrap peers: \(networkKey.bootstrapPeers.joined(separator: ", "))")
+            print("")
+            print("To see all networks:")
+            print("  omerta network list")
+
+        } catch {
+            print("❌ Failed to join network: \(error)")
+            throw ExitCode.failure
+        }
+    }
+}
+
+struct NetworkList: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "list",
+        abstract: "List all joined networks"
+    )
+
+    @Flag(name: .long, help: "Show detailed information")
+    var detailed: Bool = false
+
+    mutating func run() async throws {
+        let networkManager = NetworkManager()
+        try await networkManager.loadNetworks()
+
+        let networks = await networkManager.getNetworks()
+
+        if networks.isEmpty {
+            print("No networks joined yet.")
+            print("")
+            print("To create a network:")
+            print("  omerta network create --name \"My Network\" --endpoint \"<your-ip>:50051\"")
+            print("")
+            print("To join a network:")
+            print("  omerta network join --key <network-key>")
+            return
+        }
+
+        print("Joined Networks")
+        print("===============")
+        print("")
+
+        for network in networks.sorted(by: { $0.joinedAt > $1.joinedAt }) {
+            let isEnabled = await networkManager.isNetworkEnabled(network.id)
+            let status = isEnabled ? "✅ Active" : "⏸  Paused"
+
+            print("\(status) \(network.name)")
+            print("   ID: \(network.id.prefix(16))...")
+            print("   Joined: \(formatDate(network.joinedAt))")
+
+            if detailed {
+                print("   Bootstrap peers: \(network.key.bootstrapPeers.joined(separator: ", "))")
+            }
+
+            print("")
+        }
+
+        print("Total: \(networks.count) networks")
+        print("")
+        print("To see network details:")
+        print("  omerta network show --id <network-id>")
+    }
+
+    private func formatDate(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+struct NetworkLeave: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "leave",
+        abstract: "Leave a network"
+    )
+
+    @Option(name: .long, help: "Network ID")
+    var id: String
+
+    @Flag(name: .long, help: "Skip confirmation")
+    var force: Bool = false
+
+    mutating func run() async throws {
+        let networkManager = NetworkManager()
+        try await networkManager.loadNetworks()
+
+        guard let network = await networkManager.getNetwork(id: id) else {
+            print("❌ Network not found: \(id)")
+            throw ExitCode.failure
+        }
+
+        if !force {
+            print("Are you sure you want to leave '\(network.name)'?")
+            print("You will need the network key to rejoin.")
+            print("")
+            print("Type 'yes' to confirm: ", terminator: "")
+
+            guard let response = readLine()?.lowercased(), response == "yes" else {
+                print("Cancelled.")
+                return
+            }
+        }
+
+        do {
+            try await networkManager.leaveNetwork(networkId: id)
+            print("\n✅ Left network: \(network.name)")
+        } catch {
+            print("❌ Failed to leave network: \(error)")
+            throw ExitCode.failure
+        }
+    }
+}
+
+struct NetworkShow: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "show",
+        abstract: "Show detailed information about a network"
+    )
+
+    @Option(name: .long, help: "Network ID")
+    var id: String
+
+    mutating func run() async throws {
+        let networkManager = NetworkManager()
+        try await networkManager.loadNetworks()
+
+        guard let network = await networkManager.getNetwork(id: id) else {
+            print("❌ Network not found: \(id)")
+            throw ExitCode.failure
+        }
+
+        let isEnabled = await networkManager.isNetworkEnabled(id)
+
+        print("Network Details")
+        print("===============")
+        print("")
+        print("Name: \(network.name)")
+        print("ID: \(network.id)")
+        print("Status: \(isEnabled ? "Active" : "Paused")")
+        print("Joined: \(network.joinedAt)")
+        print("")
+        print("Bootstrap Peers:")
+        for peer in network.key.bootstrapPeers {
+            print("  • \(peer)")
+        }
+        print("")
+        print("Network Key (for sharing):")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        do {
+            let encodedKey = try network.key.encode()
+            print(encodedKey)
+        } catch {
+            print("Error encoding key: \(error)")
+        }
+
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("")
+        print("To enable/disable this network:")
+        print("  omerta network enable --id \(network.id)")
+        print("  omerta network disable --id \(network.id)")
+    }
+}
+
 // MARK: - VPN Command
 struct VPN: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
@@ -261,12 +515,14 @@ struct Status: AsyncParsableCommand {
 
     mutating func run() async throws {
         print("Omerta Compute Sharing Platform")
-        print("Version: 0.2.0")
+        print("Version: 0.4.0")
         print("")
         print("✅ Phase 0: Project Bootstrap - Complete")
         print("✅ Phase 1: Core VM Management - Complete")
         print("✅ Phase 2: VPN Routing & Network Isolation - Complete")
-        print("⏳ Phase 3: Local Request Processing - Pending")
+        print("✅ Phase 3: Local Request Processing - Complete")
+        print("✅ Phase 4: Network Discovery & Multi-Network - Complete")
+        print("⏳ Phase 5: Consumer Client & E2E - Pending")
         print("")
 
         if checkDeps {
@@ -280,7 +536,8 @@ struct Status: AsyncParsableCommand {
 
         print("Available commands:")
         print("  execute   - Execute job locally with VPN routing")
-        print("  submit    - Submit job to remote provider (requires Phase 3)")
+        print("  submit    - Submit job to remote provider")
+        print("  network   - Network management (create, join, list, etc.)")
         print("  vpn       - VPN management commands")
         print("  status    - Show this status information")
         print("")

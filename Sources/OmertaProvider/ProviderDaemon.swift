@@ -3,6 +3,7 @@ import Logging
 import OmertaCore
 import OmertaVM
 import OmertaNetwork
+import protocol OmertaNetwork.JobSubmissionHandler
 
 /// The main provider daemon that manages compute job execution
 public actor ProviderDaemon {
@@ -523,5 +524,58 @@ public struct ActivityLogEntry: Sendable, Identifiable {
         self.activityDescription = activityDescription
         self.event = event
         self.details = details
+    }
+}
+
+// MARK: - JobSubmissionHandler Protocol Conformance
+
+extension ProviderDaemon: JobSubmissionHandler {
+    /// Handle a job submission from the gRPC service
+    public func handleJobSubmission(_ job: ComputeJob) async throws -> ExecutionResult {
+        // Submit job and wait for execution result
+        _ = try await submitJob(job)
+
+        // Poll for completion (simplified for MVP)
+        // In production, this would use async callbacks or streams
+        while true {
+            if let status = await getJobStatus(job.id) {
+                switch status {
+                case .completed:
+                    // Get result from completed jobs
+                    let state = await jobQueue.getState()
+                    if let completed = state.completedJobs[job.id] {
+                        switch completed.result {
+                        case .success(let result):
+                            return result
+                        case .failure(let error):
+                            throw error
+                        }
+                    }
+                    throw ProviderError.jobNotFound
+
+                case .failed:
+                    throw ProviderError.jobNotFound
+
+                case .cancelled:
+                    throw ProviderError.jobNotFound
+
+                default:
+                    // Still running or pending, wait
+                    try await Task.sleep(for: .milliseconds(500))
+                }
+            } else {
+                throw ProviderError.jobNotFound
+            }
+        }
+    }
+
+    /// Handle a job cancellation from the gRPC service
+    public func handleJobCancellation(_ jobId: UUID) async throws {
+        try await cancelJob(jobId)
+    }
+
+    /// Query job status from the gRPC service
+    public func handleJobStatusQuery(_ jobId: UUID) async -> JobStatus? {
+        await getJobStatus(jobId)
     }
 }
