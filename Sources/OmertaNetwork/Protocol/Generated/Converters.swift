@@ -36,11 +36,28 @@ extension ComputeRequest {
     }
 }
 
+// Helper functions to map between domain and proto ResourceType enums
+private func mapResourceTypeToProto(_ type: OmertaCore.ResourceType) -> ResourceType {
+    switch type {
+    case .cpuOnly: return .cpuOnly
+    case .gpuRequired: return .gpuRequired
+    case .gpuPreferred: return .gpuPreferred
+    }
+}
+
+private func mapProtoResourceTypeToDomain(_ type: ResourceType) -> OmertaCore.ResourceType {
+    switch type {
+    case .cpuOnly: return .cpuOnly
+    case .gpuRequired: return .gpuRequired
+    case .gpuPreferred: return .gpuPreferred
+    }
+}
+
 extension Proto_ResourceRequirements {
     /// Convert from domain ResourceRequirements to proto
     public static func from(_ requirements: ResourceRequirements) -> Proto_ResourceRequirements {
         Proto_ResourceRequirements(
-            type: ResourceType(rawValue: requirements.type.rawValue) ?? .cpuOnly,
+            type: mapResourceTypeToProto(requirements.type),
             cpuCores: requirements.cpuCores,
             memoryMb: requirements.memoryMB,
             gpu: requirements.gpu.map { GpuRequirements.from($0) },
@@ -51,7 +68,7 @@ extension Proto_ResourceRequirements {
     /// Convert from proto to domain ResourceRequirements
     public func toResourceRequirements() -> ResourceRequirements {
         ResourceRequirements(
-            type: .init(rawValue: type.rawValue) ?? .cpuOnly,
+            type: mapProtoResourceTypeToDomain(type),
             cpuCores: cpuCores,
             memoryMB: memoryMb,
             gpu: gpu.map { $0.toGPURequirements() },
@@ -89,14 +106,14 @@ extension WorkloadSpec {
                 language: script.language,
                 scriptContent: script.scriptContent,
                 dependencies: script.dependencies,
-                env: script.env
+                env: script.environment
             ))
         case .binary(let binary):
             return .binary(BinaryWorkload(
                 binaryUrl: binary.binaryURL,
                 binaryHash: binary.binaryHash,
-                args: binary.args,
-                env: binary.env
+                args: binary.arguments,
+                env: binary.environment
             ))
         }
     }
@@ -109,14 +126,14 @@ extension WorkloadSpec {
                 language: script.language,
                 scriptContent: script.scriptContent,
                 dependencies: script.dependencies,
-                env: script.env
+                environment: script.env
             ))
         case .binary(let binary):
             return .binary(OmertaCore.BinaryWorkload(
                 binaryURL: binary.binaryUrl,
                 binaryHash: binary.binaryHash,
-                args: binary.args,
-                env: binary.env
+                arguments: binary.args,
+                environment: binary.env
             ))
         }
     }
@@ -148,9 +165,12 @@ extension Proto_VPNConfiguration {
 extension ComputeResponse {
     /// Convert from domain ExecutionResult to proto ComputeResponse
     public static func from(_ result: ExecutionResult, requestId: String) -> ComputeResponse {
-        ComputeResponse(
+        let status: ResponseStatus = result.exitCode == 0 ? .success : .failure
+        let message = result.exitCode == 0 ? "Job completed successfully" : "Job failed with exit code \(result.exitCode)"
+
+        return ComputeResponse(
             requestId: requestId,
-            status: .success,
+            status: status,
             result: Proto_ExecutionResult(
                 exitCode: result.exitCode,
                 stdout: result.stdout,
@@ -158,7 +178,7 @@ extension ComputeResponse {
             ),
             metrics: Proto_ExecutionMetrics.from(result.metrics),
             logs: [],
-            message: "Job completed successfully"
+            message: message
         )
     }
 
@@ -204,7 +224,18 @@ extension Proto_JobStatus {
     /// Convert from domain JobStatus to proto
     public static func from(_ status: JobStatus) -> Proto_JobStatus {
         switch status {
-        case .pending: return .queued
+        case .queued: return .queued
+        case .running: return .running
+        case .completed: return .completed
+        case .failed: return .failed
+        case .cancelled: return .cancelled
+        }
+    }
+
+    /// Convert to domain JobStatus
+    public func toJobStatus() -> JobStatus {
+        switch self {
+        case .queued: return .queued
         case .running: return .running
         case .completed: return .completed
         case .failed: return .failed
