@@ -115,11 +115,18 @@ public actor PeerDiscovery {
 
     /// Announce to a specific network
     private func announceToNetwork(_ network: Network) async {
-        let announcement = PeerAnnouncement.local(
+        let announcement = PeerAnnouncement(
             peerId: localPeerId,
             networkId: network.id,
             endpoint: localEndpoint,
-            capabilities: await getLocalCapabilities()
+            capabilities: await getLocalCapabilities(),
+            metadata: PeerMetadata(
+                reputationScore: 100,
+                jobsCompleted: 0,
+                jobsRejected: 0,
+                averageResponseTimeMs: 50
+            ),
+            signature: Data()  // TODO: Sign announcement
         )
 
         // For MVP: Store announcement in registry (self-registration)
@@ -134,16 +141,29 @@ public actor PeerDiscovery {
 
     /// Get local resource capabilities
     private func getLocalCapabilities() async -> [ResourceCapability] {
-        // TODO: Query actual system resources
-        // For MVP, return placeholder capabilities
-        [
+        // Query actual system resources
+        let cpuCount = UInt32(ProcessInfo.processInfo.processorCount)
+        let totalMemoryMB = ProcessInfo.processInfo.physicalMemory / (1024 * 1024)
+
+        // Get architecture
+        #if arch(arm64)
+        let architecture = CPUArchitecture.arm64
+        #else
+        let architecture = CPUArchitecture.x86_64
+        #endif
+
+        return [
             ResourceCapability(
-                type: .cpuOnly,
-                availableCpuCores: 4,  // TODO: Query from system
-                availableMemoryMb: 8192,  // TODO: Query from system
-                hasGpu: false,  // TODO: Detect GPU
-                gpu: nil,
-                supportedWorkloadTypes: ["script", "binary"]
+                cpuCores: cpuCount,
+                cpuArchitecture: architecture,
+                cpuModel: nil,
+                totalMemoryMB: totalMemoryMB,
+                availableMemoryMB: totalMemoryMB - 4096,  // Reserve 4GB for host
+                totalStorageMB: 500_000,  // TODO: Query actual disk
+                availableStorageMB: 100_000,  // TODO: Query actual disk
+                gpu: nil,  // TODO: Detect GPU
+                networkBandwidthMbps: nil,
+                availableImages: ["ubuntu-22.04"]
             )
         ]
     }

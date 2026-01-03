@@ -167,21 +167,35 @@ public actor PeerRegistry {
         peer: DiscoveredPeer,
         requirements: ResourceRequirements
     ) -> Bool {
-        // Find capability matching the resource type
-        guard let capability = peer.capabilities.first(where: { capability in
-            ResourceType(rawValue: capability.type.rawValue) == requirements.type
-        }) else {
-            return false
+        // Check if any capability meets requirements
+        return peer.capabilities.contains { capability in
+            matchesSingleCapability(capability, requirements)
+        }
+    }
+
+    /// Check if a single capability matches requirements
+    private func matchesSingleCapability(
+        _ capability: ResourceCapability,
+        _ requirements: ResourceRequirements
+    ) -> Bool {
+        // Check CPU cores
+        if let requiredCores = requirements.cpuCores {
+            guard capability.cpuCores >= requiredCores else { return false }
         }
 
-        // Check CPU
-        if capability.availableCpuCores < requirements.cpuCores {
-            return false
+        // Check CPU architecture
+        if let requiredArch = requirements.cpuArchitecture {
+            guard capability.cpuArchitecture == requiredArch else { return false }
         }
 
         // Check memory
-        if capability.availableMemoryMb < requirements.memoryMB {
-            return false
+        if let requiredMemory = requirements.memoryMB {
+            guard capability.availableMemoryMB >= requiredMemory else { return false }
+        }
+
+        // Check storage
+        if let requiredStorage = requirements.storageMB {
+            guard capability.availableStorageMB >= requiredStorage else { return false }
         }
 
         // Check GPU if required
@@ -189,8 +203,11 @@ public actor PeerRegistry {
             guard let gpuCap = capability.gpu else {
                 return false
             }
-            if gpuCap.availableVramMb < gpuReq.vramMB {
-                return false
+            if let requiredVRAM = gpuReq.vramMB {
+                guard gpuCap.availableVramMB >= requiredVRAM else { return false }
+            }
+            if let requiredVendor = gpuReq.vendor {
+                guard gpuCap.vendor == requiredVendor else { return false }
             }
         }
 
@@ -205,11 +222,11 @@ public actor PeerRegistry {
         let onlinePeers = allPeers.filter { $0.isOnline }
 
         let totalCpu = onlinePeers.reduce(UInt32(0)) { sum, peer in
-            sum + (peer.capabilities.first?.availableCpuCores ?? 0)
+            sum + (peer.capabilities.first?.cpuCores ?? 0)
         }
 
         let totalMemory = onlinePeers.reduce(UInt64(0)) { sum, peer in
-            sum + (peer.capabilities.first?.availableMemoryMb ?? 0)
+            sum + (peer.capabilities.first?.availableMemoryMB ?? 0)
         }
 
         let averageReputation = onlinePeers.isEmpty ? 0 : onlinePeers.reduce(0) { sum, peer in
