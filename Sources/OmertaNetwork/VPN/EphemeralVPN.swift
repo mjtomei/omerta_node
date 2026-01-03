@@ -2,19 +2,136 @@ import Foundation
 import Crypto
 import Logging
 import OmertaCore
+#if canImport(NetworkExtension)
+import NetworkExtension
+#endif
+
+/// VPN backend mode
+public enum VPNBackend: String, Sendable {
+    case networkExtension  // Use macOS Network Extension (no sudo required)
+    case wgQuick          // Use wg-quick CLI (requires sudo)
+    case dryRun           // Skip actual VPN setup (for testing)
+}
+
+/// Helper to find WireGuard tools on different systems
+public struct WireGuardPaths {
+    public static let wg: String = {
+        let paths = [
+            "/opt/homebrew/bin/wg",      // macOS Apple Silicon Homebrew
+            "/usr/local/bin/wg",          // macOS Intel Homebrew / Linux manual
+            "/usr/bin/wg"                 // Linux package manager
+        ]
+        for path in paths {
+            if FileManager.default.fileExists(atPath: path) {
+                return path
+            }
+        }
+        return "/usr/bin/wg"  // Default fallback
+    }()
+
+    public static let wgQuick: String = {
+        let paths = [
+            "/opt/homebrew/bin/wg-quick",  // macOS Apple Silicon Homebrew
+            "/usr/local/bin/wg-quick",      // macOS Intel Homebrew / Linux manual
+            "/usr/bin/wg-quick"             // Linux package manager
+        ]
+        for path in paths {
+            if FileManager.default.fileExists(atPath: path) {
+                return path
+            }
+        }
+        return "/usr/bin/wg-quick"  // Default fallback
+    }()
+
+    /// Environment with PATH including Homebrew bash (required for wg-quick on macOS)
+    public static let environment: [String: String] = {
+        var env = ProcessInfo.processInfo.environment
+        // Prepend Homebrew paths to ensure bash 4+ is found
+        let homebrewPaths = "/opt/homebrew/bin:/usr/local/bin"
+        if let existingPath = env["PATH"] {
+            env["PATH"] = "\(homebrewPaths):\(existingPath)"
+        } else {
+            env["PATH"] = "\(homebrewPaths):/usr/bin:/bin"
+        }
+        return env
+    }()
+}
 
 /// Creates and manages ephemeral WireGuard VPN servers for individual jobs
 /// Used by consumers/requesters to create isolated network environments
-public actor EphemeralVPN {
+/// Implements VPNProvider protocol for cross-platform abstraction
+public actor EphemeralVPN: VPNProvider {
     private let logger = Logger(label: "com.omerta.ephemeral-vpn")
     private var activeServers: [UUID: VPNServer] = [:]
     private let basePort: UInt16
     private var nextPort: UInt16
+    private let backend: VPNBackend
 
-    public init(basePort: UInt16 = 51820) {
+    #if canImport(NetworkExtension)
+    private let tunnelService: VPNTunnelService?
+    #endif
+
+    /// Initialize EphemeralVPN
+    /// - Parameters:
+    ///   - basePort: Base port for WireGuard listeners
+    ///   - backend: Which VPN backend to use (.networkExtension, .wgQuick, or .dryRun)
+    // Use port range 51900+ for VPN tunnels (51820 is typically used for control)
+    public init(basePort: UInt16 = 51900, backend: VPNBackend = .networkExtension) {
         self.basePort = basePort
         self.nextPort = basePort
-        logger.info("EphemeralVPN initialized", metadata: ["base_port": "\(basePort)"])
+        self.backend = backend
+
+        #if canImport(NetworkExtension)
+        if backend == .networkExtension {
+            self.tunnelService = VPNTunnelService()
+        } else {
+            self.tunnelService = nil
+        }
+        #endif
+
+        logger.info("EphemeralVPN initialized", metadata: [
+            "base_port": "\(basePort)",
+            "backend": "\(backend.rawValue)"
+        ])
+    }
+
+    /// Initialize with legacy dryRun parameter (backwards compatibility)
+    public init(basePort: UInt16 = 51900, dryRun: Bool) {
+        self.basePort = basePort
+        self.nextPort = basePort
+        self.backend = dryRun ? .dryRun : .networkExtension
+
+        #if canImport(NetworkExtension)
+        if !dryRun {
+            self.tunnelService = VPNTunnelService()
+        } else {
+            self.tunnelService = nil
+        }
+        #endif
+
+        logger.info("EphemeralVPN initialized", metadata: [
+            "base_port": "\(basePort)",
+            "dry_run": "\(dryRun)"
+        ])
+    }
+
+    /// Check if the VPN backend is available
+    public func isBackendAvailable() async -> Bool {
+        switch backend {
+        case .dryRun:
+            return true
+        case .wgQuick:
+            return FileManager.default.fileExists(atPath: WireGuardPaths.wgQuick)
+        case .networkExtension:
+            #if canImport(NetworkExtension)
+            if let service = tunnelService {
+                return await service.isExtensionInstalled()
+            }
+            return false
+            #else
+            return false
+            #endif
+        }
     }
 
     /// Create an ephemeral VPN server for a job
@@ -58,15 +175,55 @@ public actor EphemeralVPN {
             serverVPNIP: serverVPNIP
         )
 
-        // Start WireGuard server
-        let interfaceName = "wg-server-\(jobId.uuidString.prefix(8))"
-        try await startVPNServer(
-            config: serverConfig,
-            interfaceName: interfaceName
-        )
+        // Start WireGuard server based on backend
+        // Interface name must be ≤15 chars for wg-quick
+        let interfaceName = "wg\(jobId.uuidString.prefix(8))"
+        var usedWgQuick = false
 
-        // Configure NAT/forwarding for internet access
-        try await configureNATForwarding(interfaceName: interfaceName)
+        switch backend {
+        case .dryRun:
+            logger.info("Dry run - skipping VPN server start", metadata: ["interface": "\(interfaceName)"])
+
+        case .networkExtension:
+            #if canImport(NetworkExtension)
+            guard let service = tunnelService else {
+                throw VPNError.tunnelStartFailed("Network Extension service not initialized")
+            }
+
+            // Check if extension is installed
+            let isInstalled = await service.isExtensionInstalled()
+            if !isInstalled {
+                throw VPNError.tunnelStartFailed("VPN extension not installed. Run 'omerta setup' first.")
+            }
+
+            // Try Network Extension first, fall back to wg-quick on permission denied
+            do {
+                _ = try await service.startTunnel(jobId: jobId, config: serverConfig)
+                logger.info("VPN server started via Network Extension", metadata: ["interface": "\(interfaceName)"])
+            } catch let error as NSError where error.domain == "NEVPNErrorDomain" && error.code == 5 {
+                // Permission denied - fall back to wg-quick
+                logger.warning("Network Extension permission denied, falling back to wg-quick (requires sudo)")
+                try await startVPNServerWgQuick(
+                    config: serverConfig,
+                    interfaceName: interfaceName
+                )
+                try await configureNATForwarding(interfaceName: interfaceName)
+                usedWgQuick = true
+            }
+            #else
+            throw VPNError.tunnelStartFailed("Network Extension not available on this platform")
+            #endif
+
+        case .wgQuick:
+            try await startVPNServerWgQuick(
+                config: serverConfig,
+                interfaceName: interfaceName
+            )
+            usedWgQuick = true
+
+            // Configure NAT/forwarding for internet access
+            try await configureNATForwarding(interfaceName: interfaceName)
+        }
 
         let server = VPNServer(
             jobId: jobId,
@@ -76,7 +233,8 @@ public actor EphemeralVPN {
             clientVPNIP: clientVPNIP,
             serverPrivateKey: serverPrivateKey,
             clientPublicKey: clientPublicKey,
-            createdAt: Date()
+            createdAt: Date(),
+            usedWgQuick: usedWgQuick
         )
 
         activeServers[jobId] = server
@@ -92,7 +250,6 @@ public actor EphemeralVPN {
             wireguardConfig: clientConfig,
             endpoint: endpoint,
             publicKey: Data(serverPublicKey.utf8),
-            allowedIPs: "0.0.0.0/0", // Route all traffic through VPN
             vpnServerIP: serverVPNIP
         )
     }
@@ -106,14 +263,31 @@ public actor EphemeralVPN {
 
         logger.info("Destroying ephemeral VPN", metadata: [
             "job_id": "\(jobId)",
-            "interface": "\(server.interfaceName)"
+            "interface": "\(server.interfaceName)",
+            "usedWgQuick": "\(server.usedWgQuick)"
         ])
 
-        // Remove NAT forwarding rules
-        try await removeNATForwarding(interfaceName: server.interfaceName)
+        switch backend {
+        case .dryRun:
+            logger.info("Dry run - skipping VPN server stop", metadata: ["interface": "\(server.interfaceName)"])
 
-        // Stop WireGuard server
-        try await stopVPNServer(interfaceName: server.interfaceName)
+        case .networkExtension:
+            #if canImport(NetworkExtension)
+            // If wg-quick was used as fallback, clean up with wg-quick
+            if server.usedWgQuick {
+                try await removeNATForwarding(interfaceName: server.interfaceName)
+                try await stopVPNServerWgQuick(interfaceName: server.interfaceName)
+            } else if let service = tunnelService {
+                try await service.stopTunnel(jobId: jobId)
+            }
+            #endif
+
+        case .wgQuick:
+            // Remove NAT forwarding rules
+            try await removeNATForwarding(interfaceName: server.interfaceName)
+            // Stop WireGuard server
+            try await stopVPNServerWgQuick(interfaceName: server.interfaceName)
+        }
 
         activeServers.removeValue(forKey: jobId)
 
@@ -128,8 +302,8 @@ public actor EphemeralVPN {
 
         // Check WireGuard handshake status
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/wg")
-        process.arguments = ["show", server.interfaceName, "latest-handshakes"]
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process.arguments = [WireGuardPaths.wg, "show", server.interfaceName, "latest-handshakes"]
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -159,11 +333,11 @@ public actor EphemeralVPN {
     }
 
     private func derivePublicKey(from privateKey: String) throws -> String {
-        // In real implementation, this would use WireGuard's Curve25519 key derivation
-        // For now, we'll call wg pubkey command
+        // Use wg pubkey command to derive public key from private key
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/wg")
+        process.executableURL = URL(fileURLWithPath: WireGuardPaths.wg)
         process.arguments = ["pubkey"]
+        process.environment = WireGuardPaths.environment
 
         let inputPipe = Pipe()
         let outputPipe = Pipe()
@@ -218,21 +392,13 @@ public actor EphemeralVPN {
         clientIP: String,
         port: UInt16
     ) -> String {
+        // Simple config without NAT - consumer and provider communicate directly via VPN
+        // NAT/forwarding would be needed for internet access through the VPN
         """
         [Interface]
         PrivateKey = \(privateKey)
         Address = \(serverIP)/24
         ListenPort = \(port)
-
-        # Enable IP forwarding
-        PostUp = sysctl -w net.ipv4.ip_forward=1
-        PostUp = iptables -A FORWARD -i %i -j ACCEPT
-        PostUp = iptables -A FORWARD -o %i -j ACCEPT
-        PostUp = iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-
-        PostDown = iptables -D FORWARD -i %i -j ACCEPT
-        PostDown = iptables -D FORWARD -o %i -j ACCEPT
-        PostDown = iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
 
         [Peer]
         PublicKey = \(clientPublicKey)
@@ -261,29 +427,41 @@ public actor EphemeralVPN {
         """
     }
 
-    private func startVPNServer(
+    private func startVPNServerWgQuick(
         config: String,
         interfaceName: String
     ) async throws {
-        // Write config to file
-        let tmpDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("omerta-vpn-server")
+        // Write config to user-writable temp directory
+        // wg-quick accepts full paths to config files
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omerta-wg").path
+        let configPath = "\(configDir)/\(interfaceName).conf"
 
-        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        // Create directory if it doesn't exist
+        if !FileManager.default.fileExists(atPath: configDir) {
+            try FileManager.default.createDirectory(
+                atPath: configDir,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+        }
 
-        let configURL = tmpDir.appendingPathComponent("\(interfaceName).conf")
-        try config.write(to: configURL, atomically: true, encoding: .utf8)
+        // Write config file
+        try config.write(toFile: configPath, atomically: true, encoding: .utf8)
 
         // Set secure permissions
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o600],
-            ofItemAtPath: configURL.path
+            ofItemAtPath: configPath
         )
 
-        // Start WireGuard
+        // Start WireGuard with sudo
+        // Set PATH before calling sudo so wg-quick finds bash 4+
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/local/bin/wg-quick")
-        process.arguments = ["up", configURL.path]
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        let pathValue = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+        process.environment = ["PATH": pathValue]
+        process.arguments = [WireGuardPaths.wgQuick, "up", configPath]
 
         let errorPipe = Pipe()
         process.standardError = errorPipe
@@ -300,15 +478,38 @@ public actor EphemeralVPN {
         logger.info("VPN server started", metadata: ["interface": "\(interfaceName)"])
     }
 
-    private func stopVPNServer(interfaceName: String) async throws {
+    private func stopVPNServerWgQuick(interfaceName: String) async throws {
+        // Config is in our temp directory
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omerta-wg").path
+        let configPath = "\(configDir)/\(interfaceName).conf"
+
+        // Stop WireGuard with sudo (same pattern as start)
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/local/bin/wg-quick")
-        process.arguments = ["down", interfaceName]
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        let pathValue = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+        process.environment = ["PATH": pathValue]
+        process.arguments = [WireGuardPaths.wgQuick, "down", configPath]
+
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
 
         try process.run()
         process.waitUntilExit()
 
-        // Best-effort cleanup
+        // Log any errors but don't fail - interface might already be down
+        if process.terminationStatus != 0 {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+            logger.warning("wg-quick down returned error (interface may already be down)", metadata: [
+                "interface": "\(interfaceName)",
+                "error": "\(errorMessage)"
+            ])
+        }
+
+        // Clean up config file
+        try? FileManager.default.removeItem(atPath: configPath)
+
         logger.info("VPN server stopped", metadata: ["interface": "\(interfaceName)"])
     }
 
@@ -327,6 +528,23 @@ public actor EphemeralVPN {
     public func getActiveServers() -> [UUID: VPNServer] {
         activeServers
     }
+
+    // MARK: - VPNProvider Protocol
+
+    /// Create a VPN tunnel for a VM session (VPNProvider protocol)
+    public func createVPN(for vmId: UUID) async throws -> VPNConfiguration {
+        try await createVPNForJob(vmId)
+    }
+
+    /// Check if a VPN tunnel is connected (VPNProvider protocol)
+    public func isConnected(for vmId: UUID) async throws -> Bool {
+        try await isClientConnected(for: vmId)
+    }
+
+    /// Get all active VPN tunnel IDs (VPNProvider protocol)
+    public func getActiveTunnels() async -> [UUID] {
+        Array(activeServers.keys)
+    }
 }
 
 /// VPN server instance
@@ -339,4 +557,295 @@ public struct VPNServer: Sendable {
     public let serverPrivateKey: String
     public let clientPublicKey: String
     public let createdAt: Date
+    /// True if wg-quick was used (either as primary backend or as fallback from Network Extension)
+    public let usedWgQuick: Bool
+}
+
+// MARK: - Static Cleanup Methods
+
+/// Cleanup utilities for orphaned WireGuard interfaces
+/// These are static so they can be used without an EphemeralVPN instance
+public enum WireGuardCleanup {
+    private static let logger = Logger(label: "com.omerta.wg-cleanup")
+
+    /// Pattern for Omerta-managed WireGuard interfaces: wg + 8 hex chars
+    /// Examples: wg3AD3F0D1, wgABCD1234
+    public static let interfacePattern = #"^wg[0-9A-Fa-f]{8}$"#
+
+    /// List all active WireGuard interfaces
+    public static func listAllInterfaces() throws -> [String] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process.arguments = [WireGuardPaths.wg, "show", "interfaces"]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            return []
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+
+        return output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: " ")
+            .map(String.init)
+            .filter { !$0.isEmpty }
+    }
+
+    /// List only Omerta-managed interfaces (matching our naming pattern)
+    /// On macOS, also checks /var/run/wireguard/*.name files for interface mappings
+    public static func listOmertaInterfaces() throws -> [String] {
+        var omertaInterfaces: [String] = []
+
+        // Method 1: Check wg show interfaces output
+        let allInterfaces = try listAllInterfaces()
+        let regex = try NSRegularExpression(pattern: interfacePattern)
+
+        for interfaceName in allInterfaces {
+            let range = NSRange(interfaceName.startIndex..., in: interfaceName)
+            if regex.firstMatch(in: interfaceName, range: range) != nil {
+                omertaInterfaces.append(interfaceName)
+            }
+        }
+
+        // Method 2: On macOS, check /var/run/wireguard/*.name files
+        // These map our config names to utun interfaces
+        #if os(macOS)
+        let wireguardRunDir = "/var/run/wireguard"
+        if FileManager.default.fileExists(atPath: wireguardRunDir) {
+            if let files = try? FileManager.default.contentsOfDirectory(atPath: wireguardRunDir) {
+                for file in files where file.hasSuffix(".name") {
+                    // Extract config name from filename (e.g., "wg3E8EBF8E.name" -> "wg3E8EBF8E")
+                    let configName = String(file.dropLast(5))
+                    let range = NSRange(configName.startIndex..., in: configName)
+                    if regex.firstMatch(in: configName, range: range) != nil {
+                        if !omertaInterfaces.contains(configName) {
+                            omertaInterfaces.append(configName)
+                        }
+                    }
+                }
+            }
+        }
+        #endif
+
+        return omertaInterfaces
+    }
+
+    /// Stop a WireGuard interface by name
+    public static func stopInterface(_ interfaceName: String) throws {
+        // First try with config file path (if it exists)
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omerta-wg").path
+        let configPath = "\(configDir)/\(interfaceName).conf"
+
+        let pathValue = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+
+        // Try with config path first
+        var process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process.environment = ["PATH": pathValue]
+
+        if FileManager.default.fileExists(atPath: configPath) {
+            process.arguments = [WireGuardPaths.wgQuick, "down", configPath]
+        } else {
+            // Fall back to interface name (for interfaces created without our config)
+            process.arguments = [WireGuardPaths.wgQuick, "down", interfaceName]
+        }
+
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        // Clean up config file if it exists
+        try? FileManager.default.removeItem(atPath: configPath)
+
+        // Clean up macOS name file if it exists (in /var/run/wireguard/)
+        #if os(macOS)
+        let nameFilePath = "/var/run/wireguard/\(interfaceName).name"
+        if FileManager.default.fileExists(atPath: nameFilePath) {
+            // Need sudo to remove files in /var/run/wireguard
+            let rmProcess = Process()
+            rmProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            rmProcess.arguments = ["rm", "-f", nameFilePath]
+            rmProcess.standardError = FileHandle.nullDevice
+            try? rmProcess.run()
+            rmProcess.waitUntilExit()
+            logger.info("Removed name file", metadata: ["path": "\(nameFilePath)"])
+        }
+        #endif
+
+        if process.terminationStatus != 0 {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+            logger.warning("wg-quick down returned error", metadata: [
+                "interface": "\(interfaceName)",
+                "error": "\(errorMessage)"
+            ])
+        } else {
+            logger.info("Stopped interface", metadata: ["interface": "\(interfaceName)"])
+        }
+    }
+
+    /// Stop all Omerta-managed WireGuard interfaces
+    public static func cleanupAllOmertaInterfaces() throws -> [String] {
+        let interfaces = try listOmertaInterfaces()
+
+        for interfaceName in interfaces {
+            try stopInterface(interfaceName)
+        }
+
+        // Also clean up any leftover config files
+        cleanupConfigFiles()
+
+        return interfaces
+    }
+
+    /// Stop orphaned interfaces (interfaces not in the tracked list)
+    public static func cleanupOrphanedInterfaces(trackedInterfaceNames: Set<String>) throws -> [String] {
+        let activeInterfaces = try listOmertaInterfaces()
+        var cleaned: [String] = []
+
+        for interfaceName in activeInterfaces {
+            if !trackedInterfaceNames.contains(interfaceName) {
+                logger.info("Cleaning up orphaned interface", metadata: ["interface": "\(interfaceName)"])
+                try stopInterface(interfaceName)
+                cleaned.append(interfaceName)
+            }
+        }
+
+        return cleaned
+    }
+
+    /// Clean up leftover config files in temp directory
+    public static func cleanupConfigFiles() {
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omerta-wg").path
+
+        guard FileManager.default.fileExists(atPath: configDir) else { return }
+
+        do {
+            let files = try FileManager.default.contentsOfDirectory(atPath: configDir)
+            for file in files where file.hasSuffix(".conf") {
+                let filePath = "\(configDir)/\(file)"
+                try? FileManager.default.removeItem(atPath: filePath)
+                logger.info("Removed config file", metadata: ["path": "\(filePath)"])
+            }
+        } catch {
+            logger.warning("Failed to list config directory", metadata: ["error": "\(error)"])
+        }
+    }
+
+    /// Get cleanup status report
+    public static func getCleanupStatus() throws -> CleanupStatus {
+        let omertaInterfaces = try listOmertaInterfaces()
+
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omerta-wg").path
+        var configFiles: [String] = []
+        if FileManager.default.fileExists(atPath: configDir) {
+            configFiles = (try? FileManager.default.contentsOfDirectory(atPath: configDir)
+                .filter { $0.hasSuffix(".conf") }) ?? []
+        }
+
+        // Check for orphaned wireguard-go processes
+        let orphanedProcesses = listOrphanedWireGuardProcesses()
+
+        return CleanupStatus(
+            activeInterfaces: omertaInterfaces,
+            configFiles: configFiles,
+            configDirectory: configDir,
+            orphanedProcesses: orphanedProcesses
+        )
+    }
+
+    /// List orphaned wireguard-go processes (processes without matching interfaces)
+    public static func listOrphanedWireGuardProcesses() -> [OrphanedProcess] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        process.arguments = ["-fl", "wireguard-go"]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return []
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+
+        var processes: [OrphanedProcess] = []
+        for line in output.split(separator: "\n") {
+            let parts = line.split(separator: " ", maxSplits: 1)
+            if let pidStr = parts.first, let pid = Int32(pidStr) {
+                let command = parts.count > 1 ? String(parts[1]) : "wireguard-go"
+                processes.append(OrphanedProcess(pid: pid, command: command))
+            }
+        }
+
+        return processes
+    }
+
+    /// Kill orphaned wireguard-go processes
+    public static func killOrphanedProcesses(_ processes: [OrphanedProcess]) throws -> Int {
+        guard !processes.isEmpty else { return 0 }
+
+        var killed = 0
+        for proc in processes {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            process.arguments = ["kill", "-9", String(proc.pid)]
+
+            let errorPipe = Pipe()
+            process.standardError = errorPipe
+
+            try process.run()
+            process.waitUntilExit()
+
+            if process.terminationStatus == 0 {
+                killed += 1
+                logger.info("Killed orphaned process", metadata: ["pid": "\(proc.pid)"])
+            } else {
+                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                let errorMsg = String(data: errorData, encoding: .utf8) ?? "unknown error"
+                logger.warning("Failed to kill process", metadata: [
+                    "pid": "\(proc.pid)",
+                    "error": "\(errorMsg)"
+                ])
+            }
+        }
+
+        return killed
+    }
+}
+
+/// Represents an orphaned wireguard-go process
+public struct OrphanedProcess: Sendable {
+    public let pid: Int32
+    public let command: String
+}
+
+/// Status of WireGuard resources that may need cleanup
+public struct CleanupStatus: Sendable {
+    public let activeInterfaces: [String]
+    public let configFiles: [String]
+    public let configDirectory: String
+    public let orphanedProcesses: [OrphanedProcess]
+
+    public var needsCleanup: Bool {
+        !activeInterfaces.isEmpty || !configFiles.isEmpty || !orphanedProcesses.isEmpty
+    }
 }
