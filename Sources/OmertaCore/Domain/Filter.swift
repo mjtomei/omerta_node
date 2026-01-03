@@ -108,20 +108,20 @@ public struct DescriptionCondition: Sendable {
 
 /// Resource based filtering (limit resource requests)
 public struct ResourceCondition: Sendable {
-    public let allowedTypes: Set<ResourceType>
+    public let maxCpuCores: UInt32
     public let maxMemoryMB: UInt64
-    public let maxRuntimeSeconds: UInt64
+    public let maxStorageMB: UInt64
     public let allowGPU: Bool
 
     public init(
-        allowedTypes: Set<ResourceType> = [.cpuOnly, .gpuRequired, .gpuPreferred],
+        maxCpuCores: UInt32 = UInt32.max,
         maxMemoryMB: UInt64 = UInt64.max,
-        maxRuntimeSeconds: UInt64 = UInt64.max,
+        maxStorageMB: UInt64 = UInt64.max,
         allowGPU: Bool = true
     ) {
-        self.allowedTypes = allowedTypes
+        self.maxCpuCores = maxCpuCores
         self.maxMemoryMB = maxMemoryMB
-        self.maxRuntimeSeconds = maxRuntimeSeconds
+        self.maxStorageMB = maxStorageMB
         self.allowGPU = allowGPU
     }
 }
