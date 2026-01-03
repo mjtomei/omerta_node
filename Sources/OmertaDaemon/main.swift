@@ -9,8 +9,8 @@ import OmertaProvider
 struct OmertaDaemon: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "omertad",
-        abstract: "Omerta provider daemon - execute compute jobs from network peers",
-        version: "0.3.0 (Phase 3: Provider Mode)",
+        abstract: "Omerta provider daemon - provides VM resources to network peers",
+        version: "0.5.0 (Phase 5: Consumer Client)",
         subcommands: [
             Start.self,
             Stop.self,
@@ -28,11 +28,11 @@ struct Start: AsyncParsableCommand {
         abstract: "Start the provider daemon"
     )
 
-    @Option(name: .long, help: "Port to listen on")
-    var port: Int = 50051
+    @Option(name: .long, help: "Control port to listen on")
+    var port: UInt16 = 51820
 
-    @Option(name: .long, help: "Maximum concurrent jobs")
-    var maxJobs: Int = 1
+    @Option(name: .long, help: "Network key (hex encoded)")
+    var networkKey: String
 
     @Option(name: .long, help: "Owner peer ID (gets highest priority)")
     var ownerPeer: String?
@@ -40,27 +40,29 @@ struct Start: AsyncParsableCommand {
     @Option(name: .long, help: "Trusted network IDs (comma-separated)")
     var trustedNetworks: String?
 
-    @Flag(name: .long, help: "Enable activity logging")
+    @Flag(name: .long, inversion: .prefixedNo, help: "Enable activity logging")
     var activityLog: Bool = true
 
-    @Option(name: .long, help: "Results storage path")
-    var resultsPath: String?
-
     mutating func run() async throws {
-        print("🚀 Starting Omerta Provider Daemon...")
+        print("Starting Omerta Provider Daemon...")
         print("")
+
+        // Parse network key
+        guard let keyData = Data(hexString: networkKey), keyData.count == 32 else {
+            print("Error: Network key must be a 64-character hex string (32 bytes)")
+            throw ExitCode.failure
+        }
 
         // Parse trusted networks
         let networks = trustedNetworks?.components(separatedBy: ",") ?? []
 
         // Create configuration
         let config = ProviderDaemon.Configuration(
-            port: port,
-            maxConcurrentJobs: maxJobs,
+            controlPort: port,
+            networkKey: keyData,
             ownerPeerId: ownerPeer,
             trustedNetworks: networks,
-            enableActivityLogging: activityLog,
-            resultsStoragePath: resultsPath
+            enableActivityLogging: activityLog
         )
 
         // Check dependencies
@@ -68,9 +70,9 @@ struct Start: AsyncParsableCommand {
         let checker = DependencyChecker()
         do {
             try await checker.verifyProviderMode()
-            print("✅ All dependencies satisfied")
+            print("All dependencies satisfied")
         } catch let error as DependencyChecker.MissingDependenciesError {
-            print("\n❌ Missing dependencies:")
+            print("\nMissing dependencies:")
             print(error.description)
             print("\nRun the installation script:")
             print("  curl -sSL https://raw.githubusercontent.com/omerta/omerta/main/Scripts/install.sh | bash")
@@ -89,8 +91,7 @@ struct Start: AsyncParsableCommand {
             print("  Omerta Provider Daemon Running")
             print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             print("")
-            print("Port: \(port)")
-            print("Max concurrent jobs: \(maxJobs)")
+            print("Control Port: \(port)")
             if let owner = ownerPeer {
                 print("Owner peer: \(owner)")
             }
@@ -98,19 +99,17 @@ struct Start: AsyncParsableCommand {
                 print("Trusted networks: \(networks.joined(separator: ", "))")
             }
             print("")
+            print("Ready to accept VM requests from network peers.")
+            print("VMs will be accessible via SSH over WireGuard tunnel.")
+            print("")
             print("Press Ctrl+C to stop")
             print("")
 
             // Keep running until interrupted
-            // Note: In a real production daemon, use proper signal handling
-            // For now, just keep the task alive
-            print("Note: Use Ctrl+C to stop the daemon")
-
-            // Keep running indefinitely (sleep for a very long time)
             try await Task.sleep(for: .seconds(60 * 60 * 24 * 365))  // 1 year
 
         } catch {
-            print("❌ Failed to start daemon: \(error)")
+            print("Failed to start daemon: \(error)")
             throw ExitCode.failure
         }
     }
@@ -124,7 +123,7 @@ struct Stop: AsyncParsableCommand {
     )
 
     mutating func run() async throws {
-        print("⏹ Stopping Omerta Provider Daemon...")
+        print("Stopping Omerta Provider Daemon...")
 
         // In a real implementation, this would:
         // 1. Find the running daemon process (PID file)
@@ -132,7 +131,7 @@ struct Stop: AsyncParsableCommand {
         // 3. Wait for graceful shutdown
         // 4. Send SIGKILL if timeout
 
-        print("⚠️  Not yet implemented")
+        print("Not yet implemented")
         print("For now, use Ctrl+C in the terminal running 'omertad start'")
     }
 }
@@ -144,27 +143,25 @@ struct Status: AsyncParsableCommand {
         abstract: "Show provider daemon status"
     )
 
-    @Flag(name: .long, help: "Show detailed queue information")
+    @Flag(name: .long, help: "Show detailed VM information")
     var detailed: Bool = false
 
     mutating func run() async throws {
         print("Omerta Provider Daemon")
-        print("Version: 0.3.0 (Phase 3: Provider Mode)")
+        print("Version: 0.5.0 (Phase 5: Consumer Client)")
         print("")
 
         // In a real implementation, this would connect to running daemon
-        // For now, just show static status
-
-        print("Status: ⚠️  Not Running")
+        print("Status: Not Running")
         print("")
         print("To start the daemon:")
-        print("  omertad start --port 50051")
+        print("  omertad start --network-key <64-char-hex-key>")
         print("")
-        print("Configuration:")
-        print("  • Provider daemon accepts compute jobs from network peers")
-        print("  • Jobs are filtered based on rules and trusted networks")
-        print("  • Each job runs in an isolated VM with VPN routing")
-        print("  • Activity logging tracks all job submissions")
+        print("Provider daemon:")
+        print("  - Accepts VM requests from network peers")
+        print("  - Creates isolated VMs accessible via SSH")
+        print("  - Routes all VM traffic through WireGuard tunnel")
+        print("  - Monitors VPN health and kills VMs on tunnel failure")
         print("")
         print("Available commands:")
         print("  start   - Start the provider daemon")
@@ -197,23 +194,21 @@ struct ConfigShow: AsyncParsableCommand {
         print("Provider Daemon Configuration")
         print("============================")
         print("")
-        print("Port: 50051 (default)")
-        print("Max concurrent jobs: 1 (default)")
+        print("Control Port: 51820 (default)")
         print("Activity logging: enabled")
         print("")
         print("Trusted networks: (none configured)")
         print("Blocked peers: (none)")
         print("")
         print("Filter rules:")
-        print("  • Resource Limits: enabled")
-        print("    - Max CPU: 8 cores")
-        print("    - Max Memory: 16384 MB")
-        print("    - Max Runtime: 3600 seconds")
-        print("  • Quiet Hours: enabled")
-        print("    - Hours: 22:00 - 08:00 (require approval)")
+        print("  - Resource Limits: enabled")
+        print("    Max CPU: 8 cores")
+        print("    Max Memory: 16384 MB")
+        print("    Max Storage: 100 GB")
+        print("  - Quiet Hours: enabled")
+        print("    Hours: 22:00 - 08:00 (require approval)")
         print("")
-        print("⚠️  Dynamic configuration management not yet implemented")
-        print("Edit configuration file or restart with different flags")
+        print("Dynamic configuration management not yet implemented")
     }
 }
 
@@ -227,10 +222,9 @@ struct ConfigTrust: AsyncParsableCommand {
     var networkId: String
 
     mutating func run() async throws {
-        print("✅ Added trusted network: \(networkId)")
+        print("Added trusted network: \(networkId)")
         print("")
-        print("⚠️  Configuration will be applied on next daemon restart")
-        print("For live configuration changes, use the gRPC API (Phase 4)")
+        print("Configuration will be applied on next daemon restart")
     }
 }
 
@@ -244,9 +238,29 @@ struct ConfigBlock: AsyncParsableCommand {
     var peerId: String
 
     mutating func run() async throws {
-        print("🚫 Blocked peer: \(peerId)")
+        print("Blocked peer: \(peerId)")
         print("")
-        print("⚠️  Configuration will be applied on next daemon restart")
-        print("For live configuration changes, use the gRPC API (Phase 4)")
+        print("Configuration will be applied on next daemon restart")
+    }
+}
+
+// MARK: - Helpers
+
+extension Data {
+    init?(hexString: String) {
+        let len = hexString.count / 2
+        var data = Data(capacity: len)
+        var index = hexString.startIndex
+
+        for _ in 0..<len {
+            let nextIndex = hexString.index(index, offsetBy: 2)
+            guard let byte = UInt8(hexString[index..<nextIndex], radix: 16) else {
+                return nil
+            }
+            data.append(byte)
+            index = nextIndex
+        }
+
+        self = data
     }
 }
