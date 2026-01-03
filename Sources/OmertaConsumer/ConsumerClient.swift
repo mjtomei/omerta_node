@@ -36,6 +36,9 @@ public actor ConsumerClient {
     public func requestVM(
         in networkId: String,
         requirements: ResourceRequirements,
+        sshPublicKey: String,
+        sshKeyPath: String = "~/.omerta/ssh/id_ed25519",
+        sshUser: String = "omerta",
         retryOnFailure: Bool = false,
         maxRetries: Int = 3
     ) async throws -> VMConnection {
@@ -48,12 +51,18 @@ public actor ConsumerClient {
             return try await requestVMWithRetry(
                 networkId: networkId,
                 requirements: requirements,
+                sshPublicKey: sshPublicKey,
+                sshKeyPath: sshKeyPath,
+                sshUser: sshUser,
                 maxRetries: maxRetries
             )
         } else {
             return try await requestVMOnce(
                 networkId: networkId,
-                requirements: requirements
+                requirements: requirements,
+                sshPublicKey: sshPublicKey,
+                sshKeyPath: sshKeyPath,
+                sshUser: sshUser
             )
         }
     }
@@ -133,6 +142,9 @@ public actor ConsumerClient {
     private func requestVMOnce(
         networkId: String,
         requirements: ResourceRequirements,
+        sshPublicKey: String,
+        sshKeyPath: String,
+        sshUser: String,
         excludePeers: Set<String> = []
     ) async throws -> VMConnection {
         // 1. Select provider
@@ -165,7 +177,9 @@ public actor ConsumerClient {
             vmId: vmId,
             requirements: requirements,
             vpnConfig: vpnConfig,
-            consumerEndpoint: consumerEndpoint
+            consumerEndpoint: consumerEndpoint,
+            sshPublicKey: sshPublicKey,
+            sshUser: sshUser
         )
 
         logger.info("Provider created VM", metadata: [
@@ -181,8 +195,8 @@ public actor ConsumerClient {
                 endpoint: provider.endpoint
             ),
             vmIP: response.vmIP,
-            sshKeyPath: "~/.omerta/vm-key",  // TODO: Make configurable
-            sshUser: "root",  // TODO: Make configurable
+            sshKeyPath: sshKeyPath,
+            sshUser: sshUser,
             vpnInterface: "wg\(vmId.uuidString.prefix(8))",
             createdAt: Date(),
             networkId: networkId
@@ -203,6 +217,9 @@ public actor ConsumerClient {
     private func requestVMWithRetry(
         networkId: String,
         requirements: ResourceRequirements,
+        sshPublicKey: String,
+        sshKeyPath: String,
+        sshUser: String,
         maxRetries: Int
     ) async throws -> VMConnection {
         var failedPeers = Set<String>()
@@ -215,6 +232,9 @@ public actor ConsumerClient {
                 let connection = try await requestVMOnce(
                     networkId: networkId,
                     requirements: requirements,
+                    sshPublicKey: sshPublicKey,
+                    sshKeyPath: sshKeyPath,
+                    sshUser: sshUser,
                     excludePeers: failedPeers
                 )
                 return connection
@@ -297,10 +317,18 @@ public actor ConsumerClient {
 
 extension ConsumerClient {
     /// Request VM with minimal requirements (any available provider)
-    public func requestAnyVM(in networkId: String) async throws -> VMConnection {
+    public func requestAnyVM(
+        in networkId: String,
+        sshPublicKey: String,
+        sshKeyPath: String = "~/.omerta/ssh/id_ed25519",
+        sshUser: String = "omerta"
+    ) async throws -> VMConnection {
         try await requestVM(
             in: networkId,
-            requirements: ResourceRequirements()
+            requirements: ResourceRequirements(),
+            sshPublicKey: sshPublicKey,
+            sshKeyPath: sshKeyPath,
+            sshUser: sshUser
         )
     }
 
@@ -308,7 +336,10 @@ extension ConsumerClient {
     public func requestGPUVM(
         in networkId: String,
         gpuModel: String,
-        minVRAM: UInt64? = nil
+        minVRAM: UInt64? = nil,
+        sshPublicKey: String,
+        sshKeyPath: String = "~/.omerta/ssh/id_ed25519",
+        sshUser: String = "omerta"
     ) async throws -> VMConnection {
         try await requestVM(
             in: networkId,
@@ -317,7 +348,10 @@ extension ConsumerClient {
                     model: gpuModel,
                     vramMB: minVRAM
                 )
-            )
+            ),
+            sshPublicKey: sshPublicKey,
+            sshKeyPath: sshKeyPath,
+            sshUser: sshUser
         )
     }
 
@@ -326,7 +360,10 @@ extension ConsumerClient {
         in networkId: String,
         architecture: CPUArchitecture,
         minCores: UInt32? = nil,
-        minMemory: UInt64? = nil
+        minMemory: UInt64? = nil,
+        sshPublicKey: String,
+        sshKeyPath: String = "~/.omerta/ssh/id_ed25519",
+        sshUser: String = "omerta"
     ) async throws -> VMConnection {
         try await requestVM(
             in: networkId,
@@ -334,7 +371,10 @@ extension ConsumerClient {
                 cpuCores: minCores,
                 cpuArchitecture: architecture,
                 memoryMB: minMemory
-            )
+            ),
+            sshPublicKey: sshPublicKey,
+            sshKeyPath: sshKeyPath,
+            sshUser: sshUser
         )
     }
 

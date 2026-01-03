@@ -31,16 +31,31 @@ public actor SimpleVMManager {
     public func startVM(
         vmId: UUID,
         requirements: ResourceRequirements,
-        vpnConfig: VPNConfiguration
+        vpnConfig: VPNConfiguration,
+        sshPublicKey: String,
+        sshUser: String = "omerta"
     ) async throws -> String {
         logger.info("Starting VM", metadata: [
             "vm_id": "\(vmId)",
             "cpu_cores": "\(requirements.cpuCores ?? 0)",
-            "memory_mb": "\(requirements.memoryMB ?? 0)"
+            "memory_mb": "\(requirements.memoryMB ?? 0)",
+            "ssh_user": "\(sshUser)"
         ])
 
-        // 1. Create VM configuration
-        let config = try await createVMConfiguration(requirements: requirements)
+        // 1. Generate dynamic cloud-init ISO with consumer's SSH key
+        let seedISOPath = try await generateCloudInitISO(
+            vmId: vmId,
+            sshPublicKey: sshPublicKey,
+            sshUser: sshUser
+        )
+
+        logger.info("Cloud-init ISO created", metadata: ["path": "\(seedISOPath)"])
+
+        // 2. Create VM configuration
+        let config = try await createVMConfiguration(
+            requirements: requirements,
+            seedISOPath: seedISOPath
+        )
 
         // 2. Create and start VM (must be on main queue)
         let vm = try await MainActor.run {
@@ -125,8 +140,28 @@ public actor SimpleVMManager {
 
     // MARK: - Private Helpers
 
+    /// Generate a dynamic cloud-init ISO for this VM
+    private func generateCloudInitISO(
+        vmId: UUID,
+        sshPublicKey: String,
+        sshUser: String
+    ) async throws -> String {
+        let tempDir = FileManager.default.temporaryDirectory
+        let isoPath = tempDir.appendingPathComponent("omerta-seed-\(vmId.uuidString).iso").path
+
+        try CloudInitGenerator.createSeedISO(
+            at: isoPath,
+            sshPublicKey: sshPublicKey,
+            sshUser: sshUser,
+            instanceId: vmId
+        )
+
+        return isoPath
+    }
+
     private func createVMConfiguration(
-        requirements: ResourceRequirements
+        requirements: ResourceRequirements,
+        seedISOPath: String
     ) async throws -> VZVirtualMachineConfiguration {
         let config = VZVirtualMachineConfiguration()
 
@@ -172,15 +207,14 @@ public actor SimpleVMManager {
         let mainDisk = VZVirtioBlockDeviceConfiguration(attachment: mainDiskAttachment)
         storageDevices.append(mainDisk)
 
-        // 2. Cloud-init seed ISO
-        if let seedURL = try? getCloudInitSeedURL() {
-            let seedAttachment = try VZDiskImageStorageDeviceAttachment(
-                url: seedURL,
-                readOnly: true
-            )
-            let seedDisk = VZVirtioBlockDeviceConfiguration(attachment: seedAttachment)
-            storageDevices.append(seedDisk)
-        }
+        // 2. Cloud-init seed ISO (dynamically generated with consumer's SSH key)
+        let seedURL = URL(fileURLWithPath: seedISOPath)
+        let seedAttachment = try VZDiskImageStorageDeviceAttachment(
+            url: seedURL,
+            readOnly: true
+        )
+        let seedDisk = VZVirtioBlockDeviceConfiguration(attachment: seedAttachment)
+        storageDevices.append(seedDisk)
 
         config.storageDevices = storageDevices
 
@@ -230,24 +264,6 @@ public actor SimpleVMManager {
         }
 
         throw VMError.diskImageNotFound
-    }
-
-    private func getCloudInitSeedURL() throws -> URL {
-        let paths = [
-            "~/Library/Application Support/Omerta/seed.iso",
-            "/usr/local/share/omerta/seed.iso",
-            "/opt/omerta/seed.iso"
-        ]
-
-        for path in paths {
-            let expandedPath = NSString(string: path).expandingTildeInPath
-            let url = URL(fileURLWithPath: expandedPath)
-            if FileManager.default.fileExists(atPath: url.path) {
-                return url
-            }
-        }
-
-        throw VMError.cloudInitNotFound
     }
 
     private func generateVMIP(vpnConfig: VPNConfiguration) -> String {

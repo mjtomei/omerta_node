@@ -197,7 +197,8 @@ public actor UDPControlServer {
     private func handleRequestVM(_ request: RequestVMMessage) async throws -> ControlAction {
         logger.info("Handling VM request", metadata: [
             "vm_id": "\(request.vmId)",
-            "consumer_endpoint": "\(request.consumerEndpoint)"
+            "consumer_endpoint": "\(request.consumerEndpoint)",
+            "ssh_user": "\(request.sshUser)"
         ])
 
         // 1. Verify resources available
@@ -206,12 +207,14 @@ public actor UDPControlServer {
             throw ProviderError.insufficientResources
         }
 
-        // 2. Start VM with requirements
+        // 2. Start VM with requirements and consumer's SSH key
         logger.info("Starting VM", metadata: ["vm_id": "\(request.vmId)"])
         let vmIP = try await vmManager.startVM(
             vmId: request.vmId,
             requirements: request.requirements,
-            vpnConfig: request.vpnConfig
+            vpnConfig: request.vpnConfig,
+            sshPublicKey: request.sshPublicKey,
+            sshUser: request.sshUser
         )
 
         logger.info("VM started successfully", metadata: [

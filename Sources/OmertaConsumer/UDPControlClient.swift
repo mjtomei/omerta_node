@@ -24,13 +24,17 @@ public actor UDPControlClient {
         vmId: UUID,
         requirements: ResourceRequirements,
         vpnConfig: VPNConfiguration,
-        consumerEndpoint: String
+        consumerEndpoint: String,
+        sshPublicKey: String,
+        sshUser: String = "omerta"
     ) async throws -> VMCreatedResponse {
         let request = RequestVMMessage(
             vmId: vmId,
             requirements: requirements,
             vpnConfig: vpnConfig,
-            consumerEndpoint: consumerEndpoint
+            consumerEndpoint: consumerEndpoint,
+            sshPublicKey: sshPublicKey,
+            sshUser: sshUser
         )
 
         let message = ControlMessage(action: .requestVM(request))

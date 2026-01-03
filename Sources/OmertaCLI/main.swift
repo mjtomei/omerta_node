@@ -19,6 +19,7 @@ struct OmertaCLI: AsyncParsableCommand {
         abstract: "Omerta - Decentralized VM Infrastructure",
         version: "0.5.0 (Phase 5: VM Infrastructure)",
         subcommands: [
+            Init.self,
             Setup.self,
             Network.self,
             VPN.self,
@@ -28,6 +29,188 @@ struct OmertaCLI: AsyncParsableCommand {
         ],
         defaultSubcommand: Status.self
     )
+}
+
+// MARK: - Init Command
+struct Init: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "init",
+        abstract: "Initialize Omerta configuration and SSH keys"
+    )
+
+    @Flag(name: .long, help: "Force reinitialize even if already initialized")
+    var force: Bool = false
+
+    @Option(name: .long, help: "Path to existing SSH private key to import")
+    var importKey: String?
+
+    @Option(name: .long, help: "Default SSH username for VMs")
+    var sshUser: String = "omerta"
+
+    mutating func run() async throws {
+        print("Omerta Initialization")
+        print("=====================")
+        print("")
+
+        let configManager = ConfigManager()
+
+        // Check if already initialized
+        if await configManager.exists() && !force {
+            print("[✓] Already initialized")
+            print("")
+            print("Configuration: \(OmertaConfig.configFilePath)")
+
+            do {
+                let config = try await configManager.load()
+                print("SSH Key: \(config.ssh.expandedPrivateKeyPath())")
+                if let pubKey = config.ssh.publicKey {
+                    print("Public Key: \(pubKey.prefix(50))...")
+                }
+                print("Default SSH User: \(config.ssh.defaultUser)")
+                print("Networks: \(config.networks.count)")
+            } catch {
+                print("Error loading config: \(error)")
+            }
+
+            print("")
+            print("Use --force to reinitialize.")
+            return
+        }
+
+        // Create SSH keypair
+        let sshDir = "\(OmertaConfig.defaultConfigDir)/ssh"
+        let privateKeyPath = "\(sshDir)/id_ed25519"
+        let publicKeyPath = "\(sshDir)/id_ed25519.pub"
+
+        var publicKey: String
+
+        if let importPath = importKey {
+            // Import existing key
+            print("Importing SSH key from: \(importPath)")
+
+            let expandedPath = expandPath(importPath)
+            let pubPath = expandedPath + ".pub"
+
+            guard FileManager.default.fileExists(atPath: expandedPath) else {
+                print("Error: Private key not found at \(importPath)")
+                throw ExitCode.failure
+            }
+
+            guard FileManager.default.fileExists(atPath: pubPath) else {
+                print("Error: Public key not found at \(importPath).pub")
+                throw ExitCode.failure
+            }
+
+            // Copy keys to omerta directory
+            try FileManager.default.createDirectory(
+                atPath: sshDir,
+                withIntermediateDirectories: true
+            )
+
+            // Read and copy keys
+            let privateKeyContent = try String(contentsOfFile: expandedPath)
+            let publicKeyContent = try String(contentsOfFile: pubPath)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            try privateKeyContent.write(
+                toFile: expandPath(privateKeyPath),
+                atomically: true,
+                encoding: .utf8
+            )
+            try publicKeyContent.write(
+                toFile: expandPath(publicKeyPath),
+                atomically: true,
+                encoding: .utf8
+            )
+
+            // Set permissions
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: expandPath(privateKeyPath)
+            )
+
+            publicKey = publicKeyContent
+            print("[✓] SSH key imported")
+
+        } else {
+            // Generate new keypair
+            print("Generating SSH keypair...")
+
+            // Check if keys already exist
+            if SSHKeyGenerator.keyPairExists(privateKeyPath: privateKeyPath, publicKeyPath: publicKeyPath) {
+                if force {
+                    print("  Removing existing keys...")
+                    try? FileManager.default.removeItem(atPath: expandPath(privateKeyPath))
+                    try? FileManager.default.removeItem(atPath: expandPath(publicKeyPath))
+                } else {
+                    print("  Using existing keys")
+                    publicKey = try SSHKeyGenerator.readPublicKey(path: publicKeyPath)
+                }
+            }
+
+            // Generate if needed
+            if !SSHKeyGenerator.keyPairExists(privateKeyPath: privateKeyPath, publicKeyPath: publicKeyPath) {
+                let hostname = ProcessInfo.processInfo.hostName
+                let username = ProcessInfo.processInfo.environment["USER"] ?? "user"
+                let comment = "\(username)@\(hostname)-omerta"
+
+                let (_, pubKey) = try SSHKeyGenerator.generateKeyPair(
+                    privateKeyPath: privateKeyPath,
+                    publicKeyPath: publicKeyPath,
+                    comment: comment
+                )
+                publicKey = pubKey
+                print("[✓] SSH keypair generated")
+            } else {
+                publicKey = try SSHKeyGenerator.readPublicKey(path: publicKeyPath)
+            }
+        }
+
+        print("  Private: \(privateKeyPath)")
+        print("  Public:  \(publicKeyPath)")
+        print("")
+
+        // Create config
+        print("Creating configuration...")
+
+        let sshConfig = SSHConfig(
+            privateKeyPath: privateKeyPath,
+            publicKeyPath: publicKeyPath,
+            publicKey: publicKey,
+            defaultUser: sshUser
+        )
+
+        let config = OmertaConfig(
+            ssh: sshConfig,
+            networks: [:],
+            defaultNetwork: nil
+        )
+
+        try await configManager.save(config)
+        print("[✓] Configuration saved")
+        print("  Path: \(OmertaConfig.configFilePath)")
+        print("")
+
+        print("Initialization complete!")
+        print("")
+        print("Your SSH public key (add to VMs):")
+        print("  \(publicKey)")
+        print("")
+        print("Next steps:")
+        print("  1. Add a network:  omerta network add --name mynet --key <hex-key>")
+        print("  2. Request a VM:   omerta vm request --provider <ip:port> --network-key <key>")
+    }
+
+    private func expandPath(_ path: String) -> String {
+        if path.hasPrefix("~/") {
+            let homeDir = OmertaConfig.defaultConfigDir.replacingOccurrences(
+                of: "/.omerta",
+                with: ""
+            )
+            return homeDir + String(path.dropFirst(1))
+        }
+        return path
+    }
 }
 
 // MARK: - Setup Command
@@ -743,6 +926,26 @@ struct VMRequest: AsyncParsableCommand {
             print("[DRY RUN] Skipping VPN setup")
         }
 
+        // Load SSH config
+        let configManager = ConfigManager()
+        let config: OmertaConfig
+        do {
+            config = try await configManager.load()
+        } catch ConfigError.notInitialized {
+            print("")
+            print("Error: Omerta not initialized. Run 'omerta init' first.")
+            throw ExitCode.failure
+        }
+
+        guard let sshPublicKey = config.ssh.publicKey else {
+            print("")
+            print("Error: SSH public key not found in config. Run 'omerta init' to regenerate.")
+            throw ExitCode.failure
+        }
+
+        print("Using SSH key: \(config.ssh.expandedPrivateKeyPath())")
+        print("")
+
         // Create a minimal peer registry with just this provider
         let peerRegistry = PeerRegistry()
 
@@ -778,10 +981,13 @@ struct VMRequest: AsyncParsableCommand {
         )
         await peerRegistry.registerPeer(from: announcement)
 
-        // Request VM
+        // Request VM with SSH config from omerta settings
         let connection = try await client.requestVM(
             in: "direct",
             requirements: requirements,
+            sshPublicKey: sshPublicKey,
+            sshKeyPath: config.ssh.privateKeyPath,
+            sshUser: config.ssh.defaultUser,
             retryOnFailure: false
         )
 
@@ -800,6 +1006,26 @@ struct VMRequest: AsyncParsableCommand {
         if dryRun {
             print("[DRY RUN] Skipping VPN setup")
         }
+
+        // Load SSH config
+        let configManager = ConfigManager()
+        let config: OmertaConfig
+        do {
+            config = try await configManager.load()
+        } catch ConfigError.notInitialized {
+            print("")
+            print("Error: Omerta not initialized. Run 'omerta init' first.")
+            throw ExitCode.failure
+        }
+
+        guard let sshPublicKey = config.ssh.publicKey else {
+            print("")
+            print("Error: SSH public key not found in config. Run 'omerta init' to regenerate.")
+            throw ExitCode.failure
+        }
+
+        print("Using SSH key: \(config.ssh.expandedPrivateKeyPath())")
+        print("")
 
         // Load network state
         let networkManager = NetworkManager()
@@ -835,10 +1061,13 @@ struct VMRequest: AsyncParsableCommand {
             dryRun: dryRun
         )
 
-        // Request VM
+        // Request VM with SSH config from omerta settings
         let connection = try await client.requestVM(
             in: networkId,
             requirements: requirements,
+            sshPublicKey: sshPublicKey,
+            sshKeyPath: config.ssh.privateKeyPath,
+            sshUser: config.ssh.defaultUser,
             retryOnFailure: retry,
             maxRetries: maxRetries
         )
