@@ -9,7 +9,7 @@ public actor VPNManager {
     private var activeTunnels: [UUID: VPNTunnel] = [:]
     private let wireguardToolPath: String
 
-    public init(wireguardToolPath: String = "/usr/local/bin/wg-quick") {
+    public init(wireguardToolPath: String = WireGuardPaths.wgQuick) {
         self.wireguardToolPath = wireguardToolPath
         logger.info("VPNManager initialized")
     }
@@ -86,8 +86,8 @@ public actor VPNManager {
 
         // Check if interface exists and has traffic
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/wg")
-        process.arguments = ["show", tunnel.interfaceName]
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process.arguments = [WireGuardPaths.wg, "show", tunnel.interfaceName]
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -106,8 +106,8 @@ public actor VPNManager {
         }
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/wg")
-        process.arguments = ["show", tunnel.interfaceName, "transfer"]
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process.arguments = [WireGuardPaths.wg, "show", tunnel.interfaceName, "transfer"]
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -176,8 +176,8 @@ public actor VPNManager {
         interfaceName: String
     ) async throws {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: wireguardToolPath)
-        process.arguments = ["up", configURL.path]
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process.arguments = [wireguardToolPath, "up", configURL.path]
 
         let errorPipe = Pipe()
         process.standardError = errorPipe
@@ -198,8 +198,8 @@ public actor VPNManager {
 
     private func stopWireGuardTunnel(interfaceName: String) async throws {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: wireguardToolPath)
-        process.arguments = ["down", interfaceName]
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process.arguments = [wireguardToolPath, "down", interfaceName]
 
         let errorPipe = Pipe()
         process.standardError = errorPipe
