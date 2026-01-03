@@ -1,9 +1,20 @@
 import Foundation
 import OmertaCore
 
-/// Filter decision for a compute request
+/// Priority levels for VM requests
+public enum RequestPriority: Int, Comparable, Sendable {
+    case owner = 100        // Requests from the machine owner (highest priority)
+    case network = 50       // Requests from network peers (normal priority)
+    case external = 10      // Requests from outside trusted networks (lowest priority)
+
+    public static func < (lhs: RequestPriority, rhs: RequestPriority) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+}
+
+/// Filter decision for a VM request
 public enum FilterDecision: Sendable {
-    case accept(priority: JobPriority)
+    case accept(priority: RequestPriority)
     case reject(reason: String)
     case requiresApproval(reason: String)
 }
@@ -45,14 +56,6 @@ public struct FilterRequest: Sendable {
         self.requirements = requirements
         self.activityDescription = activityDescription
         self.timestamp = timestamp
-    }
-
-    public init(from job: ComputeJob) {
-        self.requesterId = job.requesterId
-        self.networkId = job.networkId
-        self.requirements = job.requirements
-        self.activityDescription = job.activityDescription
-        self.timestamp = Date()
     }
 }
 
@@ -276,7 +279,7 @@ public struct ResourceLimitRule: FilterRule {
 
     public let maxCpuCores: UInt32
     public let maxMemoryMB: UInt64
-    public let maxRuntimeSeconds: UInt64
+    public let maxStorageMB: UInt64
 
     public init(
         id: UUID = UUID(),
@@ -285,7 +288,7 @@ public struct ResourceLimitRule: FilterRule {
         priority: Int = 50,
         maxCpuCores: UInt32 = 8,
         maxMemoryMB: UInt64 = 16384,
-        maxRuntimeSeconds: UInt64 = 3600
+        maxStorageMB: UInt64 = 102400  // 100GB default
     ) {
         self.id = id
         self.name = name
@@ -293,21 +296,20 @@ public struct ResourceLimitRule: FilterRule {
         self.priority = priority
         self.maxCpuCores = maxCpuCores
         self.maxMemoryMB = maxMemoryMB
-        self.maxRuntimeSeconds = maxRuntimeSeconds
+        self.maxStorageMB = maxStorageMB
     }
 
     public func evaluate(_ request: FilterRequest) async -> FilterRuleResult {
-        if request.requirements.cpuCores > maxCpuCores {
-            return .reject("Requested CPU cores (\(request.requirements.cpuCores)) exceeds limit (\(maxCpuCores))")
+        if let cpuCores = request.requirements.cpuCores, cpuCores > maxCpuCores {
+            return .reject("Requested CPU cores (\(cpuCores)) exceeds limit (\(maxCpuCores))")
         }
 
-        if request.requirements.memoryMB > maxMemoryMB {
-            return .reject("Requested memory (\(request.requirements.memoryMB)MB) exceeds limit (\(maxMemoryMB)MB)")
+        if let memoryMB = request.requirements.memoryMB, memoryMB > maxMemoryMB {
+            return .reject("Requested memory (\(memoryMB)MB) exceeds limit (\(maxMemoryMB)MB)")
         }
 
-        let maxRuntime = request.requirements.maxRuntimeSeconds
-        if maxRuntime > maxRuntimeSeconds {
-            return .reject("Requested runtime (\(maxRuntime)s) exceeds limit (\(maxRuntimeSeconds)s)")
+        if let storageMB = request.requirements.storageMB, storageMB > maxStorageMB {
+            return .reject("Requested storage (\(storageMB)MB) exceeds limit (\(maxStorageMB)MB)")
         }
 
         return .pass
