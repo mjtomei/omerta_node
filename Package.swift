@@ -65,6 +65,7 @@ let package = Package(
                 "OmertaCore",
                 "OmertaVM",
                 "OmertaNetwork",
+                "OmertaConsumer",
                 .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/OmertaProvider"
@@ -86,6 +87,8 @@ let package = Package(
             dependencies: [
                 "OmertaCore",
                 "OmertaNetwork",
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "Crypto", package: "swift-crypto"),
             ],
             path: "Sources/OmertaConsumer"
         ),
