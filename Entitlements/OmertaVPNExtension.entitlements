@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Network Extension packet tunnel provider -->
+    <key>com.apple.developer.networking.networkextension</key>
+    <array>
+        <string>packet-tunnel-provider</string>
+    </array>
+
+    <!-- Keychain access (shared with main app) -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)com.matthewtomei.shared</string>
+    </array>
+
+    <!-- Network client access -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Network server access (for WireGuard listener) -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+</dict>
+</plist>

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Allow embedding system extensions -->
+    <key>com.apple.developer.system-extension.install</key>
+    <true/>
+
+    <!-- Network Extension capabilities for managing VPN -->
+    <key>com.apple.developer.networking.networkextension</key>
+    <array>
+        <string>packet-tunnel-provider</string>
+    </array>
+
+    <!-- Keychain access for storing keys -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)com.matthewtomei.shared</string>
+    </array>
+
+    <!-- App Sandbox (required for App Store, optional for direct distribution) -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
+    <!-- Network client access -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Network server access (for WireGuard listener) -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+</dict>
+</plist>
