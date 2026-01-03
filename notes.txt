@@ -1,4 +1,6 @@
-Allows sharing your compute resources without knowing what the user is doing or sharing your internet connection. It allows for higher throughput to be allocated to power users while sharing compute costs more evenly. But it also allows reducing the latency to results even for users with similar utilization, which should increase average productivity.
+Omerta is a platform for ephemeral compute swarms which allows providers to share their compute without worrying about what is being run. It does this by deleting VMs after use and requiring all networking traffic go through a VPN served by the compute consumer. This decreases risks of providing compute in a swarm without requiring heavyweight mechanisms for encrypted computation or identity attestation. This will hopefully allow wider access to compute swarms both for providers and consumers and subsequently decrease underutilization of our global compute resources.
+
+While there are still legitimate security concerns like VM escapes and malicious providers. We argue that a coming requirement for a more proactive approach to computer security as well as the erosion of intellectual property rights as a result of machine intelligence will tip the scales firmly in our favor. Membership in an Omerta network provides, in addition to potential monetary compensation, a shephard for that user's compute resources which can keep the newly born wolves at bay.
 
 - starts a new VM for every compute request which gets deleted when its done
 - routes all traffic through VPN served by requester
@@ -7,3 +9,16 @@ Allows sharing your compute resources without knowing what the user is doing or 
 - always monitors for rogue internet connections
 - option to aggressively prioritize user tasks over other work
 - support for checkpoint and restart of VMs
+
+TODOs
+- set up provisioning provile for the network extension entitlement, get primary network extension approval flow working
+- plan requirements for minimal initial release with support for auto-updates
+- add support for prioritizing different networks
+- add support for explicitly exposing access to guest from host so isolation can't be assumed
+- look into mechanisms for protected VMs
+- add a feature or separate tool for LLM assisted spot checking of shared compute and credit assignment
+  - possibly use a blockchain for maintaining history as well as assigning coins based on contributions
+- have option for more detailed machine intelligence assisted observation of VM by host provider
+  - allows creation of a mechanism for trust and ranking of users
+  - allows maintenance of free networks for good causes as decided by the provider
+  - might need to be run and maintain by dedicated, more tech-savy participants who understand false positives
