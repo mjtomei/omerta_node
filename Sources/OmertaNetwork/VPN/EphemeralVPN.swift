@@ -292,14 +292,76 @@ public actor EphemeralVPN: VPNProvider {
         peerPublicKey: String,
         allowedIPs: String
     ) async throws {
+        // On macOS, we need the utun device name, not the wg interface name
+        // Use `sudo wg show interfaces` which is already in the passwordless sudo list
+        var actualInterface = interfaceName
+        #if os(macOS)
+        let wgDir = "/var/run/wireguard"
+
+        // Use wg show to find the matching interface
+        // wg show interfaces lists all active interfaces (utun names)
+        // We need to find which one corresponds to our wg interface name
+        let showProcess = Process()
+        showProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        showProcess.arguments = [WireGuardPaths.wg, "show", "interfaces"]
+        let showPipe = Pipe()
+        showProcess.standardOutput = showPipe
+        showProcess.standardError = Pipe()
+
+        do {
+            try showProcess.run()
+            showProcess.waitUntilExit()
+            let data = showPipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !output.isEmpty {
+                // The output is space-separated or newline-separated interface names (utun devices)
+                let interfaces = output.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+                logger.info("WireGuard interfaces from wg show", metadata: ["interfaces": "\(interfaces)"])
+
+                // If there's exactly one interface with our name file, use the utun name from wg show
+                let nameFile = "\(wgDir)/\(interfaceName).name"
+                if FileManager.default.fileExists(atPath: nameFile) && interfaces.count == 1 {
+                    actualInterface = interfaces[0]
+                    logger.info("Using interface from wg show", metadata: [
+                        "wg_name": "\(interfaceName)",
+                        "utun_name": "\(actualInterface)"
+                    ])
+                } else if interfaces.count > 0 {
+                    // Multiple interfaces - try to find ours by checking sockets
+                    for iface in interfaces {
+                        let sockFile = "\(wgDir)/\(iface).sock"
+                        if FileManager.default.fileExists(atPath: sockFile) {
+                            actualInterface = iface
+                            logger.info("Found interface by socket", metadata: [
+                                "wg_name": "\(interfaceName)",
+                                "utun_name": "\(iface)"
+                            ])
+                            break
+                        }
+                    }
+                }
+            }
+        } catch {
+            logger.error("Failed to list WireGuard interfaces", metadata: ["error": "\(error)"])
+        }
+
+        if let contents = try? FileManager.default.contentsOfDirectory(atPath: wgDir) {
+            logger.info("WireGuard runtime files", metadata: ["files": "\(contents)"])
+        }
+        #endif
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
         process.arguments = [
-            WireGuardPaths.wg, "set", interfaceName,
+            WireGuardPaths.wg, "set", actualInterface,
             "peer", peerPublicKey,
             "allowed-ips", allowedIPs
         ]
         process.environment = WireGuardPaths.environment
+
+        logger.info("Running wg set command", metadata: [
+            "interface": "\(actualInterface)",
+            "wg_path": "\(WireGuardPaths.wg)"
+        ])
 
         let errorPipe = Pipe()
         process.standardError = errorPipe
@@ -555,6 +617,20 @@ public actor EphemeralVPN: VPNProvider {
         }
 
         logger.info("VPN server started", metadata: ["interface": "\(interfaceName)"])
+
+        // On macOS, wireguard-go needs a moment to create the socket
+        // before we can use `wg set` to add peers
+        // Wait for the socket to appear (up to 5 seconds)
+        #if os(macOS)
+        let socketPath = "/var/run/wireguard/\(interfaceName).name"
+        for _ in 0..<50 {  // 50 * 100ms = 5 seconds max
+            if FileManager.default.fileExists(atPath: socketPath) {
+                logger.info("WireGuard socket ready", metadata: ["interface": "\(interfaceName)"])
+                break
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        #endif
     }
 
     private func stopVPNServerWgQuick(interfaceName: String) async throws {
