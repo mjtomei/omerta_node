@@ -31,8 +31,8 @@ struct Start: AsyncParsableCommand {
     @Option(name: .long, help: "Control port to listen on")
     var port: UInt16 = 51820
 
-    @Option(name: .long, help: "Network key (hex encoded)")
-    var networkKey: String
+    @Option(name: .long, help: "Network key (hex encoded). Uses local key from config if not specified.")
+    var networkKey: String?
 
     @Option(name: .long, help: "Owner peer ID (gets highest priority)")
     var ownerPeer: String?
@@ -43,14 +43,41 @@ struct Start: AsyncParsableCommand {
     @Flag(name: .long, inversion: .prefixedNo, help: "Enable activity logging")
     var activityLog: Bool = true
 
+    @Flag(name: .long, help: "Dry run mode - simulate VM creation without actual VMs")
+    var dryRun: Bool = false
+
     mutating func run() async throws {
         print("Starting Omerta Provider Daemon...")
+        if dryRun {
+            print("*** DRY RUN MODE - No actual VMs will be created ***")
+        }
         print("")
 
-        // Parse network key
-        guard let keyData = Data(hexString: networkKey), keyData.count == 32 else {
-            print("Error: Network key must be a 64-character hex string (32 bytes)")
-            throw ExitCode.failure
+        // Determine network key - use provided or load from config
+        let keyData: Data
+        if let providedKey = networkKey {
+            guard let data = Data(hexString: providedKey), data.count == 32 else {
+                print("Error: Network key must be a 64-character hex string (32 bytes)")
+                throw ExitCode.failure
+            }
+            keyData = data
+        } else {
+            // Load from config
+            let configManager = ConfigManager()
+            do {
+                let config = try await configManager.load()
+                guard let localKeyData = config.localKeyData() else {
+                    print("Error: No network key specified and no local key in config.")
+                    print("Run 'omerta init' to generate a local key, or specify --network-key")
+                    throw ExitCode.failure
+                }
+                keyData = localKeyData
+                print("Using local encryption key from config")
+            } catch ConfigError.notInitialized {
+                print("Error: Omerta not initialized and no --network-key specified.")
+                print("Run 'omerta init' first, or specify --network-key")
+                throw ExitCode.failure
+            }
         }
 
         // Parse trusted networks
@@ -62,7 +89,8 @@ struct Start: AsyncParsableCommand {
             networkKey: keyData,
             ownerPeerId: ownerPeer,
             trustedNetworks: networks,
-            enableActivityLogging: activityLog
+            enableActivityLogging: activityLog,
+            dryRun: dryRun
         )
 
         // Check dependencies
@@ -155,7 +183,7 @@ struct Status: AsyncParsableCommand {
         print("Status: Not Running")
         print("")
         print("To start the daemon:")
-        print("  omertad start --network-key <64-char-hex-key>")
+        print("  sudo omertad start")
         print("")
         print("Provider daemon:")
         print("  - Accepts VM requests from network peers")
@@ -244,23 +272,4 @@ struct ConfigBlock: AsyncParsableCommand {
     }
 }
 
-// MARK: - Helpers
-
-extension Data {
-    init?(hexString: String) {
-        let len = hexString.count / 2
-        var data = Data(capacity: len)
-        var index = hexString.startIndex
-
-        for _ in 0..<len {
-            let nextIndex = hexString.index(index, offsetBy: 2)
-            guard let byte = UInt8(hexString[index..<nextIndex], radix: 16) else {
-                return nil
-            }
-            data.append(byte)
-            index = nextIndex
-        }
-
-        self = data
-    }
-}
+// Data.init?(hexString:) is provided by OmertaCore

@@ -16,19 +16,22 @@ public actor ProviderDaemon {
         public let ownerPeerId: String?
         public let trustedNetworks: [String]
         public let enableActivityLogging: Bool
+        public let dryRun: Bool
 
         public init(
             controlPort: UInt16 = 51820,
             networkKey: Data,
             ownerPeerId: String? = nil,
             trustedNetworks: [String] = [],
-            enableActivityLogging: Bool = true
+            enableActivityLogging: Bool = true,
+            dryRun: Bool = false
         ) {
             self.controlPort = controlPort
             self.networkKey = networkKey
             self.ownerPeerId = ownerPeerId
             self.trustedNetworks = trustedNetworks
             self.enableActivityLogging = enableActivityLogging
+            self.dryRun = dryRun
         }
     }
 
@@ -61,7 +64,8 @@ public actor ProviderDaemon {
         // Initialize components
         self.udpControlServer = UDPControlServer(
             networkKey: config.networkKey,
-            port: config.controlPort
+            port: config.controlPort,
+            dryRun: config.dryRun
         )
         self.filterManager = FilterManager(
             ownerPeerId: config.ownerPeerId,

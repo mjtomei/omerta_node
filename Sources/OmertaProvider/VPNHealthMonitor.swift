@@ -22,8 +22,8 @@ public actor VPNHealthMonitor {
     }
 
     public init(
-        checkInterval: TimeInterval = 10.0,
-        timeoutThreshold: TimeInterval = 30.0
+        checkInterval: TimeInterval = 30.0,
+        timeoutThreshold: TimeInterval = 600.0  // 10 minutes - extended for testing
     ) {
         var logger = Logger(label: "com.omerta.provider.vpn-health")
         logger.logLevel = .info
