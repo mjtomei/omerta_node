@@ -29,8 +29,10 @@ public struct ControlMessage: Codable, Sendable {
 public enum ControlAction: Codable, Sendable {
     case requestVM(RequestVMMessage)
     case releaseVM(ReleaseVMMessage)
+    case queryVMStatus(VMStatusRequest)
     case vmCreated(VMCreatedResponse)
     case vmReleased(VMReleasedResponse)
+    case vmStatus(VMStatusResponse)
 }
 
 // MARK: - Request VM Message
@@ -79,11 +81,20 @@ public struct VMCreatedResponse: Codable, Sendable {
     public let vmId: UUID
     public let vmIP: String  // IP address within VPN tunnel
     public let sshPort: UInt16  // SSH port (usually 22)
+    public let providerPublicKey: String  // Provider's WireGuard public key for this tunnel
+    public let error: String?  // Error message if VM creation failed
 
-    public init(vmId: UUID, vmIP: String, sshPort: UInt16 = 22) {
+    public init(vmId: UUID, vmIP: String, sshPort: UInt16 = 22, providerPublicKey: String, error: String? = nil) {
         self.vmId = vmId
         self.vmIP = vmIP
         self.sshPort = sshPort
+        self.providerPublicKey = providerPublicKey
+        self.error = error
+    }
+
+    /// Check if this response indicates an error
+    public var isError: Bool {
+        error != nil || vmIP.isEmpty || providerPublicKey.isEmpty
     }
 }
 
@@ -96,6 +107,63 @@ public struct VMReleasedResponse: Codable, Sendable {
     public init(vmId: UUID) {
         self.vmId = vmId
     }
+}
+
+// MARK: - VM Status Request
+
+/// Request VM status from provider
+public struct VMStatusRequest: Codable, Sendable {
+    public let vmId: UUID?  // nil = query all VMs
+
+    public init(vmId: UUID? = nil) {
+        self.vmId = vmId
+    }
+}
+
+// MARK: - VM Status Response
+
+/// Response with VM status information
+public struct VMStatusResponse: Codable, Sendable {
+    public let vms: [VMInfo]
+
+    public init(vms: [VMInfo]) {
+        self.vms = vms
+    }
+}
+
+/// Information about a single VM
+public struct VMInfo: Codable, Sendable {
+    public let vmId: UUID
+    public let status: VMStatus
+    public let vmIP: String
+    public let createdAt: Date
+    public let uptimeSeconds: Int
+    public let consoleOutput: String?  // Last few lines of console
+
+    public init(
+        vmId: UUID,
+        status: VMStatus,
+        vmIP: String,
+        createdAt: Date,
+        uptimeSeconds: Int,
+        consoleOutput: String? = nil
+    ) {
+        self.vmId = vmId
+        self.status = status
+        self.vmIP = vmIP
+        self.createdAt = createdAt
+        self.uptimeSeconds = uptimeSeconds
+        self.consoleOutput = consoleOutput
+    }
+}
+
+/// VM status enum
+public enum VMStatus: String, Codable, Sendable {
+    case starting = "starting"
+    case running = "running"
+    case stopping = "stopping"
+    case stopped = "stopped"
+    case error = "error"
 }
 
 // MARK: - Provider Notifications (Async)

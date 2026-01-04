@@ -135,16 +135,14 @@ public actor EphemeralVPN: VPNProvider {
     }
 
     /// Create an ephemeral VPN server for a job
+    /// Provider will connect to this server after receiving the VPNConfiguration
+    /// Call addProviderPeer() after receiving provider's public key
     public func createVPNForJob(_ jobId: UUID) async throws -> VPNConfiguration {
         logger.info("Creating ephemeral VPN for job", metadata: ["job_id": "\(jobId)"])
 
-        // Generate key pair for server
+        // Generate key pair for server (consumer)
         let serverPrivateKey = try generatePrivateKey()
         let serverPublicKey = try derivePublicKey(from: serverPrivateKey)
-
-        // Generate key pair for client (provider/VM)
-        let clientPrivateKey = try generatePrivateKey()
-        let clientPublicKey = try derivePublicKey(from: clientPrivateKey)
 
         // Allocate port
         let port = allocatePort()
@@ -153,26 +151,20 @@ public actor EphemeralVPN: VPNProvider {
         let serverEndpoint = try await determineServerEndpoint()
         let endpoint = "\(serverEndpoint):\(port)"
 
-        // VPN network addresses
-        let serverVPNIP = "10.99.0.1"
-        let clientVPNIP = "10.99.0.2"
+        // VPN network addresses - use unique subnet per job to avoid conflicts
+        // Use job ID bytes to generate a unique /24 subnet in 10.x.y.0/24 range
+        let jobBytes = withUnsafeBytes(of: jobId.uuid) { Array($0) }
+        let subnetByte1 = Int(jobBytes[0] % 200) + 50  // 50-249 to avoid common subnets
+        let subnetByte2 = Int(jobBytes[1] % 250) + 1   // 1-250
+        let serverVPNIP = "10.\(subnetByte1).\(subnetByte2).1"
+        let clientVPNIP = "10.\(subnetByte1).\(subnetByte2).2"
 
-        // Create server configuration
-        let serverConfig = generateServerConfig(
+        // Create initial server configuration WITHOUT peer
+        // Peer (provider) will be added dynamically after we receive their public key
+        let serverConfig = generateServerConfigNoPeer(
             privateKey: serverPrivateKey,
             serverIP: serverVPNIP,
-            clientPublicKey: clientPublicKey,
-            clientIP: clientVPNIP,
             port: port
-        )
-
-        // Create client configuration (what provider will use)
-        let clientConfig = generateClientConfig(
-            privateKey: clientPrivateKey,
-            clientIP: clientVPNIP,
-            serverPublicKey: serverPublicKey,
-            endpoint: endpoint,
-            serverVPNIP: serverVPNIP
         )
 
         // Start WireGuard server based on backend
@@ -232,7 +224,9 @@ public actor EphemeralVPN: VPNProvider {
             serverVPNIP: serverVPNIP,
             clientVPNIP: clientVPNIP,
             serverPrivateKey: serverPrivateKey,
-            clientPublicKey: clientPublicKey,
+            serverPublicKey: serverPublicKey,
+            endpoint: endpoint,
+            providerPublicKey: nil,
             createdAt: Date(),
             usedWgQuick: usedWgQuick
         )
@@ -245,13 +239,79 @@ public actor EphemeralVPN: VPNProvider {
             "endpoint": "\(endpoint)"
         ])
 
-        // Return configuration for client (provider)
+        // Return configuration for provider (contains consumer's info)
+        let vpnSubnet = "10.\(subnetByte1).\(subnetByte2).0/24"
         return VPNConfiguration(
-            wireguardConfig: clientConfig,
-            endpoint: endpoint,
-            publicKey: Data(serverPublicKey.utf8),
-            vpnServerIP: serverVPNIP
+            consumerPublicKey: serverPublicKey,
+            consumerEndpoint: endpoint,
+            consumerVPNIP: serverVPNIP,
+            vmVPNIP: clientVPNIP,
+            vpnSubnet: vpnSubnet
         )
+    }
+
+    /// Add provider as a peer on the WireGuard server
+    /// Called after receiving the provider's public key from VMCreatedResponse
+    public func addProviderPeer(
+        jobId: UUID,
+        providerPublicKey: String
+    ) async throws {
+        guard var server = activeServers[jobId] else {
+            throw VPNError.tunnelNotFound(jobId)
+        }
+
+        logger.info("Adding provider peer to VPN", metadata: [
+            "job_id": "\(jobId)",
+            "provider_public_key": "\(providerPublicKey.prefix(20))..."
+        ])
+
+        // Update server with provider's public key
+        server.providerPublicKey = providerPublicKey
+        activeServers[jobId] = server
+
+        // Add peer to WireGuard interface
+        switch backend {
+        case .dryRun:
+            logger.info("Dry run - skipping peer addition", metadata: ["interface": "\(server.interfaceName)"])
+
+        case .networkExtension, .wgQuick:
+            // Use wg command to add peer dynamically
+            try await addPeerToInterface(
+                interfaceName: server.interfaceName,
+                peerPublicKey: providerPublicKey,
+                allowedIPs: "\(server.clientVPNIP)/32"  // Provider routes traffic for the VM's VPN IP
+            )
+        }
+
+        logger.info("Provider peer added successfully", metadata: ["job_id": "\(jobId)"])
+    }
+
+    /// Add a peer to an existing WireGuard interface
+    private func addPeerToInterface(
+        interfaceName: String,
+        peerPublicKey: String,
+        allowedIPs: String
+    ) async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process.arguments = [
+            WireGuardPaths.wg, "set", interfaceName,
+            "peer", peerPublicKey,
+            "allowed-ips", allowedIPs
+        ]
+        process.environment = WireGuardPaths.environment
+
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+            throw VPNError.tunnelStartFailed("Failed to add peer: \(errorMessage)")
+        }
     }
 
     /// Destroy an ephemeral VPN server
@@ -294,9 +354,14 @@ public actor EphemeralVPN: VPNProvider {
         logger.info("Ephemeral VPN destroyed", metadata: ["job_id": "\(jobId)"])
     }
 
-    /// Check if VPN server is accepting connections from client
+    /// Check if VPN server is accepting connections from provider
     public func isClientConnected(for jobId: UUID) async throws -> Bool {
         guard let server = activeServers[jobId] else {
+            return false
+        }
+
+        // Need provider public key to check connection
+        guard let providerKey = server.providerPublicKey else {
             return false
         }
 
@@ -320,7 +385,7 @@ public actor EphemeralVPN: VPNProvider {
         let output = String(data: data, encoding: .utf8) ?? ""
 
         // Check if handshake is recent (within last 3 minutes)
-        return output.contains(server.clientPublicKey) && !output.contains("\t0\n")
+        return output.contains(providerKey) && !output.contains("\t0\n")
     }
 
     // MARK: - Private Methods
@@ -383,6 +448,20 @@ public actor EphemeralVPN: VPNProvider {
         let hostname = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "localhost"
 
         return hostname
+    }
+
+    /// Generate server config WITHOUT peer - peer will be added dynamically
+    private func generateServerConfigNoPeer(
+        privateKey: String,
+        serverIP: String,
+        port: UInt16
+    ) -> String {
+        """
+        [Interface]
+        PrivateKey = \(privateKey)
+        Address = \(serverIP)/24
+        ListenPort = \(port)
+        """
     }
 
     private func generateServerConfig(
@@ -552,10 +631,12 @@ public struct VPNServer: Sendable {
     public let jobId: UUID
     public let interfaceName: String
     public let port: UInt16
-    public let serverVPNIP: String
-    public let clientVPNIP: String
-    public let serverPrivateKey: String
-    public let clientPublicKey: String
+    public let serverVPNIP: String       // Consumer's VPN IP (e.g., 10.99.0.1)
+    public let clientVPNIP: String       // VM's VPN IP (e.g., 10.99.0.2)
+    public let serverPrivateKey: String  // Consumer's private key
+    public let serverPublicKey: String   // Consumer's public key
+    public let endpoint: String          // Consumer's WireGuard endpoint (IP:port)
+    public var providerPublicKey: String? // Provider's public key (set after response)
     public let createdAt: Date
     /// True if wg-quick was used (either as primary backend or as fallback from Network Extension)
     public let usedWgQuick: Bool

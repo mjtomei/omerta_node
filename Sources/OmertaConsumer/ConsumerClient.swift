@@ -12,6 +12,7 @@ public actor ConsumerClient {
     private let vmTracker: VMTracker
     private let networkKey: Data
     private let logger: Logger
+    private let dryRun: Bool
 
     public init(
         peerRegistry: PeerRegistry,
@@ -24,10 +25,15 @@ public actor ConsumerClient {
         self.ephemeralVPN = EphemeralVPN(dryRun: dryRun)
         self.vmTracker = VMTracker(persistencePath: persistencePath)
         self.networkKey = networkKey
+        self.dryRun = dryRun
 
         var logger = Logger(label: "com.omerta.consumer")
         logger.logLevel = .info
         self.logger = logger
+
+        if dryRun {
+            logger.info("ConsumerClient initialized in DRY RUN mode - no actual VPN tunnels will be created")
+        }
     }
 
     // MARK: - VM Lifecycle
@@ -167,50 +173,82 @@ public actor ConsumerClient {
 
         logger.info("VPN tunnel created", metadata: ["vm_id": "\(vmId)"])
 
-        // 3. Determine consumer endpoint for notifications
-        let consumerEndpoint = try await determineConsumerEndpoint()
+        // Wrap remaining steps in do-catch to clean up VPN on failure
+        do {
+            // 3. Determine consumer endpoint for notifications
+            let consumerEndpoint = try await determineConsumerEndpoint()
 
-        // 4. Send request_vm command to provider
-        logger.info("Sending VM request to provider")
-        let response = try await udpControl.requestVM(
-            providerEndpoint: provider.endpoint,
-            vmId: vmId,
-            requirements: requirements,
-            vpnConfig: vpnConfig,
-            consumerEndpoint: consumerEndpoint,
-            sshPublicKey: sshPublicKey,
-            sshUser: sshUser
-        )
+            // 4. Send request_vm command to provider
+            logger.info("Sending VM request to provider")
+            let response = try await udpControl.requestVM(
+                providerEndpoint: provider.endpoint,
+                vmId: vmId,
+                requirements: requirements,
+                vpnConfig: vpnConfig,
+                consumerEndpoint: consumerEndpoint,
+                sshPublicKey: sshPublicKey,
+                sshUser: sshUser
+            )
 
-        logger.info("Provider created VM", metadata: [
-            "vm_id": "\(vmId)",
-            "vm_ip": "\(response.vmIP)"
-        ])
+            logger.info("Provider response received", metadata: [
+                "vm_id": "\(vmId)",
+                "vm_ip": "\(response.vmIP)",
+                "provider_public_key": "\(response.providerPublicKey.prefix(20))...",
+                "error": "\(response.error ?? "none")"
+            ])
 
-        // 5. Build connection info
-        let connection = VMConnection(
-            vmId: vmId,
-            provider: PeerInfo(
-                peerId: provider.peerId,
-                endpoint: provider.endpoint
-            ),
-            vmIP: response.vmIP,
-            sshKeyPath: sshKeyPath,
-            sshUser: sshUser,
-            vpnInterface: "wg\(vmId.uuidString.prefix(8))",
-            createdAt: Date(),
-            networkId: networkId
-        )
+            // Check for error response from provider
+            if response.isError {
+                let errorMsg = response.error ?? "Provider returned empty VM IP or public key"
+                logger.error("Provider failed to create VM", metadata: [
+                    "vm_id": "\(vmId)",
+                    "error": "\(errorMsg)"
+                ])
+                throw ConsumerError.providerError(errorMsg)
+            }
 
-        // 6. Track VM
-        try await vmTracker.trackVM(connection)
+            // 5. Add provider as peer on consumer's WireGuard server
+            // This allows provider's connection to be accepted
+            logger.info("Adding provider as peer")
+            try await ephemeralVPN.addProviderPeer(
+                jobId: vmId,
+                providerPublicKey: response.providerPublicKey
+            )
+            logger.info("Provider peer added to VPN")
 
-        logger.info("VM request completed successfully", metadata: [
-            "vm_id": "\(vmId)",
-            "ssh_command": "\(connection.sshCommand)"
-        ])
+            // 7. Build connection info
+            let connection = VMConnection(
+                vmId: vmId,
+                provider: PeerInfo(
+                    peerId: provider.peerId,
+                    endpoint: provider.endpoint
+                ),
+                vmIP: response.vmIP,
+                sshKeyPath: sshKeyPath,
+                sshUser: sshUser,
+                vpnInterface: "wg\(vmId.uuidString.prefix(8))",
+                createdAt: Date(),
+                networkId: networkId
+            )
 
-        return connection
+            // 8. Track VM
+            try await vmTracker.trackVM(connection)
+
+            logger.info("VM request completed successfully", metadata: [
+                "vm_id": "\(vmId)",
+                "ssh_command": "\(connection.sshCommand)"
+            ])
+
+            return connection
+        } catch {
+            // Clean up VPN on any failure
+            logger.warning("VM request failed, cleaning up VPN", metadata: [
+                "vm_id": "\(vmId)",
+                "error": "\(error)"
+            ])
+            try? await ephemeralVPN.destroyVPN(for: vmId)
+            throw error
+        }
     }
 
     /// Request VM with retry logic

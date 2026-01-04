@@ -12,6 +12,7 @@ public enum ConsumerError: Error, CustomStringConvertible {
     case decryptionFailed
     case networkKeyNotFound
     case invalidResponse(String)
+    case providerError(String)  // Error message from provider
 
     public var description: String {
         switch self {
@@ -33,6 +34,8 @@ public enum ConsumerError: Error, CustomStringConvertible {
             return "Network key not found for encryption"
         case .invalidResponse(let reason):
             return "Invalid response from provider: \(reason)"
+        case .providerError(let message):
+            return "Provider error: \(message)"
         }
     }
 }
