@@ -1,5 +1,9 @@
 import Foundation
 
+#if canImport(Security)
+import Security
+#endif
+
 /// Represents a network membership
 public struct Network: Identifiable, Sendable {
     public let id: String  // Derived from network key hash
@@ -73,9 +77,15 @@ public struct NetworkKey: Sendable, Codable {
         bootstrapEndpoint: String
     ) -> NetworkKey {
         var keyData = Data(count: 32)  // 256 bits
+        #if canImport(Security)
         _ = keyData.withUnsafeMutableBytes { bytes in
             SecRandomCopyBytes(kSecRandomDefault, 32, bytes.baseAddress!)
         }
+        #else
+        // On Linux, use SystemRandomNumberGenerator
+        var rng = SystemRandomNumberGenerator()
+        keyData = Data((0..<32).map { _ in UInt8.random(in: 0...255, using: &rng) })
+        #endif
 
         return NetworkKey(
             networkKey: keyData,

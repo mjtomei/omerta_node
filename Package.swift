@@ -3,9 +3,9 @@ import PackageDescription
 
 let package = Package(
     name: "Omerta",
-    platforms: [
-        .macOS(.v14) // Required for Virtualization.framework features
-    ],
+    // macOS 14+ required for Virtualization.framework
+    // Linux doesn't need platform specification
+    platforms: [.macOS(.v14)],
     products: [
         .executable(name: "omerta", targets: ["OmertaCLI"]),
         .executable(name: "omertad", targets: ["OmertaDaemon"]),
@@ -66,7 +66,10 @@ let package = Package(
                 "OmertaVM",
                 "OmertaNetwork",
                 "OmertaConsumer",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "Crypto", package: "swift-crypto"),
             ],
             path: "Sources/OmertaProvider"
         ),
@@ -87,6 +90,8 @@ let package = Package(
             dependencies: [
                 "OmertaCore",
                 "OmertaNetwork",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Crypto", package: "swift-crypto"),
             ],

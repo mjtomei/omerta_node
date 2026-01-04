@@ -1,7 +1,10 @@
 import Foundation
-import Network
 import Logging
 import OmertaCore
+
+#if canImport(Network)
+import Network
+#endif
 
 /// Monitors VM network traffic to detect rogue connections (traffic bypassing VPN)
 /// Automatically starts with every VM to ensure provider's network security
@@ -26,8 +29,8 @@ public actor RogueConnectionDetector {
 
         let monitor = NetworkMonitor(
             jobId: jobId,
-            vpnServerIP: vpnConfig.vpnServerIP,
-            vpnEndpoint: vpnConfig.endpoint,
+            consumerVPNIP: vpnConfig.consumerVPNIP,
+            consumerEndpoint: vpnConfig.consumerEndpoint,
             vmInterface: vmInterface,
             startedAt: Date()
         )
@@ -121,8 +124,8 @@ public actor RogueConnectionDetector {
                 continue
             }
 
-            // Skip VPN server connection itself
-            if connection.destinationIP == monitor.vpnServerIP {
+            // Skip VPN server connection itself (the consumer's VPN server)
+            if connection.destinationIP == monitor.consumerVPNIP {
                 continue
             }
 
@@ -215,8 +218,14 @@ public actor RogueConnectionDetector {
     private func isConnectionThroughVPN(_ connection: ActiveConnection) async throws -> Bool {
         // Check routing table to see if destination goes through VPN interface
         let process = Process()
+
+        #if os(macOS)
+        process.executableURL = URL(fileURLWithPath: "/sbin/route")
+        process.arguments = ["get", connection.destinationIP]
+        #else
         process.executableURL = URL(fileURLWithPath: "/sbin/ip")
         process.arguments = ["route", "get", connection.destinationIP]
+        #endif
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -234,7 +243,11 @@ public actor RogueConnectionDetector {
         let output = String(data: data, encoding: .utf8) ?? ""
 
         // Check if route goes through wg* interface
+        #if os(macOS)
+        return output.contains("interface: utun") || output.contains("interface: wg")
+        #else
         return output.contains("dev wg") || output.contains("via wg")
+        #endif
     }
 
     /// Check VPN tunnel health
@@ -245,7 +258,7 @@ public actor RogueConnectionDetector {
         // Ping VPN server to check connectivity
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/sbin/ping")
-        process.arguments = ["-c", "1", "-W", "2", vpnConfig.vpnServerIP]
+        process.arguments = ["-c", "1", "-W", "2", vpnConfig.consumerVPNIP]
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -283,8 +296,8 @@ public actor RogueConnectionDetector {
 /// Network monitor for a specific job
 public struct NetworkMonitor: Sendable {
     public let jobId: UUID
-    public let vpnServerIP: String
-    public let vpnEndpoint: String
+    public let consumerVPNIP: String
+    public let consumerEndpoint: String
     public let vmInterface: String?
     public let startedAt: Date
 }

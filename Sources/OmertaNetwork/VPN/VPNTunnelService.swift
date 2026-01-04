@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import NetworkExtension
 import Logging
@@ -212,3 +213,4 @@ public enum VPNTunnelError: Error, CustomStringConvertible {
         }
     }
 }
+#endif

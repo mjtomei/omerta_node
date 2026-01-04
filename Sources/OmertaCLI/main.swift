@@ -4,6 +4,7 @@ import OmertaCore
 import OmertaVM
 import OmertaNetwork
 import OmertaConsumer
+import OmertaProvider
 import Logging
 #if canImport(NetworkExtension)
 import NetworkExtension
@@ -11,6 +12,39 @@ import NetworkExtension
 #if canImport(SystemExtensions)
 import SystemExtensions
 #endif
+
+// MARK: - Cross-platform date formatting helper
+
+/// Format a date as relative time (cross-platform replacement for RelativeDateTimeFormatter)
+func formatRelativeDate(_ date: Date) -> String {
+    let now = Date()
+    let interval = now.timeIntervalSince(date)
+
+    if interval < 0 {
+        // Future date
+        return "in the future"
+    }
+
+    let seconds = Int(interval)
+    let minutes = seconds / 60
+    let hours = minutes / 60
+    let days = hours / 24
+
+    if seconds < 60 {
+        return "just now"
+    } else if minutes < 60 {
+        return "\(minutes) minute\(minutes == 1 ? "" : "s") ago"
+    } else if hours < 24 {
+        return "\(hours) hour\(hours == 1 ? "" : "s") ago"
+    } else if days < 7 {
+        return "\(days) day\(days == 1 ? "" : "s") ago"
+    } else {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+}
 
 @main
 struct OmertaCLI: AsyncParsableCommand {
@@ -170,8 +204,11 @@ struct Init: AsyncParsableCommand {
         print("  Public:  \(publicKeyPath)")
         print("")
 
-        // Create config
+        // Create config with auto-generated local key
         print("Creating configuration...")
+
+        let localKey = OmertaConfig.generateLocalKey()
+        print("[✓] Local encryption key generated")
 
         let sshConfig = SSHConfig(
             privateKeyPath: privateKeyPath,
@@ -183,7 +220,8 @@ struct Init: AsyncParsableCommand {
         let config = OmertaConfig(
             ssh: sshConfig,
             networks: [:],
-            defaultNetwork: nil
+            defaultNetwork: nil,
+            localKey: localKey
         )
 
         try await configManager.save(config)
@@ -196,9 +234,9 @@ struct Init: AsyncParsableCommand {
         print("Your SSH public key (add to VMs):")
         print("  \(publicKey)")
         print("")
-        print("Next steps:")
-        print("  1. Add a network:  omerta network add --name mynet --key <hex-key>")
-        print("  2. Request a VM:   omerta vm request --provider <ip:port> --network-key <key>")
+        print("Quick start (local testing):")
+        print("  Terminal 1: sudo omertad start")
+        print("  Terminal 2: omerta vm request --provider 127.0.0.1:51820")
     }
 
     private func expandPath(_ path: String) -> String {
@@ -575,9 +613,7 @@ struct NetworkList: AsyncParsableCommand {
     }
 
     private func formatDate(_ date: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .full
-        return formatter.localizedString(for: date, relativeTo: Date())
+        formatRelativeDate(date)
     }
 }
 
@@ -797,6 +833,7 @@ struct VM: AsyncParsableCommand {
         subcommands: [
             VMRequest.self,
             VMList.self,
+            VMStatus.self,
             VMRelease.self,
             VMConnect.self,
             VMCleanup.self
@@ -817,8 +854,8 @@ struct VMRequest: AsyncParsableCommand {
     @Option(name: .long, help: "Network ID - for network-based discovery")
     var network: String?
 
-    @Option(name: .long, help: "Network key (hex encoded, 64 chars)")
-    var networkKey: String
+    @Option(name: .long, help: "Network key (hex encoded, 64 chars). Uses local key from config if not specified.")
+    var networkKey: String?
 
     @Option(name: .long, help: "Number of CPU cores")
     var cpu: UInt32?
@@ -857,9 +894,30 @@ struct VMRequest: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        // Parse network key
-        guard let keyData = Data(hexString: networkKey), keyData.count == 32 else {
-            print("Error: Network key must be a 64-character hex string (32 bytes)")
+        // Load config to get local key if not specified
+        let configManager = ConfigManager()
+        let config: OmertaConfig
+        do {
+            config = try await configManager.load()
+        } catch ConfigError.notInitialized {
+            print("Error: Omerta not initialized. Run 'omerta init' first.")
+            throw ExitCode.failure
+        }
+
+        // Determine network key - use provided key or fall back to local key
+        let keyData: Data
+        if let providedKey = networkKey {
+            guard let data = Data(hexString: providedKey), data.count == 32 else {
+                print("Error: Network key must be a 64-character hex string (32 bytes)")
+                throw ExitCode.failure
+            }
+            keyData = data
+        } else if let localKeyData = config.localKeyData() {
+            keyData = localKeyData
+            print("Using local encryption key from config")
+        } else {
+            print("Error: No network key specified and no local key in config.")
+            print("Run 'omerta init' to generate a local key, or specify --network-key")
             throw ExitCode.failure
         }
 
@@ -1094,7 +1152,7 @@ struct VMRequest: AsyncParsableCommand {
         print("  \(connection.scpCommand)")
         print("")
         print("To release this VM:")
-        print("  omerta vm release \(connection.vmId) --network-key \(networkKey)")
+        print("  omerta vm release \(connection.vmId)")
     }
 }
 
@@ -1144,16 +1202,139 @@ struct VMList: AsyncParsableCommand {
         print("  omerta vm connect <vm-id>")
         print("")
         print("To release a VM:")
-        print("  omerta vm release <vm-id> --network-key <key>")
+        print("  omerta vm release <vm-id>")
         print("")
         print("To clean up orphaned resources:")
         print("  omerta vm cleanup")
     }
 
     private func formatDate(_ date: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: Date())
+        formatRelativeDate(date)
+    }
+}
+
+// MARK: - VM Status Command
+struct VMStatus: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "status",
+        abstract: "Query VM status from provider"
+    )
+
+    @Option(name: .long, help: "Provider endpoint (ip:port)")
+    var provider: String
+
+    @Option(name: .long, help: "Network key (hex encoded). Uses local key from config if not specified.")
+    var networkKey: String?
+
+    @Option(name: .long, help: "Specific VM ID to query (default: all)")
+    var vmId: String?
+
+    mutating func run() async throws {
+        // Load config to get local key if not specified
+        let configManager = ConfigManager()
+        let config: OmertaConfig
+        do {
+            config = try await configManager.load()
+        } catch ConfigError.notInitialized {
+            print("Error: Omerta not initialized. Run 'omerta init' first.")
+            throw ExitCode.failure
+        }
+
+        // Determine network key
+        let keyData: Data
+        if let providedKey = networkKey {
+            guard let data = Data(hexString: providedKey), data.count == 32 else {
+                print("Error: Network key must be a 64-character hex string (32 bytes)")
+                throw ExitCode.failure
+            }
+            keyData = data
+        } else if let localKeyData = config.localKeyData() {
+            keyData = localKeyData
+        } else {
+            print("Error: No network key specified and no local key in config.")
+            throw ExitCode.failure
+        }
+
+        // Parse VM ID if provided
+        var queryVmId: UUID? = nil
+        if let vmIdStr = vmId {
+            // Handle both full UUID and short prefix
+            if vmIdStr.count == 36 {
+                queryVmId = UUID(uuidString: vmIdStr)
+            } else {
+                // Try to find matching VM from local tracking
+                let tracker = VMTracker()
+                let vms = try await tracker.loadPersistedVMs()
+                let matchingVM = vms.first { vm in
+                    vm.vmId.uuidString.lowercased().hasPrefix(vmIdStr.lowercased())
+                }
+                queryVmId = matchingVM?.vmId
+            }
+
+            if queryVmId == nil {
+                print("Error: Invalid VM ID: \(vmIdStr)")
+                throw ExitCode.failure
+            }
+        }
+
+        print("Querying VM status from \(provider)...")
+        print("")
+
+        let client = UDPControlClient(networkKey: keyData)
+
+        do {
+            let response = try await client.queryVMStatus(
+                providerEndpoint: provider,
+                vmId: queryVmId
+            )
+
+            if response.vms.isEmpty {
+                print("No VMs found on provider")
+                return
+            }
+
+            print("Provider VMs")
+            print("============")
+            print("")
+
+            for vm in response.vms {
+                let statusIcon = vm.status == .running ? "●" : "○"
+                print("\(statusIcon) [\(vm.vmId.uuidString.prefix(8))...] \(vm.vmIP)")
+                print("   Status: \(vm.status.rawValue.uppercased())")
+                print("   Uptime: \(formatUptime(vm.uptimeSeconds))")
+                print("   Created: \(formatDate(vm.createdAt))")
+
+                if let console = vm.consoleOutput, !console.isEmpty {
+                    print("   Console:")
+                    for line in console.split(separator: "\n").suffix(3) {
+                        print("     \(line)")
+                    }
+                }
+                print("")
+            }
+
+            print("Total: \(response.vms.count) VMs")
+
+        } catch {
+            print("Error querying status: \(error)")
+            throw ExitCode.failure
+        }
+    }
+
+    private func formatUptime(_ seconds: Int) -> String {
+        if seconds < 60 {
+            return "\(seconds)s"
+        } else if seconds < 3600 {
+            return "\(seconds / 60)m \(seconds % 60)s"
+        } else {
+            let hours = seconds / 3600
+            let minutes = (seconds % 3600) / 60
+            return "\(hours)h \(minutes)m"
+        }
+    }
+
+    private func formatDate(_ date: Date) -> String {
+        formatRelativeDate(date)
     }
 }
 
@@ -1167,16 +1348,35 @@ struct VMRelease: AsyncParsableCommand {
     @Argument(help: "VM ID to release (or prefix)")
     var vmId: String
 
-    @Option(name: .long, help: "Network key (hex encoded)")
-    var networkKey: String
+    @Option(name: .long, help: "Network key (hex encoded). Uses local key from config if not specified.")
+    var networkKey: String?
 
     @Flag(name: .long, help: "Skip confirmation")
     var force: Bool = false
 
     mutating func run() async throws {
-        // Parse network key
-        guard let keyData = Data(hexString: networkKey), keyData.count == 32 else {
-            print("Error: Network key must be a 64-character hex string (32 bytes)")
+        // Load config to get local key if not specified
+        let configManager = ConfigManager()
+        let config: OmertaConfig
+        do {
+            config = try await configManager.load()
+        } catch ConfigError.notInitialized {
+            print("Error: Omerta not initialized. Run 'omerta init' first.")
+            throw ExitCode.failure
+        }
+
+        // Determine network key
+        let keyData: Data
+        if let providedKey = networkKey {
+            guard let data = Data(hexString: providedKey), data.count == 32 else {
+                print("Error: Network key must be a 64-character hex string (32 bytes)")
+                throw ExitCode.failure
+            }
+            keyData = data
+        } else if let localKeyData = config.localKeyData() {
+            keyData = localKeyData
+        } else {
+            print("Error: No network key specified and no local key in config.")
             throw ExitCode.failure
         }
 
@@ -1289,7 +1489,7 @@ struct VMConnect: AsyncParsableCommand {
 struct VMCleanup: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "cleanup",
-        abstract: "Clean up orphaned WireGuard interfaces and resources"
+        abstract: "Clean up orphaned WireGuard interfaces, firewall rules, and resources"
     )
 
     @Flag(name: .long, help: "Clean up all Omerta interfaces, not just orphaned ones")
@@ -1302,8 +1502,8 @@ struct VMCleanup: AsyncParsableCommand {
     var force: Bool = false
 
     mutating func run() async throws {
-        print("WireGuard Cleanup")
-        print("=================")
+        print("Omerta Cleanup")
+        print("==============")
         print("")
 
         // Check if we have sudo access (needed for killing processes and stopping interfaces)
@@ -1343,7 +1543,9 @@ struct VMCleanup: AsyncParsableCommand {
             }
         }
 
-        // Display status
+        // ========== WireGuard Interfaces ==========
+        print("WireGuard Interfaces")
+        print("--------------------")
         print("Active Omerta interfaces: \(status.activeInterfaces.count)")
         for iface in status.activeInterfaces {
             let isTracked = trackedInterfaces.contains(iface)
@@ -1378,7 +1580,60 @@ struct VMCleanup: AsyncParsableCommand {
             let marker = hasInterface ? "[active]" : "[no interface]"
             print("  \(marker) \(vm.vmId.uuidString.prefix(8))... \(vm.vmIP) (\(vm.vpnInterface))")
         }
+        if trackedVMs.isEmpty {
+            print("  (none)")
+        }
         print("")
+
+        // ========== Firewall Rules (macOS pf anchors) ==========
+        #if os(macOS)
+        print("Firewall Rules (pf anchors)")
+        print("---------------------------")
+
+        // Get firewall markers (created by omerta)
+        let markers = ProviderVPNManager.listFirewallMarkers()
+
+        // Get all omerta pf anchors
+        let anchors = ProviderVPNManager.listOmertaAnchors()
+
+        // Categorize anchors
+        var markeredAnchors: [(anchor: String, marker: ProviderVPNManager.FirewallMarker)] = []
+        var unmarkedAnchors: [String] = []
+
+        for anchor in anchors {
+            if let marker = markers.first(where: { $0.anchor == anchor }) {
+                markeredAnchors.append((anchor, marker))
+            } else {
+                unmarkedAnchors.append(anchor)
+            }
+        }
+
+        // Show orphaned markers (marker exists but no anchor - already cleaned)
+        let orphanedMarkers = markers.filter { marker in
+            guard let anchor = marker.anchor else { return true }
+            return !anchors.contains(anchor)
+        }
+
+        if anchors.isEmpty {
+            print("  No omerta pf anchors found")
+        } else {
+            print("  Active anchors: \(anchors.count)")
+            for (anchor, marker) in markeredAnchors {
+                print("    [omerta] \(anchor) (created: \(marker.createdAt ?? "unknown"))")
+            }
+            for anchor in unmarkedAnchors {
+                print("    [unknown] \(anchor)")
+            }
+        }
+
+        if !orphanedMarkers.isEmpty {
+            print("  Orphaned markers (no anchor): \(orphanedMarkers.count)")
+            for marker in orphanedMarkers {
+                print("    \(marker.path)")
+            }
+        }
+        print("")
+        #endif
 
         // Determine what to clean
         let interfacesToClean: [String]
@@ -1396,7 +1651,22 @@ struct VMCleanup: AsyncParsableCommand {
         let hasConfigFiles = !status.configFiles.isEmpty
         let hasStaleVMs = !staleVMs.isEmpty
 
-        if !hasInterfacesToClean && !hasConfigFiles && !hasOrphanedProcesses && (!hasStaleVMs || !all) {
+        #if os(macOS)
+        let hasMarkeredAnchors = !markeredAnchors.isEmpty
+        let hasUnmarkedAnchors = !unmarkedAnchors.isEmpty
+        let hasOrphanedMarkers = !orphanedMarkers.isEmpty
+        let hasFirewallWork = hasMarkeredAnchors || hasUnmarkedAnchors || hasOrphanedMarkers
+        #else
+        let hasFirewallWork = false
+        let hasMarkeredAnchors = false
+        let hasUnmarkedAnchors = false
+        let hasOrphanedMarkers = false
+        let markeredAnchors: [(anchor: String, marker: ProviderVPNManager.FirewallMarker)] = []
+        let unmarkedAnchors: [String] = []
+        let orphanedMarkers: [ProviderVPNManager.FirewallMarker] = []
+        #endif
+
+        if !hasInterfacesToClean && !hasConfigFiles && !hasOrphanedProcesses && !hasFirewallWork && (!hasStaleVMs || !all) {
             print("Nothing to clean up!")
             if hasStaleVMs {
                 print("")
@@ -1417,6 +1687,17 @@ struct VMCleanup: AsyncParsableCommand {
             for file in status.configFiles {
                 print("  - Remove config: \(file)")
             }
+            #if os(macOS)
+            for (anchor, _) in markeredAnchors {
+                print("  - Remove pf anchor: \(anchor) [auto - has marker]")
+            }
+            for anchor in unmarkedAnchors {
+                print("  - Remove pf anchor: \(anchor) [requires confirmation]")
+            }
+            for marker in orphanedMarkers {
+                print("  - Remove orphaned marker: \(marker.path)")
+            }
+            #endif
             if all {
                 for vm in staleVMs {
                     print("  - Remove stale tracking: \(vm.vmId.uuidString.prefix(8))...")
@@ -1441,6 +1722,11 @@ struct VMCleanup: AsyncParsableCommand {
             } else if hasInterfacesToClean {
                 print("This will clean up \(interfacesToClean.count) orphaned interfaces.")
             }
+            #if os(macOS)
+            if hasMarkeredAnchors {
+                print("This will remove \(markeredAnchors.count) pf anchor(s) created by omerta.")
+            }
+            #endif
             print("")
             print("Type 'yes' to confirm: ", terminator: "")
 
@@ -1489,6 +1775,59 @@ struct VMCleanup: AsyncParsableCommand {
         // Clean up config files
         WireGuardCleanup.cleanupConfigFiles()
 
+        // ========== Firewall Cleanup ==========
+        #if os(macOS)
+        var anchorsRemoved = 0
+
+        // Remove anchors with markers automatically
+        for (anchor, marker) in markeredAnchors {
+            print("  Removing pf anchor \(anchor)...", terminator: " ")
+            if ProviderVPNManager.removePFAnchor(anchor) {
+                print("done")
+                anchorsRemoved += 1
+                // Also remove the marker file
+                try? FileManager.default.removeItem(atPath: marker.path)
+            } else {
+                print("failed")
+            }
+        }
+
+        // For unmarked anchors, ask user unless --force
+        for anchor in unmarkedAnchors {
+            if force {
+                print("  Removing unknown pf anchor \(anchor)...", terminator: " ")
+                if ProviderVPNManager.removePFAnchor(anchor) {
+                    print("done")
+                    anchorsRemoved += 1
+                } else {
+                    print("failed")
+                }
+            } else {
+                print("")
+                print("  Found pf anchor '\(anchor)' without marker file.")
+                print("  This may have been created by omerta or another tool.")
+                print("  Remove this anchor? (y/n): ", terminator: "")
+
+                if let response = readLine()?.lowercased(), response == "y" || response == "yes" {
+                    print("  Removing...", terminator: " ")
+                    if ProviderVPNManager.removePFAnchor(anchor) {
+                        print("done")
+                        anchorsRemoved += 1
+                    } else {
+                        print("failed")
+                    }
+                } else {
+                    print("  Skipped.")
+                }
+            }
+        }
+
+        // Clean up orphaned markers
+        for marker in orphanedMarkers {
+            try? FileManager.default.removeItem(atPath: marker.path)
+        }
+        #endif
+
         // If --all, also clear stale VM tracking
         if all && !staleVMs.isEmpty {
             print("")
@@ -1507,6 +1846,11 @@ struct VMCleanup: AsyncParsableCommand {
         if cleanedCount > 0 {
             print("  Interfaces stopped: \(cleanedCount)")
         }
+        #if os(macOS)
+        if anchorsRemoved > 0 {
+            print("  Firewall anchors removed: \(anchorsRemoved)")
+        }
+        #endif
         if all && hasStaleVMs {
             print("  Stale VMs removed: \(staleVMs.count)")
         }
@@ -1565,23 +1909,4 @@ struct CheckDeps: AsyncParsableCommand {
     }
 }
 
-// MARK: - Helpers
-
-extension Data {
-    init?(hexString: String) {
-        let len = hexString.count / 2
-        var data = Data(capacity: len)
-        var index = hexString.startIndex
-
-        for _ in 0..<len {
-            let nextIndex = hexString.index(index, offsetBy: 2)
-            guard let byte = UInt8(hexString[index..<nextIndex], radix: 16) else {
-                return nil
-            }
-            data.append(byte)
-            index = nextIndex
-        }
-
-        self = data
-    }
-}
+// Data.init?(hexString:) is provided by OmertaCore

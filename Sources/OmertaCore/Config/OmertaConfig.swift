@@ -1,20 +1,48 @@
 import Foundation
 
+#if canImport(Security)
+import Security
+#endif
+
 /// Central configuration for Omerta
 /// Stored at ~/.omerta/config.json
 public struct OmertaConfig: Codable, Sendable {
     public var ssh: SSHConfig
     public var networks: [String: NetworkConfig]
     public var defaultNetwork: String?
+    public var localKey: String?  // Auto-generated key for local/direct connections
 
     public init(
         ssh: SSHConfig = SSHConfig(),
         networks: [String: NetworkConfig] = [:],
-        defaultNetwork: String? = nil
+        defaultNetwork: String? = nil,
+        localKey: String? = nil
     ) {
         self.ssh = ssh
         self.networks = networks
         self.defaultNetwork = defaultNetwork
+        self.localKey = localKey
+    }
+
+    /// Get the local key as Data, or nil if not set
+    public func localKeyData() -> Data? {
+        guard let hex = localKey else { return nil }
+        return Data(hexString: hex)
+    }
+
+    /// Generate a new random local key (32 bytes, hex encoded)
+    public static func generateLocalKey() -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        #if canImport(Security)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        #else
+        // On Linux, use SystemRandomNumberGenerator
+        var rng = SystemRandomNumberGenerator()
+        for i in 0..<bytes.count {
+            bytes[i] = UInt8.random(in: 0...255, using: &rng)
+        }
+        #endif
+        return bytes.map { String(format: "%02x", $0) }.joined()
     }
 
     /// Get the default config directory path
@@ -291,5 +319,32 @@ public enum ConfigError: Error, CustomStringConvertible {
         case .networkNotFound(let name):
             return "Network '\(name)' not found in configuration"
         }
+    }
+}
+
+// MARK: - Data Hex Extension
+
+public extension Data {
+    /// Initialize Data from a hex string
+    init?(hexString: String) {
+        let len = hexString.count / 2
+        var data = Data(capacity: len)
+        var index = hexString.startIndex
+
+        for _ in 0..<len {
+            let nextIndex = hexString.index(index, offsetBy: 2)
+            guard let byte = UInt8(hexString[index..<nextIndex], radix: 16) else {
+                return nil
+            }
+            data.append(byte)
+            index = nextIndex
+        }
+
+        self = data
+    }
+
+    /// Convert Data to hex string
+    var hexString: String {
+        map { String(format: "%02x", $0) }.joined()
     }
 }

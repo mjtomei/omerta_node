@@ -1,10 +1,14 @@
 import Foundation
-import Virtualization
 import Logging
 import OmertaCore
 
+#if os(macOS)
+import Virtualization
+#endif
+
 /// Handles network isolation and VPN routing for VMs
 /// Ensures ALL VM traffic routes through requester-provided VPN
+/// Note: Full functionality only available on macOS with Virtualization.framework
 public actor NetworkIsolation {
     private let logger = Logger(label: "com.omerta.network-isolation")
 
@@ -33,13 +37,15 @@ public actor NetworkIsolation {
         return modifiedInitramfsPath
     }
 
-    /// Create network device configuration with VPN routing
+    #if os(macOS)
+    /// Create network device configuration with VPN routing (macOS only)
     public func createVPNRoutedNetworkDevice() -> VZVirtioNetworkDeviceConfiguration {
         // Use NAT attachment - VM will configure VPN routing internally
         let networkDevice = VZVirtioNetworkDeviceConfiguration()
         networkDevice.attachment = VZNATNetworkDeviceAttachment()
         return networkDevice
     }
+    #endif
 
     // MARK: - Private Methods
 
@@ -59,15 +65,30 @@ public actor NetworkIsolation {
 
         try await extractInitramfs(initramfsPath, to: extractDir)
 
+        // Note: In the new Option 3 architecture, provider runs WireGuard, not the VM
+        // This code path is retained for backwards compatibility but is not used
+        // Generate a placeholder config for the VM (consumer is the peer)
+        let wgConfig = """
+        [Interface]
+        PrivateKey = <GENERATED_AT_BOOT>
+        Address = \(vpnConfig.vmVPNIP)/24
+
+        [Peer]
+        PublicKey = \(vpnConfig.consumerPublicKey)
+        Endpoint = \(vpnConfig.consumerEndpoint)
+        AllowedIPs = 0.0.0.0/0
+        PersistentKeepalive = 25
+        """
+
         // Write WireGuard config
         let wgConfigPath = extractDir.appendingPathComponent("wg0.conf")
-        try vpnConfig.wireguardConfig.write(to: wgConfigPath, atomically: true, encoding: .utf8)
+        try wgConfig.write(to: wgConfigPath, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: wgConfigPath.path)
 
         // Create VPN setup script
         let vpnSetupScript = generateVPNSetupScript(
-            vpnServerIP: vpnConfig.vpnServerIP,
-            endpoint: vpnConfig.endpoint
+            vpnServerIP: vpnConfig.consumerVPNIP,
+            endpoint: vpnConfig.consumerEndpoint
         )
 
         let vpnSetupPath = extractDir.appendingPathComponent("setup-vpn.sh")

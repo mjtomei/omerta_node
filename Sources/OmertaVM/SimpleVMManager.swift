@@ -1,37 +1,64 @@
 import Foundation
-import Virtualization
 import Logging
 import OmertaCore
 
+#if os(macOS)
+import Virtualization
+#endif
+
 /// Simplified VM manager for VM infrastructure only (no job execution)
 /// Starts VMs with SSH access, user controls everything after that
+/// On Linux, only dry-run mode is currently supported (full VM support requires libvirt)
 public actor SimpleVMManager {
     private let logger: Logger
     private var activeVMs: [UUID: RunningVM] = [:]
     private let basePort: UInt16 = 10000
+    private let dryRun: Bool
 
+    #if os(macOS)
     public struct RunningVM: Sendable {
         public let vmId: UUID
-        public let vm: VZVirtualMachine
+        public let vm: VZVirtualMachine?  // nil in dry-run mode
         public let sshPort: UInt16
         public let vmIP: String
         public let createdAt: Date
     }
+    #else
+    public struct RunningVM: Sendable {
+        public let vmId: UUID
+        public let sshPort: UInt16
+        public let vmIP: String
+        public let createdAt: Date
+    }
+    #endif
 
-    public init() {
+    public init(dryRun: Bool = false) {
         var logger = Logger(label: "com.omerta.vm.simple")
         logger.logLevel = .info
         self.logger = logger
+
+        #if os(Linux)
+        // On Linux, force dry-run mode until libvirt support is added
+        self.dryRun = true
+        if !dryRun {
+            logger.warning("Linux VM support not yet implemented - forcing DRY RUN mode")
+        }
+        #else
+        self.dryRun = dryRun
+        #endif
+
+        if self.dryRun {
+            logger.info("SimpleVMManager initialized in DRY RUN mode - no actual VMs will be created")
+        }
     }
 
     // MARK: - VM Lifecycle
 
     /// Start a VM with specified resources
-    /// Returns VM IP address within VPN network for SSH access
+    /// Returns VM's NAT IP address (e.g., 192.168.64.x)
     public func startVM(
         vmId: UUID,
         requirements: ResourceRequirements,
-        vpnConfig: VPNConfiguration,
         sshPublicKey: String,
         sshUser: String = "omerta"
     ) async throws -> String {
@@ -39,9 +66,67 @@ public actor SimpleVMManager {
             "vm_id": "\(vmId)",
             "cpu_cores": "\(requirements.cpuCores ?? 0)",
             "memory_mb": "\(requirements.memoryMB ?? 0)",
-            "ssh_user": "\(sshUser)"
+            "ssh_user": "\(sshUser)",
+            "dry_run": "\(dryRun)"
         ])
 
+        // In dry-run mode, skip actual VM creation
+        if dryRun {
+            logger.info("DRY RUN: Simulating VM creation")
+
+            // Generate simulated VM NAT IP
+            let vmNATIP = generateVMNATIP()
+            let sshPort = allocatePort()
+
+            // Track "running" VM
+            #if os(macOS)
+            let runningVM = RunningVM(
+                vmId: vmId,
+                vm: nil,
+                sshPort: sshPort,
+                vmIP: vmNATIP,
+                createdAt: Date()
+            )
+            #else
+            let runningVM = RunningVM(
+                vmId: vmId,
+                sshPort: sshPort,
+                vmIP: vmNATIP,
+                createdAt: Date()
+            )
+            #endif
+            activeVMs[vmId] = runningVM
+
+            logger.info("DRY RUN: VM simulated successfully", metadata: [
+                "vm_id": "\(vmId)",
+                "vm_nat_ip": "\(vmNATIP)",
+                "ssh_port": "\(sshPort)"
+            ])
+
+            return vmNATIP
+        }
+
+        #if os(macOS)
+        // macOS: Use Virtualization.framework
+        return try await startVMMacOS(
+            vmId: vmId,
+            requirements: requirements,
+            sshPublicKey: sshPublicKey,
+            sshUser: sshUser
+        )
+        #else
+        // Linux: Not yet implemented
+        throw VMError.platformNotSupported
+        #endif
+    }
+
+    #if os(macOS)
+    private func startVMMacOS(
+        vmId: UUID,
+        requirements: ResourceRequirements,
+        sshPublicKey: String,
+        sshUser: String
+    ) async throws -> String {
         // 1. Generate dynamic cloud-init ISO with consumer's SSH key
         let seedISOPath = try await generateCloudInitISO(
             vmId: vmId,
@@ -57,7 +142,7 @@ public actor SimpleVMManager {
             seedISOPath: seedISOPath
         )
 
-        // 2. Create and start VM (must be on main queue)
+        // 3. Create and start VM (must be on main queue)
         let vm = try await MainActor.run {
             let vm = VZVirtualMachine(configuration: config)
             return vm
@@ -77,30 +162,31 @@ public actor SimpleVMManager {
             }
         }
 
-        // 3. Generate VM IP (from VPN config client IP + offset)
-        let vmIP = generateVMIP(vpnConfig: vpnConfig)
+        // 4. Generate VM NAT IP
+        let vmNATIP = generateVMNATIP()
 
-        // 4. Allocate SSH port
+        // 5. Allocate SSH port
         let sshPort = allocatePort()
 
-        // 5. Track running VM
+        // 6. Track running VM
         let runningVM = RunningVM(
             vmId: vmId,
             vm: vm,
             sshPort: sshPort,
-            vmIP: vmIP,
+            vmIP: vmNATIP,
             createdAt: Date()
         )
         activeVMs[vmId] = runningVM
 
         logger.info("VM started successfully", metadata: [
             "vm_id": "\(vmId)",
-            "vm_ip": "\(vmIP)",
+            "vm_nat_ip": "\(vmNATIP)",
             "ssh_port": "\(sshPort)"
         ])
 
-        return vmIP
+        return vmNATIP
     }
+    #endif
 
     /// Stop and destroy a VM
     public func stopVM(vmId: UUID) async throws {
@@ -109,11 +195,20 @@ public actor SimpleVMManager {
             return
         }
 
-        logger.info("Stopping VM", metadata: ["vm_id": "\(vmId)"])
+        logger.info("Stopping VM", metadata: ["vm_id": "\(vmId)", "dry_run": "\(dryRun)"])
+
+        #if os(macOS)
+        // In dry-run mode or if VM is nil, just remove from tracking
+        if dryRun || runningVM.vm == nil {
+            logger.info("DRY RUN: Simulating VM stop")
+            activeVMs.removeValue(forKey: vmId)
+            logger.info("DRY RUN: VM removed from tracking", metadata: ["vm_id": "\(vmId)"])
+            return
+        }
 
         // Stop VM
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            runningVM.vm.stop { error in
+            runningVM.vm!.stop { error in
                 if let error = error {
                     continuation.resume(throwing: error)
                 } else {
@@ -121,6 +216,10 @@ public actor SimpleVMManager {
                 }
             }
         }
+        #else
+        // Linux: Just remove from tracking (dry-run only)
+        logger.info("DRY RUN: Simulating VM stop")
+        #endif
 
         // Remove from tracking
         activeVMs.removeValue(forKey: vmId)
@@ -140,6 +239,7 @@ public actor SimpleVMManager {
 
     // MARK: - Private Helpers
 
+    #if os(macOS)
     /// Generate a dynamic cloud-init ISO for this VM
     private func generateCloudInitISO(
         vmId: UUID,
@@ -265,21 +365,13 @@ public actor SimpleVMManager {
 
         throw VMError.diskImageNotFound
     }
+    #endif
 
-    private func generateVMIP(vpnConfig: VPNConfiguration) -> String {
-        // Extract base IP from VPN server IP and increment
-        // e.g., "10.99.0.1" -> "10.99.0.2", "10.99.0.3", etc.
-        let components = vpnConfig.vpnServerIP.split(separator: ".")
-        guard components.count == 4 else {
-            // Fallback
-            return "10.99.0.\(activeVMs.count + 2)"
-        }
-
-        let octet1 = String(components[0])
-        let octet2 = String(components[1])
-        let octet3 = String(components[2])
+    private func generateVMNATIP() -> String {
+        // Use 192.168.64.0/24 for NAT (macOS convention, also works for libvirt)
+        // Gateway is at 192.168.64.1, VMs get addresses starting at .2
         let offset = activeVMs.count + 2
-        return "\(octet1).\(octet2).\(octet3).\(offset)"
+        return "192.168.64.\(offset)"
     }
 
     private func allocatePort() -> UInt16 {
@@ -298,6 +390,7 @@ public enum VMError: Error, CustomStringConvertible {
     case vmNotFound(UUID)
     case startFailed(Error)
     case stopFailed(Error)
+    case platformNotSupported
 
     public var description: String {
         switch self {
@@ -317,6 +410,8 @@ public enum VMError: Error, CustomStringConvertible {
             return "Failed to start VM: \(error.localizedDescription)"
         case .stopFailed(let error):
             return "Failed to stop VM: \(error.localizedDescription)"
+        case .platformNotSupported:
+            return "VM functionality not yet supported on this platform. Use --dry-run mode."
         }
     }
 }

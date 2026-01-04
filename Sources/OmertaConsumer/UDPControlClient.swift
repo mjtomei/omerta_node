@@ -1,15 +1,19 @@
 import Foundation
-import Network
+import NIOCore
+import NIOPosix
 import Crypto
 import OmertaCore
 
 /// Client for sending encrypted UDP control messages to provider daemons
+/// Uses SwiftNIO for cross-platform UDP support (macOS and Linux)
 public actor UDPControlClient {
     private let networkKey: Data
     private let localPort: UInt16
-    private var connections: [String: NWConnection] = [:]
     private let maxRetries: Int = 3
     private let retryTimeout: TimeInterval = 2.0
+
+    private var eventLoopGroup: MultiThreadedEventLoopGroup?
+    private var channel: Channel?
 
     public init(networkKey: Data, localPort: UInt16 = 0) {
         self.networkKey = networkKey
@@ -61,56 +65,54 @@ public actor UDPControlClient {
         }
     }
 
+    /// Query VM status from provider
+    public func queryVMStatus(
+        providerEndpoint: String,
+        vmId: UUID? = nil
+    ) async throws -> VMStatusResponse {
+        let request = VMStatusRequest(vmId: vmId)
+        let message = ControlMessage(action: .queryVMStatus(request))
+        let response = try await sendWithRetry(message, to: providerEndpoint)
+
+        guard case .vmStatus(let statusResponse) = response.action else {
+            throw ConsumerError.invalidResponse("Expected vmStatus, got \(response.action)")
+        }
+
+        return statusResponse
+    }
+
     // MARK: - Notification Listener
 
     /// Listen for async notifications from providers
     public func listenForNotifications(port: UInt16) async throws -> AsyncStream<ProviderNotification> {
-        let listener = try NWListener(using: .udp, on: NWEndpoint.Port(integerLiteral: port))
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
 
         return AsyncStream { continuation in
-            listener.newConnectionHandler = { connection in
-                connection.start(queue: .global())
+            let handler = NotificationHandler(
+                networkKey: self.networkKey,
+                continuation: continuation
+            )
 
-                connection.receiveMessage { data, _, _, error in
-                    if let error = error {
-                        print("Error receiving notification: \(error)")
-                        return
-                    }
-
-                    guard let data = data else { return }
-
-                    do {
-                        let message = try self.decryptMessageSync(data)
-
-                        // Extract notification from message action
-                        if case .vmCreated(let response) = message.action {
-                            continuation.yield(.vmReady(vmId: response.vmId, vmIP: response.vmIP))
-                        }
-                        // Add more notification types as needed
-                    } catch {
-                        print("Error decrypting notification: \(error)")
-                    }
+            let bootstrap = DatagramBootstrap(group: group)
+                .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+                .channelInitializer { channel in
+                    channel.pipeline.addHandler(handler)
                 }
-            }
 
-            listener.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
+            Task {
+                do {
+                    let channel = try await bootstrap.bind(host: "0.0.0.0", port: Int(port)).get()
                     print("Notification listener ready on port \(port)")
-                case .failed(let error):
+
+                    continuation.onTermination = { _ in
+                        channel.close(promise: nil)
+                        try? group.syncShutdownGracefully()
+                    }
+                } catch {
                     print("Notification listener failed: \(error)")
                     continuation.finish()
-                case .cancelled:
-                    continuation.finish()
-                default:
-                    break
+                    try? group.syncShutdownGracefully()
                 }
-            }
-
-            listener.start(queue: .global())
-
-            continuation.onTermination = { _ in
-                listener.cancel()
             }
         }
     }
@@ -144,21 +146,48 @@ public actor UDPControlClient {
         _ message: ControlMessage,
         to endpoint: String
     ) async throws -> ControlMessage {
-        let connection = getOrCreateConnection(to: endpoint)
+        // Parse endpoint (format: "IP:port")
+        let parts = endpoint.split(separator: ":")
+        guard parts.count == 2,
+              let host = parts.first.map(String.init),
+              let port = Int(parts.last!) else {
+            throw ConsumerError.invalidResponse("Invalid endpoint format: \(endpoint)")
+        }
+
+        // Create event loop group for this request
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        defer {
+            try? group.syncShutdownGracefully()
+        }
+
+        // Create response handler
+        let responseHandler = ResponseHandler(networkKey: networkKey)
+
+        // Create UDP channel
+        let bootstrap = DatagramBootstrap(group: group)
+            .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .channelInitializer { channel in
+                channel.pipeline.addHandler(responseHandler)
+            }
+
+        let channel = try await bootstrap.bind(host: "0.0.0.0", port: Int(localPort)).get()
+        defer {
+            try? channel.close().wait()
+        }
 
         // Encrypt message
         let encrypted = try encryptMessage(message)
 
+        // Create remote address
+        let remoteAddress = try SocketAddress(ipAddress: host, port: port)
+
+        // Create addressed envelope
+        var buffer = channel.allocator.buffer(capacity: encrypted.count)
+        buffer.writeBytes(encrypted)
+        let envelope = AddressedEnvelope(remoteAddress: remoteAddress, data: buffer)
+
         // Send message
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            connection.send(content: encrypted, completion: .contentProcessed { error in
-                if let error = error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
-            })
-        }
+        try await channel.writeAndFlush(envelope).get()
 
         // Wait for response with timeout
         return try await withThrowingTaskGroup(of: ControlMessage.self) { group in
@@ -170,7 +199,7 @@ public actor UDPControlClient {
 
             // Receive task
             group.addTask {
-                try await self.receiveMessage(from: connection)
+                try await responseHandler.waitForResponse()
             }
 
             // Return first result (either response or timeout)
@@ -181,56 +210,6 @@ public actor UDPControlClient {
             group.cancelAll()
             return result
         }
-    }
-
-    /// Receive and decrypt response
-    private func receiveMessage(from connection: NWConnection) async throws -> ControlMessage {
-        try await withCheckedThrowingContinuation { continuation in
-            connection.receiveMessage { data, _, _, error in
-                if let error = error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-
-                guard let data = data else {
-                    continuation.resume(throwing: ConsumerError.invalidResponse("No data received"))
-                    return
-                }
-
-                do {
-                    let message = try self.decryptMessageSync(data)
-                    continuation.resume(returning: message)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-    }
-
-    /// Get or create UDP connection to endpoint
-    private func getOrCreateConnection(to endpoint: String) -> NWConnection {
-        if let existing = connections[endpoint] {
-            return existing
-        }
-
-        // Parse endpoint (format: "IP:port")
-        let parts = endpoint.split(separator: ":")
-        guard parts.count == 2,
-              let host = parts.first.map(String.init),
-              let port = UInt16(parts.last!) else {
-            fatalError("Invalid endpoint format: \(endpoint)")
-        }
-
-        let connection = NWConnection(
-            host: NWEndpoint.Host(host),
-            port: NWEndpoint.Port(integerLiteral: port),
-            using: .udp
-        )
-
-        connection.start(queue: .global())
-        connections[endpoint] = connection
-
-        return connection
     }
 
     // MARK: - Encryption
@@ -252,7 +231,7 @@ public actor UDPControlClient {
     }
 
     /// Decrypt control message
-    private func decryptMessageSync(_ data: Data) throws -> ControlMessage {
+    private func decryptMessage(_ data: Data) throws -> ControlMessage {
         // Decrypt with ChaCha20-Poly1305
         let key = SymmetricKey(data: networkKey)
         let sealedBox = try ChaChaPoly.SealedBox(combined: data)
@@ -272,12 +251,118 @@ public actor UDPControlClient {
 
         return message
     }
+}
 
-    // MARK: - Cleanup
+// MARK: - NIO Handlers
 
-    deinit {
-        for connection in connections.values {
-            connection.cancel()
+/// Handler for receiving responses
+private final class ResponseHandler: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = AddressedEnvelope<ByteBuffer>
+
+    private let networkKey: Data
+    private var responseContinuation: CheckedContinuation<ControlMessage, Error>?
+    private let lock = NSLock()
+
+    init(networkKey: Data) {
+        self.networkKey = networkKey
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let envelope = unwrapInboundIn(data)
+        var buffer = envelope.data
+
+        guard let bytes = buffer.readBytes(length: buffer.readableBytes) else {
+            return
         }
+
+        let data = Data(bytes)
+
+        do {
+            let message = try decryptMessage(data)
+
+            lock.lock()
+            let continuation = responseContinuation
+            responseContinuation = nil
+            lock.unlock()
+
+            continuation?.resume(returning: message)
+        } catch {
+            lock.lock()
+            let continuation = responseContinuation
+            responseContinuation = nil
+            lock.unlock()
+
+            continuation?.resume(throwing: error)
+        }
+    }
+
+    func waitForResponse() async throws -> ControlMessage {
+        try await withCheckedThrowingContinuation { continuation in
+            lock.lock()
+            responseContinuation = continuation
+            lock.unlock()
+        }
+    }
+
+    private func decryptMessage(_ data: Data) throws -> ControlMessage {
+        let key = SymmetricKey(data: networkKey)
+        let sealedBox = try ChaChaPoly.SealedBox(combined: data)
+        let plaintext = try ChaChaPoly.open(sealedBox, using: key)
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let message = try decoder.decode(ControlMessage.self, from: plaintext)
+
+        let now = UInt64(Date().timeIntervalSince1970)
+        let timeDiff = abs(Int64(now) - Int64(message.timestamp))
+        guard timeDiff < 60 else {
+            throw ConsumerError.invalidResponse("Message timestamp too old")
+        }
+
+        return message
+    }
+}
+
+/// Handler for notification listener
+private final class NotificationHandler: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = AddressedEnvelope<ByteBuffer>
+
+    private let networkKey: Data
+    private let continuation: AsyncStream<ProviderNotification>.Continuation
+
+    init(networkKey: Data, continuation: AsyncStream<ProviderNotification>.Continuation) {
+        self.networkKey = networkKey
+        self.continuation = continuation
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let envelope = unwrapInboundIn(data)
+        var buffer = envelope.data
+
+        guard let bytes = buffer.readBytes(length: buffer.readableBytes) else {
+            return
+        }
+
+        let data = Data(bytes)
+
+        do {
+            let message = try decryptMessage(data)
+
+            if case .vmCreated(let response) = message.action {
+                continuation.yield(.vmReady(vmId: response.vmId, vmIP: response.vmIP))
+            }
+        } catch {
+            print("Error decrypting notification: \(error)")
+        }
+    }
+
+    private func decryptMessage(_ data: Data) throws -> ControlMessage {
+        let key = SymmetricKey(data: networkKey)
+        let sealedBox = try ChaChaPoly.SealedBox(combined: data)
+        let plaintext = try ChaChaPoly.open(sealedBox, using: key)
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(ControlMessage.self, from: plaintext)
     }
 }

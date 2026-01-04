@@ -1,5 +1,6 @@
 import Foundation
-import Network
+import NIOCore
+import NIOPosix
 import Crypto
 import Logging
 import OmertaCore
@@ -9,16 +10,19 @@ import OmertaVM
 
 /// Server for handling encrypted UDP control messages from consumers
 /// Manages VM lifecycle in response to requestVM/releaseVM commands
+/// Uses SwiftNIO for cross-platform UDP support (macOS and Linux)
 public actor UDPControlServer {
     private let networkKey: Data
     private let port: UInt16
     private let logger: Logger
-    private var listener: NWListener?
+    private var eventLoopGroup: MultiThreadedEventLoopGroup?
+    private var channel: Channel?
     private var isRunning: Bool = false
 
     // VM management
     private let vmManager: SimpleVMManager
     private let vpnHealthMonitor: VPNHealthMonitor
+    private let providerVPNManager: ProviderVPNManager
 
     // VM tracking
     private var activeVMs: [UUID: ActiveVM] = [:]
@@ -27,25 +31,34 @@ public actor UDPControlServer {
         let vmId: UUID
         let consumerEndpoint: String
         let vpnConfig: VPNConfiguration
-        let vmIP: String
+        let vmIP: String          // VPN IP (e.g., 10.99.0.2)
+        let vmNATIP: String       // NAT IP (e.g., 192.168.64.2)
         let vpnInterface: String
+        let providerPublicKey: String
         let createdAt: Date
     }
 
     public init(
         networkKey: Data,
         port: UInt16 = 51820,
-        vmManager: SimpleVMManager = SimpleVMManager(),
-        vpnHealthMonitor: VPNHealthMonitor = VPNHealthMonitor()
+        vmManager: SimpleVMManager? = nil,
+        vpnHealthMonitor: VPNHealthMonitor = VPNHealthMonitor(),
+        providerVPNManager: ProviderVPNManager? = nil,
+        dryRun: Bool = false
     ) {
         self.networkKey = networkKey
         self.port = port
-        self.vmManager = vmManager
+        self.vmManager = vmManager ?? SimpleVMManager(dryRun: dryRun)
         self.vpnHealthMonitor = vpnHealthMonitor
+        self.providerVPNManager = providerVPNManager ?? ProviderVPNManager(dryRun: dryRun)
 
         var logger = Logger(label: "com.omerta.provider.udp-control")
         logger.logLevel = .info
         self.logger = logger
+
+        if dryRun {
+            logger.info("UDPControlServer initialized in DRY RUN mode")
+        }
     }
 
     // MARK: - Lifecycle
@@ -59,50 +72,30 @@ public actor UDPControlServer {
 
         logger.info("Starting UDP control server", metadata: ["port": "\(port)"])
 
-        let listener = try NWListener(using: .udp, on: NWEndpoint.Port(integerLiteral: port))
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
+        self.eventLoopGroup = group
 
-        listener.newConnectionHandler = { [weak self] connection in
-            guard let self = self else { return }
+        // Create the message handler
+        let handler = ServerMessageHandler(server: self, networkKey: networkKey, logger: logger)
 
-            connection.start(queue: .global())
-
-            // Handle incoming message
-            connection.receiveMessage { data, _, _, error in
-                if let error = error {
-                    self.logger.error("Error receiving message", metadata: ["error": "\(error)"])
-                    return
-                }
-
-                guard let data = data else { return }
-
-                Task {
-                    await self.handleIncomingMessage(data, from: connection)
-                }
+        let bootstrap = DatagramBootstrap(group: group)
+            .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .channelInitializer { channel in
+                channel.pipeline.addHandler(handler)
             }
+
+        do {
+            let channel = try await bootstrap.bind(host: "0.0.0.0", port: Int(port)).get()
+            self.channel = channel
+            self.isRunning = true
+
+            logger.info("UDP control server listening", metadata: ["port": "\(port)"])
+        } catch {
+            logger.error("UDP control server failed to start", metadata: ["error": "\(error)"])
+            try? group.syncShutdownGracefully()
+            self.eventLoopGroup = nil
+            throw error
         }
-
-        listener.stateUpdateHandler = { [weak self] state in
-            guard let self = self else { return }
-
-            Task {
-                switch state {
-                case .ready:
-                    await self.logger.info("UDP control server listening", metadata: ["port": "\(self.port)"])
-                case .failed(let error):
-                    await self.logger.error("UDP control server failed", metadata: ["error": "\(error)"])
-                case .cancelled:
-                    await self.logger.info("UDP control server cancelled")
-                default:
-                    break
-                }
-            }
-        }
-
-        listener.start(queue: .global())
-        self.listener = listener
-        self.isRunning = true
-
-        logger.info("UDP control server started successfully")
     }
 
     /// Stop UDP control server
@@ -114,24 +107,29 @@ public actor UDPControlServer {
 
         logger.info("Stopping UDP control server")
 
-        listener?.cancel()
-        listener = nil
+        try? channel?.close().wait()
+        channel = nil
+
+        try? eventLoopGroup?.syncShutdownGracefully()
+        eventLoopGroup = nil
+
         isRunning = false
 
         logger.info("UDP control server stopped")
     }
 
-    // MARK: - Message Handling
+    // MARK: - Message Handling (called by handler)
 
-    /// Handle incoming encrypted control message
-    private func handleIncomingMessage(_ data: Data, from connection: NWConnection) async {
+    /// Handle incoming encrypted control message and return response
+    func handleIncomingMessage(_ data: Data, from remoteAddress: SocketAddress) async -> Data? {
         do {
             // Decrypt message
             let message = try decryptMessage(data)
 
             logger.info("Received control message", metadata: [
                 "action": "\(message.action)",
-                "message_id": "\(message.messageId)"
+                "message_id": "\(message.messageId)",
+                "from": "\(remoteAddress)"
             ])
 
             // Verify timestamp (prevent replay attacks)
@@ -141,7 +139,7 @@ public actor UDPControlServer {
                 logger.warning("Message timestamp too old - possible replay attack", metadata: [
                     "time_diff": "\(timeDiff)"
                 ])
-                return
+                return nil
             }
 
             // Handle action
@@ -151,30 +149,27 @@ public actor UDPControlServer {
             let responseMessage = ControlMessage(action: response)
             let encrypted = try encryptMessage(responseMessage)
 
-            connection.send(content: encrypted, completion: .contentProcessed { error in
-                if let error = error {
-                    self.logger.error("Failed to send response", metadata: ["error": "\(error)"])
-                } else {
-                    self.logger.info("Response sent successfully")
-                }
-            })
+            logger.info("Response prepared successfully")
+            return encrypted
 
         } catch {
             logger.error("Error handling message", metadata: ["error": "\(error)"])
 
-            // Try to send error response
+            // Try to send error response with the actual error message
             do {
                 let errorResponse = ControlMessage(
                     action: .vmCreated(VMCreatedResponse(
                         vmId: UUID(),
                         vmIP: "",
-                        sshPort: 0
+                        sshPort: 0,
+                        providerPublicKey: "",
+                        error: "\(error)"
                     ))
                 )
-                let encrypted = try encryptMessage(errorResponse)
-                connection.send(content: encrypted, completion: .contentProcessed { _ in })
+                return try encryptMessage(errorResponse)
             } catch {
-                logger.error("Failed to send error response", metadata: ["error": "\(error)"])
+                logger.error("Failed to create error response", metadata: ["error": "\(error)"])
+                return nil
             }
         }
     }
@@ -188,7 +183,10 @@ public actor UDPControlServer {
         case .releaseVM(let request):
             return try await handleReleaseVM(request)
 
-        case .vmCreated, .vmReleased:
+        case .queryVMStatus(let request):
+            return try await handleQueryVMStatus(request)
+
+        case .vmCreated, .vmReleased, .vmStatus:
             throw ProviderError.unexpectedMessage("Received response message on server")
         }
     }
@@ -208,29 +206,50 @@ public actor UDPControlServer {
         }
 
         // 2. Start VM with requirements and consumer's SSH key
+        // VM gets a NAT IP (e.g., 192.168.64.2)
         logger.info("Starting VM", metadata: ["vm_id": "\(request.vmId)"])
-        let vmIP = try await vmManager.startVM(
+        let vmNATIP = try await vmManager.startVM(
             vmId: request.vmId,
             requirements: request.requirements,
-            vpnConfig: request.vpnConfig,
             sshPublicKey: request.sshPublicKey,
             sshUser: request.sshUser
         )
 
         logger.info("VM started successfully", metadata: [
             "vm_id": "\(request.vmId)",
-            "vm_ip": "\(vmIP)"
+            "vm_nat_ip": "\(vmNATIP)"
         ])
 
-        // 3. Extract consumer public key from VPN config
-        let consumerPublicKey = String(data: request.vpnConfig.publicKey, encoding: .utf8) ?? ""
+        // 3. Create VPN tunnel connecting to consumer's WireGuard server
+        // This sets up NAT routing from VM VPN IP to VM NAT IP
+        let vpnInterface = "wg-\(request.vmId.uuidString.prefix(8))"
+        let providerPublicKey: String
+
+        do {
+            providerPublicKey = try await providerVPNManager.createTunnel(
+                vmId: request.vmId,
+                vpnConfig: request.vpnConfig,
+                vmNATIP: vmNATIP
+            )
+            logger.info("VPN tunnel created", metadata: [
+                "vm_id": "\(request.vmId)",
+                "interface": "\(vpnInterface)"
+            ])
+        } catch {
+            // VPN setup failed - clean up VM
+            logger.error("VPN tunnel creation failed, cleaning up VM", metadata: [
+                "vm_id": "\(request.vmId)",
+                "error": "\(error)"
+            ])
+            try? await vmManager.stopVM(vmId: request.vmId)
+            throw ProviderError.vpnSetupFailed("Failed to create VPN tunnel: \(error)")
+        }
 
         // 4. Start VPN health monitoring
-        let vpnInterface = "wg-\(request.vmId.uuidString.prefix(8))"
         await vpnHealthMonitor.startMonitoring(
             vmId: request.vmId,
             vpnInterface: vpnInterface,
-            consumerPublicKey: consumerPublicKey
+            consumerPublicKey: request.vpnConfig.consumerPublicKey
         ) { [weak self] deadVmId in
             guard let self = self else { return }
 
@@ -238,33 +257,40 @@ public actor UDPControlServer {
                 "vm_id": "\(deadVmId)"
             ])
 
+            // Clean up VPN tunnel
+            try? await self.providerVPNManager.destroyTunnel(vmId: deadVmId)
+
             // Kill VM
             try? await self.vmManager.stopVM(vmId: deadVmId)
 
             // Remove from tracking
             await self.removeVM(deadVmId)
-
-            // TODO: Notify consumer of VM death
         }
 
         logger.info("VPN health monitoring started", metadata: ["vm_id": "\(request.vmId)"])
 
         // 5. Track active VM
+        // Consumer accesses VM via the VPN IP (from vpnConfig)
+        let vmVPNIP = request.vpnConfig.vmVPNIP
         let activeVM = ActiveVM(
             vmId: request.vmId,
             consumerEndpoint: request.consumerEndpoint,
             vpnConfig: request.vpnConfig,
-            vmIP: vmIP,
+            vmIP: vmVPNIP,
+            vmNATIP: vmNATIP,
             vpnInterface: vpnInterface,
+            providerPublicKey: providerPublicKey,
             createdAt: Date()
         )
         activeVMs[request.vmId] = activeVM
 
-        // 6. Return response
+        // 6. Return response with provider's public key
+        // Consumer needs this to add provider as a peer on their WireGuard server
         let response = VMCreatedResponse(
             vmId: request.vmId,
-            vmIP: vmIP,
-            sshPort: 22
+            vmIP: vmVPNIP,
+            sshPort: 22,
+            providerPublicKey: providerPublicKey
         )
 
         return .vmCreated(response)
@@ -283,7 +309,22 @@ public actor UDPControlServer {
         await vpnHealthMonitor.stopMonitoring(vmId: request.vmId)
         logger.info("VPN health monitoring stopped", metadata: ["vm_id": "\(request.vmId)"])
 
-        // 2. Kill the VM
+        // 2. Destroy VPN tunnel (includes NAT cleanup and firewall rules)
+        do {
+            try await providerVPNManager.destroyTunnel(vmId: request.vmId)
+            logger.info("VPN tunnel destroyed", metadata: [
+                "vm_id": "\(request.vmId)",
+                "interface": "\(vm.vpnInterface)"
+            ])
+        } catch {
+            logger.warning("Failed to destroy VPN tunnel", metadata: [
+                "vm_id": "\(request.vmId)",
+                "error": "\(error)"
+            ])
+            // Continue with cleanup even if VPN teardown fails
+        }
+
+        // 3. Kill the VM
         do {
             try await vmManager.stopVM(vmId: request.vmId)
             logger.info("VM stopped", metadata: ["vm_id": "\(request.vmId)"])
@@ -293,22 +334,6 @@ public actor UDPControlServer {
                 "error": "\(error)"
             ])
             // Continue with cleanup even if VM stop fails
-        }
-
-        // 3. Tear down VPN interface
-        do {
-            try await tearDownVPNInterface(vm.vpnInterface)
-            logger.info("VPN interface torn down", metadata: [
-                "vm_id": "\(request.vmId)",
-                "interface": "\(vm.vpnInterface)"
-            ])
-        } catch {
-            logger.warning("Failed to tear down VPN interface", metadata: [
-                "vm_id": "\(request.vmId)",
-                "interface": "\(vm.vpnInterface)",
-                "error": "\(error)"
-            ])
-            // Continue even if VPN teardown fails
         }
 
         // 4. Remove from tracking
@@ -321,24 +346,48 @@ public actor UDPControlServer {
         return .vmReleased(response)
     }
 
-    /// Tear down WireGuard VPN interface
-    private func tearDownVPNInterface(_ interfaceName: String) async throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        let pathValue = WireGuardPaths.environment["PATH"] ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-        process.arguments = ["env", "PATH=\(pathValue)", WireGuardPaths.wgQuick, "down", interfaceName]
+    /// Handle VM status query
+    private func handleQueryVMStatus(_ request: VMStatusRequest) async throws -> ControlAction {
+        logger.info("Handling VM status query", metadata: [
+            "vm_id": "\(request.vmId?.uuidString ?? "all")"
+        ])
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
+        var vmInfos: [VMInfo] = []
 
-        try process.run()
-        process.waitUntilExit()
-
-        if process.terminationStatus != 0 {
-            let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            throw ProviderError.vpnSetupFailed("Failed to tear down \(interfaceName): \(output)")
+        if let vmId = request.vmId {
+            // Query specific VM
+            if let activeVM = activeVMs[vmId] {
+                let info = await buildVMInfo(vmId: vmId, activeVM: activeVM)
+                vmInfos.append(info)
+            }
+        } else {
+            // Query all VMs
+            for (vmId, activeVM) in activeVMs {
+                let info = await buildVMInfo(vmId: vmId, activeVM: activeVM)
+                vmInfos.append(info)
+            }
         }
+
+        let response = VMStatusResponse(vms: vmInfos)
+        return .vmStatus(response)
+    }
+
+    /// Build VMInfo for a specific VM
+    private func buildVMInfo(vmId: UUID, activeVM: ActiveVM) async -> VMInfo {
+        // Check if VM is actually running
+        let isRunning = await vmManager.isVMRunning(vmId: vmId)
+        let status: VMStatus = isRunning ? .running : .stopped
+
+        let uptimeSeconds = Int(Date().timeIntervalSince(activeVM.createdAt))
+
+        return VMInfo(
+            vmId: vmId,
+            status: status,
+            vmIP: activeVM.vmIP,
+            createdAt: activeVM.createdAt,
+            uptimeSeconds: uptimeSeconds,
+            consoleOutput: nil  // TODO: Capture console output
+        )
     }
 
     // MARK: - Resource Management
@@ -348,13 +397,6 @@ public actor UDPControlServer {
         // TODO: Implement actual resource checking
         // For now, accept all requests
         return true
-    }
-
-    /// Generate VM IP address in VPN network
-    private func generateVMIP() -> String {
-        // Simple IP allocation: 10.99.0.x where x = number of active VMs + 2
-        let offset = activeVMs.count + 2
-        return "10.99.0.\(offset)"
     }
 
     // MARK: - Encryption
@@ -411,6 +453,58 @@ public actor UDPControlServer {
         public let isRunning: Bool
         public let port: UInt16
         public let activeVMs: Int
+    }
+}
+
+// MARK: - NIO Message Handler
+
+/// Handler for incoming UDP messages
+private final class ServerMessageHandler: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = AddressedEnvelope<ByteBuffer>
+    typealias OutboundOut = AddressedEnvelope<ByteBuffer>
+
+    private let server: UDPControlServer
+    private let networkKey: Data
+    private let logger: Logger
+
+    init(server: UDPControlServer, networkKey: Data, logger: Logger) {
+        self.server = server
+        self.networkKey = networkKey
+        self.logger = logger
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let envelope = unwrapInboundIn(data)
+        var buffer = envelope.data
+        let remoteAddress = envelope.remoteAddress
+
+        guard let bytes = buffer.readBytes(length: buffer.readableBytes) else {
+            return
+        }
+
+        let messageData = Data(bytes)
+
+        // Capture allocator before async to avoid event loop issues
+        let allocator = context.channel.allocator
+        let eventLoop = context.eventLoop
+
+        // Handle message asynchronously
+        Task {
+            if let responseData = await server.handleIncomingMessage(messageData, from: remoteAddress) {
+                // Write response on event loop
+                eventLoop.execute {
+                    var responseBuffer = allocator.buffer(capacity: responseData.count)
+                    responseBuffer.writeBytes(responseData)
+
+                    let responseEnvelope = AddressedEnvelope(remoteAddress: remoteAddress, data: responseBuffer)
+                    context.writeAndFlush(self.wrapOutboundOut(responseEnvelope), promise: nil)
+                }
+            }
+        }
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        logger.error("Channel error", metadata: ["error": "\(error)"])
     }
 }
 

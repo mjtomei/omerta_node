@@ -1,9 +1,9 @@
 import Foundation
-import Network
 import Logging
 import OmertaCore
 
 /// Actor managing WireGuard VPN tunnels for job isolation
+/// Note: In Option 3 architecture, this is used for client-side tunnels connecting to consumer's VPN server
 public actor VPNManager {
     private let logger = Logger(label: "com.omerta.vpn")
     private var activeTunnels: [UUID: VPNTunnel] = [:]
@@ -15,9 +15,11 @@ public actor VPNManager {
     }
 
     /// Create and start a WireGuard tunnel for a job
+    /// Connects to consumer's VPN server using provided configuration
     public func createTunnel(
         for jobId: UUID,
-        config: VPNConfiguration
+        config: VPNConfiguration,
+        privateKey: String
     ) async throws -> VPNTunnel {
         logger.info("Creating VPN tunnel", metadata: ["job_id": "\(jobId)"])
 
@@ -28,7 +30,11 @@ public actor VPNManager {
         let interfaceName = "wg-\(jobId.uuidString.prefix(8))"
 
         // Write WireGuard config to temporary file
-        let configURL = try writeConfigFile(config: config, interfaceName: interfaceName)
+        let configURL = try writeConfigFile(
+            config: config,
+            privateKey: privateKey,
+            interfaceName: interfaceName
+        )
 
         // Start WireGuard tunnel
         try await startWireGuardTunnel(configURL: configURL, interfaceName: interfaceName)
@@ -40,8 +46,8 @@ public actor VPNManager {
             jobId: jobId,
             interfaceName: interfaceName,
             configURL: configURL,
-            vpnServerIP: config.vpnServerIP,
-            endpoint: config.endpoint,
+            consumerVPNIP: config.consumerVPNIP,
+            consumerEndpoint: config.consumerEndpoint,
             createdAt: Date()
         )
 
@@ -129,20 +135,24 @@ public actor VPNManager {
     // MARK: - Private Methods
 
     private func validateConfiguration(_ config: VPNConfiguration) throws {
-        guard !config.wireguardConfig.isEmpty else {
-            throw VPNError.invalidConfiguration("Empty WireGuard config")
+        guard !config.consumerPublicKey.isEmpty else {
+            throw VPNError.invalidConfiguration("Empty consumer public key")
         }
 
-        guard !config.endpoint.isEmpty else {
-            throw VPNError.invalidConfiguration("Empty endpoint")
+        guard !config.consumerEndpoint.isEmpty else {
+            throw VPNError.invalidConfiguration("Empty consumer endpoint")
         }
 
-        guard !config.vpnServerIP.isEmpty else {
-            throw VPNError.invalidConfiguration("Empty VPN server IP")
+        guard !config.consumerVPNIP.isEmpty else {
+            throw VPNError.invalidConfiguration("Empty consumer VPN IP")
+        }
+
+        guard !config.vmVPNIP.isEmpty else {
+            throw VPNError.invalidConfiguration("Empty VM VPN IP")
         }
 
         // Validate endpoint format (IP:port)
-        let components = config.endpoint.split(separator: ":")
+        let components = config.consumerEndpoint.split(separator: ":")
         guard components.count == 2,
               let _ = UInt16(components[1]) else {
             throw VPNError.invalidConfiguration("Invalid endpoint format (expected IP:port)")
@@ -151,6 +161,7 @@ public actor VPNManager {
 
     private func writeConfigFile(
         config: VPNConfiguration,
+        privateKey: String,
         interfaceName: String
     ) throws -> URL {
         let tmpDir = FileManager.default.temporaryDirectory
@@ -160,7 +171,20 @@ public actor VPNManager {
 
         let configURL = tmpDir.appendingPathComponent("\(interfaceName).conf")
 
-        try config.wireguardConfig.write(to: configURL, atomically: true, encoding: .utf8)
+        // Generate WireGuard config to connect to consumer's VPN server
+        let wireguardConfig = """
+        [Interface]
+        PrivateKey = \(privateKey)
+        Address = \(config.vmVPNIP)/24
+
+        [Peer]
+        PublicKey = \(config.consumerPublicKey)
+        Endpoint = \(config.consumerEndpoint)
+        AllowedIPs = \(config.vpnSubnet)
+        PersistentKeepalive = 25
+        """
+
+        try wireguardConfig.write(to: configURL, atomically: true, encoding: .utf8)
 
         // Set secure permissions (only owner can read)
         try FileManager.default.setAttributes(
@@ -216,10 +240,10 @@ public actor VPNManager {
     }
 
     private func verifyTunnelConnectivity(config: VPNConfiguration) async throws {
-        // Ping the VPN server to verify connectivity
+        // Ping the consumer's VPN server to verify connectivity
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/sbin/ping")
-        process.arguments = ["-c", "1", "-W", "2", config.vpnServerIP]
+        process.arguments = ["-c", "1", "-W", "2", config.consumerVPNIP]
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -229,10 +253,10 @@ public actor VPNManager {
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
-            throw VPNError.connectivityCheckFailed("Cannot reach VPN server at \(config.vpnServerIP)")
+            throw VPNError.connectivityCheckFailed("Cannot reach consumer VPN server at \(config.consumerVPNIP)")
         }
 
-        logger.info("VPN connectivity verified", metadata: ["vpn_server": "\(config.vpnServerIP)"])
+        logger.info("VPN connectivity verified", metadata: ["consumer_vpn": "\(config.consumerVPNIP)"])
     }
 
     private func parseTransferStats(_ output: String) throws -> VPNTunnelStats {
@@ -268,8 +292,8 @@ public struct VPNTunnel: Sendable {
     public let jobId: UUID
     public let interfaceName: String
     public let configURL: URL
-    public let vpnServerIP: String
-    public let endpoint: String
+    public let consumerVPNIP: String
+    public let consumerEndpoint: String
     public let createdAt: Date
 }
 
