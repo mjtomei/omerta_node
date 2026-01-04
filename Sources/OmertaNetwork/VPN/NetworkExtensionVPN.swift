@@ -207,11 +207,14 @@ public actor NetworkExtensionVPN: VPNProvider {
             PersistentKeepalive = 25
             """
 
+        // In Option 3 architecture, consumer (us) is the VPN server
+        // Provider will generate its own keypair and connect to us
         let vpnConfiguration = VPNConfiguration(
-            wireguardConfig: clientConfig,
-            endpoint: endpoint,
-            publicKey: Data(serverPublicKey.utf8),
-            vpnServerIP: serverVPNIP
+            consumerPublicKey: serverPublicKey,
+            consumerEndpoint: endpoint,
+            consumerVPNIP: serverVPNIP,
+            vmVPNIP: clientVPNIP,
+            vpnSubnet: "\(vpnSubnet).0/24"
         )
 
         return GeneratedVPNConfig(

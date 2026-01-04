@@ -200,23 +200,35 @@ public struct ResourceUsage: Sendable {
 
 // MARK: - VPN Configuration
 
-/// VPN configuration for routing VM traffic
-/// (Kept here since VPN is still needed for VM network isolation)
+/// VPN configuration for consumer-hosted WireGuard server
+/// Consumer sends this to provider so provider can connect back
 public struct VPNConfiguration: Sendable, Codable {
-    public let wireguardConfig: String
-    public let endpoint: String  // IP:port
-    public let publicKey: Data
-    public let vpnServerIP: String  // Consumer's IP within VPN network
+    /// Consumer's WireGuard public key
+    public let consumerPublicKey: String
+
+    /// Consumer's WireGuard endpoint (IP:port) - where provider connects
+    public let consumerEndpoint: String
+
+    /// Consumer's IP within VPN network (e.g., 10.99.0.1)
+    public let consumerVPNIP: String
+
+    /// Requested VM IP within VPN network (e.g., 10.99.0.2)
+    public let vmVPNIP: String
+
+    /// VPN subnet (e.g., "10.99.0.0/24")
+    public let vpnSubnet: String
 
     public init(
-        wireguardConfig: String,
-        endpoint: String,
-        publicKey: Data,
-        vpnServerIP: String
+        consumerPublicKey: String,
+        consumerEndpoint: String,
+        consumerVPNIP: String = "10.99.0.1",
+        vmVPNIP: String = "10.99.0.2",
+        vpnSubnet: String = "10.99.0.0/24"
     ) {
-        self.wireguardConfig = wireguardConfig
-        self.endpoint = endpoint
-        self.publicKey = publicKey
-        self.vpnServerIP = vpnServerIP
+        self.consumerPublicKey = consumerPublicKey
+        self.consumerEndpoint = consumerEndpoint
+        self.consumerVPNIP = consumerVPNIP
+        self.vmVPNIP = vmVPNIP
+        self.vpnSubnet = vpnSubnet
     }
 }

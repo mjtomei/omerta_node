@@ -29,5 +29,9 @@
     <!-- Network server access (for WireGuard listener) -->
     <key>com.apple.security.network.server</key>
     <true/>
+
+    <!-- Virtualization framework access (for running VMs) -->
+    <key>com.apple.security.virtualization</key>
+    <true/>
 </dict>
 </plist>
