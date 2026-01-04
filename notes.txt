@@ -11,6 +11,11 @@ While there are still legitimate security concerns like VM escapes and malicious
 - support for checkpoint and restart of VMs
 
 TODOs
+- replace CLI tools (wg-quick, ip, iptables) with native APIs for production:
+  - Linux: use netlink API for interfaces/routing, WireGuard netlink for VPN config, nftables for NAT
+  - macOS: use NetworkExtension framework for VPN, pf for NAT
+  - eliminates sudo requirements, more robust than shelling out
+  - all implementations still use WireGuard protocol, full cross-platform interoperability
 - set up provisioning provile for the network extension entitlement, get primary network extension approval flow working
 - plan requirements for minimal initial release with support for auto-updates
 - add support for prioritizing different networks
