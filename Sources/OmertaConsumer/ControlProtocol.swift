@@ -1,6 +1,47 @@
 import Foundation
 import OmertaCore
 
+// MARK: - Message Envelope
+
+/// Envelope format for UDP messages with plaintext networkId header
+/// Format: [1 byte: networkId length][N bytes: networkId UTF-8][rest: encrypted payload]
+/// This allows the provider to look up the correct decryption key based on networkId
+public struct MessageEnvelope: Sendable {
+    public let networkId: String
+    public let encryptedPayload: Data
+
+    public init(networkId: String, encryptedPayload: Data) {
+        self.networkId = networkId
+        self.encryptedPayload = encryptedPayload
+    }
+
+    /// Serialize envelope to wire format
+    public func serialize() -> Data {
+        let networkIdData = networkId.data(using: .utf8) ?? Data()
+        let length = UInt8(min(networkIdData.count, 255))
+
+        var result = Data(capacity: 1 + Int(length) + encryptedPayload.count)
+        result.append(length)
+        result.append(networkIdData.prefix(Int(length)))
+        result.append(encryptedPayload)
+        return result
+    }
+
+    /// Parse envelope from wire format
+    public static func parse(_ data: Data) -> MessageEnvelope? {
+        guard data.count >= 1 else { return nil }
+
+        let length = Int(data[0])
+        guard data.count >= 1 + length else { return nil }
+
+        let networkIdData = data.subdata(in: 1..<(1 + length))
+        guard let networkId = String(data: networkIdData, encoding: .utf8) else { return nil }
+
+        let encryptedPayload = data.subdata(in: (1 + length)..<data.count)
+        return MessageEnvelope(networkId: networkId, encryptedPayload: encryptedPayload)
+    }
+}
+
 // MARK: - Control Message (Top-Level)
 
 /// Top-level control message sent over UDP

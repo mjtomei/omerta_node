@@ -12,7 +12,7 @@ public actor ProviderDaemon {
 
     public struct Configuration: Sendable {
         public let controlPort: UInt16
-        public let networkKey: Data
+        public let networkKeys: [String: Data]  // networkId -> encryption key
         public let ownerPeerId: String?
         public let trustedNetworks: [String]
         public let enableActivityLogging: Bool
@@ -20,14 +20,32 @@ public actor ProviderDaemon {
 
         public init(
             controlPort: UInt16 = 51820,
-            networkKey: Data,
+            networkKeys: [String: Data],
             ownerPeerId: String? = nil,
             trustedNetworks: [String] = [],
             enableActivityLogging: Bool = true,
             dryRun: Bool = false
         ) {
             self.controlPort = controlPort
-            self.networkKey = networkKey
+            self.networkKeys = networkKeys
+            self.ownerPeerId = ownerPeerId
+            self.trustedNetworks = trustedNetworks
+            self.enableActivityLogging = enableActivityLogging
+            self.dryRun = dryRun
+        }
+
+        /// Convenience initializer for single network key (backward compatibility)
+        public init(
+            controlPort: UInt16 = 51820,
+            networkKey: Data,
+            networkId: String = "default",
+            ownerPeerId: String? = nil,
+            trustedNetworks: [String] = [],
+            enableActivityLogging: Bool = true,
+            dryRun: Bool = false
+        ) {
+            self.controlPort = controlPort
+            self.networkKeys = [networkId: networkKey]
             self.ownerPeerId = ownerPeerId
             self.trustedNetworks = trustedNetworks
             self.enableActivityLogging = enableActivityLogging
@@ -63,7 +81,7 @@ public actor ProviderDaemon {
 
         // Initialize components
         self.udpControlServer = UDPControlServer(
-            networkKey: config.networkKey,
+            networkKeys: config.networkKeys,
             port: config.controlPort,
             dryRun: config.dryRun
         )
@@ -163,7 +181,21 @@ public actor ProviderDaemon {
 
     // MARK: - Configuration Management
 
-    /// Add a trusted network
+    /// Add a network with its encryption key
+    public func addNetwork(_ networkId: String, key: Data) async {
+        await udpControlServer.addNetworkKey(networkId, key: key)
+        await filterManager.addTrustedNetwork(networkId)
+        logger.info("Added network: \(networkId)")
+    }
+
+    /// Remove a network and its key
+    public func removeNetwork(_ networkId: String) async {
+        await udpControlServer.removeNetworkKey(networkId)
+        await filterManager.removeTrustedNetwork(networkId)
+        logger.info("Removed network: \(networkId)")
+    }
+
+    /// Add a trusted network (for filtering only, must already have key)
     public func addTrustedNetwork(_ networkId: String) async {
         await filterManager.addTrustedNetwork(networkId)
         logger.info("Added trusted network: \(networkId)")

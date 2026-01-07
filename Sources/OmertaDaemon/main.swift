@@ -83,12 +83,21 @@ struct Start: AsyncParsableCommand {
         // Parse trusted networks
         let networks = trustedNetworks?.components(separatedBy: ",") ?? []
 
-        // Create configuration
+        // Create network keys dictionary
+        // Use "direct" as default networkId for direct peer connections
+        var networkKeysDict: [String: Data] = ["direct": keyData]
+
+        // Also add any trusted networks with the same key (for now)
+        for networkId in networks {
+            networkKeysDict[networkId] = keyData
+        }
+
+        // Create configuration with network keys
         let config = ProviderDaemon.Configuration(
             controlPort: port,
-            networkKey: keyData,
+            networkKeys: networkKeysDict,
             ownerPeerId: ownerPeer,
-            trustedNetworks: networks,
+            trustedNetworks: networks + ["direct"],  // Trust direct network by default
             enableActivityLogging: activityLog,
             dryRun: dryRun
         )

@@ -374,7 +374,47 @@ public actor EphemeralVPN: VPNProvider {
             let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
             throw VPNError.tunnelStartFailed("Failed to add peer: \(errorMessage)")
         }
+
+        // On macOS, `wg set` doesn't add routes, so we need to add them manually
+        #if os(macOS)
+        try await addRouteForPeer(allowedIPs: allowedIPs, interface: actualInterface)
+        #endif
     }
+
+    #if os(macOS)
+    /// Add a route for peer's AllowedIPs on macOS
+    private func addRouteForPeer(allowedIPs: String, interface: String) async throws {
+        // allowedIPs is like "10.223.58.2/32" - add route via the utun interface
+        let routeProcess = Process()
+        routeProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        routeProcess.arguments = ["/sbin/route", "add", "-net", allowedIPs, "-interface", interface]
+
+        let errorPipe = Pipe()
+        routeProcess.standardError = errorPipe
+        routeProcess.standardOutput = Pipe()
+
+        do {
+            try routeProcess.run()
+            routeProcess.waitUntilExit()
+
+            if routeProcess.terminationStatus == 0 {
+                logger.info("Route added for peer", metadata: [
+                    "allowed_ips": "\(allowedIPs)",
+                    "interface": "\(interface)"
+                ])
+            } else {
+                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+                logger.warning("Failed to add route (may already exist)", metadata: [
+                    "error": "\(errorMessage)",
+                    "allowed_ips": "\(allowedIPs)"
+                ])
+            }
+        } catch {
+            logger.warning("Route add failed", metadata: ["error": "\(error)"])
+        }
+    }
+    #endif
 
     /// Destroy an ephemeral VPN server
     public func destroyVPN(for jobId: UUID) async throws {

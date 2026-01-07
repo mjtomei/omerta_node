@@ -12,7 +12,7 @@ import OmertaVM
 /// Manages VM lifecycle in response to requestVM/releaseVM commands
 /// Uses SwiftNIO for cross-platform UDP support (macOS and Linux)
 public actor UDPControlServer {
-    private let networkKey: Data
+    private var networkKeys: [String: Data]  // networkId -> encryption key
     private let port: UInt16
     private let logger: Logger
     private var eventLoopGroup: MultiThreadedEventLoopGroup?
@@ -24,11 +24,12 @@ public actor UDPControlServer {
     private let vpnHealthMonitor: VPNHealthMonitor
     private let providerVPNManager: ProviderVPNManager
 
-    // VM tracking
+    // VM tracking - includes networkId for responses
     private var activeVMs: [UUID: ActiveVM] = [:]
 
     private struct ActiveVM {
         let vmId: UUID
+        let networkId: String     // Network this VM belongs to
         let consumerEndpoint: String
         let vpnConfig: VPNConfiguration
         let vmIP: String          // VPN IP (e.g., 10.99.0.2)
@@ -39,14 +40,14 @@ public actor UDPControlServer {
     }
 
     public init(
-        networkKey: Data,
+        networkKeys: [String: Data],
         port: UInt16 = 51820,
         vmManager: SimpleVMManager? = nil,
         vpnHealthMonitor: VPNHealthMonitor = VPNHealthMonitor(),
         providerVPNManager: ProviderVPNManager? = nil,
         dryRun: Bool = false
     ) {
-        self.networkKey = networkKey
+        self.networkKeys = networkKeys
         self.port = port
         self.vmManager = vmManager ?? SimpleVMManager(dryRun: dryRun)
         self.vpnHealthMonitor = vpnHealthMonitor
@@ -59,6 +60,25 @@ public actor UDPControlServer {
         if dryRun {
             logger.info("UDPControlServer initialized in DRY RUN mode")
         }
+
+        logger.info("UDPControlServer initialized with \(networkKeys.count) network key(s)")
+    }
+
+    /// Add a network key for a specific network
+    public func addNetworkKey(_ networkId: String, key: Data) {
+        networkKeys[networkId] = key
+        logger.info("Added network key", metadata: ["network_id": "\(networkId)"])
+    }
+
+    /// Remove a network key
+    public func removeNetworkKey(_ networkId: String) {
+        networkKeys.removeValue(forKey: networkId)
+        logger.info("Removed network key", metadata: ["network_id": "\(networkId)"])
+    }
+
+    /// Get key for a network (used by message handler)
+    func getNetworkKey(_ networkId: String) -> Data? {
+        networkKeys[networkId]
     }
 
     // MARK: - Lifecycle
@@ -76,7 +96,7 @@ public actor UDPControlServer {
         self.eventLoopGroup = group
 
         // Create the message handler
-        let handler = ServerMessageHandler(server: self, networkKey: networkKey, logger: logger)
+        let handler = ServerMessageHandler(server: self, logger: logger)
 
         let bootstrap = DatagramBootstrap(group: group)
             .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -123,12 +143,30 @@ public actor UDPControlServer {
     /// Handle incoming encrypted control message and return response
     func handleIncomingMessage(_ data: Data, from remoteAddress: SocketAddress) async -> Data? {
         do {
+            // Parse envelope to get networkId
+            guard let envelope = MessageEnvelope.parse(data) else {
+                logger.warning("Failed to parse message envelope", metadata: ["from": "\(remoteAddress)"])
+                return nil
+            }
+
+            let networkId = envelope.networkId
+
+            // Look up key for this network
+            guard let networkKey = networkKeys[networkId] else {
+                logger.warning("Unknown network ID", metadata: [
+                    "network_id": "\(networkId)",
+                    "from": "\(remoteAddress)"
+                ])
+                return nil
+            }
+
             // Decrypt message
-            let message = try decryptMessage(data)
+            let message = try decryptMessage(envelope.encryptedPayload, using: networkKey)
 
             logger.info("Received control message", metadata: [
                 "action": "\(message.action)",
                 "message_id": "\(message.messageId)",
+                "network_id": "\(networkId)",
                 "from": "\(remoteAddress)"
             ])
 
@@ -142,43 +180,29 @@ public actor UDPControlServer {
                 return nil
             }
 
-            // Handle action
-            let response = try await handleAction(message.action)
+            // Handle action (pass networkId for VM tracking)
+            let response = try await handleAction(message.action, networkId: networkId)
 
-            // Send response
+            // Send response wrapped in envelope
             let responseMessage = ControlMessage(action: response)
-            let encrypted = try encryptMessage(responseMessage)
+            let encrypted = try encryptMessage(responseMessage, using: networkKey)
+            let responseEnvelope = MessageEnvelope(networkId: networkId, encryptedPayload: encrypted)
 
             logger.info("Response prepared successfully")
-            return encrypted
+            return responseEnvelope.serialize()
 
         } catch {
             logger.error("Error handling message", metadata: ["error": "\(error)"])
-
-            // Try to send error response with the actual error message
-            do {
-                let errorResponse = ControlMessage(
-                    action: .vmCreated(VMCreatedResponse(
-                        vmId: UUID(),
-                        vmIP: "",
-                        sshPort: 0,
-                        providerPublicKey: "",
-                        error: "\(error)"
-                    ))
-                )
-                return try encryptMessage(errorResponse)
-            } catch {
-                logger.error("Failed to create error response", metadata: ["error": "\(error)"])
-                return nil
-            }
+            // Can't send error response since we might not have the right key
+            return nil
         }
     }
 
     /// Handle specific control action
-    private func handleAction(_ action: ControlAction) async throws -> ControlAction {
+    private func handleAction(_ action: ControlAction, networkId: String) async throws -> ControlAction {
         switch action {
         case .requestVM(let request):
-            return try await handleRequestVM(request)
+            return try await handleRequestVM(request, networkId: networkId)
 
         case .releaseVM(let request):
             return try await handleReleaseVM(request)
@@ -192,9 +216,10 @@ public actor UDPControlServer {
     }
 
     /// Handle VM request
-    private func handleRequestVM(_ request: RequestVMMessage) async throws -> ControlAction {
+    private func handleRequestVM(_ request: RequestVMMessage, networkId: String) async throws -> ControlAction {
         logger.info("Handling VM request", metadata: [
             "vm_id": "\(request.vmId)",
+            "network_id": "\(networkId)",
             "consumer_endpoint": "\(request.consumerEndpoint)",
             "ssh_user": "\(request.sshUser)"
         ])
@@ -274,6 +299,7 @@ public actor UDPControlServer {
         let vmVPNIP = request.vpnConfig.vmVPNIP
         let activeVM = ActiveVM(
             vmId: request.vmId,
+            networkId: networkId,
             consumerEndpoint: request.consumerEndpoint,
             vpnConfig: request.vpnConfig,
             vmIP: vmVPNIP,
@@ -402,7 +428,7 @@ public actor UDPControlServer {
     // MARK: - Encryption
 
     /// Encrypt control message using ChaCha20-Poly1305
-    private func encryptMessage(_ message: ControlMessage) throws -> Data {
+    private func encryptMessage(_ message: ControlMessage, using networkKey: Data) throws -> Data {
         // Encode message to JSON
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -418,7 +444,7 @@ public actor UDPControlServer {
     }
 
     /// Decrypt control message
-    private func decryptMessage(_ data: Data) throws -> ControlMessage {
+    private func decryptMessage(_ data: Data, using networkKey: Data) throws -> ControlMessage {
         // Decrypt with ChaCha20-Poly1305
         let key = SymmetricKey(data: networkKey)
         let sealedBox = try ChaChaPoly.SealedBox(combined: data)
@@ -464,12 +490,10 @@ private final class ServerMessageHandler: ChannelInboundHandler, @unchecked Send
     typealias OutboundOut = AddressedEnvelope<ByteBuffer>
 
     private let server: UDPControlServer
-    private let networkKey: Data
     private let logger: Logger
 
-    init(server: UDPControlServer, networkKey: Data, logger: Logger) {
+    init(server: UDPControlServer, logger: Logger) {
         self.server = server
-        self.networkKey = networkKey
         self.logger = logger
     }
 

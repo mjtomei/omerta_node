@@ -7,7 +7,6 @@ import OmertaNetwork
 /// Handles VM lifecycle: request, track, and release VMs from providers
 public actor ConsumerClient {
     private let peerSelector: PeerSelector
-    private let udpControl: UDPControlClient
     private let ephemeralVPN: EphemeralVPN
     private let vmTracker: VMTracker
     private let networkKey: Data
@@ -21,7 +20,6 @@ public actor ConsumerClient {
         dryRun: Bool = false
     ) {
         self.peerSelector = PeerSelector(peerRegistry: peerRegistry)
-        self.udpControl = UDPControlClient(networkKey: networkKey)
         self.ephemeralVPN = EphemeralVPN(dryRun: dryRun)
         self.vmTracker = VMTracker(persistencePath: persistencePath)
         self.networkKey = networkKey
@@ -34,6 +32,11 @@ public actor ConsumerClient {
         if dryRun {
             logger.info("ConsumerClient initialized in DRY RUN mode - no actual VPN tunnels will be created")
         }
+    }
+
+    /// Create a UDP control client for a specific network
+    private func createUDPClient(networkId: String) -> UDPControlClient {
+        UDPControlClient(networkId: networkId, networkKey: networkKey)
     }
 
     // MARK: - VM Lifecycle
@@ -79,7 +82,8 @@ public actor ConsumerClient {
 
         do {
             // 1. Tell provider to kill VM
-            try await udpControl.releaseVM(
+            let udpClient = createUDPClient(networkId: connection.networkId)
+            try await udpClient.releaseVM(
                 providerEndpoint: connection.provider.endpoint,
                 vmId: connection.vmId
             )
@@ -180,7 +184,8 @@ public actor ConsumerClient {
 
             // 4. Send request_vm command to provider
             logger.info("Sending VM request to provider")
-            let response = try await udpControl.requestVM(
+            let udpClient = createUDPClient(networkId: networkId)
+            let response = try await udpClient.requestVM(
                 providerEndpoint: provider.endpoint,
                 vmId: vmId,
                 requirements: requirements,

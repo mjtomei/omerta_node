@@ -7,6 +7,7 @@ import OmertaCore
 /// Client for sending encrypted UDP control messages to provider daemons
 /// Uses SwiftNIO for cross-platform UDP support (macOS and Linux)
 public actor UDPControlClient {
+    private let networkId: String
     private let networkKey: Data
     private let localPort: UInt16
     private let maxRetries: Int = 3
@@ -15,7 +16,8 @@ public actor UDPControlClient {
     private var eventLoopGroup: MultiThreadedEventLoopGroup?
     private var channel: Channel?
 
-    public init(networkKey: Data, localPort: UInt16 = 0) {
+    public init(networkId: String, networkKey: Data, localPort: UInt16 = 0) {
+        self.networkId = networkId
         self.networkKey = networkKey
         self.localPort = localPort
     }
@@ -89,6 +91,7 @@ public actor UDPControlClient {
 
         return AsyncStream { continuation in
             let handler = NotificationHandler(
+                networkId: self.networkId,
                 networkKey: self.networkKey,
                 continuation: continuation
             )
@@ -161,7 +164,7 @@ public actor UDPControlClient {
         }
 
         // Create response handler
-        let responseHandler = ResponseHandler(networkKey: networkKey)
+        let responseHandler = ResponseHandler(networkId: networkId, networkKey: networkKey)
 
         // Create UDP channel
         let bootstrap = DatagramBootstrap(group: group)
@@ -175,15 +178,17 @@ public actor UDPControlClient {
             try? channel.close().wait()
         }
 
-        // Encrypt message
+        // Encrypt message and wrap in envelope with networkId
         let encrypted = try encryptMessage(message)
+        let messageEnvelope = MessageEnvelope(networkId: networkId, encryptedPayload: encrypted)
+        let wireData = messageEnvelope.serialize()
 
         // Create remote address
         let remoteAddress = try SocketAddress(ipAddress: host, port: port)
 
         // Create addressed envelope
-        var buffer = channel.allocator.buffer(capacity: encrypted.count)
-        buffer.writeBytes(encrypted)
+        var buffer = channel.allocator.buffer(capacity: wireData.count)
+        buffer.writeBytes(wireData)
         let envelope = AddressedEnvelope(remoteAddress: remoteAddress, data: buffer)
 
         // Send message
@@ -259,11 +264,13 @@ public actor UDPControlClient {
 private final class ResponseHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = AddressedEnvelope<ByteBuffer>
 
+    private let networkId: String
     private let networkKey: Data
     private var responseContinuation: CheckedContinuation<ControlMessage, Error>?
     private let lock = NSLock()
 
-    init(networkKey: Data) {
+    init(networkId: String, networkKey: Data) {
+        self.networkId = networkId
         self.networkKey = networkKey
     }
 
@@ -305,8 +312,18 @@ private final class ResponseHandler: ChannelInboundHandler, @unchecked Sendable 
     }
 
     private func decryptMessage(_ data: Data) throws -> ControlMessage {
+        // Parse envelope (provider wraps response in envelope too)
+        guard let envelope = MessageEnvelope.parse(data) else {
+            throw ConsumerError.invalidResponse("Invalid message envelope")
+        }
+
+        // Verify networkId matches
+        guard envelope.networkId == networkId else {
+            throw ConsumerError.invalidResponse("Network ID mismatch in response")
+        }
+
         let key = SymmetricKey(data: networkKey)
-        let sealedBox = try ChaChaPoly.SealedBox(combined: data)
+        let sealedBox = try ChaChaPoly.SealedBox(combined: envelope.encryptedPayload)
         let plaintext = try ChaChaPoly.open(sealedBox, using: key)
 
         let decoder = JSONDecoder()
@@ -327,10 +344,12 @@ private final class ResponseHandler: ChannelInboundHandler, @unchecked Sendable 
 private final class NotificationHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = AddressedEnvelope<ByteBuffer>
 
+    private let networkId: String
     private let networkKey: Data
     private let continuation: AsyncStream<ProviderNotification>.Continuation
 
-    init(networkKey: Data, continuation: AsyncStream<ProviderNotification>.Continuation) {
+    init(networkId: String, networkKey: Data, continuation: AsyncStream<ProviderNotification>.Continuation) {
+        self.networkId = networkId
         self.networkKey = networkKey
         self.continuation = continuation
     }
@@ -357,8 +376,18 @@ private final class NotificationHandler: ChannelInboundHandler, @unchecked Senda
     }
 
     private func decryptMessage(_ data: Data) throws -> ControlMessage {
+        // Parse envelope
+        guard let envelope = MessageEnvelope.parse(data) else {
+            throw ConsumerError.invalidResponse("Invalid message envelope")
+        }
+
+        // Verify networkId matches
+        guard envelope.networkId == networkId else {
+            throw ConsumerError.invalidResponse("Network ID mismatch in notification")
+        }
+
         let key = SymmetricKey(data: networkKey)
-        let sealedBox = try ChaChaPoly.SealedBox(combined: data)
+        let sealedBox = try ChaChaPoly.SealedBox(combined: envelope.encryptedPayload)
         let plaintext = try ChaChaPoly.open(sealedBox, using: key)
 
         let decoder = JSONDecoder()
