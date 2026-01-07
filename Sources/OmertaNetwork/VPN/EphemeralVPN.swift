@@ -10,6 +10,7 @@ import NetworkExtension
 public enum VPNBackend: String, Sendable {
     case networkExtension  // Use macOS Network Extension (no sudo required)
     case wgQuick          // Use wg-quick CLI (requires sudo)
+    case nativeNetlink    // Use native Linux netlink APIs (requires root)
     case dryRun           // Skip actual VPN setup (for testing)
 }
 
@@ -71,16 +72,32 @@ public actor EphemeralVPN: VPNProvider {
     private let tunnelService: VPNTunnelService?
     #endif
 
+    #if os(Linux)
+    private var linuxWgManager: LinuxWireGuardManager?
+    #endif
+
     /// Initialize EphemeralVPN
     /// - Parameters:
     ///   - basePort: Base port for WireGuard listeners
-    ///   - backend: Which VPN backend to use (.networkExtension, .wgQuick, or .dryRun)
+    ///   - backend: Which VPN backend to use (.networkExtension, .wgQuick, .nativeNetlink, or .dryRun)
     // Use port range 51900+ for VPN tunnels (51820 is typically used for control)
     public init(basePort: UInt16 = 51900, backend: VPNBackend = .networkExtension) {
         self.basePort = basePort
         self.nextPort = basePort
-        self.backend = backend
 
+        #if os(Linux)
+        // On Linux, auto-select nativeNetlink if networkExtension was requested
+        // (NetworkExtension is macOS-only)
+        if backend == .networkExtension {
+            self.backend = .nativeNetlink
+        } else {
+            self.backend = backend
+        }
+        if self.backend == .nativeNetlink {
+            self.linuxWgManager = LinuxWireGuardManager()
+        }
+        #else
+        self.backend = backend
         #if canImport(NetworkExtension)
         if backend == .networkExtension {
             self.tunnelService = VPNTunnelService()
@@ -88,10 +105,11 @@ public actor EphemeralVPN: VPNProvider {
             self.tunnelService = nil
         }
         #endif
+        #endif
 
         logger.info("EphemeralVPN initialized", metadata: [
             "base_port": "\(basePort)",
-            "backend": "\(backend.rawValue)"
+            "backend": "\(self.backend.rawValue)"
         ])
     }
 
@@ -99,14 +117,22 @@ public actor EphemeralVPN: VPNProvider {
     public init(basePort: UInt16 = 51900, dryRun: Bool) {
         self.basePort = basePort
         self.nextPort = basePort
-        self.backend = dryRun ? .dryRun : .networkExtension
 
+        #if os(Linux)
+        // On Linux, use nativeNetlink instead of networkExtension
+        self.backend = dryRun ? .dryRun : .nativeNetlink
+        if !dryRun {
+            self.linuxWgManager = LinuxWireGuardManager()
+        }
+        #else
+        self.backend = dryRun ? .dryRun : .networkExtension
         #if canImport(NetworkExtension)
         if !dryRun {
             self.tunnelService = VPNTunnelService()
         } else {
             self.tunnelService = nil
         }
+        #endif
         #endif
 
         logger.info("EphemeralVPN initialized", metadata: [
@@ -122,6 +148,15 @@ public actor EphemeralVPN: VPNProvider {
             return true
         case .wgQuick:
             return FileManager.default.fileExists(atPath: WireGuardPaths.wgQuick)
+        case .nativeNetlink:
+            #if os(Linux)
+            // Native netlink requires root and WireGuard kernel module
+            // Check if /sys/module/wireguard exists
+            return FileManager.default.fileExists(atPath: "/sys/module/wireguard") ||
+                   FileManager.default.fileExists(atPath: "/sys/class/net/lo")  // At least basic netlink works
+            #else
+            return false
+            #endif
         case .networkExtension:
             #if canImport(NetworkExtension)
             if let service = tunnelService {
@@ -215,6 +250,20 @@ public actor EphemeralVPN: VPNProvider {
 
             // Configure NAT/forwarding for internet access
             try await configureNATForwarding(interfaceName: interfaceName)
+
+        case .nativeNetlink:
+            #if os(Linux)
+            try await startVPNServerNativeNetlink(
+                privateKey: serverPrivateKey,
+                interfaceName: interfaceName,
+                serverIP: serverVPNIP,
+                port: port
+            )
+            // Configure NAT/forwarding for internet access
+            try await configureNATForwarding(interfaceName: interfaceName)
+            #else
+            throw VPNError.tunnelStartFailed("Native netlink only available on Linux")
+            #endif
         }
 
         let server = VPNServer(
@@ -281,6 +330,18 @@ public actor EphemeralVPN: VPNProvider {
                 peerPublicKey: providerPublicKey,
                 allowedIPs: "\(server.clientVPNIP)/32"  // Provider routes traffic for the VM's VPN IP
             )
+
+        case .nativeNetlink:
+            #if os(Linux)
+            try await addPeerToInterfaceNativeNetlink(
+                interfaceName: server.interfaceName,
+                peerPublicKey: providerPublicKey,
+                allowedIPs: server.clientVPNIP,
+                prefixLength: 32
+            )
+            #else
+            throw VPNError.tunnelStartFailed("Native netlink only available on Linux")
+            #endif
         }
 
         logger.info("Provider peer added successfully", metadata: ["job_id": "\(jobId)"])
@@ -449,6 +510,14 @@ public actor EphemeralVPN: VPNProvider {
             try await removeNATForwarding(interfaceName: server.interfaceName)
             // Stop WireGuard server
             try await stopVPNServerWgQuick(interfaceName: server.interfaceName)
+
+        case .nativeNetlink:
+            #if os(Linux)
+            // Remove NAT forwarding rules
+            try await removeNATForwarding(interfaceName: server.interfaceName)
+            // Delete WireGuard interface via native netlink
+            try await stopVPNServerNativeNetlink(interfaceName: server.interfaceName)
+            #endif
         }
 
         activeServers.removeValue(forKey: jobId)
@@ -500,31 +569,20 @@ public actor EphemeralVPN: VPNProvider {
     }
 
     private func derivePublicKey(from privateKey: String) throws -> String {
-        // Use wg pubkey command to derive public key from private key
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: WireGuardPaths.wg)
-        process.arguments = ["pubkey"]
-        process.environment = WireGuardPaths.environment
-
-        let inputPipe = Pipe()
-        let outputPipe = Pipe()
-        process.standardInput = inputPipe
-        process.standardOutput = outputPipe
-        process.standardError = Pipe()
-
-        try process.run()
-
-        inputPipe.fileHandleForWriting.write(Data(privateKey.utf8))
-        try inputPipe.fileHandleForWriting.close()
-
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            throw VPNError.invalidConfiguration("Failed to derive public key")
+        // Use native Curve25519 to derive public key
+        // WireGuard uses Curve25519 for key exchange
+        guard let privateKeyData = Data(base64Encoded: privateKey), privateKeyData.count == 32 else {
+            throw VPNError.invalidConfiguration("Invalid private key format")
         }
 
-        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        do {
+            // Curve25519.KeyAgreement.PrivateKey expects raw 32-byte key
+            let curve25519PrivateKey = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: privateKeyData)
+            let publicKeyData = curve25519PrivateKey.publicKey.rawRepresentation
+            return publicKeyData.base64EncodedString()
+        } catch {
+            throw VPNError.invalidConfiguration("Failed to derive public key: \(error)")
+        }
     }
 
     private func allocatePort() -> UInt16 {
@@ -707,6 +765,131 @@ public actor EphemeralVPN: VPNProvider {
 
         logger.info("VPN server stopped", metadata: ["interface": "\(interfaceName)"])
     }
+
+    // MARK: - Native Netlink Methods (Linux only)
+
+    #if os(Linux)
+    /// Start WireGuard VPN server using native Linux netlink APIs
+    private func startVPNServerNativeNetlink(
+        privateKey: String,
+        interfaceName: String,
+        serverIP: String,
+        port: UInt16
+    ) async throws {
+        if linuxWgManager == nil {
+            // Try to initialize on-demand
+            linuxWgManager = LinuxWireGuardManager()
+        }
+        guard linuxWgManager != nil else {
+            throw VPNError.tunnelStartFailed("Failed to initialize Linux WireGuard manager")
+        }
+
+        logger.info("Starting VPN server via native netlink", metadata: [
+            "interface": "\(interfaceName)",
+            "port": "\(port)"
+        ])
+
+        do {
+            try linuxWgManager!.createInterface(
+                name: interfaceName,
+                privateKeyBase64: privateKey,
+                listenPort: port,
+                address: serverIP,
+                prefixLength: 24,
+                peers: []  // Peers will be added dynamically after provider responds
+            )
+
+            logger.info("VPN server started via native netlink", metadata: [
+                "interface": "\(interfaceName)"
+            ])
+        } catch let error as NetlinkError {
+            // Check if it's a permission error (EPERM = 1)
+            if case .operationFailed(let errno) = error, errno == 1 {
+                logger.warning("Native netlink requires root, falling back to wg-quick")
+                // Generate config and fall back to wg-quick
+                let config = generateServerConfigNoPeer(
+                    privateKey: privateKey,
+                    serverIP: serverIP,
+                    port: port
+                )
+                try await startVPNServerWgQuick(config: config, interfaceName: interfaceName)
+            } else {
+                throw VPNError.tunnelStartFailed("Native netlink failed: \(error)")
+            }
+        } catch {
+            throw VPNError.tunnelStartFailed("Failed to start VPN: \(error)")
+        }
+    }
+
+    /// Stop WireGuard VPN server using native Linux netlink APIs
+    private func stopVPNServerNativeNetlink(interfaceName: String) async throws {
+        guard let manager = linuxWgManager else {
+            // If no manager, try to clean up via wg-quick
+            logger.warning("No Linux WireGuard manager, trying wg-quick cleanup")
+            try await stopVPNServerWgQuick(interfaceName: interfaceName)
+            return
+        }
+
+        logger.info("Stopping VPN server via native netlink", metadata: [
+            "interface": "\(interfaceName)"
+        ])
+
+        do {
+            try manager.deleteInterface(name: interfaceName)
+            logger.info("VPN server stopped via native netlink", metadata: [
+                "interface": "\(interfaceName)"
+            ])
+        } catch {
+            logger.warning("Failed to delete interface via netlink, trying wg-quick", metadata: [
+                "error": "\(error)"
+            ])
+            try await stopVPNServerWgQuick(interfaceName: interfaceName)
+        }
+    }
+
+    /// Add a peer to WireGuard interface using native Linux netlink APIs
+    private func addPeerToInterfaceNativeNetlink(
+        interfaceName: String,
+        peerPublicKey: String,
+        allowedIPs: String,
+        prefixLength: UInt8
+    ) async throws {
+        guard let manager = linuxWgManager else {
+            throw VPNError.tunnelStartFailed("Linux WireGuard manager not initialized")
+        }
+
+        guard let peerConfig = WireGuardPeerConfig(
+            publicKeyBase64: peerPublicKey,
+            allowedIPs: [(allowedIPs, prefixLength)]
+        ) else {
+            throw VPNError.invalidConfiguration("Invalid peer public key")
+        }
+
+        logger.info("Adding peer via native netlink", metadata: [
+            "interface": "\(interfaceName)",
+            "peer_key": "\(peerPublicKey.prefix(20))..."
+        ])
+
+        do {
+            try manager.addPeer(interface: interfaceName, peer: peerConfig)
+            logger.info("Peer added via native netlink", metadata: [
+                "interface": "\(interfaceName)"
+            ])
+        } catch let error as NetlinkError {
+            // Check if it's a permission error - fall back to wg CLI
+            if case .operationFailed(let errno) = error, errno == 1 {
+                logger.warning("Native netlink requires root for peer add, falling back to wg CLI")
+                try await addPeerToInterface(
+                    interfaceName: interfaceName,
+                    peerPublicKey: peerPublicKey,
+                    allowedIPs: "\(allowedIPs)/\(prefixLength)"
+                )
+            } else {
+                throw VPNError.tunnelStartFailed("Failed to add peer: \(error)")
+            }
+        }
+    }
+    #endif
 
     private func configureNATForwarding(interfaceName: String) async throws {
         // IP forwarding should be enabled in PostUp scripts

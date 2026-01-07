@@ -60,8 +60,8 @@ public actor SimpleVMManager {
             logger.warning("QEMU not found - forcing DRY RUN mode. Install: sudo apt install qemu-system-x86")
             self.dryRun = true
         } else if !kvmAvailable {
-            logger.warning("KVM not available - forcing DRY RUN mode. Check /dev/kvm permissions.")
-            self.dryRun = true
+            logger.warning("KVM not available - VMs will use software emulation (slow). Check /dev/kvm for hardware acceleration.")
+            self.dryRun = dryRun  // Allow running without KVM (TCG mode)
         } else {
             self.dryRun = dryRun
         }
@@ -244,11 +244,26 @@ public actor SimpleVMManager {
         let memoryMB = max(1024, requirements.memoryMB ?? 2048)
 
         let qemuBinary = getQEMUBinary()
-        var qemuArgs = [
-            "-enable-kvm",
+        let kvmAvailable = Self.checkKVMAvailable()
+
+        var qemuArgs: [String] = []
+
+        // Add KVM acceleration if available, otherwise use TCG (software emulation)
+        if kvmAvailable {
+            qemuArgs.append(contentsOf: ["-enable-kvm", "-cpu", "host"])
+        } else {
+            // Use software emulation - slower but works without KVM
+            #if arch(arm64)
+            qemuArgs.append(contentsOf: ["-cpu", "cortex-a72"])
+            #else
+            qemuArgs.append(contentsOf: ["-cpu", "qemu64"])
+            #endif
+            logger.info("Using software emulation (TCG) - VM will be slow")
+        }
+
+        qemuArgs.append(contentsOf: [
             "-m", "\(memoryMB)",
             "-smp", "\(cpuCores)",
-            "-cpu", "host",
             "-drive", "file=\(overlayPath),format=qcow2,if=virtio",
             "-drive", "file=\(seedISOPath),format=raw,if=virtio,readonly=on",
             "-netdev", "user,id=net0,hostfwd=tcp::\(sshPort)-:22",
@@ -256,7 +271,7 @@ public actor SimpleVMManager {
             "-nographic",
             "-serial", "mon:stdio",
             "-pidfile", "\(vmDiskDir)/\(vmId.uuidString).pid"
-        ]
+        ])
 
         // Add architecture-specific options
         #if arch(arm64)
