@@ -6,6 +6,7 @@ import OmertaNetwork
 import OmertaConsumer
 import OmertaProvider
 import Logging
+import Crypto
 #if canImport(NetworkExtension)
 import NetworkExtension
 #endif
@@ -713,9 +714,107 @@ struct VPN: AsyncParsableCommand {
         abstract: "VPN management commands",
         subcommands: [
             VPNStatus.self,
-            VPNTest.self
+            VPNTest.self,
+            VPNNetlinkTest.self
         ]
     )
+}
+
+struct VPNNetlinkTest: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "netlink-test",
+        abstract: "Test native Linux WireGuard netlink implementation (Linux only)"
+    )
+
+    @Flag(name: .long, help: "Dry run - don't actually create interfaces")
+    var dryRun: Bool = false
+
+    mutating func run() async throws {
+        #if os(Linux)
+        print("=== WireGuard Native Netlink Test ===")
+        print("")
+
+        // 1. Generate test keys
+        print("1. Generating WireGuard keys using Swift Crypto...")
+        let keyData = SymmetricKey(size: .bits256)
+        let privateKeyData = keyData.withUnsafeBytes { Data($0) }
+        let privateKey = privateKeyData.base64EncodedString()
+
+        let curve25519Private = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: privateKeyData)
+        let publicKey = curve25519Private.publicKey.rawRepresentation.base64EncodedString()
+
+        print("   Private key: \(privateKey.prefix(20))...")
+        print("   Public key:  \(publicKey.prefix(20))...")
+
+        let interfaceName = "wg-test-\(Int.random(in: 1000...9999))"
+        let vpnAddress = "10.200.200.1"
+        let prefixLength: UInt8 = 24
+
+        print("")
+        print("2. Creating WireGuard interface '\(interfaceName)' with native netlink...")
+
+        if dryRun {
+            print("   [DRY RUN] Would create interface with:")
+            print("     - Name: \(interfaceName)")
+            print("     - Address: \(vpnAddress)/\(prefixLength)")
+            print("     - Private key: \(privateKey.prefix(20))...")
+            print("")
+            print("=== Test completed (dry run) ===")
+            return
+        }
+
+        let wg = LinuxWireGuardManager()
+
+        // Create interface
+        try wg.createInterface(
+            name: interfaceName,
+            privateKeyBase64: privateKey,
+            listenPort: 0,
+            address: vpnAddress,
+            prefixLength: prefixLength,
+            peers: []
+        )
+        print("   ✓ Interface created successfully")
+
+        // Verify with ip command
+        print("")
+        print("3. Verifying interface with 'ip link show'...")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/sbin/ip")
+        process.arguments = ["link", "show", interfaceName]
+        let outputPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = outputPipe
+        try process.run()
+        process.waitUntilExit()
+        let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        print(output)
+
+        // Check IP address
+        print("4. Checking IP address with 'ip addr show'...")
+        let addrProcess = Process()
+        addrProcess.executableURL = URL(fileURLWithPath: "/sbin/ip")
+        addrProcess.arguments = ["addr", "show", interfaceName]
+        let addrPipe = Pipe()
+        addrProcess.standardOutput = addrPipe
+        addrProcess.standardError = addrPipe
+        try addrProcess.run()
+        addrProcess.waitUntilExit()
+        let addrOutput = String(data: addrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        print(addrOutput)
+
+        // Clean up
+        print("5. Cleaning up - deleting interface...")
+        try wg.deleteInterface(name: interfaceName)
+        print("   ✓ Interface deleted successfully")
+
+        print("")
+        print("=== Test completed successfully ===")
+        #else
+        print("Native netlink implementation is only available on Linux")
+        throw ExitCode.failure
+        #endif
+    }
 }
 
 struct VPNStatus: AsyncParsableCommand {
@@ -1280,7 +1379,7 @@ struct VMStatus: AsyncParsableCommand {
         print("Querying VM status from \(provider)...")
         print("")
 
-        let client = UDPControlClient(networkKey: keyData)
+        let client = UDPControlClient(networkId: "direct", networkKey: keyData)
 
         do {
             let response = try await client.queryVMStatus(
@@ -1298,7 +1397,7 @@ struct VMStatus: AsyncParsableCommand {
             print("")
 
             for vm in response.vms {
-                let statusIcon = vm.status == .running ? "●" : "○"
+                let statusIcon = vm.status == OmertaConsumer.VMStatus.running ? "●" : "○"
                 print("\(statusIcon) [\(vm.vmId.uuidString.prefix(8))...] \(vm.vmIP)")
                 print("   Status: \(vm.status.rawValue.uppercased())")
                 print("   Uptime: \(formatUptime(vm.uptimeSeconds))")

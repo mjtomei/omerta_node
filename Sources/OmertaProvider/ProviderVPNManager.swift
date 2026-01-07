@@ -4,6 +4,11 @@ import OmertaCore
 import OmertaNetwork
 import Crypto
 
+#if os(Linux)
+// Use native netlink implementation on Linux when available
+private let useNativeNetlink = true
+#endif
+
 /// Manages provider-side WireGuard tunnels connecting to consumer VPN servers
 /// Sets up NAT routing from VPN network to VM NAT addresses
 public actor ProviderVPNManager {
@@ -12,6 +17,10 @@ public actor ProviderVPNManager {
     private let configDirectory: String
     private let firewallMarkerDirectory: String
     private let dryRun: Bool
+
+    #if os(Linux)
+    private var nativeWireGuard: LinuxWireGuardManager?
+    #endif
 
     public struct ProviderTunnel: Sendable {
         public let vmId: UUID
@@ -203,6 +212,24 @@ public actor ProviderVPNManager {
     }
 
     private func derivePublicKey(from privateKey: String) throws -> String {
+        // Try native Curve25519 derivation first (works without wg binary)
+        guard let privateKeyData = Data(base64Encoded: privateKey), privateKeyData.count == 32 else {
+            throw ProviderVPNError.keyDerivationFailed
+        }
+
+        do {
+            // WireGuard uses Curve25519 - derive public key using Swift Crypto
+            let curve25519Private = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: privateKeyData)
+            let publicKeyData = curve25519Private.publicKey.rawRepresentation
+            return publicKeyData.base64EncodedString()
+        } catch {
+            // Fall back to wg binary if available
+            logger.debug("Native key derivation failed, trying wg binary: \(error)")
+            return try derivePublicKeyUsingWG(from: privateKey)
+        }
+    }
+
+    private func derivePublicKeyUsingWG(from privateKey: String) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: WireGuardPaths.wg)
         process.arguments = ["pubkey"]
@@ -286,6 +313,169 @@ public actor ProviderVPNManager {
     private func startWireGuardInterface(configPath: String, interfaceName: String) async throws {
         logger.info("Starting WireGuard interface", metadata: ["interface": "\(interfaceName)"])
 
+        #if os(Linux)
+        if useNativeNetlink {
+            try await startWireGuardInterfaceNative(configPath: configPath, interfaceName: interfaceName)
+            return
+        }
+        #endif
+
+        // Fall back to wg-quick
+        try await startWireGuardInterfaceWGQuick(configPath: configPath, interfaceName: interfaceName)
+    }
+
+    #if os(Linux)
+    private func startWireGuardInterfaceNative(configPath: String, interfaceName: String) async throws {
+        logger.info("Using native netlink for WireGuard interface", metadata: ["interface": "\(interfaceName)"])
+
+        // Parse config file to extract parameters
+        let config = try String(contentsOfFile: configPath, encoding: .utf8)
+        guard let params = parseWireGuardConfig(config) else {
+            throw ProviderVPNError.interfaceStartFailed("Failed to parse WireGuard config")
+        }
+
+        // Initialize native WireGuard manager
+        if nativeWireGuard == nil {
+            nativeWireGuard = LinuxWireGuardManager()
+        }
+
+        guard let wg = nativeWireGuard else {
+            throw ProviderVPNError.interfaceStartFailed("Failed to initialize native WireGuard manager")
+        }
+
+        // Parse peer configuration
+        var peers: [WireGuardPeerConfig] = []
+        if let peerPublicKey = params.peerPublicKey,
+           let keyData = Data(base64Encoded: peerPublicKey) {
+            var endpoint: (host: String, port: UInt16)? = nil
+            if let endpointStr = params.peerEndpoint {
+                let parts = endpointStr.split(separator: ":")
+                if parts.count == 2, let port = UInt16(parts[1]) {
+                    endpoint = (host: String(parts[0]), port: port)
+                }
+            }
+
+            var allowedIPs: [(ip: String, cidr: UInt8)] = []
+            if let allowedIPsStr = params.allowedIPs {
+                for cidrStr in allowedIPsStr.split(separator: ",") {
+                    let trimmed = cidrStr.trimmingCharacters(in: .whitespaces)
+                    let cidrParts = trimmed.split(separator: "/")
+                    if cidrParts.count == 2, let cidr = UInt8(cidrParts[1]) {
+                        allowedIPs.append((ip: String(cidrParts[0]), cidr: cidr))
+                    }
+                }
+            }
+
+            let peer = WireGuardPeerConfig(
+                publicKey: keyData,
+                endpoint: endpoint,
+                allowedIPs: allowedIPs,
+                persistentKeepalive: params.persistentKeepalive
+            )
+            peers.append(peer)
+        }
+
+        // Parse address
+        var address = "10.0.0.1"
+        var prefixLength: UInt8 = 24
+        if let addrStr = params.address {
+            let parts = addrStr.split(separator: "/")
+            address = String(parts[0])
+            if parts.count == 2, let prefix = UInt8(parts[1]) {
+                prefixLength = prefix
+            }
+        }
+
+        do {
+            // Create and configure interface
+            try wg.createInterface(
+                name: interfaceName,
+                privateKeyBase64: params.privateKey,
+                listenPort: params.listenPort ?? 0,
+                address: address,
+                prefixLength: prefixLength,
+                peers: peers
+            )
+
+            // Wait for interface to be ready
+            try await Task.sleep(for: .milliseconds(100))
+
+            logger.info("WireGuard interface started (native)", metadata: ["interface": "\(interfaceName)"])
+        } catch let error as NetlinkError {
+            // Check if it's a permission error (EPERM = 1)
+            if case .operationFailed(let errno) = error, errno == 1 {
+                logger.info("Native netlink requires root, falling back to wg-quick", metadata: ["interface": "\(interfaceName)"])
+                try await startWireGuardInterfaceWGQuick(configPath: configPath, interfaceName: interfaceName)
+            } else {
+                throw error
+            }
+        } catch let error as LinuxWireGuardError {
+            logger.info("Native netlink failed, falling back to wg-quick: \(error)", metadata: ["interface": "\(interfaceName)"])
+            try await startWireGuardInterfaceWGQuick(configPath: configPath, interfaceName: interfaceName)
+        }
+    }
+
+    private struct WireGuardConfigParams {
+        var privateKey: String
+        var address: String?
+        var listenPort: UInt16?
+        var peerPublicKey: String?
+        var peerEndpoint: String?
+        var allowedIPs: String?
+        var persistentKeepalive: UInt16?
+    }
+
+    private func parseWireGuardConfig(_ config: String) -> WireGuardConfigParams? {
+        var params = WireGuardConfigParams(privateKey: "")
+        var inPeer = false
+
+        for line in config.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            if trimmed.hasPrefix("[Peer]") {
+                inPeer = true
+                continue
+            } else if trimmed.hasPrefix("[") {
+                inPeer = false
+                continue
+            }
+
+            let parts = trimmed.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+
+            let key = parts[0].trimmingCharacters(in: .whitespaces)
+            let value = parts[1].trimmingCharacters(in: .whitespaces)
+
+            if inPeer {
+                switch key {
+                case "PublicKey":
+                    params.peerPublicKey = value
+                case "Endpoint":
+                    params.peerEndpoint = value
+                case "AllowedIPs":
+                    params.allowedIPs = value
+                case "PersistentKeepalive":
+                    params.persistentKeepalive = UInt16(value)
+                default: break
+                }
+            } else {
+                switch key {
+                case "PrivateKey":
+                    params.privateKey = value
+                case "Address":
+                    params.address = value
+                case "ListenPort":
+                    params.listenPort = UInt16(value)
+                default: break
+                }
+            }
+        }
+
+        return params.privateKey.isEmpty ? nil : params
+    }
+    #endif
+
+    private func startWireGuardInterfaceWGQuick(configPath: String, interfaceName: String) async throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
         let pathValue = WireGuardPaths.environment["PATH"] ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
@@ -314,6 +504,45 @@ public actor ProviderVPNManager {
     private func stopWireGuardInterface(interfaceName: String, configPath: String) async throws {
         logger.info("Stopping WireGuard interface", metadata: ["interface": "\(interfaceName)"])
 
+        #if os(Linux)
+        if useNativeNetlink {
+            try await stopWireGuardInterfaceNative(interfaceName: interfaceName)
+            return
+        }
+        #endif
+
+        // Fall back to wg-quick
+        try await stopWireGuardInterfaceWGQuick(interfaceName: interfaceName, configPath: configPath)
+    }
+
+    #if os(Linux)
+    private func stopWireGuardInterfaceNative(interfaceName: String) async throws {
+        logger.info("Using native netlink to stop WireGuard interface", metadata: ["interface": "\(interfaceName)"])
+
+        // Initialize native WireGuard manager if needed
+        if nativeWireGuard == nil {
+            nativeWireGuard = LinuxWireGuardManager()
+        }
+
+        guard let wg = nativeWireGuard else {
+            logger.warning("Failed to initialize native WireGuard manager for teardown")
+            return
+        }
+
+        do {
+            try wg.deleteInterface(name: interfaceName)
+            logger.info("WireGuard interface stopped (native)", metadata: ["interface": "\(interfaceName)"])
+        } catch {
+            // Log but don't fail - interface might already be down
+            logger.warning("Native interface deletion returned error", metadata: [
+                "interface": "\(interfaceName)",
+                "error": "\(error)"
+            ])
+        }
+    }
+    #endif
+
+    private func stopWireGuardInterfaceWGQuick(interfaceName: String, configPath: String) async throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
         let pathValue = WireGuardPaths.environment["PATH"] ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
