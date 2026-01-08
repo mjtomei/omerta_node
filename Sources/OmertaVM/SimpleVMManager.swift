@@ -2,10 +2,6 @@ import Foundation
 import Logging
 import OmertaCore
 
-#if os(macOS)
-import Virtualization
-#endif
-
 #if os(Linux)
 import Glibc
 #endif
@@ -19,22 +15,15 @@ public actor SimpleVMManager {
     private let basePort: UInt16 = 10000
     private let dryRun: Bool
 
-    #if os(Linux)
-    /// Base image path for Linux VMs
+    /// Base image path for VMs
     private let baseImagePath: String
     /// Directory for VM overlay disks
     private let vmDiskDir: String
+    #if os(Linux)
+    /// Track TAP interfaces for cleanup (Linux only - macOS uses vmnet)
+    private var vmTapInterfaces: [UUID: String] = [:]
     #endif
 
-    #if os(macOS)
-    public struct RunningVM: Sendable {
-        public let vmId: UUID
-        public let vm: VZVirtualMachine?  // nil in dry-run mode
-        public let sshPort: UInt16
-        public let vmIP: String
-        public let createdAt: Date
-    }
-    #else
     public struct RunningVM: Sendable {
         public let vmId: UUID
         public let qemuPid: Int32?  // QEMU process ID, nil in dry-run mode
@@ -44,30 +33,46 @@ public actor SimpleVMManager {
         public let seedISOPath: String?
         public let createdAt: Date
     }
-    #endif
 
     public init(dryRun: Bool = false) {
         var logger = Logger(label: "com.omerta.vm.simple")
         logger.logLevel = .info
         self.logger = logger
 
-        #if os(Linux)
-        // Check if QEMU and KVM are available
+        // Check if QEMU is available
         let qemuAvailable = Self.checkQEMUAvailable()
-        let kvmAvailable = Self.checkKVMAvailable()
+        let accelAvailable = Self.checkAccelerationAvailable()
 
         if !qemuAvailable {
+            #if os(macOS)
+            logger.warning("QEMU not found - forcing DRY RUN mode. Install: brew install qemu")
+            #else
             logger.warning("QEMU not found - forcing DRY RUN mode. Install: sudo apt install qemu-system-x86")
+            #endif
             self.dryRun = true
-        } else if !kvmAvailable {
+        } else if !accelAvailable {
+            #if os(macOS)
+            logger.warning("HVF not available - VMs will use software emulation (slow).")
+            #else
             logger.warning("KVM not available - VMs will use software emulation (slow). Check /dev/kvm for hardware acceleration.")
-            self.dryRun = dryRun  // Allow running without KVM (TCG mode)
+            #endif
+            self.dryRun = dryRun  // Allow running without acceleration (TCG mode)
         } else {
             self.dryRun = dryRun
         }
 
-        // Set up paths
-        let homeDir = ProcessInfo.processInfo.environment["HOME"] ?? "/tmp"
+        // Set up paths - use SUDO_USER's home if running with sudo
+        let homeDir: String
+        if let sudoUser = ProcessInfo.processInfo.environment["SUDO_USER"] {
+            // Running with sudo - use the original user's home directory
+            #if os(macOS)
+            homeDir = "/Users/\(sudoUser)"
+            #else
+            homeDir = "/home/\(sudoUser)"
+            #endif
+        } else {
+            homeDir = ProcessInfo.processInfo.environment["HOME"] ?? "/tmp"
+        }
         #if arch(arm64)
         let archSuffix = "arm64"
         #else
@@ -81,9 +86,6 @@ public actor SimpleVMManager {
             atPath: vmDiskDir,
             withIntermediateDirectories: true
         )
-        #else
-        self.dryRun = dryRun
-        #endif
 
         if self.dryRun {
             logger.info("SimpleVMManager initialized in DRY RUN mode - no actual VMs will be created")
@@ -92,19 +94,32 @@ public actor SimpleVMManager {
         }
     }
 
-    #if os(Linux)
     /// Check if QEMU is available
     private static func checkQEMUAvailable() -> Bool {
+        #if os(macOS)
+        let paths = [
+            "/opt/homebrew/bin/qemu-system-aarch64",
+            "/opt/homebrew/bin/qemu-system-x86_64",
+            "/usr/local/bin/qemu-system-aarch64",
+            "/usr/local/bin/qemu-system-x86_64"
+        ]
+        #else
         let paths = [
             "/usr/bin/qemu-system-x86_64",
             "/usr/bin/qemu-system-aarch64",
             "/usr/local/bin/qemu-system-x86_64"
         ]
+        #endif
         return paths.contains { FileManager.default.fileExists(atPath: $0) }
     }
 
-    /// Check if KVM is available and accessible
-    private static func checkKVMAvailable() -> Bool {
+    /// Check if hardware acceleration is available (KVM on Linux, HVF on macOS)
+    private static func checkAccelerationAvailable() -> Bool {
+        #if os(macOS)
+        // HVF is generally available on Apple Silicon and Intel Macs with macOS 10.15+
+        // We assume it's available - QEMU will fall back to TCG if not
+        return true
+        #else
         let kvmPath = "/dev/kvm"
         guard FileManager.default.fileExists(atPath: kvmPath) else {
             return false
@@ -116,29 +131,55 @@ public actor SimpleVMManager {
             return true
         }
         return false
+        #endif
     }
 
     /// Get the appropriate QEMU binary for the host architecture
     private func getQEMUBinary() -> String {
-        #if arch(x86_64)
-        return "/usr/bin/qemu-system-x86_64"
-        #elseif arch(arm64)
-        return "/usr/bin/qemu-system-aarch64"
+        #if os(macOS)
+            #if arch(arm64)
+            return "/opt/homebrew/bin/qemu-system-aarch64"
+            #else
+            return "/opt/homebrew/bin/qemu-system-x86_64"
+            #endif
         #else
-        return "/usr/bin/qemu-system-x86_64"
+            #if arch(x86_64)
+            return "/usr/bin/qemu-system-x86_64"
+            #elseif arch(arm64)
+            return "/usr/bin/qemu-system-aarch64"
+            #else
+            return "/usr/bin/qemu-system-x86_64"
+            #endif
         #endif
     }
-    #endif
+
+    /// Get the UEFI firmware path for QEMU
+    private func getUEFIFirmwarePath() -> String {
+        #if os(macOS)
+        return "/opt/homebrew/share/qemu/edk2-aarch64-code.fd"
+        #else
+        return "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
+        #endif
+    }
 
     // MARK: - VM Lifecycle
 
     /// Start a VM with specified resources
-    /// Returns VM's NAT IP address (e.g., 192.168.64.x)
+    /// - Parameters:
+    ///   - vmId: Unique identifier for this VM
+    ///   - requirements: CPU/memory requirements
+    ///   - sshPublicKey: Consumer's SSH public key for access
+    ///   - sshUser: Username for SSH access
+    ///   - vpnIP: The VPN IP to assign to the VM (e.g., "10.166.104.2")
+    ///   - vpnGateway: The VPN gateway IP (e.g., "10.166.104.254")
+    /// - Returns: The VM's IP address (same as vpnIP when using TAP networking)
     public func startVM(
         vmId: UUID,
         requirements: ResourceRequirements,
         sshPublicKey: String,
-        sshUser: String = "omerta"
+        sshUser: String = "omerta",
+        vpnIP: String? = nil,
+        vpnGateway: String? = nil
     ) async throws -> String {
         logger.info("Starting VM", metadata: [
             "vm_id": "\(vmId)",
@@ -152,66 +193,49 @@ public actor SimpleVMManager {
         if dryRun {
             logger.info("DRY RUN: Simulating VM creation")
 
-            // Generate simulated VM NAT IP
-            let vmNATIP = generateVMNATIP()
+            // Use VPN IP if provided, otherwise generate simulated NAT IP
+            let vmIP = vpnIP ?? generateVMNATIP()
             let sshPort = allocatePort()
 
             // Track "running" VM
-            #if os(macOS)
-            let runningVM = RunningVM(
-                vmId: vmId,
-                vm: nil,
-                sshPort: sshPort,
-                vmIP: vmNATIP,
-                createdAt: Date()
-            )
-            #else
             let runningVM = RunningVM(
                 vmId: vmId,
                 qemuPid: nil,
                 sshPort: sshPort,
-                vmIP: vmNATIP,
+                vmIP: vmIP,
                 overlayDiskPath: nil,
                 seedISOPath: nil,
                 createdAt: Date()
             )
-            #endif
             activeVMs[vmId] = runningVM
 
             logger.info("DRY RUN: VM simulated successfully", metadata: [
                 "vm_id": "\(vmId)",
-                "vm_nat_ip": "\(vmNATIP)",
+                "vm_ip": "\(vmIP)",
                 "ssh_port": "\(sshPort)"
             ])
 
-            return vmNATIP
+            return vmIP
         }
 
-        #if os(macOS)
-        // macOS: Use Virtualization.framework
-        return try await startVMMacOS(
+        // Use QEMU on all platforms
+        return try await startVMQEMU(
             vmId: vmId,
             requirements: requirements,
             sshPublicKey: sshPublicKey,
-            sshUser: sshUser
+            sshUser: sshUser,
+            vpnIP: vpnIP,
+            vpnGateway: vpnGateway
         )
-        #else
-        // Linux: Use QEMU/KVM
-        return try await startVMLinux(
-            vmId: vmId,
-            requirements: requirements,
-            sshPublicKey: sshPublicKey,
-            sshUser: sshUser
-        )
-        #endif
     }
 
-    #if os(Linux)
-    private func startVMLinux(
+    private func startVMQEMU(
         vmId: UUID,
         requirements: ResourceRequirements,
         sshPublicKey: String,
-        sshUser: String
+        sshUser: String,
+        vpnIP: String?,
+        vpnGateway: String?
     ) async throws -> String {
         // 1. Verify base image exists
         guard FileManager.default.fileExists(atPath: baseImagePath) else {
@@ -223,7 +247,100 @@ public actor SimpleVMManager {
         try await createOverlayDisk(basePath: baseImagePath, overlayPath: overlayPath)
         logger.info("Created overlay disk", metadata: ["path": "\(overlayPath)"])
 
-        // 3. Generate cloud-init ISO with consumer's SSH key
+        // 3. Determine if we're using TAP networking (when vpnIP is provided)
+        // TAP networking is only supported on Linux; macOS uses SLIRP
+        #if os(Linux)
+        if let vpnIPValue = vpnIP, let vpnGatewayValue = vpnGateway {
+            // TAP networking: VM gets VPN IP directly (Linux only)
+            let vmIP = vpnIPValue
+            let sshPort: UInt16 = 22  // SSH directly on VPN IP
+
+            // Create TAP interface
+            let tapInterface = "tap-\(vmId.uuidString.prefix(8))"
+            try await createTapInterface(name: tapInterface)
+            vmTapInterfaces[vmId] = tapInterface
+
+            logger.info("Created TAP interface for VM", metadata: [
+                "vm_id": "\(vmId)",
+                "tap": "\(tapInterface)",
+                "vpn_ip": "\(vmIP)"
+            ])
+
+            // Generate cloud-init ISO with VPN network config
+            let seedISOPath = "\(vmDiskDir)/\(vmId.uuidString)-seed.iso"
+            try CloudInitGenerator.createSeedISO(
+                at: seedISOPath,
+                sshPublicKey: sshPublicKey,
+                sshUser: sshUser,
+                instanceId: vmId,
+                networkConfig: CloudInitGenerator.NetworkConfig(
+                    ipAddress: vpnIPValue,
+                    gateway: vpnGatewayValue,
+                    prefixLength: 24
+                )
+            )
+            logger.info("Created cloud-init ISO with TAP network config", metadata: ["path": "\(seedISOPath)"])
+
+            // Build QEMU command with TAP networking
+            let qemuArgs = try buildQEMUArgs(
+                vmId: vmId,
+                requirements: requirements,
+                overlayPath: overlayPath,
+                seedISOPath: seedISOPath,
+                tapInterface: tapInterface
+            )
+
+            let qemuBinary = getQEMUBinary()
+            logger.info("Starting QEMU VM with TAP networking", metadata: [
+                "vm_id": "\(vmId)",
+                "binary": "\(qemuBinary)",
+                "tap": "\(tapInterface)",
+                "vpn_ip": "\(vmIP)"
+            ])
+
+            // Start QEMU process
+            let qemuPid = try await startQEMUProcess(
+                binary: qemuBinary,
+                arguments: qemuArgs,
+                vmId: vmId
+            )
+
+            logger.info("QEMU process started", metadata: [
+                "vm_id": "\(vmId)",
+                "pid": "\(qemuPid)"
+            ])
+
+            // Track running VM
+            let runningVM = RunningVM(
+                vmId: vmId,
+                qemuPid: qemuPid,
+                sshPort: sshPort,
+                vmIP: vmIP,
+                overlayDiskPath: overlayPath,
+                seedISOPath: seedISOPath,
+                createdAt: Date()
+            )
+            activeVMs[vmId] = runningVM
+
+            logger.info("VM started successfully with TAP networking", metadata: [
+                "vm_id": "\(vmId)",
+                "vm_ip": "\(vmIP)",
+                "ssh_command": "ssh \(sshUser)@\(vmIP)"
+            ])
+
+            return vmIP
+        }
+        #else
+        if vpnIP != nil {
+            logger.warning("TAP networking requested but not supported on macOS VMs - using NAT")
+        }
+        #endif
+
+        // SLIRP user-mode networking (used on macOS always, and on Linux as fallback)
+        let vmIP = generateVMNATIP()
+        let sshPort = allocatePort()
+
+        // Generate cloud-init ISO with DHCP (default)
         let seedISOPath = "\(vmDiskDir)/\(vmId.uuidString)-seed.iso"
         try CloudInitGenerator.createSeedISO(
             at: seedISOPath,
@@ -233,67 +350,23 @@ public actor SimpleVMManager {
         )
         logger.info("Created cloud-init ISO", metadata: ["path": "\(seedISOPath)"])
 
-        // 4. Allocate SSH port for this VM
-        let sshPort = allocatePort()
-
-        // 5. Generate VM NAT IP
-        let vmNATIP = generateVMNATIP()
-
-        // 6. Build QEMU command
-        let cpuCores = max(2, Int(requirements.cpuCores ?? 2))
-        let memoryMB = max(1024, requirements.memoryMB ?? 2048)
+        // Build QEMU command with SLIRP networking
+        let qemuArgs = try buildQEMUArgsSlirp(
+            vmId: vmId,
+            requirements: requirements,
+            overlayPath: overlayPath,
+            seedISOPath: seedISOPath,
+            sshPort: sshPort
+        )
 
         let qemuBinary = getQEMUBinary()
-        let kvmAvailable = Self.checkKVMAvailable()
-
-        var qemuArgs: [String] = []
-
-        // Add KVM acceleration if available, otherwise use TCG (software emulation)
-        if kvmAvailable {
-            qemuArgs.append(contentsOf: ["-enable-kvm", "-cpu", "host"])
-        } else {
-            // Use software emulation - slower but works without KVM
-            #if arch(arm64)
-            qemuArgs.append(contentsOf: ["-cpu", "cortex-a72"])
-            #else
-            qemuArgs.append(contentsOf: ["-cpu", "qemu64"])
-            #endif
-            logger.info("Using software emulation (TCG) - VM will be slow")
-        }
-
-        qemuArgs.append(contentsOf: [
-            "-m", "\(memoryMB)",
-            "-smp", "\(cpuCores)",
-            "-drive", "file=\(overlayPath),format=qcow2,if=virtio",
-            "-drive", "file=\(seedISOPath),format=raw,if=virtio,readonly=on",
-            "-netdev", "user,id=net0,hostfwd=tcp::\(sshPort)-:22",
-            "-device", "virtio-net-pci,netdev=net0",
-            "-nographic",
-            "-serial", "mon:stdio",
-            "-pidfile", "\(vmDiskDir)/\(vmId.uuidString).pid"
-        ])
-
-        // Add architecture-specific options
-        #if arch(arm64)
-        qemuArgs.insert(contentsOf: [
-            "-machine", "virt",
-            "-bios", "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
-        ], at: 0)
-        #else
-        qemuArgs.insert(contentsOf: [
-            "-machine", "q35"
-        ], at: 0)
-        #endif
-
-        logger.info("Starting QEMU VM", metadata: [
+        logger.info("Starting QEMU VM with SLIRP networking", metadata: [
             "vm_id": "\(vmId)",
             "binary": "\(qemuBinary)",
-            "cpu": "\(cpuCores)",
-            "memory_mb": "\(memoryMB)",
             "ssh_port": "\(sshPort)"
         ])
 
-        // 7. Start QEMU process
+        // Start QEMU process
         let qemuPid = try await startQEMUProcess(
             binary: qemuBinary,
             arguments: qemuArgs,
@@ -305,26 +378,204 @@ public actor SimpleVMManager {
             "pid": "\(qemuPid)"
         ])
 
-        // 8. Track running VM
+        // Track running VM
         let runningVM = RunningVM(
             vmId: vmId,
             qemuPid: qemuPid,
             sshPort: sshPort,
-            vmIP: vmNATIP,
+            vmIP: vmIP,
             overlayDiskPath: overlayPath,
             seedISOPath: seedISOPath,
             createdAt: Date()
         )
         activeVMs[vmId] = runningVM
 
-        logger.info("VM started successfully", metadata: [
+        logger.info("VM started successfully with SLIRP networking", metadata: [
             "vm_id": "\(vmId)",
-            "vm_nat_ip": "\(vmNATIP)",
+            "vm_nat_ip": "\(vmIP)",
             "ssh_port": "\(sshPort)",
             "ssh_command": "ssh -p \(sshPort) \(sshUser)@localhost"
         ])
 
-        return vmNATIP
+        return vmIP
+    }
+
+    #if os(Linux)
+    /// Create a TAP interface for VM networking (Linux only)
+    private func createTapInterface(name: String) async throws {
+        logger.info("Creating TAP interface", metadata: ["name": "\(name)"])
+
+        // Create TAP interface
+        let createProcess = Process()
+        createProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        createProcess.arguments = ["ip", "tuntap", "add", "dev", name, "mode", "tap"]
+
+        let createError = Pipe()
+        createProcess.standardError = createError
+        createProcess.standardOutput = FileHandle.nullDevice
+
+        try createProcess.run()
+        createProcess.waitUntilExit()
+
+        guard createProcess.terminationStatus == 0 else {
+            let errorData = createError.fileHandleForReading.readDataToEndOfFile()
+            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+            throw VMError.tapCreationFailed(errorMessage)
+        }
+
+        // Bring interface up
+        let upProcess = Process()
+        upProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        upProcess.arguments = ["ip", "link", "set", name, "up"]
+
+        try upProcess.run()
+        upProcess.waitUntilExit()
+
+        // Enable proxy ARP on the TAP interface so it can reach the gateway
+        let proxyArpProcess = Process()
+        proxyArpProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        proxyArpProcess.arguments = ["sysctl", "-w", "net.ipv4.conf.\(name).proxy_arp=1"]
+
+        try? proxyArpProcess.run()
+        proxyArpProcess.waitUntilExit()
+
+        logger.info("TAP interface created and configured", metadata: ["name": "\(name)"])
+    }
+
+    /// Delete a TAP interface
+    private func deleteTapInterface(name: String) async {
+        logger.info("Deleting TAP interface", metadata: ["name": "\(name)"])
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process.arguments = ["ip", "link", "delete", name]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        try? process.run()
+        process.waitUntilExit()
+    }
+
+    /// Build QEMU arguments for TAP networking (Linux only)
+    private func buildQEMUArgs(
+        vmId: UUID,
+        requirements: ResourceRequirements,
+        overlayPath: String,
+        seedISOPath: String,
+        tapInterface: String
+    ) throws -> [String] {
+        let cpuCores = max(2, Int(requirements.cpuCores ?? 2))
+        let memoryMB = max(1024, requirements.memoryMB ?? 2048)
+        let kvmAvailable = Self.checkAccelerationAvailable()
+
+        var args: [String] = []
+
+        // Add KVM acceleration if available
+        if kvmAvailable {
+            args.append(contentsOf: ["-enable-kvm", "-cpu", "host"])
+        } else {
+            #if arch(arm64)
+            args.append(contentsOf: ["-cpu", "cortex-a72"])
+            #else
+            args.append(contentsOf: ["-cpu", "qemu64"])
+            #endif
+            logger.info("Using software emulation (TCG) - VM will be slow")
+        }
+
+        args.append(contentsOf: [
+            "-m", "\(memoryMB)",
+            "-smp", "\(cpuCores)",
+            "-drive", "file=\(overlayPath),format=qcow2,if=virtio",
+            "-drive", "file=\(seedISOPath),format=raw,if=virtio,readonly=on",
+            // TAP networking - VM gets direct L2 access
+            "-netdev", "tap,id=net0,ifname=\(tapInterface),script=no,downscript=no",
+            "-device", "virtio-net-pci,netdev=net0",
+            "-nographic",
+            "-serial", "mon:stdio",
+            "-pidfile", "\(vmDiskDir)/\(vmId.uuidString).pid"
+        ])
+
+        // Add architecture-specific options
+        #if arch(arm64)
+        args.insert(contentsOf: [
+            "-machine", "virt",
+            "-bios", "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
+        ], at: 0)
+        #else
+        args.insert(contentsOf: [
+            "-machine", "q35"
+        ], at: 0)
+        #endif
+
+        return args
+    }
+    #endif
+
+    /// Build QEMU arguments for SLIRP user-mode networking
+    private func buildQEMUArgsSlirp(
+        vmId: UUID,
+        requirements: ResourceRequirements,
+        overlayPath: String,
+        seedISOPath: String,
+        sshPort: UInt16
+    ) throws -> [String] {
+        let cpuCores = max(2, Int(requirements.cpuCores ?? 2))
+        let memoryMB = max(1024, requirements.memoryMB ?? 2048)
+        let accelAvailable = Self.checkAccelerationAvailable()
+
+        var args: [String] = []
+
+        // Add hardware acceleration if available (KVM on Linux, HVF on macOS)
+        #if os(macOS)
+        if accelAvailable {
+            args.append(contentsOf: ["-accel", "hvf", "-cpu", "host"])
+        } else {
+            #if arch(arm64)
+            args.append(contentsOf: ["-cpu", "cortex-a72"])
+            #else
+            args.append(contentsOf: ["-cpu", "qemu64"])
+            #endif
+            logger.info("Using software emulation (TCG) - VM will be slow")
+        }
+        #else
+        if accelAvailable {
+            args.append(contentsOf: ["-enable-kvm", "-cpu", "host"])
+        } else {
+            #if arch(arm64)
+            args.append(contentsOf: ["-cpu", "cortex-a72"])
+            #else
+            args.append(contentsOf: ["-cpu", "qemu64"])
+            #endif
+            logger.info("Using software emulation (TCG) - VM will be slow")
+        }
+        #endif
+
+        args.append(contentsOf: [
+            "-m", "\(memoryMB)",
+            "-smp", "\(cpuCores)",
+            "-drive", "file=\(overlayPath),format=qcow2,if=virtio",
+            "-drive", "file=\(seedISOPath),format=raw,if=virtio,readonly=on",
+            // SLIRP user-mode networking with SSH port forward
+            "-netdev", "user,id=net0,hostfwd=tcp::\(sshPort)-:22",
+            "-device", "virtio-net-pci,netdev=net0",
+            "-nographic",
+            "-serial", "mon:stdio",
+            "-pidfile", "\(vmDiskDir)/\(vmId.uuidString).pid"
+        ])
+
+        // Add architecture-specific options
+        #if arch(arm64)
+        args.insert(contentsOf: [
+            "-machine", "virt",
+            "-bios", getUEFIFirmwarePath()
+        ], at: 0)
+        #else
+        args.insert(contentsOf: [
+            "-machine", "q35"
+        ], at: 0)
+        #endif
+
+        return args
     }
 
     /// Create a QCOW2 overlay disk backed by the base image
@@ -333,7 +584,11 @@ public actor SimpleVMManager {
         try? FileManager.default.removeItem(atPath: overlayPath)
 
         let process = Process()
+        #if os(macOS)
+        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/qemu-img")
+        #else
         process.executableURL = URL(fileURLWithPath: "/usr/bin/qemu-img")
+        #endif
         process.arguments = [
             "create",
             "-f", "qcow2",
@@ -395,15 +650,25 @@ public actor SimpleVMManager {
 
         return process.processIdentifier
     }
-    #endif
 
-    #if os(macOS)
+    // Virtualization.framework support disabled - using QEMU instead
+    // To re-enable, define ENABLE_VIRTUALIZATION_FRAMEWORK
+    #if ENABLE_VIRTUALIZATION_FRAMEWORK
     private func startVMMacOS(
         vmId: UUID,
         requirements: ResourceRequirements,
         sshPublicKey: String,
-        sshUser: String
+        sshUser: String,
+        vpnIP: String?,
+        vpnGateway: String?
     ) async throws -> String {
+        // Note: macOS Virtualization.framework uses its own NAT networking
+        // TAP networking is not supported on macOS VMs in the same way as Linux
+        // For macOS provider, we would need a different approach (e.g., bridged networking)
+        if vpnIP != nil {
+            logger.warning("TAP networking requested but not supported on macOS VMs - using NAT")
+        }
+
         // 1. Generate dynamic cloud-init ISO with consumer's SSH key
         let seedISOPath = try await generateCloudInitISO(
             vmId: vmId,
@@ -439,8 +704,8 @@ public actor SimpleVMManager {
             }
         }
 
-        // 4. Generate VM NAT IP
-        let vmNATIP = generateVMNATIP()
+        // 4. Use VPN IP if provided (for tracking), otherwise generate NAT IP
+        let vmIP = vpnIP ?? generateVMNATIP()
 
         // 5. Allocate SSH port
         let sshPort = allocatePort()
@@ -450,18 +715,18 @@ public actor SimpleVMManager {
             vmId: vmId,
             vm: vm,
             sshPort: sshPort,
-            vmIP: vmNATIP,
+            vmIP: vmIP,
             createdAt: Date()
         )
         activeVMs[vmId] = runningVM
 
         logger.info("VM started successfully", metadata: [
             "vm_id": "\(vmId)",
-            "vm_nat_ip": "\(vmNATIP)",
+            "vm_ip": "\(vmIP)",
             "ssh_port": "\(sshPort)"
         ])
 
-        return vmNATIP
+        return vmIP
     }
     #endif
 
@@ -474,27 +739,7 @@ public actor SimpleVMManager {
 
         logger.info("Stopping VM", metadata: ["vm_id": "\(vmId)", "dry_run": "\(dryRun)"])
 
-        #if os(macOS)
-        // In dry-run mode or if VM is nil, just remove from tracking
-        if dryRun || runningVM.vm == nil {
-            logger.info("DRY RUN: Simulating VM stop")
-            activeVMs.removeValue(forKey: vmId)
-            logger.info("DRY RUN: VM removed from tracking", metadata: ["vm_id": "\(vmId)"])
-            return
-        }
-
-        // Stop VM
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            runningVM.vm!.stop { error in
-                if let error = error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
-            }
-        }
-        #else
-        // Linux: Stop QEMU process and clean up
+        // Stop QEMU process and clean up
         if dryRun || runningVM.qemuPid == nil {
             logger.info("DRY RUN: Simulating VM stop")
         } else if let pid = runningVM.qemuPid {
@@ -512,6 +757,15 @@ public actor SimpleVMManager {
             }
         }
 
+        #if os(Linux)
+        // Clean up TAP interface if present (Linux only)
+        if let tapInterface = vmTapInterfaces[vmId] {
+            await deleteTapInterface(name: tapInterface)
+            vmTapInterfaces.removeValue(forKey: vmId)
+            logger.info("Cleaned up TAP interface", metadata: ["tap": "\(tapInterface)"])
+        }
+        #endif
+
         // Clean up overlay disk and seed ISO
         if let overlayPath = runningVM.overlayDiskPath {
             try? FileManager.default.removeItem(atPath: overlayPath)
@@ -527,7 +781,6 @@ public actor SimpleVMManager {
         try? FileManager.default.removeItem(atPath: pidFilePath)
         try? FileManager.default.removeItem(atPath: "\(vmDiskDir)/\(vmId.uuidString)-stdout.log")
         try? FileManager.default.removeItem(atPath: "\(vmDiskDir)/\(vmId.uuidString)-stderr.log")
-        #endif
 
         // Remove from tracking
         activeVMs.removeValue(forKey: vmId)
@@ -556,7 +809,6 @@ public actor SimpleVMManager {
         return (vm.vmIP, vm.sshPort)
     }
 
-    #if os(Linux)
     /// Check if VM's QEMU process is still running
     public func isQEMURunning(vmId: UUID) -> Bool {
         guard let vm = activeVMs[vmId], let pid = vm.qemuPid else {
@@ -613,7 +865,11 @@ public actor SimpleVMManager {
     private func checkPortOpen(port: UInt16) async -> Bool {
         var hints = addrinfo()
         hints.ai_family = AF_INET
+        #if os(Linux)
         hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
+        #else
+        hints.ai_socktype = SOCK_STREAM
+        #endif
         hints.ai_protocol = Int32(IPPROTO_TCP)
 
         var result: UnsafeMutablePointer<addrinfo>?
@@ -638,12 +894,11 @@ public actor SimpleVMManager {
         let connectResult = connect(sock, addrInfo.pointee.ai_addr, addrInfo.pointee.ai_addrlen)
         return connectResult == 0
     }
-    #endif
 
     // MARK: - Private Helpers
 
-    #if os(macOS)
-    /// Generate a dynamic cloud-init ISO for this VM
+    #if ENABLE_VIRTUALIZATION_FRAMEWORK
+    /// Generate a dynamic cloud-init ISO for this VM (Virtualization.framework)
     private func generateCloudInitISO(
         vmId: UUID,
         sshPublicKey: String,
@@ -739,8 +994,22 @@ public actor SimpleVMManager {
         return config
     }
 
+    /// Get the real user's home directory (handles sudo correctly)
+    private func getRealUserHomeDir() -> String {
+        // When running with sudo, $HOME points to root's home
+        // Check SUDO_USER to get the original user's home
+        if let sudoUser = ProcessInfo.processInfo.environment["SUDO_USER"] {
+            return "/Users/\(sudoUser)"
+        } else if let home = ProcessInfo.processInfo.environment["HOME"] {
+            return home
+        } else {
+            return NSHomeDirectory()
+        }
+    }
+
     private func getOrCreateEFIVariableStore() throws -> VZEFIVariableStore {
-        let efiPath = NSString(string: "~/Library/Application Support/Omerta/efi-vars.bin").expandingTildeInPath
+        let homeDir = getRealUserHomeDir()
+        let efiPath = "\(homeDir)/Library/Application Support/Omerta/efi-vars.bin"
         let efiURL = URL(fileURLWithPath: efiPath)
 
         if FileManager.default.fileExists(atPath: efiPath) {
@@ -752,15 +1021,15 @@ public actor SimpleVMManager {
     }
 
     private func getUbuntuDiskURL() throws -> URL {
+        let homeDir = getRealUserHomeDir()
         let paths = [
-            "~/Library/Application Support/Omerta/ubuntu-22.04.raw",
+            "\(homeDir)/Library/Application Support/Omerta/ubuntu-22.04.raw",
             "/usr/local/share/omerta/ubuntu-22.04.raw",
             "/opt/omerta/ubuntu-22.04.raw"
         ]
 
         for path in paths {
-            let expandedPath = NSString(string: path).expandingTildeInPath
-            let url = URL(fileURLWithPath: expandedPath)
+            let url = URL(fileURLWithPath: path)
             if FileManager.default.fileExists(atPath: url.path) {
                 return url
             }
@@ -798,6 +1067,7 @@ public enum VMError: Error, CustomStringConvertible {
     case kvmNotAvailable
     case overlayCreationFailed(String)
     case isoToolNotFound
+    case tapCreationFailed(String)
 
     public var description: String {
         switch self {
@@ -833,6 +1103,8 @@ public enum VMError: Error, CustomStringConvertible {
             return "Failed to create VM overlay disk: \(reason)"
         case .isoToolNotFound:
             return "ISO creation tool not found. Install with: sudo apt install genisoimage"
+        case .tapCreationFailed(let reason):
+            return "Failed to create TAP interface: \(reason)"
         }
     }
 }

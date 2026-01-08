@@ -405,7 +405,7 @@ public class WireGuardNetlinkSocket {
     }
 
     private func makeEndpointSockaddr(host: String, port: UInt16) -> Data? {
-        // Try IPv4 first
+        // Try IPv4 literal first
         var addr4 = sockaddr_in()
         if inet_pton(AF_INET, host, &addr4.sin_addr) == 1 {
             addr4.sin_family = sa_family_t(AF_INET)
@@ -413,12 +413,48 @@ public class WireGuardNetlinkSocket {
             return withUnsafeBytes(of: &addr4) { Data($0) }
         }
 
-        // Try IPv6
+        // Try IPv6 literal
         var addr6 = sockaddr_in6()
         if inet_pton(AF_INET6, host, &addr6.sin6_addr) == 1 {
             addr6.sin6_family = sa_family_t(AF_INET6)
             addr6.sin6_port = port.bigEndian
             return withUnsafeBytes(of: &addr6) { Data($0) }
+        }
+
+        // Try hostname resolution using getaddrinfo
+        var hints = addrinfo()
+        hints.ai_family = AF_UNSPEC  // Allow IPv4 or IPv6
+        hints.ai_socktype = Int32(SOCK_DGRAM.rawValue)  // UDP
+
+        var result: UnsafeMutablePointer<addrinfo>?
+        let status = getaddrinfo(host, String(port), &hints, &result)
+
+        guard status == 0, let addrInfo = result else {
+            return nil
+        }
+        defer { freeaddrinfo(result) }
+
+        // Use the first result
+        if addrInfo.pointee.ai_family == AF_INET {
+            // IPv4
+            guard addrInfo.pointee.ai_addrlen >= MemoryLayout<sockaddr_in>.size else {
+                return nil
+            }
+            return addrInfo.pointee.ai_addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { ptr in
+                var addr = ptr.pointee
+                addr.sin_port = port.bigEndian
+                return withUnsafeBytes(of: &addr) { Data($0) }
+            }
+        } else if addrInfo.pointee.ai_family == AF_INET6 {
+            // IPv6
+            guard addrInfo.pointee.ai_addrlen >= MemoryLayout<sockaddr_in6>.size else {
+                return nil
+            }
+            return addrInfo.pointee.ai_addr.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { ptr in
+                var addr = ptr.pointee
+                addr.sin6_port = port.bigEndian
+                return withUnsafeBytes(of: &addr) { Data($0) }
+            }
         }
 
         return nil

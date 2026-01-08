@@ -46,6 +46,9 @@ struct Start: AsyncParsableCommand {
     @Flag(name: .long, help: "Dry run mode - simulate VM creation without actual VMs")
     var dryRun: Bool = false
 
+    @Option(name: .long, help: "Auto-shutdown after N seconds (for testing)")
+    var timeout: Int?
+
     mutating func run() async throws {
         print("Starting Omerta Provider Daemon...")
         if dryRun {
@@ -139,11 +142,21 @@ struct Start: AsyncParsableCommand {
             print("Ready to accept VM requests from network peers.")
             print("VMs will be accessible via SSH over WireGuard tunnel.")
             print("")
-            print("Press Ctrl+C to stop")
+            if let timeout = timeout {
+                print("Auto-shutdown in \(timeout) seconds")
+            } else {
+                print("Press Ctrl+C to stop")
+            }
             print("")
 
-            // Keep running until interrupted
-            try await Task.sleep(for: .seconds(60 * 60 * 24 * 365))  // 1 year
+            // Keep running until interrupted or timeout
+            let duration = timeout ?? (60 * 60 * 24 * 365)  // timeout or 1 year
+            try await Task.sleep(for: .seconds(duration))
+
+            if timeout != nil {
+                print("Timeout reached, shutting down...")
+                try await daemon.stop()
+            }
 
         } catch {
             print("Failed to start daemon: \(error)")

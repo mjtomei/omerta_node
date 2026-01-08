@@ -11,6 +11,7 @@ public enum VPNBackend: String, Sendable {
     case networkExtension  // Use macOS Network Extension (no sudo required)
     case wgQuick          // Use wg-quick CLI (requires sudo)
     case nativeNetlink    // Use native Linux netlink APIs (requires root)
+    case nativeMacOS      // Use native macOS utun/userspace WireGuard (requires root)
     case dryRun           // Skip actual VPN setup (for testing)
 }
 
@@ -76,6 +77,10 @@ public actor EphemeralVPN: VPNProvider {
     private var linuxWgManager: LinuxWireGuardManager?
     #endif
 
+    #if os(macOS)
+    private var macOSWgManager: MacOSWireGuardManager?
+    #endif
+
     /// Initialize EphemeralVPN
     /// - Parameters:
     ///   - basePort: Base port for WireGuard listeners
@@ -88,7 +93,7 @@ public actor EphemeralVPN: VPNProvider {
         #if os(Linux)
         // On Linux, auto-select nativeNetlink if networkExtension was requested
         // (NetworkExtension is macOS-only)
-        if backend == .networkExtension {
+        if backend == .networkExtension || backend == .nativeMacOS {
             self.backend = .nativeNetlink
         } else {
             self.backend = backend
@@ -96,6 +101,23 @@ public actor EphemeralVPN: VPNProvider {
         if self.backend == .nativeNetlink {
             self.linuxWgManager = LinuxWireGuardManager()
         }
+        #elseif os(macOS)
+        // On macOS, prefer wgQuick (native macOS implementation is incomplete)
+        // If nativeNetlink or nativeMacOS was explicitly requested, use wgQuick instead
+        if backend == .nativeNetlink || backend == .nativeMacOS {
+            self.backend = .wgQuick
+        } else {
+            self.backend = backend
+        }
+        // Don't initialize native manager since we're using wgQuick
+        self.macOSWgManager = nil
+        #if canImport(NetworkExtension)
+        if backend == .networkExtension {
+            self.tunnelService = VPNTunnelService()
+        } else {
+            self.tunnelService = nil
+        }
+        #endif
         #else
         self.backend = backend
         #if canImport(NetworkExtension)
@@ -124,6 +146,14 @@ public actor EphemeralVPN: VPNProvider {
         if !dryRun {
             self.linuxWgManager = LinuxWireGuardManager()
         }
+        #elseif os(macOS)
+        // On macOS, use wgQuick (native macOS implementation is incomplete)
+        // The native macOS WireGuard doesn't implement the full Noise protocol
+        self.backend = dryRun ? .dryRun : .wgQuick
+        self.macOSWgManager = nil  // Not using native implementation
+        #if canImport(NetworkExtension)
+        self.tunnelService = nil
+        #endif
         #else
         self.backend = dryRun ? .dryRun : .networkExtension
         #if canImport(NetworkExtension)
@@ -154,6 +184,14 @@ public actor EphemeralVPN: VPNProvider {
             // Check if /sys/module/wireguard exists
             return FileManager.default.fileExists(atPath: "/sys/module/wireguard") ||
                    FileManager.default.fileExists(atPath: "/sys/class/net/lo")  // At least basic netlink works
+            #else
+            return false
+            #endif
+        case .nativeMacOS:
+            #if os(macOS)
+            // Native macOS requires root to create utun interfaces
+            // Check if we can open the system control socket (requires elevated privileges)
+            return true  // Will fail at runtime if not root
             #else
             return false
             #endif
@@ -264,6 +302,20 @@ public actor EphemeralVPN: VPNProvider {
             #else
             throw VPNError.tunnelStartFailed("Native netlink only available on Linux")
             #endif
+
+        case .nativeMacOS:
+            #if os(macOS)
+            try await startVPNServerNativeMacOS(
+                privateKey: serverPrivateKey,
+                interfaceName: interfaceName,
+                serverIP: serverVPNIP,
+                port: port
+            )
+            // Configure NAT/forwarding for internet access
+            try await configureNATForwardingMacOS(interfaceName: interfaceName, vpnSubnet: "10.\(subnetByte1).\(subnetByte2).0/24")
+            #else
+            throw VPNError.tunnelStartFailed("Native macOS only available on macOS")
+            #endif
         }
 
         let server = VPNServer(
@@ -341,6 +393,17 @@ public actor EphemeralVPN: VPNProvider {
             )
             #else
             throw VPNError.tunnelStartFailed("Native netlink only available on Linux")
+            #endif
+
+        case .nativeMacOS:
+            #if os(macOS)
+            try await addPeerToInterfaceNativeMacOS(
+                interfaceName: server.interfaceName,
+                peerPublicKey: providerPublicKey,
+                allowedIPs: server.clientVPNIP
+            )
+            #else
+            throw VPNError.tunnelStartFailed("Native macOS only available on macOS")
             #endif
         }
 
@@ -517,6 +580,14 @@ public actor EphemeralVPN: VPNProvider {
             try await removeNATForwarding(interfaceName: server.interfaceName)
             // Delete WireGuard interface via native netlink
             try await stopVPNServerNativeNetlink(interfaceName: server.interfaceName)
+            #endif
+
+        case .nativeMacOS:
+            #if os(macOS)
+            // Remove NAT/pf rules
+            try await removeNATForwardingMacOS(interfaceName: server.interfaceName)
+            // Stop WireGuard and close utun
+            try await stopVPNServerNativeMacOS(interfaceName: server.interfaceName)
             #endif
         }
 
@@ -891,6 +962,136 @@ public actor EphemeralVPN: VPNProvider {
     }
     #endif
 
+    // MARK: - Native macOS Methods
+
+    #if os(macOS)
+    /// Start WireGuard VPN server using native macOS utun and userspace WireGuard
+    private func startVPNServerNativeMacOS(
+        privateKey: String,
+        interfaceName: String,
+        serverIP: String,
+        port: UInt16
+    ) async throws {
+        if macOSWgManager == nil {
+            macOSWgManager = MacOSWireGuardManager()
+        }
+        guard let manager = macOSWgManager else {
+            throw VPNError.tunnelStartFailed("Failed to initialize macOS WireGuard manager")
+        }
+
+        logger.info("Starting VPN server via native macOS", metadata: [
+            "interface": "\(interfaceName)",
+            "port": "\(port)"
+        ])
+
+        // Decode private key
+        guard let privateKeyData = Data(base64Encoded: privateKey), privateKeyData.count == 32 else {
+            throw VPNError.invalidConfiguration("Invalid private key format")
+        }
+
+        let config = WireGuardConfig(
+            privateKey: privateKeyData,
+            listenPort: port,
+            address: serverIP,
+            prefixLength: 24,
+            peers: []  // Peers will be added dynamically
+        )
+
+        do {
+            try await manager.start(name: interfaceName, config: config)
+            logger.info("VPN server started via native macOS", metadata: [
+                "interface": "\(interfaceName)"
+            ])
+        } catch {
+            throw VPNError.tunnelStartFailed("Native macOS failed: \(error)")
+        }
+    }
+
+    /// Stop WireGuard VPN server on macOS
+    private func stopVPNServerNativeMacOS(interfaceName: String) async throws {
+        guard let manager = macOSWgManager else {
+            logger.warning("No macOS WireGuard manager")
+            return
+        }
+
+        logger.info("Stopping VPN server via native macOS", metadata: [
+            "interface": "\(interfaceName)"
+        ])
+
+        await manager.stop()
+        logger.info("VPN server stopped via native macOS", metadata: [
+            "interface": "\(interfaceName)"
+        ])
+    }
+
+    /// Add a peer to WireGuard interface using native macOS
+    private func addPeerToInterfaceNativeMacOS(
+        interfaceName: String,
+        peerPublicKey: String,
+        allowedIPs: String
+    ) async throws {
+        guard let manager = macOSWgManager else {
+            throw VPNError.tunnelStartFailed("macOS WireGuard manager not initialized")
+        }
+
+        // Decode public key
+        guard let publicKeyData = Data(base64Encoded: peerPublicKey), publicKeyData.count == 32 else {
+            throw VPNError.invalidConfiguration("Invalid peer public key format")
+        }
+
+        // Create peer with allowed IPs in the expected format: [(ip: String, cidr: UInt8)]
+        let peer = WireGuardPeer(
+            publicKey: publicKeyData,
+            endpoint: nil,  // No endpoint for server-side peer
+            allowedIPs: [(ip: allowedIPs, cidr: 32)],
+            persistentKeepalive: nil
+        )
+
+        logger.info("Adding peer via native macOS", metadata: [
+            "interface": "\(interfaceName)",
+            "peer_key": "\(peerPublicKey.prefix(20))..."
+        ])
+
+        try await manager.addPeer(peer)
+
+        logger.info("Peer added via native macOS", metadata: [
+            "interface": "\(interfaceName)"
+        ])
+    }
+
+    /// Configure NAT/forwarding on macOS using native pf
+    private func configureNATForwardingMacOS(interfaceName: String, vpnSubnet: String) async throws {
+        guard let manager = macOSWgManager else {
+            logger.warning("No macOS WireGuard manager for NAT config")
+            return
+        }
+
+        let actualInterface = await manager.getInterfaceName()
+
+        // Enable pf and IP forwarding
+        try MacOSPacketFilterManager.enable()
+        try MacOSPacketFilterManager.enableIPForwarding()
+
+        // Create filter rules for the VPN (NAT requires separate anchor)
+        let anchor = "omerta-\(interfaceName)"
+        // Simple pass rule - just allow traffic on the VPN interface
+        let rules = "pass quick on \(actualInterface) all\n"
+
+        try MacOSPacketFilterManager.loadRulesIntoAnchor(anchor: anchor, rules: rules)
+        logger.info("NAT forwarding configured via native pf", metadata: [
+            "interface": "\(actualInterface)",
+            "anchor": "\(anchor)"
+        ])
+    }
+
+    /// Remove NAT/forwarding on macOS
+    private func removeNATForwardingMacOS(interfaceName: String) async throws {
+        let anchor = "omerta-\(interfaceName)"
+        try MacOSPacketFilterManager.flushAnchor(anchor: anchor)
+        logger.info("NAT forwarding removed via native pf", metadata: ["anchor": "\(anchor)"])
+    }
+    #endif
+
     private func configureNATForwarding(interfaceName: String) async throws {
         // IP forwarding should be enabled in PostUp scripts
         // Additional configuration if needed
@@ -948,9 +1149,11 @@ public struct VPNServer: Sendable {
 public enum WireGuardCleanup {
     private static let logger = Logger(label: "com.omerta.wg-cleanup")
 
-    /// Pattern for Omerta-managed WireGuard interfaces: wg + 8 hex chars
-    /// Examples: wg3AD3F0D1, wgABCD1234
-    public static let interfacePattern = #"^wg[0-9A-Fa-f]{8}$"#
+    /// Pattern for Omerta-managed WireGuard interfaces
+    /// Consumer format: wg + 8 hex chars (e.g., wg3AD3F0D1)
+    /// Provider format: wg- + 8 hex chars (e.g., wg-3AD3F0D1)
+    /// Also matches tap interfaces: tap- + 8 hex chars (e.g., tap-3AD3F0D1)
+    public static let interfacePattern = #"^(wg-?|tap-)[0-9A-Fa-f]{8}$"#
 
     /// List all active WireGuard interfaces
     public static func listAllInterfaces() throws -> [String] {
@@ -981,12 +1184,13 @@ public enum WireGuardCleanup {
 
     /// List only Omerta-managed interfaces (matching our naming pattern)
     /// On macOS, also checks /var/run/wireguard/*.name files for interface mappings
+    /// On Linux, also checks `ip link` for native kernel WireGuard interfaces
     public static func listOmertaInterfaces() throws -> [String] {
         var omertaInterfaces: [String] = []
+        let regex = try NSRegularExpression(pattern: interfacePattern)
 
         // Method 1: Check wg show interfaces output
         let allInterfaces = try listAllInterfaces()
-        let regex = try NSRegularExpression(pattern: interfacePattern)
 
         for interfaceName in allInterfaces {
             let range = NSRange(interfaceName.startIndex..., in: interfaceName)
@@ -995,9 +1199,9 @@ public enum WireGuardCleanup {
             }
         }
 
+        #if os(macOS)
         // Method 2: On macOS, check /var/run/wireguard/*.name files
         // These map our config names to utun interfaces
-        #if os(macOS)
         let wireguardRunDir = "/var/run/wireguard"
         if FileManager.default.fileExists(atPath: wireguardRunDir) {
             if let files = try? FileManager.default.contentsOfDirectory(atPath: wireguardRunDir) {
@@ -1008,6 +1212,39 @@ public enum WireGuardCleanup {
                     if regex.firstMatch(in: configName, range: range) != nil {
                         if !omertaInterfaces.contains(configName) {
                             omertaInterfaces.append(configName)
+                        }
+                    }
+                }
+            }
+        }
+        #else
+        // Method 2: On Linux, check `ip link` for native kernel interfaces
+        // Native WireGuard interfaces may not show up in `wg show interfaces`
+        let ipProcess = Process()
+        ipProcess.executableURL = URL(fileURLWithPath: "/usr/sbin/ip")
+        ipProcess.arguments = ["link", "show"]
+
+        let ipPipe = Pipe()
+        ipProcess.standardOutput = ipPipe
+        ipProcess.standardError = FileHandle.nullDevice
+
+        try? ipProcess.run()
+        ipProcess.waitUntilExit()
+
+        if ipProcess.terminationStatus == 0 {
+            let data = ipPipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8) ?? ""
+
+            // Parse interface names from `ip link` output
+            // Format: "29: wg-892362D4: <POINTOPOINT,..."
+            for line in output.split(separator: "\n") {
+                let parts = line.split(separator: ":")
+                if parts.count >= 2 {
+                    let interfaceName = parts[1].trimmingCharacters(in: .whitespaces)
+                    let range = NSRange(interfaceName.startIndex..., in: interfaceName)
+                    if regex.firstMatch(in: interfaceName, range: range) != nil {
+                        if !omertaInterfaces.contains(interfaceName) {
+                            omertaInterfaces.append(interfaceName)
                         }
                     }
                 }
@@ -1027,8 +1264,10 @@ public enum WireGuardCleanup {
 
         let pathValue = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
 
+        var wgQuickSuccess = false
+
         // Try with config path first
-        var process = Process()
+        let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
         process.environment = ["PATH": pathValue]
 
@@ -1041,15 +1280,18 @@ public enum WireGuardCleanup {
 
         let errorPipe = Pipe()
         process.standardError = errorPipe
+        process.standardOutput = FileHandle.nullDevice
 
         try process.run()
         process.waitUntilExit()
 
+        wgQuickSuccess = process.terminationStatus == 0
+
         // Clean up config file if it exists
         try? FileManager.default.removeItem(atPath: configPath)
 
-        // Clean up macOS name file if it exists (in /var/run/wireguard/)
         #if os(macOS)
+        // Clean up macOS name file if it exists (in /var/run/wireguard/)
         let nameFilePath = "/var/run/wireguard/\(interfaceName).name"
         if FileManager.default.fileExists(atPath: nameFilePath) {
             // Need sudo to remove files in /var/run/wireguard
@@ -1061,12 +1303,31 @@ public enum WireGuardCleanup {
             rmProcess.waitUntilExit()
             logger.info("Removed name file", metadata: ["path": "\(nameFilePath)"])
         }
+        #else
+        // On Linux, if wg-quick failed, try `ip link delete` for native kernel interfaces
+        if !wgQuickSuccess {
+            logger.info("wg-quick failed, trying ip link delete", metadata: ["interface": "\(interfaceName)"])
+
+            let ipProcess = Process()
+            ipProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            ipProcess.arguments = ["ip", "link", "delete", interfaceName]
+            ipProcess.standardOutput = FileHandle.nullDevice
+            ipProcess.standardError = FileHandle.nullDevice
+
+            try? ipProcess.run()
+            ipProcess.waitUntilExit()
+
+            if ipProcess.terminationStatus == 0 {
+                logger.info("Deleted interface via ip link", metadata: ["interface": "\(interfaceName)"])
+                wgQuickSuccess = true  // Mark as success since we deleted it
+            }
+        }
         #endif
 
-        if process.terminationStatus != 0 {
+        if !wgQuickSuccess {
             let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
             let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-            logger.warning("wg-quick down returned error", metadata: [
+            logger.warning("Failed to stop interface", metadata: [
                 "interface": "\(interfaceName)",
                 "error": "\(errorMessage)"
             ])

@@ -3,6 +3,21 @@ import Foundation
 /// Generates cloud-init configuration for VM provisioning
 public enum CloudInitGenerator {
 
+    /// Network configuration for static IP assignment
+    public struct NetworkConfig {
+        public let ipAddress: String
+        public let gateway: String
+        public let prefixLength: UInt8
+        public let dns: [String]
+
+        public init(ipAddress: String, gateway: String, prefixLength: UInt8 = 24, dns: [String] = ["8.8.8.8", "8.8.4.4"]) {
+            self.ipAddress = ipAddress
+            self.gateway = gateway
+            self.prefixLength = prefixLength
+            self.dns = dns
+        }
+    }
+
     /// Generate cloud-init user-data with the consumer's SSH public key
     public static func generateUserData(
         sshPublicKey: String,
@@ -56,13 +71,43 @@ public enum CloudInitGenerator {
         """
     }
 
+    /// Generate cloud-init network-config for static IP (Netplan v2 format)
+    /// Uses wildcard match for interface to work across different QEMU configurations
+    public static func generateNetworkConfig(_ config: NetworkConfig) -> String {
+        let dnsServers = config.dns.map { "\"\($0)\"" }.joined(separator: ", ")
+        // Use id0 with match on driver:virtio* to work across different QEMU setups
+        // On ARM64 QEMU the interface is typically enp0s1, on x86 it might be ens3
+        return """
+        version: 2
+        ethernets:
+          id0:
+            match:
+              driver: virtio*
+            addresses:
+              - \(config.ipAddress)/\(config.prefixLength)
+            routes:
+              - to: default
+                via: \(config.gateway)
+            nameservers:
+              addresses: [\(dnsServers)]
+        """
+    }
+
     /// Create a cloud-init seed ISO file
+    /// - Parameters:
+    ///   - path: Output path for the ISO file
+    ///   - sshPublicKey: SSH public key for the omerta user
+    ///   - sshUser: Username for SSH access (default: "omerta")
+    ///   - instanceId: Unique ID for this VM instance
+    ///   - password: Optional password for recovery access
+    ///   - networkConfig: Optional static IP configuration (if nil, VM uses DHCP)
     public static func createSeedISO(
         at path: String,
         sshPublicKey: String,
         sshUser: String = "omerta",
         instanceId: UUID,
-        password: String? = "omerta123"  // Default recovery password
+        password: String? = "omerta123",  // Default recovery password
+        networkConfig: NetworkConfig? = nil
     ) throws {
         let expandedPath = expandPath(path)
         let tempDir = FileManager.default.temporaryDirectory
@@ -91,6 +136,13 @@ public enum CloudInitGenerator {
         let metaData = generateMetaData(instanceId: instanceId)
         let metaDataPath = tempDir.appendingPathComponent("meta-data")
         try metaData.write(to: metaDataPath, atomically: true, encoding: .utf8)
+
+        // Write network-config if static IP is specified
+        if let netConfig = networkConfig {
+            let networkConfigData = generateNetworkConfig(netConfig)
+            let networkConfigPath = tempDir.appendingPathComponent("network-config")
+            try networkConfigData.write(to: networkConfigPath, atomically: true, encoding: .utf8)
+        }
 
         // Create ISO using hdiutil (macOS) or genisoimage (Linux)
         #if os(macOS)

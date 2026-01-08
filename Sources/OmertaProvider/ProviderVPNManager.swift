@@ -4,11 +4,6 @@ import OmertaCore
 import OmertaNetwork
 import Crypto
 
-#if os(Linux)
-// Use native netlink implementation on Linux when available
-private let useNativeNetlink = true
-#endif
-
 /// Manages provider-side WireGuard tunnels connecting to consumer VPN servers
 /// Sets up NAT routing from VPN network to VM NAT addresses
 public actor ProviderVPNManager {
@@ -22,6 +17,10 @@ public actor ProviderVPNManager {
     private var nativeWireGuard: LinuxWireGuardManager?
     #endif
 
+    #if os(macOS)
+    private var macOSWireGuard: MacOSWireGuardManager?
+    #endif
+
     public struct ProviderTunnel: Sendable {
         public let vmId: UUID
         public let interfaceName: String
@@ -29,7 +28,7 @@ public actor ProviderVPNManager {
         public let publicKey: String
         public let providerVPNIP: String  // Provider's IP within VPN (e.g., 10.99.0.254)
         public let vmVPNIP: String        // VM's VPN IP (e.g., 10.99.0.2)
-        public let vmNATIP: String        // VM's actual NAT IP (e.g., 192.168.64.2)
+        public let tapInterface: String   // TAP interface for VM (e.g., tap-abc12345)
         public let consumerEndpoint: String
         public let configPath: String
         public let createdAt: Date
@@ -56,16 +55,18 @@ public actor ProviderVPNManager {
     // MARK: - Tunnel Lifecycle
 
     /// Create a WireGuard tunnel connecting to consumer's VPN server
+    /// With TAP networking, routes traffic directly to the VM's TAP interface (no NAT needed)
     /// Returns the provider's public key (consumer needs this to allow connection)
     public func createTunnel(
         vmId: UUID,
         vpnConfig: VPNConfiguration,
-        vmNATIP: String
+        tapInterface: String
     ) async throws -> String {
-        logger.info("Creating provider VPN tunnel", metadata: [
+        logger.info("Creating provider VPN tunnel with TAP routing", metadata: [
             "vm_id": "\(vmId)",
             "consumer_endpoint": "\(vpnConfig.consumerEndpoint)",
             "vm_vpn_ip": "\(vpnConfig.vmVPNIP)",
+            "tap_interface": "\(tapInterface)",
             "dry_run": "\(dryRun)"
         ])
 
@@ -105,21 +106,22 @@ public actor ProviderVPNManager {
             // 5. Start WireGuard interface
             try await startWireGuardInterface(configPath: configPath, interfaceName: interfaceName)
 
-            // 6. Set up NAT routing: traffic to vmVPNIP gets routed to vmNATIP
-            try await setupNATRouting(
+            // 6. Set up TAP routing: traffic to vmVPNIP goes directly to TAP interface
+            // No NAT needed - VM has the VPN IP directly
+            try await setupTAPRouting(
                 vmVPNIP: vpnConfig.vmVPNIP,
-                vmNATIP: vmNATIP,
-                interfaceName: interfaceName
+                tapInterface: tapInterface,
+                wgInterface: interfaceName
             )
 
             // 7. Set up firewall rules to isolate VM
             try await setupFirewallRules(
-                vmNATIP: vmNATIP,
+                vmVPNIP: vpnConfig.vmVPNIP,
                 vpnSubnet: vpnConfig.vpnSubnet,
                 interfaceName: interfaceName
             )
         } else {
-            logger.info("DRY RUN: Skipping WireGuard interface, NAT, and firewall setup")
+            logger.info("DRY RUN: Skipping WireGuard interface, TAP routing, and firewall setup")
         }
 
         // 8. Track tunnel
@@ -130,7 +132,7 @@ public actor ProviderVPNManager {
             publicKey: publicKey,
             providerVPNIP: providerVPNIP,
             vmVPNIP: vpnConfig.vmVPNIP,
-            vmNATIP: vmNATIP,
+            tapInterface: tapInterface,
             consumerEndpoint: vpnConfig.consumerEndpoint,
             configPath: configPath,
             createdAt: Date()
@@ -163,14 +165,14 @@ public actor ProviderVPNManager {
         if !dryRun {
             // 1. Remove firewall rules
             try await removeFirewallRules(
-                vmNATIP: tunnel.vmNATIP,
+                vmVPNIP: tunnel.vmVPNIP,
                 interfaceName: tunnel.interfaceName
             )
 
-            // 2. Remove NAT routing
-            try await removeNATRouting(
+            // 2. Remove TAP routing
+            try await removeTAPRouting(
                 vmVPNIP: tunnel.vmVPNIP,
-                vmNATIP: tunnel.vmNATIP
+                tapInterface: tunnel.tapInterface
             )
 
             // 3. Stop WireGuard interface
@@ -314,14 +316,12 @@ public actor ProviderVPNManager {
         logger.info("Starting WireGuard interface", metadata: ["interface": "\(interfaceName)"])
 
         #if os(Linux)
-        if useNativeNetlink {
-            try await startWireGuardInterfaceNative(configPath: configPath, interfaceName: interfaceName)
-            return
-        }
+        try await startWireGuardInterfaceNative(configPath: configPath, interfaceName: interfaceName)
+        #elseif os(macOS)
+        try await startWireGuardInterfaceNativeMacOS(configPath: configPath, interfaceName: interfaceName)
+        #else
+        throw ProviderVPNError.interfaceStartFailed("Unsupported platform")
         #endif
-
-        // Fall back to wg-quick
-        try await startWireGuardInterfaceWGQuick(configPath: configPath, interfaceName: interfaceName)
     }
 
     #if os(Linux)
@@ -386,33 +386,20 @@ public actor ProviderVPNManager {
             }
         }
 
-        do {
-            // Create and configure interface
-            try wg.createInterface(
-                name: interfaceName,
-                privateKeyBase64: params.privateKey,
-                listenPort: params.listenPort ?? 0,
-                address: address,
-                prefixLength: prefixLength,
-                peers: peers
-            )
+        // Create and configure interface
+        try wg.createInterface(
+            name: interfaceName,
+            privateKeyBase64: params.privateKey,
+            listenPort: params.listenPort ?? 0,
+            address: address,
+            prefixLength: prefixLength,
+            peers: peers
+        )
 
-            // Wait for interface to be ready
-            try await Task.sleep(for: .milliseconds(100))
+        // Wait for interface to be ready
+        try await Task.sleep(for: .milliseconds(100))
 
-            logger.info("WireGuard interface started (native)", metadata: ["interface": "\(interfaceName)"])
-        } catch let error as NetlinkError {
-            // Check if it's a permission error (EPERM = 1)
-            if case .operationFailed(let errno) = error, errno == 1 {
-                logger.info("Native netlink requires root, falling back to wg-quick", metadata: ["interface": "\(interfaceName)"])
-                try await startWireGuardInterfaceWGQuick(configPath: configPath, interfaceName: interfaceName)
-            } else {
-                throw error
-            }
-        } catch let error as LinuxWireGuardError {
-            logger.info("Native netlink failed, falling back to wg-quick: \(error)", metadata: ["interface": "\(interfaceName)"])
-            try await startWireGuardInterfaceWGQuick(configPath: configPath, interfaceName: interfaceName)
-        }
+        logger.info("WireGuard interface started (native)", metadata: ["interface": "\(interfaceName)"])
     }
 
     private struct WireGuardConfigParams {
@@ -475,44 +462,14 @@ public actor ProviderVPNManager {
     }
     #endif
 
-    private func startWireGuardInterfaceWGQuick(configPath: String, interfaceName: String) async throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        let pathValue = WireGuardPaths.environment["PATH"] ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-        process.environment = ["PATH": pathValue]
-        process.arguments = ["env", "PATH=\(pathValue)", WireGuardPaths.wgQuick, "up", configPath]
-
-        let errorPipe = Pipe()
-        process.standardError = errorPipe
-        process.standardOutput = Pipe()
-
-        try process.run()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-            throw ProviderVPNError.interfaceStartFailed(errorMessage)
-        }
-
-        // Wait for interface to be ready
-        try await Task.sleep(for: .milliseconds(500))
-
-        logger.info("WireGuard interface started", metadata: ["interface": "\(interfaceName)"])
-    }
-
     private func stopWireGuardInterface(interfaceName: String, configPath: String) async throws {
         logger.info("Stopping WireGuard interface", metadata: ["interface": "\(interfaceName)"])
 
         #if os(Linux)
-        if useNativeNetlink {
-            try await stopWireGuardInterfaceNative(interfaceName: interfaceName)
-            return
-        }
+        try await stopWireGuardInterfaceNative(interfaceName: interfaceName)
+        #elseif os(macOS)
+        try await stopWireGuardInterfaceNativeMacOS(interfaceName: interfaceName)
         #endif
-
-        // Fall back to wg-quick
-        try await stopWireGuardInterfaceWGQuick(interfaceName: interfaceName, configPath: configPath)
     }
 
     #if os(Linux)
@@ -542,37 +499,242 @@ public actor ProviderVPNManager {
     }
     #endif
 
-    private func stopWireGuardInterfaceWGQuick(interfaceName: String, configPath: String) async throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        let pathValue = WireGuardPaths.environment["PATH"] ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-        process.environment = ["PATH": pathValue]
+    // MARK: - Native macOS Implementation
 
-        // Try with config path first, fall back to interface name
-        if FileManager.default.fileExists(atPath: configPath) {
-            process.arguments = ["env", "PATH=\(pathValue)", WireGuardPaths.wgQuick, "down", configPath]
-        } else {
-            process.arguments = ["env", "PATH=\(pathValue)", WireGuardPaths.wgQuick, "down", interfaceName]
+    #if os(macOS)
+    private func startWireGuardInterfaceNativeMacOS(configPath: String, interfaceName: String) async throws {
+        logger.info("Using native macOS for WireGuard interface", metadata: ["interface": "\(interfaceName)"])
+
+        // Parse config file to extract parameters
+        let config = try String(contentsOfFile: configPath, encoding: .utf8)
+        guard let params = parseWireGuardConfigMacOS(config) else {
+            throw ProviderVPNError.interfaceStartFailed("Failed to parse WireGuard config")
         }
 
-        let errorPipe = Pipe()
-        process.standardError = errorPipe
-
-        try process.run()
-        process.waitUntilExit()
-
-        // Log errors but don't fail - interface might already be down
-        if process.terminationStatus != 0 {
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-            logger.warning("wg-quick down returned error", metadata: [
-                "interface": "\(interfaceName)",
-                "error": "\(errorMessage)"
-            ])
+        // Initialize native macOS WireGuard manager
+        if macOSWireGuard == nil {
+            macOSWireGuard = MacOSWireGuardManager()
         }
+
+        guard let wg = macOSWireGuard else {
+            throw ProviderVPNError.interfaceStartFailed("Failed to initialize native macOS WireGuard manager")
+        }
+
+        // Decode private key
+        guard let privateKeyData = Data(base64Encoded: params.privateKey), privateKeyData.count == 32 else {
+            throw ProviderVPNError.interfaceStartFailed("Invalid private key format")
+        }
+
+        // Parse peer configuration
+        var peers: [WireGuardPeer] = []
+        if let peerPublicKey = params.peerPublicKey,
+           let keyData = Data(base64Encoded: peerPublicKey) {
+            var endpoint: (host: String, port: UInt16)? = nil
+            if let endpointStr = params.peerEndpoint {
+                let parts = endpointStr.split(separator: ":")
+                if parts.count == 2, let port = UInt16(parts[1]) {
+                    endpoint = (host: String(parts[0]), port: port)
+                }
+            }
+
+            var allowedIPs: [(ip: String, cidr: UInt8)] = []
+            if let allowedIPsStr = params.allowedIPs {
+                for cidrStr in allowedIPsStr.split(separator: ",") {
+                    let trimmed = cidrStr.trimmingCharacters(in: .whitespaces)
+                    let cidrParts = trimmed.split(separator: "/")
+                    if cidrParts.count == 2, let cidr = UInt8(cidrParts[1]) {
+                        allowedIPs.append((ip: String(cidrParts[0]), cidr: cidr))
+                    }
+                }
+            }
+
+            let peer = WireGuardPeer(
+                publicKey: keyData,
+                endpoint: endpoint,
+                allowedIPs: allowedIPs,
+                persistentKeepalive: params.persistentKeepalive
+            )
+            peers.append(peer)
+        }
+
+        // Parse address
+        var address = "10.0.0.1"
+        var prefixLength: UInt8 = 24
+        if let addrStr = params.address {
+            let parts = addrStr.split(separator: "/")
+            address = String(parts[0])
+            if parts.count == 2, let prefix = UInt8(parts[1]) {
+                prefixLength = prefix
+            }
+        }
+
+        // Create config
+        let wgConfig = WireGuardConfig(
+            privateKey: privateKeyData,
+            listenPort: params.listenPort ?? 0,
+            address: address,
+            prefixLength: prefixLength,
+            peers: peers
+        )
+
+        try await wg.start(name: interfaceName, config: wgConfig)
+        logger.info("WireGuard interface started (native macOS)", metadata: ["interface": "\(interfaceName)"])
     }
 
-    // MARK: - NAT Routing
+    private func stopWireGuardInterfaceNativeMacOS(interfaceName: String) async throws {
+        logger.info("Using native macOS to stop WireGuard interface", metadata: ["interface": "\(interfaceName)"])
+
+        guard let wg = macOSWireGuard else {
+            logger.warning("No macOS WireGuard manager for teardown")
+            return
+        }
+
+        await wg.stop()
+        logger.info("WireGuard interface stopped (native macOS)", metadata: ["interface": "\(interfaceName)"])
+    }
+
+    private struct MacOSWireGuardConfigParams {
+        var privateKey: String
+        var address: String?
+        var listenPort: UInt16?
+        var peerPublicKey: String?
+        var peerEndpoint: String?
+        var allowedIPs: String?
+        var persistentKeepalive: UInt16?
+    }
+
+    private func parseWireGuardConfigMacOS(_ config: String) -> MacOSWireGuardConfigParams? {
+        var params = MacOSWireGuardConfigParams(privateKey: "")
+        var inPeer = false
+
+        for line in config.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            if trimmed.hasPrefix("[Peer]") {
+                inPeer = true
+                continue
+            } else if trimmed.hasPrefix("[") {
+                inPeer = false
+                continue
+            }
+
+            let parts = trimmed.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+
+            let key = parts[0].trimmingCharacters(in: .whitespaces)
+            let value = parts[1].trimmingCharacters(in: .whitespaces)
+
+            if inPeer {
+                switch key {
+                case "PublicKey":
+                    params.peerPublicKey = value
+                case "Endpoint":
+                    params.peerEndpoint = value
+                case "AllowedIPs":
+                    params.allowedIPs = value
+                case "PersistentKeepalive":
+                    params.persistentKeepalive = UInt16(value)
+                default: break
+                }
+            } else {
+                switch key {
+                case "PrivateKey":
+                    params.privateKey = value
+                case "Address":
+                    params.address = value
+                case "ListenPort":
+                    params.listenPort = UInt16(value)
+                default: break
+                }
+            }
+        }
+
+        return params.privateKey.isEmpty ? nil : params
+    }
+    #endif
+
+    // MARK: - TAP Routing
+
+    /// Set up routing for TAP networking
+    /// Traffic to vmVPNIP goes directly to the TAP interface (no NAT needed)
+    private func setupTAPRouting(
+        vmVPNIP: String,
+        tapInterface: String,
+        wgInterface: String
+    ) async throws {
+        logger.info("Setting up TAP routing", metadata: [
+            "vm_vpn_ip": "\(vmVPNIP)",
+            "tap_interface": "\(tapInterface)",
+            "wg_interface": "\(wgInterface)"
+        ])
+
+        #if os(Linux)
+        // Add route: traffic to VM's VPN IP goes to TAP interface
+        let routeProcess = Process()
+        routeProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        routeProcess.arguments = ["ip", "route", "add", vmVPNIP, "dev", tapInterface]
+        routeProcess.standardError = Pipe()
+        routeProcess.standardOutput = FileHandle.nullDevice
+        try routeProcess.run()
+        routeProcess.waitUntilExit()
+
+        if routeProcess.terminationStatus != 0 {
+            let errorData = (routeProcess.standardError as? Pipe)?.fileHandleForReading.readDataToEndOfFile() ?? Data()
+            let errorMsg = String(data: errorData, encoding: .utf8) ?? ""
+            // Route might already exist - that's OK
+            if !errorMsg.contains("File exists") {
+                logger.warning("Failed to add route to TAP", metadata: ["error": "\(errorMsg)"])
+            }
+        }
+
+        // Enable proxy ARP on the WireGuard interface
+        // This allows the VM to respond to ARP requests for its VPN IP
+        let proxyArpProcess = Process()
+        proxyArpProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        proxyArpProcess.arguments = ["sysctl", "-w", "net.ipv4.conf.\(wgInterface).proxy_arp=1"]
+        try? proxyArpProcess.run()
+        proxyArpProcess.waitUntilExit()
+
+        // Enable IP forwarding
+        let forwardProcess = Process()
+        forwardProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        forwardProcess.arguments = ["sysctl", "-w", "net.ipv4.ip_forward=1"]
+        try? forwardProcess.run()
+        forwardProcess.waitUntilExit()
+
+        logger.info("TAP routing configured", metadata: [
+            "vm_vpn_ip": "\(vmVPNIP)",
+            "tap_interface": "\(tapInterface)"
+        ])
+        #else
+        // macOS doesn't use TAP in the same way
+        logger.warning("TAP routing not implemented for macOS")
+        #endif
+    }
+
+    private func removeTAPRouting(vmVPNIP: String, tapInterface: String) async throws {
+        logger.info("Removing TAP routing", metadata: [
+            "vm_vpn_ip": "\(vmVPNIP)",
+            "tap_interface": "\(tapInterface)"
+        ])
+
+        #if os(Linux)
+        // Remove route
+        let routeProcess = Process()
+        routeProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        routeProcess.arguments = ["ip", "route", "del", vmVPNIP, "dev", tapInterface]
+        routeProcess.standardOutput = FileHandle.nullDevice
+        routeProcess.standardError = FileHandle.nullDevice
+        try? routeProcess.run()
+        routeProcess.waitUntilExit()
+
+        logger.info("TAP routing removed")
+        #else
+        // macOS doesn't use TAP in the same way
+        #endif
+    }
+
+    // MARK: - NAT Routing (Legacy - kept for backwards compatibility)
 
     /// Set up DNAT so traffic to vmVPNIP:22 is forwarded to vmNATIP:22
     private func setupNATRouting(
@@ -609,70 +771,84 @@ public actor ProviderVPNManager {
 
     #if os(macOS)
     private func setupPFNATRouting(vmVPNIP: String, vmNATIP: String, interfaceName: String) async throws {
-        // Create pf rules file for this VM
+        // Get the actual utun interface name from the manager if available
+        var actualInterface = interfaceName
+        if let wg = macOSWireGuard {
+            actualInterface = await wg.getInterfaceName()
+        }
+
+        // Create pf rules for this VM
         let pfRules = """
         # Omerta NAT rules for VM \(vmVPNIP) -> \(vmNATIP)
         # DNAT: Incoming traffic to VM's VPN IP gets forwarded to NAT IP
-        rdr pass on \(interfaceName) proto tcp from any to \(vmVPNIP) -> \(vmNATIP)
-        rdr pass on \(interfaceName) proto udp from any to \(vmVPNIP) -> \(vmNATIP)
+        rdr pass on \(actualInterface) proto tcp from any to \(vmVPNIP) -> \(vmNATIP)
+        rdr pass on \(actualInterface) proto udp from any to \(vmVPNIP) -> \(vmNATIP)
 
         # NAT: Outgoing traffic from VM NAT IP appears as VPN IP
-        nat on \(interfaceName) from \(vmNATIP) to any -> (\(interfaceName))
+        nat on \(actualInterface) from \(vmNATIP) to any -> (\(actualInterface))
 
         # Allow forwarding
-        pass in on \(interfaceName) from any to \(vmNATIP)
-        pass out on \(interfaceName) from \(vmNATIP) to any
+        pass in on \(actualInterface) from any to \(vmNATIP)
+        pass out on \(actualInterface) from \(vmNATIP) to any
         """
 
-        let pfPath = "\(configDirectory)/pf-\(vmVPNIP.replacingOccurrences(of: ".", with: "-")).conf"
-        try pfRules.write(toFile: pfPath, atomically: true, encoding: .utf8)
+        let anchor = "omerta/\(vmVPNIP.replacingOccurrences(of: ".", with: "-"))"
 
-        // Load pf rules
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        process.arguments = ["pfctl", "-a", "omerta/\(vmVPNIP.replacingOccurrences(of: ".", with: "-"))", "-f", pfPath]
+        // Use native MacOSPacketFilterManager
+        do {
+            try MacOSPacketFilterManager.enable()
+            try MacOSPacketFilterManager.enableIPForwarding()
+            try MacOSPacketFilterManager.loadRulesIntoAnchor(anchor: anchor, rules: pfRules)
+        } catch {
+            logger.warning("Native pf setup failed: \(error), trying fallback")
+            // Fallback to pfctl if native fails
+            let pfPath = "\(configDirectory)/pf-\(vmVPNIP.replacingOccurrences(of: ".", with: "-")).conf"
+            try pfRules.write(toFile: pfPath, atomically: true, encoding: .utf8)
 
-        let errorPipe = Pipe()
-        process.standardError = errorPipe
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            process.arguments = ["pfctl", "-a", anchor, "-f", pfPath]
+            process.standardError = Pipe()
+            try process.run()
+            process.waitUntilExit()
 
-        try process.run()
-        process.waitUntilExit()
+            // Enable pf
+            let enableProcess = Process()
+            enableProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            enableProcess.arguments = ["pfctl", "-e"]
+            enableProcess.standardError = Pipe()
+            try? enableProcess.run()
+            enableProcess.waitUntilExit()
 
-        if process.terminationStatus != 0 {
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-            logger.warning("pfctl returned error (may need to enable pf)", metadata: ["error": "\(errorMessage)"])
+            // Enable IP forwarding
+            let sysctl = Process()
+            sysctl.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            sysctl.arguments = ["sysctl", "-w", "net.inet.ip.forwarding=1"]
+            try? sysctl.run()
+            sysctl.waitUntilExit()
         }
 
-        // Enable pf if not already enabled
-        let enableProcess = Process()
-        enableProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        enableProcess.arguments = ["pfctl", "-e"]
-        enableProcess.standardError = Pipe()
-        try? enableProcess.run()
-        enableProcess.waitUntilExit()
-
-        // Enable IP forwarding on macOS
-        let sysctl = Process()
-        sysctl.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        sysctl.arguments = ["sysctl", "-w", "net.inet.ip.forwarding=1"]
-        try? sysctl.run()
-        sysctl.waitUntilExit()
-
         // Create marker file so cleanup knows this is an omerta-created rule
-        try? createFirewallMarker(vmVPNIP: vmVPNIP, vmNATIP: vmNATIP, interfaceName: interfaceName)
+        try? createFirewallMarker(vmVPNIP: vmVPNIP, vmNATIP: vmNATIP, interfaceName: actualInterface)
 
         logger.info("pf NAT routing configured", metadata: ["vm_vpn_ip": "\(vmVPNIP)"])
     }
 
     private func removePFNATRouting(vmVPNIP: String, vmNATIP: String) async throws {
-        // Flush pf anchor for this VM
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        process.arguments = ["pfctl", "-a", "omerta/\(vmVPNIP.replacingOccurrences(of: ".", with: "-"))", "-F", "all"]
+        let anchor = "omerta/\(vmVPNIP.replacingOccurrences(of: ".", with: "-"))"
 
-        try? process.run()
-        process.waitUntilExit()
+        // Use native MacOSPacketFilterManager
+        do {
+            try MacOSPacketFilterManager.flushAnchor(anchor: anchor)
+        } catch {
+            logger.warning("Native pf flush failed: \(error), trying fallback")
+            // Fallback to pfctl
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            process.arguments = ["pfctl", "-a", anchor, "-F", "all"]
+            try? process.run()
+            process.waitUntilExit()
+        }
 
         // Clean up pf rules file
         let pfPath = "\(configDirectory)/pf-\(vmVPNIP.replacingOccurrences(of: ".", with: "-")).conf"
@@ -756,49 +932,68 @@ public actor ProviderVPNManager {
     /// Set up firewall rules to isolate VM traffic
     /// VM can only communicate with VPN subnet, not host network or internet
     private func setupFirewallRules(
-        vmNATIP: String,
+        vmVPNIP: String,
         vpnSubnet: String,
         interfaceName: String
     ) async throws {
         logger.info("Setting up firewall rules for VM isolation", metadata: [
-            "vm_nat_ip": "\(vmNATIP)",
+            "vm_vpn_ip": "\(vmVPNIP)",
             "vpn_subnet": "\(vpnSubnet)"
         ])
 
         #if os(macOS)
-        // pf rules are included in the NAT setup above
-        // Additional isolation rules could be added here
+        // pf rules would be set up here if needed
+        // For TAP networking, we primarily rely on routing
         #else
-        // Block VM from reaching anything except VPN subnet
-        let blockProcess = Process()
-        blockProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        blockProcess.arguments = [
+        // Allow forwarding for this VM's VPN IP
+        let forwardProcess = Process()
+        forwardProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        forwardProcess.arguments = [
             "iptables", "-A", "FORWARD",
-            "-s", vmNATIP, "!", "-d", vpnSubnet,
-            "-j", "DROP"
+            "-d", vmVPNIP,
+            "-j", "ACCEPT"
         ]
-        try? blockProcess.run()
-        blockProcess.waitUntilExit()
+        try? forwardProcess.run()
+        forwardProcess.waitUntilExit()
+
+        let forwardOutProcess = Process()
+        forwardOutProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        forwardOutProcess.arguments = [
+            "iptables", "-A", "FORWARD",
+            "-s", vmVPNIP,
+            "-j", "ACCEPT"
+        ]
+        try? forwardOutProcess.run()
+        forwardOutProcess.waitUntilExit()
         #endif
 
         logger.info("Firewall rules configured")
     }
 
-    private func removeFirewallRules(vmNATIP: String, interfaceName: String) async throws {
-        logger.info("Removing firewall rules", metadata: ["vm_nat_ip": "\(vmNATIP)"])
+    private func removeFirewallRules(vmVPNIP: String, interfaceName: String) async throws {
+        logger.info("Removing firewall rules", metadata: ["vm_vpn_ip": "\(vmVPNIP)"])
 
         #if os(macOS)
-        // pf rules are removed with the anchor flush
+        // pf rules are removed with the anchor flush if used
         #else
-        // Remove block rule (best effort)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        process.arguments = [
+        // Remove forward rules (best effort)
+        let process1 = Process()
+        process1.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process1.arguments = [
             "iptables", "-D", "FORWARD",
-            "-s", vmNATIP, "-j", "DROP"
+            "-d", vmVPNIP, "-j", "ACCEPT"
         ]
-        try? process.run()
-        process.waitUntilExit()
+        try? process1.run()
+        process1.waitUntilExit()
+
+        let process2 = Process()
+        process2.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process2.arguments = [
+            "iptables", "-D", "FORWARD",
+            "-s", vmVPNIP, "-j", "ACCEPT"
+        ]
+        try? process2.run()
+        process2.waitUntilExit()
         #endif
     }
 

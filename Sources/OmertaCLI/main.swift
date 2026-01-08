@@ -60,7 +60,8 @@ struct OmertaCLI: AsyncParsableCommand {
             VPN.self,
             VM.self,
             Status.self,
-            CheckDeps.self
+            CheckDeps.self,
+            Kill.self
         ],
         defaultSubcommand: Status.self
     )
@@ -715,9 +716,150 @@ struct VPN: AsyncParsableCommand {
         subcommands: [
             VPNStatus.self,
             VPNTest.self,
-            VPNNetlinkTest.self
+            VPNNetlinkTest.self,
+            VPNMacOSTest.self
         ]
     )
+}
+
+struct VPNMacOSTest: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "macos-test",
+        abstract: "Test native macOS WireGuard implementation (macOS only)"
+    )
+
+    @Flag(name: .long, help: "Dry run - don't actually create interfaces")
+    var dryRun: Bool = false
+
+    mutating func run() async throws {
+        #if os(macOS)
+        print("=== Native macOS VPN Test ===")
+        print("")
+
+        // 1. Test /dev/pf access
+        print("1. Testing /dev/pf access...")
+        let pfFd = open("/dev/pf", O_RDWR)
+        if pfFd >= 0 {
+            print("   ✓ Successfully opened /dev/pf (fd=\(pfFd))")
+            close(pfFd)
+        } else {
+            print("   ✗ Failed to open /dev/pf: \(String(cString: strerror(errno)))")
+            print("     (This requires root privileges)")
+        }
+
+        // 2. Test routing socket
+        print("")
+        print("2. Testing PF_ROUTE socket...")
+        let routeSock = socket(PF_ROUTE, SOCK_RAW, 0)
+        if routeSock >= 0 {
+            print("   ✓ Successfully created routing socket (fd=\(routeSock))")
+            close(routeSock)
+        } else {
+            print("   ✗ Failed to create routing socket: \(String(cString: strerror(errno)))")
+        }
+
+        // 3. Test utun creation
+        print("")
+        print("3. Testing utun interface creation...")
+
+        if dryRun {
+            print("   [DRY RUN] Would create utun interface")
+            print("")
+            print("=== Test completed (dry run) ===")
+            return
+        }
+
+        do {
+            let (fd, ifName) = try MacOSUtunManager.createInterface()
+            print("   ✓ Created utun interface: \(ifName) (fd=\(fd))")
+
+            // 4. Configure interface
+            print("")
+            print("4. Configuring interface...")
+            let testIP = "10.200.200.1"
+            try MacOSUtunManager.addIPv4Address(interface: ifName, address: testIP, prefixLength: 24)
+            print("   ✓ Added IP address: \(testIP)/24")
+
+            try MacOSUtunManager.setMTU(interface: ifName, mtu: 1420)
+            print("   ✓ Set MTU to 1420")
+
+            try MacOSUtunManager.setInterfaceUp(interface: ifName, up: true)
+            print("   ✓ Interface is UP")
+
+            // 5. Verify with ifconfig
+            print("")
+            print("5. Verifying interface with ifconfig...")
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
+            process.arguments = [ifName]
+            let outputPipe = Pipe()
+            process.standardOutput = outputPipe
+            process.standardError = outputPipe
+            try process.run()
+            process.waitUntilExit()
+            let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            print(output)
+
+            // 6. Test routing
+            print("6. Testing route addition...")
+            try MacOSRoutingManager.addRoute(destination: "10.200.201.0", prefixLength: 24, interface: ifName)
+            print("   ✓ Added route 10.200.201.0/24 via \(ifName)")
+
+            // Verify route
+            let routeProcess = Process()
+            routeProcess.executableURL = URL(fileURLWithPath: "/sbin/route")
+            routeProcess.arguments = ["get", "10.200.201.1"]
+            let routePipe = Pipe()
+            routeProcess.standardOutput = routePipe
+            routeProcess.standardError = routePipe
+            try? routeProcess.run()
+            routeProcess.waitUntilExit()
+            let routeOutput = String(data: routePipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            if routeOutput.contains(ifName) {
+                print("   ✓ Route verified")
+            }
+
+            // Clean up route
+            try? MacOSRoutingManager.deleteRoute(destination: "10.200.201.0", prefixLength: 24)
+            print("   ✓ Route deleted")
+
+            // 7. Test pf rules (if /dev/pf accessible)
+            print("")
+            print("7. Testing pf rules...")
+            do {
+                try MacOSPacketFilterManager.enable()
+                print("   ✓ pf enabled")
+
+                let anchor = "omerta/test-\(Int.random(in: 1000...9999))"
+                // pf rules - macOS pf syntax (needs newline at end)
+                let rules = "pass on \(ifName)\n"
+                try MacOSPacketFilterManager.loadRulesIntoAnchor(anchor: anchor, rules: rules)
+                print("   ✓ Loaded rules into anchor: \(anchor)")
+
+                try MacOSPacketFilterManager.flushAnchor(anchor: anchor)
+                print("   ✓ Flushed anchor")
+            } catch {
+                print("   ⚠ pf test skipped: \(error)")
+            }
+
+            // 8. Clean up - close fd destroys interface
+            print("")
+            print("8. Cleaning up...")
+            MacOSUtunManager.closeInterface(fd: fd)
+            print("   ✓ Interface \(ifName) destroyed")
+
+            print("")
+            print("=== Test completed successfully ===")
+
+        } catch {
+            print("   ✗ Failed: \(error)")
+            throw ExitCode.failure
+        }
+        #else
+        print("Native macOS implementation is only available on macOS")
+        throw ExitCode.failure
+        #endif
+    }
 }
 
 struct VPNNetlinkTest: AsyncParsableCommand {
@@ -935,7 +1077,8 @@ struct VM: AsyncParsableCommand {
             VMStatus.self,
             VMRelease.self,
             VMConnect.self,
-            VMCleanup.self
+            VMCleanup.self,
+            VMTest.self
         ]
     )
 }
@@ -1956,6 +2099,223 @@ struct VMCleanup: AsyncParsableCommand {
     }
 }
 
+// MARK: - VM Test Command
+struct VMTest: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "test",
+        abstract: "Test end-to-end VM request and SSH access"
+    )
+
+    @Option(name: .long, help: "Provider address (ip:port)")
+    var provider: String
+
+    @Option(name: .long, help: "Timeout in seconds for VM boot (default: 120)")
+    var timeout: Int = 120
+
+    @Option(name: .long, help: "Command to run via SSH (default: 'echo ok')")
+    var command: String = "echo ok"
+
+    @Flag(name: .long, help: "Keep the VM after test (don't release)")
+    var keep: Bool = false
+
+    @Flag(name: .long, help: "Verbose output")
+    var verbose: Bool = false
+
+    mutating func run() async throws {
+        print("=== Omerta VM End-to-End Test ===")
+        print("")
+
+        // Load config
+        let configManager = ConfigManager()
+        let config: OmertaConfig
+        do {
+            config = try await configManager.load()
+        } catch ConfigError.notInitialized {
+            print("Error: Omerta not initialized. Run 'omerta init' first.")
+            throw ExitCode.failure
+        }
+
+        guard let sshPublicKey = config.ssh.publicKey else {
+            print("Error: SSH public key not found. Run 'omerta init' to regenerate.")
+            throw ExitCode.failure
+        }
+
+        let sshKeyPath = config.ssh.expandedPrivateKeyPath()
+        let sshUser = config.ssh.defaultUser
+
+        // Get network key from config
+        guard let networkKeyData = config.localKeyData() else {
+            print("Error: No network key in config. Run 'omerta init' to generate one.")
+            throw ExitCode.failure
+        }
+
+        print("1. Configuration")
+        print("   SSH Key: \(sshKeyPath)")
+        print("   SSH User: \(sshUser)")
+        print("   Provider: \(provider)")
+        print("   Timeout: \(timeout)s")
+        print("   Test Command: '\(command)'")
+        print("")
+
+        // Step 2: Request VM
+        print("2. Requesting VM...")
+        let client = DirectProviderClient(networkKey: networkKeyData)
+        let connection: VMConnection
+
+        do {
+            connection = try await client.requestVM(
+                fromProvider: provider,
+                sshPublicKey: sshPublicKey,
+                sshKeyPath: sshKeyPath,
+                sshUser: sshUser,
+                timeout: 60.0
+            )
+
+            print("   ✓ VM requested successfully")
+            print("   VM ID: \(connection.vmId)")
+            print("   VM IP: \(connection.vmIP)")
+            print("   VPN Interface: \(connection.vpnInterface)")
+            print("")
+        } catch {
+            print("   ✗ Failed to request VM: \(error)")
+            throw ExitCode.failure
+        }
+
+        // Step 3: Wait for VM to boot
+        print("3. Waiting for VM to boot...")
+        let startTime = Date()
+        var sshReady = false
+        var lastError: String = ""
+
+        while Date().timeIntervalSince(startTime) < Double(timeout) {
+            let elapsed = Int(Date().timeIntervalSince(startTime))
+            print("   Checking SSH (\(elapsed)s / \(timeout)s)...", terminator: "")
+
+            // Try SSH connection test
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            process.arguments = [
+                "-i", sshKeyPath,
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", "ConnectTimeout=5",
+                "-o", "BatchMode=yes",
+                "\(sshUser)@\(connection.vmIP)",
+                "true"
+            ]
+            let errorPipe = Pipe()
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = errorPipe
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+
+                if process.terminationStatus == 0 {
+                    print(" connected!")
+                    sshReady = true
+                    break
+                } else {
+                    let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                    lastError = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown"
+                    if verbose {
+                        print(" not ready (\(lastError))")
+                    } else {
+                        print(" not ready")
+                    }
+                }
+            } catch {
+                print(" error: \(error)")
+            }
+
+            // Wait before retrying
+            try await Task.sleep(for: .seconds(5))
+        }
+
+        if !sshReady {
+            print("")
+            print("   ✗ SSH connection timed out after \(timeout)s")
+            print("   Last error: \(lastError)")
+            if !keep {
+                print("")
+                print("   Releasing VM...")
+                try? await client.releaseVM(vmId: connection.vmId)
+            }
+            throw ExitCode.failure
+        }
+        print("   ✓ VM is ready")
+        print("")
+
+        // Step 4: Run test command via SSH
+        print("4. Running test command via SSH...")
+        print("   Command: \(command)")
+
+        let sshProcess = Process()
+        sshProcess.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        sshProcess.arguments = [
+            "-i", sshKeyPath,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "\(sshUser)@\(connection.vmIP)",
+            command
+        ]
+        let outputPipe = Pipe()
+        let sshErrorPipe = Pipe()
+        sshProcess.standardOutput = outputPipe
+        sshProcess.standardError = sshErrorPipe
+
+        do {
+            try sshProcess.run()
+            sshProcess.waitUntilExit()
+
+            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: outputData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            if sshProcess.terminationStatus == 0 {
+                print("   ✓ Command executed successfully")
+                print("   Output: \(output)")
+            } else {
+                let errorData = sshErrorPipe.fileHandleForReading.readDataToEndOfFile()
+                let errorOutput = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                print("   ✗ Command failed (exit code: \(sshProcess.terminationStatus))")
+                print("   Output: \(output)")
+                print("   Error: \(errorOutput)")
+                if !keep {
+                    try? await client.releaseVM(vmId: connection.vmId)
+                }
+                throw ExitCode.failure
+            }
+        } catch let error as ExitCode {
+            throw error
+        } catch {
+            print("   ✗ SSH execution failed: \(error)")
+            if !keep {
+                try? await client.releaseVM(vmId: connection.vmId)
+            }
+            throw ExitCode.failure
+        }
+        print("")
+
+        // Step 5: Cleanup
+        if keep {
+            print("5. Keeping VM (--keep specified)")
+            print("   VM ID: \(connection.vmId)")
+            print("   SSH Command: \(connection.sshCommand)")
+        } else {
+            print("5. Releasing VM...")
+            do {
+                try await client.releaseVM(vmId: connection.vmId)
+                print("   ✓ VM released")
+            } catch {
+                print("   ⚠ Failed to release VM: \(error)")
+            }
+        }
+
+        print("")
+        print("=== Test completed successfully ===")
+    }
+}
+
 /// Check if we have sudo access without prompting for password
 private func checkSudoAccess() -> Bool {
     // Check if running as root
@@ -2004,6 +2364,132 @@ struct CheckDeps: AsyncParsableCommand {
             print("Or install manually:")
             print(error.description)
             throw ExitCode.failure
+        }
+    }
+}
+
+// MARK: - Kill Command
+
+struct Kill: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "kill",
+        abstract: "Kill all running omerta/omertad processes"
+    )
+
+    @Flag(name: .long, help: "Force kill (SIGKILL instead of SIGTERM)")
+    var force: Bool = false
+
+    @Flag(name: .long, help: "Also clean up WireGuard interfaces")
+    var cleanup: Bool = false
+
+    mutating func run() async throws {
+        print("Killing omerta processes...")
+
+        let signal = force ? "KILL" : "TERM"
+
+        // Kill omertad processes
+        let killDaemon = Process()
+        killDaemon.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        killDaemon.arguments = ["-\(signal)", "-f", "omertad"]
+        killDaemon.standardOutput = FileHandle.nullDevice
+        killDaemon.standardError = FileHandle.nullDevice
+        try? killDaemon.run()
+        killDaemon.waitUntilExit()
+
+        // Kill omerta processes (but not this one)
+        let myPid = ProcessInfo.processInfo.processIdentifier
+        let killCli = Process()
+        killCli.executableURL = URL(fileURLWithPath: "/bin/bash")
+        killCli.arguments = ["-c", "pgrep -f 'omerta ' | grep -v \(myPid) | xargs -r kill -\(signal) 2>/dev/null || true"]
+        killCli.standardOutput = FileHandle.nullDevice
+        killCli.standardError = FileHandle.nullDevice
+        try? killCli.run()
+        killCli.waitUntilExit()
+
+        // Wait a moment
+        try await Task.sleep(for: .milliseconds(500))
+
+        // Check remaining processes
+        let checkProcess = Process()
+        checkProcess.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        checkProcess.arguments = ["-f", "omerta"]
+        let pipe = Pipe()
+        checkProcess.standardOutput = pipe
+        checkProcess.standardError = FileHandle.nullDevice
+
+        try? checkProcess.run()
+        checkProcess.waitUntilExit()
+
+        let output = pipe.fileHandleForReading.readDataToEndOfFile()
+        let pids = String(data: output, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        // Filter out our own PID
+        let remainingPids = pids.split(separator: "\n").filter { $0 != "\(myPid)" }
+
+        if remainingPids.isEmpty {
+            print("All omerta processes killed")
+        } else {
+            print("Some processes still running: \(remainingPids.joined(separator: ", "))")
+            if !force {
+                print("Try: omerta kill --force")
+            }
+        }
+
+        // Cleanup WireGuard interfaces if requested
+        if cleanup {
+            print("")
+            print("Cleaning up WireGuard interfaces...")
+
+            #if os(macOS)
+            // On macOS, remove utun interfaces created by omerta
+            let listUtun = Process()
+            listUtun.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
+            listUtun.arguments = ["-l"]
+            let utunPipe = Pipe()
+            listUtun.standardOutput = utunPipe
+            try? listUtun.run()
+            listUtun.waitUntilExit()
+
+            let interfaces = String(data: utunPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let utunInterfaces = interfaces.split(separator: " ").filter { $0.hasPrefix("utun") && Int($0.dropFirst(4)) ?? 0 >= 10 }
+
+            for iface in utunInterfaces {
+                let down = Process()
+                down.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
+                down.arguments = [String(iface), "down"]
+                down.standardOutput = FileHandle.nullDevice
+                down.standardError = FileHandle.nullDevice
+                try? down.run()
+                down.waitUntilExit()
+                print("  Brought down \(iface)")
+            }
+            #else
+            // On Linux, remove wg interfaces
+            let listWg = Process()
+            listWg.executableURL = URL(fileURLWithPath: "/bin/bash")
+            listWg.arguments = ["-c", "ip link show | grep -oE 'wg[0-9A-F]+' | sort -u"]
+            let wgPipe = Pipe()
+            listWg.standardOutput = wgPipe
+            try? listWg.run()
+            listWg.waitUntilExit()
+
+            let wgInterfaces = String(data: wgPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(separator: "\n") ?? []
+
+            for iface in wgInterfaces {
+                let del = Process()
+                del.executableURL = URL(fileURLWithPath: "/sbin/ip")
+                del.arguments = ["link", "delete", String(iface)]
+                del.standardOutput = FileHandle.nullDevice
+                del.standardError = FileHandle.nullDevice
+                try? del.run()
+                del.waitUntilExit()
+                print("  Deleted \(iface)")
+            }
+            #endif
+
+            print("Cleanup complete")
         }
     }
 }

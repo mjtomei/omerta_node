@@ -33,7 +33,7 @@ public actor UDPControlServer {
         let consumerEndpoint: String
         let vpnConfig: VPNConfiguration
         let vmIP: String          // VPN IP (e.g., 10.99.0.2)
-        let vmNATIP: String       // NAT IP (e.g., 192.168.64.2)
+        let tapInterface: String  // TAP interface (e.g., tap-abc12345)
         let vpnInterface: String
         let providerPublicKey: String
         let createdAt: Date
@@ -231,30 +231,42 @@ public actor UDPControlServer {
         }
 
         // 2. Start VM with requirements and consumer's SSH key
-        // VM gets a NAT IP (e.g., 192.168.64.2)
-        logger.info("Starting VM", metadata: ["vm_id": "\(request.vmId)"])
-        let vmNATIP = try await vmManager.startVM(
+        // With TAP networking, VM gets VPN IP directly
+        // The provider acts as gateway at .254 in the VPN subnet
+        let vmVPNIP = request.vpnConfig.vmVPNIP
+        let providerVPNIP = deriveProviderIP(from: vmVPNIP)
+
+        logger.info("Starting VM with TAP networking", metadata: [
+            "vm_id": "\(request.vmId)",
+            "vpn_ip": "\(vmVPNIP)",
+            "gateway": "\(providerVPNIP)"
+        ])
+
+        let vmIP = try await vmManager.startVM(
             vmId: request.vmId,
             requirements: request.requirements,
             sshPublicKey: request.sshPublicKey,
-            sshUser: request.sshUser
+            sshUser: request.sshUser,
+            vpnIP: vmVPNIP,
+            vpnGateway: providerVPNIP
         )
 
         logger.info("VM started successfully", metadata: [
             "vm_id": "\(request.vmId)",
-            "vm_nat_ip": "\(vmNATIP)"
+            "vm_ip": "\(vmIP)"
         ])
 
         // 3. Create VPN tunnel connecting to consumer's WireGuard server
-        // This sets up NAT routing from VM VPN IP to VM NAT IP
+        // With TAP networking, we route directly to the TAP interface (no NAT)
         let vpnInterface = "wg-\(request.vmId.uuidString.prefix(8))"
+        let tapInterface = "tap-\(request.vmId.uuidString.prefix(8))"
         let providerPublicKey: String
 
         do {
             providerPublicKey = try await providerVPNManager.createTunnel(
                 vmId: request.vmId,
                 vpnConfig: request.vpnConfig,
-                vmNATIP: vmNATIP
+                tapInterface: tapInterface
             )
             logger.info("VPN tunnel created", metadata: [
                 "vm_id": "\(request.vmId)",
@@ -295,15 +307,14 @@ public actor UDPControlServer {
         logger.info("VPN health monitoring started", metadata: ["vm_id": "\(request.vmId)"])
 
         // 5. Track active VM
-        // Consumer accesses VM via the VPN IP (from vpnConfig)
-        let vmVPNIP = request.vpnConfig.vmVPNIP
+        // Consumer accesses VM via the VPN IP
         let activeVM = ActiveVM(
             vmId: request.vmId,
             networkId: networkId,
             consumerEndpoint: request.consumerEndpoint,
             vpnConfig: request.vpnConfig,
             vmIP: vmVPNIP,
-            vmNATIP: vmNATIP,
+            tapInterface: tapInterface,
             vpnInterface: vpnInterface,
             providerPublicKey: providerPublicKey,
             createdAt: Date()
@@ -479,6 +490,16 @@ public actor UDPControlServer {
         public let isRunning: Bool
         public let port: UInt16
         public let activeVMs: Int
+    }
+
+    /// Derive provider's VPN IP from VM's VPN IP
+    /// Provider uses .254 to avoid conflicts with consumer (.1) and VMs (.2, .3, etc)
+    private func deriveProviderIP(from vmVPNIP: String) -> String {
+        let components = vmVPNIP.split(separator: ".")
+        guard components.count == 4 else {
+            return "10.99.0.254"
+        }
+        return "\(components[0]).\(components[1]).\(components[2]).254"
     }
 }
 
