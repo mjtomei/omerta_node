@@ -12,7 +12,6 @@ final class FilterManagerTests: XCTestCase {
             requesterId: ownerPeer,
             networkId: "some-network",
             requirements: ResourceRequirements(
-                type: .cpuOnly,
                 cpuCores: 2,
                 memoryMB: 1024
             ),
@@ -39,7 +38,6 @@ final class FilterManagerTests: XCTestCase {
             requesterId: peerId,
             networkId: "network-123",
             requirements: ResourceRequirements(
-                type: .cpuOnly,
                 cpuCores: 1,
                 memoryMB: 512
             ),
@@ -66,7 +64,6 @@ final class FilterManagerTests: XCTestCase {
             requesterId: "peer-123",
             networkId: networkId,
             requirements: ResourceRequirements(
-                type: .cpuOnly,
                 cpuCores: 2,
                 memoryMB: 1024
             ),
@@ -93,7 +90,6 @@ final class FilterManagerTests: XCTestCase {
             requesterId: "peer-123",
             networkId: "untrusted-network",
             requirements: ResourceRequirements(
-                type: .cpuOnly,
                 cpuCores: 1,
                 memoryMB: 512
             ),
@@ -113,8 +109,7 @@ final class FilterManagerTests: XCTestCase {
 
         let rule = ResourceLimitRule(
             maxCpuCores: 4,
-            maxMemoryMB: 8192,
-            maxRuntimeSeconds: 3600
+            maxMemoryMB: 8192
         )
 
         await filterManager.addRule(rule)
@@ -124,7 +119,6 @@ final class FilterManagerTests: XCTestCase {
             requesterId: "peer-123",
             networkId: "network-1",
             requirements: ResourceRequirements(
-                type: .cpuOnly,
                 cpuCores: 8,  // Exceeds limit of 4
                 memoryMB: 4096
             ),
@@ -145,7 +139,6 @@ final class FilterManagerTests: XCTestCase {
             requesterId: "peer-123",
             networkId: "network-1",
             requirements: ResourceRequirements(
-                type: .cpuOnly,
                 cpuCores: 2,
                 memoryMB: 4096
             ),
@@ -175,7 +168,6 @@ final class FilterManagerTests: XCTestCase {
             requesterId: "peer-123",
             networkId: "network-1",
             requirements: ResourceRequirements(
-                type: .cpuOnly,
                 cpuCores: 2,
                 memoryMB: 1024
             ),
@@ -196,7 +188,6 @@ final class FilterManagerTests: XCTestCase {
             requesterId: "peer-123",
             networkId: "network-1",
             requirements: ResourceRequirements(
-                type: .cpuOnly,
                 cpuCores: 2,
                 memoryMB: 1024
             ),
@@ -230,7 +221,6 @@ final class FilterManagerTests: XCTestCase {
             requesterId: "peer-123",
             networkId: "network-1",
             requirements: ResourceRequirements(
-                type: .cpuOnly,
                 cpuCores: 1,
                 memoryMB: 512
             ),
@@ -258,7 +248,7 @@ final class FilterManagerTests: XCTestCase {
         _ = await filterManager.evaluate(FilterRequest(
             requesterId: "owner",
             networkId: "network-1",
-            requirements: ResourceRequirements(type: .cpuOnly, cpuCores: 1, memoryMB: 512),
+            requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
             activityDescription: nil
         ))
 
@@ -266,7 +256,7 @@ final class FilterManagerTests: XCTestCase {
         _ = await filterManager.evaluate(FilterRequest(
             requesterId: "peer-123",
             networkId: "network-1",
-            requirements: ResourceRequirements(type: .cpuOnly, cpuCores: 1, memoryMB: 512),
+            requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
             activityDescription: nil
         ))
 
@@ -275,7 +265,7 @@ final class FilterManagerTests: XCTestCase {
         _ = await filterManager.evaluate(FilterRequest(
             requesterId: "peer-456",
             networkId: "untrusted-network",
-            requirements: ResourceRequirements(type: .cpuOnly, cpuCores: 1, memoryMB: 512),
+            requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
             activityDescription: nil
         ))
 
