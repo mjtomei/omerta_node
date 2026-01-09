@@ -4,6 +4,8 @@ import OmertaCore
 
 #if os(Linux)
 import Glibc
+#elseif os(macOS)
+import Virtualization
 #endif
 
 /// Simplified VM manager for VM infrastructure only (no job execution)
@@ -26,12 +28,17 @@ public actor SimpleVMManager {
 
     public struct RunningVM: Sendable {
         public let vmId: UUID
-        public let qemuPid: Int32?  // QEMU process ID, nil in dry-run mode
+        public let qemuPid: Int32?  // QEMU process ID (Linux), nil in dry-run mode or when using Virtualization.framework
         public let sshPort: UInt16
         public let vmIP: String
         public let overlayDiskPath: String?
         public let seedISOPath: String?
         public let createdAt: Date
+        #if os(macOS)
+        // Virtualization.framework VM reference (macOS only)
+        // Not Sendable by default, but we only access on main actor
+        public let vzVM: VZVirtualMachine?
+        #endif
     }
 
     public init(dryRun: Bool = false) {
@@ -39,27 +46,30 @@ public actor SimpleVMManager {
         logger.logLevel = .info
         self.logger = logger
 
-        // Check if QEMU is available
+        #if os(macOS)
+        // macOS uses Virtualization.framework (no external dependencies)
+        // Check if we're running on a supported macOS version (11.0+)
+        if #available(macOS 11.0, *) {
+            self.dryRun = dryRun
+        } else {
+            logger.warning("macOS 11.0+ required for Virtualization.framework - forcing DRY RUN mode")
+            self.dryRun = true
+        }
+        #else
+        // Linux uses QEMU/KVM
         let qemuAvailable = Self.checkQEMUAvailable()
         let accelAvailable = Self.checkAccelerationAvailable()
 
         if !qemuAvailable {
-            #if os(macOS)
-            logger.warning("QEMU not found - forcing DRY RUN mode. Install: brew install qemu")
-            #else
             logger.warning("QEMU not found - forcing DRY RUN mode. Install: sudo apt install qemu-system-x86")
-            #endif
             self.dryRun = true
         } else if !accelAvailable {
-            #if os(macOS)
-            logger.warning("HVF not available - VMs will use software emulation (slow).")
-            #else
             logger.warning("KVM not available - VMs will use software emulation (slow). Check /dev/kvm for hardware acceleration.")
-            #endif
             self.dryRun = dryRun  // Allow running without acceleration (TCG mode)
         } else {
             self.dryRun = dryRun
         }
+        #endif
 
         // Set up paths - use SUDO_USER's home if running with sudo
         let homeDir: String
@@ -90,7 +100,11 @@ public actor SimpleVMManager {
         if self.dryRun {
             logger.info("SimpleVMManager initialized in DRY RUN mode - no actual VMs will be created")
         } else {
+            #if os(macOS)
+            logger.info("SimpleVMManager initialized with Virtualization.framework")
+            #else
             logger.info("SimpleVMManager initialized with QEMU/KVM support")
+            #endif
         }
     }
 
@@ -198,6 +212,18 @@ public actor SimpleVMManager {
             let sshPort = allocatePort()
 
             // Track "running" VM
+            #if os(macOS)
+            let runningVM = RunningVM(
+                vmId: vmId,
+                qemuPid: nil,
+                sshPort: sshPort,
+                vmIP: vmIP,
+                overlayDiskPath: nil,
+                seedISOPath: nil,
+                createdAt: Date(),
+                vzVM: nil
+            )
+            #else
             let runningVM = RunningVM(
                 vmId: vmId,
                 qemuPid: nil,
@@ -207,6 +233,7 @@ public actor SimpleVMManager {
                 seedISOPath: nil,
                 createdAt: Date()
             )
+            #endif
             activeVMs[vmId] = runningVM
 
             logger.info("DRY RUN: VM simulated successfully", metadata: [
@@ -218,7 +245,18 @@ public actor SimpleVMManager {
             return vmIP
         }
 
-        // Use QEMU on all platforms
+        #if os(macOS)
+        // macOS: Use Virtualization.framework with NAT networking
+        return try await startVMMacOS(
+            vmId: vmId,
+            requirements: requirements,
+            sshPublicKey: sshPublicKey,
+            sshUser: sshUser,
+            vpnIP: vpnIP,
+            vpnGateway: vpnGateway
+        )
+        #else
+        // Linux: Use QEMU/KVM with TAP networking
         return try await startVMQEMU(
             vmId: vmId,
             requirements: requirements,
@@ -227,8 +265,10 @@ public actor SimpleVMManager {
             vpnIP: vpnIP,
             vpnGateway: vpnGateway
         )
+        #endif
     }
 
+    #if os(Linux)
     private func startVMQEMU(
         vmId: UUID,
         requirements: ResourceRequirements,
@@ -650,10 +690,11 @@ public actor SimpleVMManager {
 
         return process.processIdentifier
     }
+    #endif  // os(Linux) - QEMU functions
 
-    // Virtualization.framework support disabled - using QEMU instead
-    // To re-enable, define ENABLE_VIRTUALIZATION_FRAMEWORK
-    #if ENABLE_VIRTUALIZATION_FRAMEWORK
+    #if os(macOS)
+    /// Start a VM using macOS Virtualization.framework
+    /// Returns the VM's NAT IP address (from vmnet network)
     private func startVMMacOS(
         vmId: UUID,
         requirements: ResourceRequirements,
@@ -662,33 +703,50 @@ public actor SimpleVMManager {
         vpnIP: String?,
         vpnGateway: String?
     ) async throws -> String {
-        // Note: macOS Virtualization.framework uses its own NAT networking
-        // TAP networking is not supported on macOS VMs in the same way as Linux
-        // For macOS provider, we would need a different approach (e.g., bridged networking)
+        // Note: macOS Virtualization.framework uses NAT networking via vmnet
+        // The VM gets an IP on the 192.168.64.0/24 network that is routable from host
+        // We use DNAT via pf to forward VPN IP traffic to this NAT IP
         if vpnIP != nil {
-            logger.warning("TAP networking requested but not supported on macOS VMs - using NAT")
+            logger.info("VPN IP requested - will use NAT routing to forward traffic")
         }
 
-        // 1. Generate dynamic cloud-init ISO with consumer's SSH key
-        let seedISOPath = try await generateCloudInitISO(
-            vmId: vmId,
+        // 1. Verify base image exists
+        guard FileManager.default.fileExists(atPath: baseImagePath) else {
+            throw VMError.diskImageNotFound
+        }
+
+        // 2. Create overlay disk for this VM (copy-on-write)
+        let overlayPath = "\(vmDiskDir)/\(vmId.uuidString).qcow2"
+        // For Virtualization.framework, we need a raw disk, not qcow2
+        // Convert base image to raw overlay
+        let rawOverlayPath = "\(vmDiskDir)/\(vmId.uuidString).raw"
+        try await createRawOverlay(basePath: baseImagePath, overlayPath: rawOverlayPath)
+        logger.info("Created raw overlay disk", metadata: ["path": "\(rawOverlayPath)"])
+
+        // 3. Generate dynamic cloud-init ISO with consumer's SSH key
+        let seedISOPath = "\(vmDiskDir)/\(vmId.uuidString)-seed.iso"
+        try CloudInitGenerator.createSeedISO(
+            at: seedISOPath,
             sshPublicKey: sshPublicKey,
-            sshUser: sshUser
+            sshUser: sshUser,
+            instanceId: vmId
         )
+        logger.info("Created cloud-init ISO", metadata: ["path": "\(seedISOPath)"])
 
-        logger.info("Cloud-init ISO created", metadata: ["path": "\(seedISOPath)"])
-
-        // 2. Create VM configuration
+        // 4. Create VM configuration
         let config = try await createVMConfiguration(
             requirements: requirements,
+            diskPath: rawOverlayPath,
             seedISOPath: seedISOPath
         )
 
-        // 3. Create and start VM (must be on main queue)
+        // 5. Create and start VM (must be on main queue)
         let vm = try await MainActor.run {
             let vm = VZVirtualMachine(configuration: config)
             return vm
         }
+
+        logger.info("Starting Virtualization.framework VM", metadata: ["vm_id": "\(vmId)"])
 
         // Start VM on main queue
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -704,29 +762,150 @@ public actor SimpleVMManager {
             }
         }
 
-        // 4. Use VPN IP if provided (for tracking), otherwise generate NAT IP
-        let vmIP = vpnIP ?? generateVMNATIP()
+        // 6. Get VM's NAT IP address
+        // Virtualization.framework assigns IPs from 192.168.64.0/24
+        // The VM typically gets .2, .3, etc. (gateway is .1)
+        let vmIP = generateVMNATIP()
 
-        // 5. Allocate SSH port
-        let sshPort = allocatePort()
+        // 7. SSH is on standard port 22 (accessed via NAT IP)
+        let sshPort: UInt16 = 22
 
-        // 6. Track running VM
+        // 8. Track running VM
         let runningVM = RunningVM(
             vmId: vmId,
-            vm: vm,
+            qemuPid: nil,
             sshPort: sshPort,
             vmIP: vmIP,
-            createdAt: Date()
+            overlayDiskPath: rawOverlayPath,
+            seedISOPath: seedISOPath,
+            createdAt: Date(),
+            vzVM: vm
         )
         activeVMs[vmId] = runningVM
 
-        logger.info("VM started successfully", metadata: [
+        logger.info("VM started successfully with Virtualization.framework", metadata: [
             "vm_id": "\(vmId)",
-            "vm_ip": "\(vmIP)",
-            "ssh_port": "\(sshPort)"
+            "vm_nat_ip": "\(vmIP)",
+            "ssh_command": "ssh \(sshUser)@\(vmIP)"
         ])
 
         return vmIP
+    }
+
+    /// Create a raw disk overlay backed by the base image (for Virtualization.framework)
+    private func createRawOverlay(basePath: String, overlayPath: String) async throws {
+        // Remove existing overlay if present
+        try? FileManager.default.removeItem(atPath: overlayPath)
+
+        // For Virtualization.framework, we need to copy the base image
+        // since it doesn't support QCOW2 overlays
+        // TODO: Consider using sparse copies for efficiency
+        try FileManager.default.copyItem(atPath: basePath, toPath: overlayPath)
+    }
+
+    /// Create VM configuration for Virtualization.framework
+    private func createVMConfiguration(
+        requirements: ResourceRequirements,
+        diskPath: String,
+        seedISOPath: String
+    ) async throws -> VZVirtualMachineConfiguration {
+        let config = VZVirtualMachineConfiguration()
+
+        // CPU configuration (minimum 2 for Ubuntu)
+        let cpuCores = max(2, Int(requirements.cpuCores ?? 2))
+        config.cpuCount = cpuCores
+
+        // Memory configuration (minimum 1GB for Ubuntu)
+        let memoryMB = max(1024, requirements.memoryMB ?? 2048)
+        let memoryBytes = UInt64(memoryMB) * 1024 * 1024
+        config.memorySize = memoryBytes
+
+        // Platform configuration for ARM64
+        let platform = VZGenericPlatformConfiguration()
+        config.platform = platform
+
+        // EFI boot loader for Ubuntu cloud image
+        let efiVariableStore = try getOrCreateEFIVariableStore()
+        let bootloader = VZEFIBootLoader()
+        bootloader.variableStore = efiVariableStore
+        config.bootLoader = bootloader
+
+        // Entropy device (required for Linux)
+        config.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
+
+        // Memory balloon device
+        config.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
+
+        // Network device with NAT (doesn't require restricted entitlement)
+        let networkDevice = VZVirtioNetworkDeviceConfiguration()
+        networkDevice.attachment = VZNATNetworkDeviceAttachment()
+        config.networkDevices = [networkDevice]
+
+        // Storage devices
+        var storageDevices: [VZStorageDeviceConfiguration] = []
+
+        // 1. Main Ubuntu disk image
+        let diskURL = URL(fileURLWithPath: diskPath)
+        let mainDiskAttachment = try VZDiskImageStorageDeviceAttachment(
+            url: diskURL,
+            readOnly: false
+        )
+        let mainDisk = VZVirtioBlockDeviceConfiguration(attachment: mainDiskAttachment)
+        storageDevices.append(mainDisk)
+
+        // 2. Cloud-init seed ISO (dynamically generated with consumer's SSH key)
+        let seedURL = URL(fileURLWithPath: seedISOPath)
+        let seedAttachment = try VZDiskImageStorageDeviceAttachment(
+            url: seedURL,
+            readOnly: true
+        )
+        let seedDisk = VZVirtioBlockDeviceConfiguration(attachment: seedAttachment)
+        storageDevices.append(seedDisk)
+
+        config.storageDevices = storageDevices
+
+        // Validate configuration
+        try config.validate()
+
+        logger.info("VM configuration created", metadata: [
+            "cpu_cores": "\(cpuCores)",
+            "memory_mb": "\(memoryMB)"
+        ])
+
+        return config
+    }
+
+    /// Get the real user's home directory (handles sudo correctly)
+    private func getRealUserHomeDir() -> String {
+        // When running with sudo, $HOME points to root's home
+        // Check SUDO_USER to get the original user's home
+        if let sudoUser = ProcessInfo.processInfo.environment["SUDO_USER"] {
+            return "/Users/\(sudoUser)"
+        } else if let home = ProcessInfo.processInfo.environment["HOME"] {
+            return home
+        } else {
+            return NSHomeDirectory()
+        }
+    }
+
+    private func getOrCreateEFIVariableStore() throws -> VZEFIVariableStore {
+        let homeDir = getRealUserHomeDir()
+        let efiDir = "\(homeDir)/.omerta"
+        let efiPath = "\(efiDir)/efi-vars.bin"
+        let efiURL = URL(fileURLWithPath: efiPath)
+
+        // Create directory if needed
+        try? FileManager.default.createDirectory(
+            atPath: efiDir,
+            withIntermediateDirectories: true
+        )
+
+        if FileManager.default.fileExists(atPath: efiPath) {
+            return try VZEFIVariableStore(url: efiURL)
+        } else {
+            // Create new EFI variable store
+            return try VZEFIVariableStore(creatingVariableStoreAt: efiURL)
+        }
     }
     #endif
 
@@ -739,32 +918,50 @@ public actor SimpleVMManager {
 
         logger.info("Stopping VM", metadata: ["vm_id": "\(vmId)", "dry_run": "\(dryRun)"])
 
-        // Stop QEMU process and clean up
-        if dryRun || runningVM.qemuPid == nil {
+        if dryRun {
             logger.info("DRY RUN: Simulating VM stop")
-        } else if let pid = runningVM.qemuPid {
-            // Send SIGTERM to QEMU process
-            logger.info("Sending SIGTERM to QEMU", metadata: ["pid": "\(pid)"])
-            kill(pid, SIGTERM)
-
-            // Wait a moment for graceful shutdown
-            try await Task.sleep(for: .seconds(2))
-
-            // Check if still running and force kill if necessary
-            if kill(pid, 0) == 0 {
-                logger.warning("QEMU didn't respond to SIGTERM, sending SIGKILL", metadata: ["pid": "\(pid)"])
-                kill(pid, SIGKILL)
+        } else {
+            #if os(macOS)
+            // Stop Virtualization.framework VM
+            if let vm = runningVM.vzVM {
+                logger.info("Stopping Virtualization.framework VM")
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    DispatchQueue.main.async {
+                        vm.stop { error in
+                            if let error = error {
+                                // Log but don't fail - VM might already be stopped
+                                self.logger.warning("Error stopping VM: \(error)")
+                            }
+                            continuation.resume()
+                        }
+                    }
+                }
             }
-        }
+            #else
+            // Stop QEMU process (Linux)
+            if let pid = runningVM.qemuPid {
+                // Send SIGTERM to QEMU process
+                logger.info("Sending SIGTERM to QEMU", metadata: ["pid": "\(pid)"])
+                kill(pid, SIGTERM)
 
-        #if os(Linux)
-        // Clean up TAP interface if present (Linux only)
-        if let tapInterface = vmTapInterfaces[vmId] {
-            await deleteTapInterface(name: tapInterface)
-            vmTapInterfaces.removeValue(forKey: vmId)
-            logger.info("Cleaned up TAP interface", metadata: ["tap": "\(tapInterface)"])
+                // Wait a moment for graceful shutdown
+                try await Task.sleep(for: .seconds(2))
+
+                // Check if still running and force kill if necessary
+                if kill(pid, 0) == 0 {
+                    logger.warning("QEMU didn't respond to SIGTERM, sending SIGKILL", metadata: ["pid": "\(pid)"])
+                    kill(pid, SIGKILL)
+                }
+            }
+
+            // Clean up TAP interface if present (Linux only)
+            if let tapInterface = vmTapInterfaces[vmId] {
+                await deleteTapInterface(name: tapInterface)
+                vmTapInterfaces.removeValue(forKey: vmId)
+                logger.info("Cleaned up TAP interface", metadata: ["tap": "\(tapInterface)"])
+            }
+            #endif
         }
-        #endif
 
         // Clean up overlay disk and seed ISO
         if let overlayPath = runningVM.overlayDiskPath {
@@ -776,11 +973,13 @@ public actor SimpleVMManager {
             logger.info("Removed seed ISO", metadata: ["path": "\(seedPath)"])
         }
 
-        // Clean up log files and pid file
+        // Clean up log files and pid file (QEMU only)
+        #if os(Linux)
         let pidFilePath = "\(vmDiskDir)/\(vmId.uuidString).pid"
         try? FileManager.default.removeItem(atPath: pidFilePath)
         try? FileManager.default.removeItem(atPath: "\(vmDiskDir)/\(vmId.uuidString)-stdout.log")
         try? FileManager.default.removeItem(atPath: "\(vmDiskDir)/\(vmId.uuidString)-stderr.log")
+        #endif
 
         // Remove from tracking
         activeVMs.removeValue(forKey: vmId)
@@ -809,13 +1008,41 @@ public actor SimpleVMManager {
         return (vm.vmIP, vm.sshPort)
     }
 
-    /// Check if VM's QEMU process is still running
-    public func isQEMURunning(vmId: UUID) -> Bool {
-        guard let vm = activeVMs[vmId], let pid = vm.qemuPid else {
+    /// Check if VM is still running (process/framework level)
+    public func isVMProcessRunning(vmId: UUID) -> Bool {
+        guard let vm = activeVMs[vmId] else {
+            return false
+        }
+
+        #if os(macOS)
+        // Check Virtualization.framework VM state
+        if let vzVM = vm.vzVM {
+            // VZVirtualMachine state is only accessible from main thread
+            // For now, assume it's running if we have a reference
+            // A more robust check would need to be done on the main actor
+            return true
+        }
+        return false
+        #else
+        // Check QEMU process (Linux)
+        guard let pid = vm.qemuPid else {
             return false
         }
         // kill with signal 0 checks if process exists
         return kill(pid, 0) == 0
+        #endif
+    }
+
+    /// Check if VM's QEMU process is still running (Linux only, kept for backwards compatibility)
+    public func isQEMURunning(vmId: UUID) -> Bool {
+        #if os(Linux)
+        guard let vm = activeVMs[vmId], let pid = vm.qemuPid else {
+            return false
+        }
+        return kill(pid, 0) == 0
+        #else
+        return isVMProcessRunning(vmId: vmId)
+        #endif
     }
 
     /// Wait for VM to be ready for SSH connections
@@ -830,19 +1057,25 @@ public actor SimpleVMManager {
 
         logger.info("Waiting for VM SSH to be ready", metadata: [
             "vm_id": "\(vmId)",
+            "vm_ip": "\(vm.vmIP)",
             "ssh_port": "\(vm.sshPort)",
             "timeout": "\(timeoutSeconds)s"
         ])
 
         while Date().timeIntervalSince(startTime) < Double(timeoutSeconds) {
-            // Check if QEMU is still running
+            // Check if VM is still running
+            #if os(Linux)
             if let pid = vm.qemuPid, kill(pid, 0) != 0 {
                 throw VMError.startFailed(NSError(domain: "QEMU", code: -1,
                     userInfo: [NSLocalizedDescriptionKey: "QEMU process terminated unexpectedly"]))
             }
+            #endif
 
             // Try to connect to SSH port
-            if await checkPortOpen(port: vm.sshPort) {
+            // For macOS Virtualization.framework, SSH is on the NAT IP:22
+            // For Linux QEMU with TAP, SSH is also on the VPN IP:22
+            let sshHost = vm.vmIP
+            if await checkPortOpenOnHost(host: sshHost, port: vm.sshPort) {
                 logger.info("VM SSH is ready", metadata: [
                     "vm_id": "\(vmId)",
                     "elapsed": "\(Int(Date().timeIntervalSince(startTime)))s"
@@ -863,6 +1096,11 @@ public actor SimpleVMManager {
 
     /// Check if a TCP port is open on localhost using a simple blocking connect with timeout
     private func checkPortOpen(port: UInt16) async -> Bool {
+        return await checkPortOpenOnHost(host: "127.0.0.1", port: port)
+    }
+
+    /// Check if a TCP port is open on a specific host using a simple blocking connect with timeout
+    private func checkPortOpenOnHost(host: String, port: UInt16) async -> Bool {
         var hints = addrinfo()
         hints.ai_family = AF_INET
         #if os(Linux)
@@ -873,7 +1111,7 @@ public actor SimpleVMManager {
         hints.ai_protocol = Int32(IPPROTO_TCP)
 
         var result: UnsafeMutablePointer<addrinfo>?
-        let status = getaddrinfo("127.0.0.1", String(port), &hints, &result)
+        let status = getaddrinfo(host, String(port), &hints, &result)
 
         guard status == 0, let addrInfo = result else {
             return false
@@ -896,148 +1134,6 @@ public actor SimpleVMManager {
     }
 
     // MARK: - Private Helpers
-
-    #if ENABLE_VIRTUALIZATION_FRAMEWORK
-    /// Generate a dynamic cloud-init ISO for this VM (Virtualization.framework)
-    private func generateCloudInitISO(
-        vmId: UUID,
-        sshPublicKey: String,
-        sshUser: String
-    ) async throws -> String {
-        let tempDir = FileManager.default.temporaryDirectory
-        let isoPath = tempDir.appendingPathComponent("omerta-seed-\(vmId.uuidString).iso").path
-
-        try CloudInitGenerator.createSeedISO(
-            at: isoPath,
-            sshPublicKey: sshPublicKey,
-            sshUser: sshUser,
-            instanceId: vmId
-        )
-
-        return isoPath
-    }
-
-    private func createVMConfiguration(
-        requirements: ResourceRequirements,
-        seedISOPath: String
-    ) async throws -> VZVirtualMachineConfiguration {
-        let config = VZVirtualMachineConfiguration()
-
-        // CPU configuration (minimum 2 for Ubuntu)
-        let cpuCores = max(2, Int(requirements.cpuCores ?? 2))
-        config.cpuCount = cpuCores
-
-        // Memory configuration (minimum 1GB for Ubuntu)
-        let memoryMB = max(1024, requirements.memoryMB ?? 2048)
-        let memoryBytes = memoryMB * 1024 * 1024
-        config.memorySize = memoryBytes
-
-        // Platform configuration for ARM64
-        let platform = VZGenericPlatformConfiguration()
-        config.platform = platform
-
-        // EFI boot loader for Ubuntu cloud image
-        let efiVariableStore = try getOrCreateEFIVariableStore()
-        let bootloader = VZEFIBootLoader()
-        bootloader.variableStore = efiVariableStore
-        config.bootLoader = bootloader
-
-        // Entropy device (required for Linux)
-        config.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
-
-        // Memory balloon device
-        config.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
-
-        // Network device with NAT
-        let networkDevice = VZVirtioNetworkDeviceConfiguration()
-        networkDevice.attachment = VZNATNetworkDeviceAttachment()
-        config.networkDevices = [networkDevice]
-
-        // Storage devices
-        var storageDevices: [VZStorageDeviceConfiguration] = []
-
-        // 1. Main Ubuntu disk image
-        let ubuntuDiskURL = try getUbuntuDiskURL()
-        let mainDiskAttachment = try VZDiskImageStorageDeviceAttachment(
-            url: ubuntuDiskURL,
-            readOnly: false
-        )
-        let mainDisk = VZVirtioBlockDeviceConfiguration(attachment: mainDiskAttachment)
-        storageDevices.append(mainDisk)
-
-        // 2. Cloud-init seed ISO (dynamically generated with consumer's SSH key)
-        let seedURL = URL(fileURLWithPath: seedISOPath)
-        let seedAttachment = try VZDiskImageStorageDeviceAttachment(
-            url: seedURL,
-            readOnly: true
-        )
-        let seedDisk = VZVirtioBlockDeviceConfiguration(attachment: seedAttachment)
-        storageDevices.append(seedDisk)
-
-        config.storageDevices = storageDevices
-
-        // Serial port for console output
-        let serialPort = VZVirtioConsoleDeviceSerialPortConfiguration()
-        serialPort.attachment = VZFileHandleSerialPortAttachment(
-            fileHandleForReading: FileHandle.standardInput,
-            fileHandleForWriting: FileHandle.standardOutput
-        )
-        config.serialPorts = [serialPort]
-
-        // Keyboard and pointer for GUI (optional but recommended)
-        config.keyboards = [VZUSBKeyboardConfiguration()]
-        config.pointingDevices = [VZUSBScreenCoordinatePointingDeviceConfiguration()]
-
-        // Validate configuration
-        try config.validate()
-
-        return config
-    }
-
-    /// Get the real user's home directory (handles sudo correctly)
-    private func getRealUserHomeDir() -> String {
-        // When running with sudo, $HOME points to root's home
-        // Check SUDO_USER to get the original user's home
-        if let sudoUser = ProcessInfo.processInfo.environment["SUDO_USER"] {
-            return "/Users/\(sudoUser)"
-        } else if let home = ProcessInfo.processInfo.environment["HOME"] {
-            return home
-        } else {
-            return NSHomeDirectory()
-        }
-    }
-
-    private func getOrCreateEFIVariableStore() throws -> VZEFIVariableStore {
-        let homeDir = getRealUserHomeDir()
-        let efiPath = "\(homeDir)/Library/Application Support/Omerta/efi-vars.bin"
-        let efiURL = URL(fileURLWithPath: efiPath)
-
-        if FileManager.default.fileExists(atPath: efiPath) {
-            return try VZEFIVariableStore(url: efiURL)
-        } else {
-            // Create new EFI variable store
-            return try VZEFIVariableStore(creatingVariableStoreAt: efiURL)
-        }
-    }
-
-    private func getUbuntuDiskURL() throws -> URL {
-        let homeDir = getRealUserHomeDir()
-        let paths = [
-            "\(homeDir)/Library/Application Support/Omerta/ubuntu-22.04.raw",
-            "/usr/local/share/omerta/ubuntu-22.04.raw",
-            "/opt/omerta/ubuntu-22.04.raw"
-        ]
-
-        for path in paths {
-            let url = URL(fileURLWithPath: path)
-            if FileManager.default.fileExists(atPath: url.path) {
-                return url
-            }
-        }
-
-        throw VMError.diskImageNotFound
-    }
-    #endif
 
     private func generateVMNATIP() -> String {
         // Use 192.168.64.0/24 for NAT (macOS convention, also works for libvirt)

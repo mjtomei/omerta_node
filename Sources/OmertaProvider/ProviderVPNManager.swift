@@ -28,7 +28,8 @@ public actor ProviderVPNManager {
         public let publicKey: String
         public let providerVPNIP: String  // Provider's IP within VPN (e.g., 10.99.0.254)
         public let vmVPNIP: String        // VM's VPN IP (e.g., 10.99.0.2)
-        public let tapInterface: String   // TAP interface for VM (e.g., tap-abc12345)
+        public let vmNATIP: String?       // VM's internal NAT IP if using NAT networking (e.g., 192.168.64.2)
+        public let tapInterface: String   // TAP interface for VM (e.g., tap-abc12345), or empty for NAT
         public let consumerEndpoint: String
         public let configPath: String
         public let createdAt: Date
@@ -55,18 +56,24 @@ public actor ProviderVPNManager {
     // MARK: - Tunnel Lifecycle
 
     /// Create a WireGuard tunnel connecting to consumer's VPN server
-    /// With TAP networking, routes traffic directly to the VM's TAP interface (no NAT needed)
+    /// With TAP networking (Linux), routes traffic directly to the VM's TAP interface
+    /// With NAT networking (macOS), uses DNAT to forward VPN IP traffic to VM's internal NAT IP
     /// Returns the provider's public key (consumer needs this to allow connection)
     public func createTunnel(
         vmId: UUID,
         vpnConfig: VPNConfiguration,
-        tapInterface: String
+        tapInterface: String,
+        vmNATIP: String? = nil
     ) async throws -> String {
-        logger.info("Creating provider VPN tunnel with TAP routing", metadata: [
+        let useNATRouting = vmNATIP != nil && vmNATIP != vpnConfig.vmVPNIP
+
+        logger.info("Creating provider VPN tunnel", metadata: [
             "vm_id": "\(vmId)",
             "consumer_endpoint": "\(vpnConfig.consumerEndpoint)",
             "vm_vpn_ip": "\(vpnConfig.vmVPNIP)",
+            "vm_nat_ip": "\(vmNATIP ?? "none")",
             "tap_interface": "\(tapInterface)",
+            "routing_mode": "\(useNATRouting ? "NAT" : "TAP")",
             "dry_run": "\(dryRun)"
         ])
 
@@ -106,13 +113,27 @@ public actor ProviderVPNManager {
             // 5. Start WireGuard interface
             try await startWireGuardInterface(configPath: configPath, interfaceName: interfaceName)
 
-            // 6. Set up TAP routing: traffic to vmVPNIP goes directly to TAP interface
-            // No NAT needed - VM has the VPN IP directly
-            try await setupTAPRouting(
-                vmVPNIP: vpnConfig.vmVPNIP,
-                tapInterface: tapInterface,
-                wgInterface: interfaceName
-            )
+            // 6. Set up routing based on networking mode
+            if useNATRouting, let natIP = vmNATIP {
+                // NAT routing: use DNAT to forward VPN IP traffic to VM's internal NAT IP
+                logger.info("Using NAT routing mode", metadata: [
+                    "vm_vpn_ip": "\(vpnConfig.vmVPNIP)",
+                    "vm_nat_ip": "\(natIP)"
+                ])
+                try await setupNATRouting(
+                    vmVPNIP: vpnConfig.vmVPNIP,
+                    vmNATIP: natIP,
+                    interfaceName: interfaceName
+                )
+            } else {
+                // TAP routing: traffic to vmVPNIP goes directly to TAP interface
+                // VM has the VPN IP directly, no NAT needed
+                try await setupTAPRouting(
+                    vmVPNIP: vpnConfig.vmVPNIP,
+                    tapInterface: tapInterface,
+                    wgInterface: interfaceName
+                )
+            }
 
             // 7. Set up firewall rules to isolate VM
             try await setupFirewallRules(
@@ -121,7 +142,7 @@ public actor ProviderVPNManager {
                 interfaceName: interfaceName
             )
         } else {
-            logger.info("DRY RUN: Skipping WireGuard interface, TAP routing, and firewall setup")
+            logger.info("DRY RUN: Skipping WireGuard interface, routing, and firewall setup")
         }
 
         // 8. Track tunnel
@@ -132,6 +153,7 @@ public actor ProviderVPNManager {
             publicKey: publicKey,
             providerVPNIP: providerVPNIP,
             vmVPNIP: vpnConfig.vmVPNIP,
+            vmNATIP: vmNATIP,
             tapInterface: tapInterface,
             consumerEndpoint: vpnConfig.consumerEndpoint,
             configPath: configPath,
@@ -169,11 +191,20 @@ public actor ProviderVPNManager {
                 interfaceName: tunnel.interfaceName
             )
 
-            // 2. Remove TAP routing
-            try await removeTAPRouting(
-                vmVPNIP: tunnel.vmVPNIP,
-                tapInterface: tunnel.tapInterface
-            )
+            // 2. Remove routing based on networking mode
+            if let natIP = tunnel.vmNATIP {
+                // NAT routing was used
+                try await removeNATRouting(
+                    vmVPNIP: tunnel.vmVPNIP,
+                    vmNATIP: natIP
+                )
+            } else {
+                // TAP routing was used
+                try await removeTAPRouting(
+                    vmVPNIP: tunnel.vmVPNIP,
+                    tapInterface: tunnel.tapInterface
+                )
+            }
 
             // 3. Stop WireGuard interface
             try await stopWireGuardInterface(interfaceName: tunnel.interfaceName, configPath: tunnel.configPath)

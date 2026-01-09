@@ -253,20 +253,27 @@ public actor UDPControlServer {
 
         logger.info("VM started successfully", metadata: [
             "vm_id": "\(request.vmId)",
-            "vm_ip": "\(vmIP)"
+            "vm_ip": "\(vmIP)",
+            "vpn_ip": "\(vmVPNIP)",
+            "using_nat": "\(vmIP != vmVPNIP)"
         ])
 
         // 3. Create VPN tunnel connecting to consumer's WireGuard server
-        // With TAP networking, we route directly to the TAP interface (no NAT)
+        // - TAP networking (Linux): route directly to the TAP interface (no NAT)
+        // - NAT networking (macOS/SLIRP): use DNAT to forward VPN IP to VM's NAT IP
         let vpnInterface = "wg-\(request.vmId.uuidString.prefix(8))"
         let tapInterface = "tap-\(request.vmId.uuidString.prefix(8))"
         let providerPublicKey: String
+
+        // If VM's actual IP differs from VPN IP, we need NAT routing
+        let vmNATIP: String? = (vmIP != vmVPNIP) ? vmIP : nil
 
         do {
             providerPublicKey = try await providerVPNManager.createTunnel(
                 vmId: request.vmId,
                 vpnConfig: request.vpnConfig,
-                tapInterface: tapInterface
+                tapInterface: tapInterface,
+                vmNATIP: vmNATIP
             )
             logger.info("VPN tunnel created", metadata: [
                 "vm_id": "\(request.vmId)",
