@@ -553,54 +553,413 @@ For initial implementation, start with basic async I/O. Optimize later if needed
 
 ## Implementation Phases
 
-### Phase 1: Basic Filtered NAT (1-2 days)
+Each phase produces a testable artifact. Unit tests are written alongside implementation.
 
-1. Implement VZFileHandleNetworkDeviceAttachment setup
-2. Implement basic ethernet frame parsing
-3. Implement FilteredNAT actor with allowlist
-4. Basic UDP forwarding to consumer
-5. Integration with ProviderVPNManager
+### Phase 1: Ethernet Frame Parser
 
-### Phase 2: VM WireGuard Setup (1 day)
+**File:** `Sources/OmertaNetwork/VPN/EthernetFrame.swift`
 
-1. Update cloud-init/boot scripts for WireGuard
-2. iptables rules for defense in depth
-3. VPN verification on boot
-4. Integration testing
+**Deliverable:** Standalone struct that parses and builds ethernet frames.
 
-### Phase 3: Performance Optimization (1-2 days)
+```swift
+public struct EthernetFrame {
+    public let destinationMAC: Data
+    public let sourceMAC: Data
+    public let etherType: EtherType
+    public let payload: Data
 
-1. Batch frame processing
-2. Dispatch I/O / async optimizations
-3. Throughput benchmarking
-4. Latency profiling
+    public init?(_ data: Data)
+    public func toData() -> Data
+}
+```
 
-### Phase 4: Testing & Hardening (1-2 days)
+**Unit Tests:** `EthernetFrameTests.swift`
+- Parse valid IPv4/ARP/IPv6 frames
+- Handle truncated frames (return nil)
+- Round-trip serialization
+- Edge cases (empty payload, max size)
 
-1. Security testing (bypass attempts)
-2. Stress testing (high packet rates)
-3. Error handling and recovery
-4. Documentation
+**Dependencies:** None (pure data parsing)
+
+**Verification:** `swift test --filter EthernetFrame`
+
+---
+
+### Phase 2: IPv4 Packet Parser
+
+**File:** `Sources/OmertaNetwork/VPN/IPv4Packet.swift`
+
+**Deliverable:** Standalone struct that parses IPv4 headers and extracts UDP/TCP ports.
+
+```swift
+public struct IPv4Packet {
+    public let sourceAddress: IPv4Address
+    public let destinationAddress: IPv4Address
+    public let proto: IPProtocol
+    public let payload: Data
+
+    public var destinationPort: UInt16?
+    public var udpPayload: Data?
+
+    public init?(_ data: Data)
+}
+```
+
+**Unit Tests:** `IPv4PacketTests.swift`
+- Parse UDP/TCP/ICMP packets
+- Extract destination ports correctly
+- Handle IP options (variable header length)
+- Handle truncated/malformed headers
+
+**Dependencies:** None (pure data parsing)
+
+**Verification:** `swift test --filter IPv4Packet`
+
+---
+
+### Phase 3: Endpoint Allowlist
+
+**File:** `Sources/OmertaNetwork/VPN/EndpointAllowlist.swift`
+
+**Deliverable:** Thread-safe allowlist that checks if an endpoint is permitted.
+
+```swift
+public struct Endpoint: Hashable, Sendable {
+    public let address: IPv4Address
+    public let port: UInt16
+}
+
+public actor EndpointAllowlist {
+    public func setAllowed(_ endpoints: Set<Endpoint>)
+    public func isAllowed(_ endpoint: Endpoint) -> Bool
+    public func isAllowed(address: IPv4Address, port: UInt16) -> Bool
+}
+```
+
+**Unit Tests:** `EndpointAllowlistTests.swift`
+- Empty allowlist blocks all
+- Single endpoint allowed, others blocked
+- Multiple endpoints
+- Port mismatch blocked
+- IP mismatch blocked
+- Thread safety (concurrent access)
+
+**Dependencies:** `IPv4Packet` (for `IPv4Address` type, or define separately)
+
+**Verification:** `swift test --filter EndpointAllowlist`
+
+---
+
+### Phase 4: UDP Forwarder
+
+**File:** `Sources/OmertaNetwork/VPN/UDPForwarder.swift`
+
+**Deliverable:** Sends UDP packets to consumer and receives responses.
+
+```swift
+public actor UDPForwarder {
+    public init(localPort: UInt16 = 0)
+
+    public func send(_ data: Data, to endpoint: Endpoint) async throws
+    public func receive() async throws -> (data: Data, from: Endpoint)
+    public func close()
+}
+```
+
+**Unit Tests:** `UDPForwarderTests.swift`
+- Send to localhost echo server
+- Receive response
+- Handle connection errors
+- Multiple sequential sends
+
+**Dependencies:** `Endpoint` type
+
+**Verification:** `swift test --filter UDPForwarder`
+
+---
+
+### Phase 5: Frame-to-Packet Bridge
+
+**File:** `Sources/OmertaNetwork/VPN/FramePacketBridge.swift`
+
+**Deliverable:** Converts between ethernet frames and IP packets, handles response wrapping.
+
+```swift
+public struct FramePacketBridge {
+    public mutating func processFrame(_ frame: EthernetFrame) -> IPv4Packet?
+    public func wrapResponse(
+        payload: Data,
+        from source: Endpoint,
+        to vmIP: IPv4Address,
+        vmMAC: Data
+    ) -> EthernetFrame
+}
+```
+
+**Unit Tests:** `FramePacketBridgeTests.swift`
+- Extract IPv4 packet from ethernet frame
+- Ignore non-IPv4 frames (ARP, IPv6)
+- Build response frame with correct headers
+- MAC/IP address tracking
+
+**Dependencies:** `EthernetFrame`, `IPv4Packet`, `Endpoint`
+
+**Verification:** `swift test --filter FramePacketBridge`
+
+---
+
+### Phase 6: FilteredNAT Core
+
+**File:** `Sources/OmertaNetwork/VPN/FilteredNAT.swift`
+
+**Deliverable:** Combines all components into the filtering NAT logic.
+
+```swift
+public actor FilteredNAT {
+    private let allowlist: EndpointAllowlist
+    private let forwarder: UDPForwarder
+    private let bridge: FramePacketBridge
+
+    public init(consumerEndpoint: Endpoint)
+
+    /// Process a frame from VM, return response frame if any
+    public func processOutbound(_ frame: Data) async -> FilterResult
+
+    /// Process inbound packet from network
+    public func processInbound(_ data: Data, from: Endpoint) async -> Data?
+
+    public enum FilterResult {
+        case forwarded
+        case dropped(reason: String)
+        case error(Error)
+    }
+}
+```
+
+**Unit Tests:** `FilteredNATTests.swift`
+- Allowed traffic forwarded
+- Blocked traffic dropped with reason
+- Inbound from allowed source accepted
+- Inbound from unknown source dropped
+- Malformed frames handled gracefully
+
+**Dependencies:** All previous phases
+
+**Verification:** `swift test --filter FilteredNAT`
+
+---
+
+### Phase 7: File Handle Network Attachment
+
+**File:** `Sources/OmertaNetwork/VPN/FileHandleNetwork.swift`
+
+**Deliverable:** Creates `VZFileHandleNetworkDeviceAttachment` and connects to FilteredNAT.
+
+```swift
+#if os(macOS)
+import Virtualization
+
+public struct FileHandleNetwork {
+    public let attachment: VZFileHandleNetworkDeviceAttachment
+    public let filteredNAT: FilteredNAT
+
+    public static func create(consumerEndpoint: Endpoint) throws -> FileHandleNetwork
+
+    /// Start processing loop
+    public func start() async
+
+    /// Stop and cleanup
+    public func stop()
+}
+#endif
+```
+
+**Integration Tests:** `FileHandleNetworkTests.swift`
+- Attachment creation succeeds
+- File handles are readable/writable
+- Write to host handle, read appears (mock VM side)
+- Cleanup releases resources
+
+**Dependencies:** `FilteredNAT`, Virtualization.framework
+
+**Verification:** `swift test --filter FileHandleNetwork` (macOS only)
+
+---
+
+### Phase 8: VM WireGuard Setup
+
+**Files:** `Resources/cloud-init/wireguard-setup.sh`, `Resources/cloud-init/iptables-setup.sh`
+
+**Deliverable:** Scripts that configure WireGuard and iptables inside VM.
+
+```bash
+# wireguard-setup.sh
+#!/bin/bash
+wg-quick up /etc/wireguard/wg0.conf
+ip link show wg0 || exit 1
+
+# iptables-setup.sh
+#!/bin/bash
+iptables -P OUTPUT DROP
+iptables -A OUTPUT -o wg0 -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+# ... etc
+```
+
+**Integration Tests:** `VMWireGuardTests.swift`
+- VM boots with WireGuard configured
+- `wg show` returns expected peer
+- iptables rules match expected
+- Outbound non-wg0 traffic blocked
+
+**Dependencies:** VM image with WireGuard tools
+
+**Verification:** Boot test VM, run verification script
+
+---
+
+### Phase 9: Provider Integration
+
+**File:** Modify `Sources/OmertaProvider/ProviderVPNManager.swift`
+
+**Deliverable:** Replace current VPN setup with FileHandleNetwork.
+
+```swift
+public actor ProviderVPNManager {
+    // Replace WireGuard setup with:
+    public func setupFilteredNAT(
+        consumerEndpoint: Endpoint,
+        vmConfig: inout VZVirtualMachineConfiguration
+    ) async throws -> FileHandleNetwork
+}
+```
+
+**Integration Tests:** `ProviderVPNIntegrationTests.swift`
+- Full VM boot with filtered network
+- Traffic to consumer works
+- Traffic to internet blocked
+- VM termination cleans up
+
+**Dependencies:** All previous phases
+
+**Verification:** `swift test --filter ProviderVPNIntegration`
+
+---
+
+### Phase 10: End-to-End Testing
+
+**Deliverable:** Full consumer-to-VM connectivity test.
+
+**Tests:** `E2EConnectivityTests.swift`
+- Consumer WireGuard server running
+- Provider starts VM with filtered NAT
+- VM establishes WireGuard tunnel
+- Bidirectional data transfer works
+- Isolation verified (VM cannot reach internet)
+
+**Dependencies:** All previous phases, test infrastructure
+
+**Verification:** `swift test --filter E2E`
+
+---
+
+### Phase 11: Performance Optimization
+
+**Files:** Modify `FilteredNAT.swift`, `FileHandleNetwork.swift`
+
+**Deliverable:** Batch processing and Dispatch I/O optimizations.
+
+```swift
+extension FilteredNAT {
+    /// Process multiple frames in batch
+    public func processBatch(_ frames: [Data]) async -> [FilterResult]
+}
+
+extension FileHandleNetwork {
+    /// Use Dispatch I/O for better throughput
+    func startWithDispatchIO() async
+}
+```
+
+**Performance Tests:** `ThroughputBenchmarkTests.swift`, `LatencyBenchmarkTests.swift`
+- Measure baseline throughput
+- Measure with batching
+- Compare Dispatch I/O vs Foundation
+- Verify targets met (2 Gbps, <100μs p50)
+
+**Dependencies:** Phase 10 complete
+
+**Verification:** `swift test --filter Benchmark`
+
+---
+
+### Phase 12: Hardening
+
+**Deliverable:** Error handling, edge cases, security hardening.
+
+**Tasks:**
+- Handle VM handle EOF/errors gracefully
+- Handle UDP socket errors with retry
+- Add metrics/logging for dropped packets
+- Fuzz testing with malformed frames
+- Memory leak verification (Instruments)
+
+**Tests:** `ErrorHandlingTests.swift`, `StressTests.swift`, `SecurityBypassTests.swift`
+
+**Verification:** `swift test --filter Stress && swift test --filter Security`
+
+---
+
+## Phase Summary
+
+| Phase | Deliverable | Tests | Dependencies |
+|-------|-------------|-------|--------------|
+| 1 | EthernetFrame parser | Unit | None |
+| 2 | IPv4Packet parser | Unit | None |
+| 3 | EndpointAllowlist | Unit | Phase 2 |
+| 4 | UDPForwarder | Unit | Phase 3 |
+| 5 | FramePacketBridge | Unit | Phase 1, 2, 3 |
+| 6 | FilteredNAT core | Unit | Phase 3, 4, 5 |
+| 7 | FileHandleNetwork | Integration | Phase 6 |
+| 8 | VM WireGuard scripts | Integration | None |
+| 9 | Provider integration | Integration | Phase 7, 8 |
+| 10 | E2E testing | E2E | Phase 9 |
+| 11 | Performance optimization | Performance | Phase 10 |
+| 12 | Hardening | Stress/Security | Phase 11 |
 
 ## Files to Create/Modify
 
 ### New Files
 
-| File | Purpose |
-|------|---------|
-| `Sources/OmertaNetwork/VPN/FilteredNAT.swift` | Main filtered NAT implementation |
-| `Sources/OmertaNetwork/VPN/EthernetFrame.swift` | Frame parsing/building |
-| `Sources/OmertaNetwork/VPN/IPv4Packet.swift` | IP packet parsing |
-| `Sources/OmertaNetwork/VPN/FileHandleNetwork.swift` | VZ file handle setup |
-| `Tests/OmertaNetworkTests/FilteredNATTests.swift` | Unit tests |
+| File | Phase | Purpose |
+|------|-------|---------|
+| `Sources/OmertaNetwork/VPN/EthernetFrame.swift` | 1 | Frame parsing/building |
+| `Sources/OmertaNetwork/VPN/IPv4Packet.swift` | 2 | IP packet parsing |
+| `Sources/OmertaNetwork/VPN/EndpointAllowlist.swift` | 3 | Allowlist logic |
+| `Sources/OmertaNetwork/VPN/UDPForwarder.swift` | 4 | UDP socket wrapper |
+| `Sources/OmertaNetwork/VPN/FramePacketBridge.swift` | 5 | Frame/packet conversion |
+| `Sources/OmertaNetwork/VPN/FilteredNAT.swift` | 6 | Main NAT implementation |
+| `Sources/OmertaNetwork/VPN/FileHandleNetwork.swift` | 7 | VZ attachment setup |
+| `Resources/cloud-init/wireguard-setup.sh` | 8 | VM WireGuard config |
+| `Resources/cloud-init/iptables-setup.sh` | 8 | VM firewall config |
+| `Tests/OmertaNetworkTests/EthernetFrameTests.swift` | 1 | Unit tests |
+| `Tests/OmertaNetworkTests/IPv4PacketTests.swift` | 2 | Unit tests |
+| `Tests/OmertaNetworkTests/EndpointAllowlistTests.swift` | 3 | Unit tests |
+| `Tests/OmertaNetworkTests/UDPForwarderTests.swift` | 4 | Unit tests |
+| `Tests/OmertaNetworkTests/FramePacketBridgeTests.swift` | 5 | Unit tests |
+| `Tests/OmertaNetworkTests/FilteredNATTests.swift` | 6 | Unit tests |
+| `Tests/OmertaNetworkTests/FileHandleNetworkTests.swift` | 7 | Integration tests |
+| `Tests/OmertaNetworkTests/E2EConnectivityTests.swift` | 10 | E2E tests |
+| `Tests/OmertaNetworkTests/ThroughputBenchmarkTests.swift` | 11 | Performance tests |
+| `Tests/OmertaNetworkTests/LatencyBenchmarkTests.swift` | 11 | Performance tests |
 
 ### Modified Files
 
-| File | Changes |
-|------|---------|
-| `Sources/OmertaProvider/ProviderVPNManager.swift` | Use FilteredNAT instead of WireGuard |
-| `Sources/OmertaVM/VirtualizationManager.swift` | Use VZFileHandleNetworkDeviceAttachment |
-| `Resources/cloud-init/*` | WireGuard + iptables setup |
+| File | Phase | Changes |
+|------|-------|---------|
+| `Sources/OmertaProvider/ProviderVPNManager.swift` | 9 | Use FilteredNAT instead of WireGuard |
+| `Sources/OmertaVM/VirtualizationManager.swift` | 9 | Use VZFileHandleNetworkDeviceAttachment |
+| `Resources/cloud-init/*` | 8 | WireGuard + iptables setup |
 
 ## Security Checklist
 
