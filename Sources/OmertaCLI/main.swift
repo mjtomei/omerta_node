@@ -1194,7 +1194,11 @@ struct VMRequest: AsyncParsableCommand {
 
         print("Requesting VM...")
 
-        if let providerEndpoint = provider {
+        if var providerEndpoint = provider {
+            // Add default port if not specified
+            if !providerEndpoint.contains(":") {
+                providerEndpoint = "\(providerEndpoint):51820"
+            }
             // Direct provider mode
             try await requestVMDirect(
                 providerEndpoint: providerEndpoint,
@@ -1743,6 +1747,9 @@ struct VMCleanup: AsyncParsableCommand {
     @Flag(name: .long, help: "Skip confirmation")
     var force: Bool = false
 
+    @Flag(name: .long, help: "Clean up VM disk files (seed ISOs, overlay disks)")
+    var disks: Bool = false
+
     mutating func run() async throws {
         print("Omerta Cleanup")
         print("==============")
@@ -1877,6 +1884,57 @@ struct VMCleanup: AsyncParsableCommand {
         print("")
         #endif
 
+        // ========== VM Disk Files ==========
+        var diskFiles: [String] = []
+        var seedISOFiles: [String] = []
+        var overlayDiskFiles: [String] = []
+
+        if disks {
+            let vmDisksDir = "\(OmertaConfig.defaultConfigDir)/vm-disks"
+            print("VM Disk Files")
+            print("-------------")
+
+            if let files = try? FileManager.default.contentsOfDirectory(atPath: vmDisksDir) {
+                for file in files {
+                    let fullPath = "\(vmDisksDir)/\(file)"
+                    if file.hasSuffix("-seed.iso") {
+                        seedISOFiles.append(fullPath)
+                    } else if file.hasSuffix(".raw") || file.hasSuffix(".qcow2") {
+                        overlayDiskFiles.append(fullPath)
+                    }
+                }
+                diskFiles = seedISOFiles + overlayDiskFiles
+
+                if seedISOFiles.isEmpty && overlayDiskFiles.isEmpty {
+                    print("  No VM disk files found")
+                } else {
+                    if !seedISOFiles.isEmpty {
+                        print("  Seed ISO files: \(seedISOFiles.count)")
+                        for file in seedISOFiles.prefix(5) {
+                            let name = (file as NSString).lastPathComponent
+                            print("    \(name)")
+                        }
+                        if seedISOFiles.count > 5 {
+                            print("    ... and \(seedISOFiles.count - 5) more")
+                        }
+                    }
+                    if !overlayDiskFiles.isEmpty {
+                        print("  Overlay disk files: \(overlayDiskFiles.count)")
+                        for file in overlayDiskFiles.prefix(5) {
+                            let name = (file as NSString).lastPathComponent
+                            print("    \(name)")
+                        }
+                        if overlayDiskFiles.count > 5 {
+                            print("    ... and \(overlayDiskFiles.count - 5) more")
+                        }
+                    }
+                }
+            } else {
+                print("  VM disks directory not found: \(vmDisksDir)")
+            }
+            print("")
+        }
+
         // Determine what to clean
         let interfacesToClean: [String]
         if all {
@@ -1892,6 +1950,7 @@ struct VMCleanup: AsyncParsableCommand {
         let hasInterfacesToClean = !interfacesToClean.isEmpty
         let hasConfigFiles = !status.configFiles.isEmpty
         let hasStaleVMs = !staleVMs.isEmpty
+        let hasDiskFiles = !diskFiles.isEmpty
 
         #if os(macOS)
         let hasMarkeredAnchors = !markeredAnchors.isEmpty
@@ -1908,7 +1967,7 @@ struct VMCleanup: AsyncParsableCommand {
         let orphanedMarkers: [ProviderVPNManager.FirewallMarker] = []
         #endif
 
-        if !hasInterfacesToClean && !hasConfigFiles && !hasOrphanedProcesses && !hasFirewallWork && (!hasStaleVMs || !all) {
+        if !hasInterfacesToClean && !hasConfigFiles && !hasOrphanedProcesses && !hasFirewallWork && !hasDiskFiles && (!hasStaleVMs || !all) {
             print("Nothing to clean up!")
             if hasStaleVMs {
                 print("")
@@ -1945,6 +2004,10 @@ struct VMCleanup: AsyncParsableCommand {
                     print("  - Remove stale tracking: \(vm.vmId.uuidString.prefix(8))...")
                 }
             }
+            if hasDiskFiles {
+                print("  - Remove \(seedISOFiles.count) seed ISO file(s)")
+                print("  - Remove \(overlayDiskFiles.count) overlay disk file(s)")
+            }
             return
         }
 
@@ -1969,6 +2032,9 @@ struct VMCleanup: AsyncParsableCommand {
                 print("This will remove \(markeredAnchors.count) pf anchor(s) created by omerta.")
             }
             #endif
+            if hasDiskFiles {
+                print("This will remove \(diskFiles.count) VM disk file(s) (\(seedISOFiles.count) ISOs, \(overlayDiskFiles.count) disks).")
+            }
             print("")
             print("Type 'yes' to confirm: ", terminator: "")
 
@@ -2080,6 +2146,23 @@ struct VMCleanup: AsyncParsableCommand {
             }
         }
 
+        // Clean up VM disk files
+        var diskFilesRemoved = 0
+        if hasDiskFiles {
+            print("")
+            print("Removing VM disk files...")
+            for file in diskFiles {
+                let name = (file as NSString).lastPathComponent
+                do {
+                    try FileManager.default.removeItem(atPath: file)
+                    print("  Removed \(name)")
+                    diskFilesRemoved += 1
+                } catch {
+                    print("  Failed to remove \(name): \(error.localizedDescription)")
+                }
+            }
+        }
+
         print("")
         print("Cleanup complete!")
         if processesKilled > 0 {
@@ -2095,6 +2178,9 @@ struct VMCleanup: AsyncParsableCommand {
         #endif
         if all && hasStaleVMs {
             print("  Stale VMs removed: \(staleVMs.count)")
+        }
+        if diskFilesRemoved > 0 {
+            print("  VM disk files removed: \(diskFilesRemoved)")
         }
     }
 }

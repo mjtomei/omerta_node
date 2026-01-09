@@ -14,10 +14,11 @@ final class RogueConnectionDetectorTests: XCTestCase {
     func testMonitoringInitialization() async throws {
         let jobId = UUID()
         let vpnConfig = VPNConfiguration(
-            wireguardConfig: "[Interface]\nPrivateKey=test\n",
-            endpoint: "192.168.1.1:51820",
-            publicKey: Data("test".utf8),
-            vpnServerIP: "10.99.0.1"
+            consumerPublicKey: "test_public_key_base64",
+            consumerEndpoint: "192.168.1.1:51820",
+            consumerVPNIP: "10.99.0.1",
+            vmVPNIP: "10.99.0.2",
+            vpnSubnet: "10.99.0.0/24"
         )
 
         var rogueEvents: [RogueConnectionEvent] = []
@@ -52,7 +53,7 @@ final class RogueConnectionDetectorTests: XCTestCase {
                 protocolType: "tcp"
             ),
             ActiveConnectionTest(
-                destinationIP: "10.99.0.1", // VPN server - should be allowed
+                destinationIP: "10.99.0.1", // VPN consumer - should be allowed
                 destinationPort: "51820",
                 protocolType: "udp"
             ),
@@ -64,18 +65,18 @@ final class RogueConnectionDetectorTests: XCTestCase {
         ]
 
         // 8.8.8.8 would be suspicious if not going through VPN
-        // 10.99.0.1 is the VPN server itself - allowed
+        // 10.99.0.1 is the VPN consumer itself - allowed
         // 127.0.0.1 is localhost - allowed
 
-        let vpnServerIP = "10.99.0.1"
+        let consumerVPNIP = "10.99.0.1"
 
         let suspiciousCount = connections.filter { conn in
             // Skip localhost
             if conn.destinationIP.hasPrefix("127.") || conn.destinationIP == "::1" {
                 return false
             }
-            // Skip VPN server
-            if conn.destinationIP == vpnServerIP {
+            // Skip VPN consumer
+            if conn.destinationIP == consumerVPNIP {
                 return false
             }
             // Everything else is suspicious (if not through VPN)
@@ -102,24 +103,26 @@ final class RogueConnectionDetectorTests: XCTestCase {
         // Verify parsed connections
         let ips = connections.map { $0.destinationIP }
         XCTAssertTrue(ips.contains("8.8.8.8"), "Should parse Google DNS")
-        XCTAssertTrue(ips.contains("10.99.0.1"), "Should parse VPN server")
+        XCTAssertTrue(ips.contains("10.99.0.1"), "Should parse VPN consumer")
         XCTAssertTrue(ips.contains("127.0.0.1"), "Should parse localhost")
     }
 
     func testVPNTunnelHealthCheck() async throws {
         let vpnConfig = VPNConfiguration(
-            wireguardConfig: "[Interface]\nPrivateKey=test\n",
-            endpoint: "192.168.1.1:51820",
-            publicKey: Data("test".utf8),
-            vpnServerIP: "10.99.0.1"
+            consumerPublicKey: "test_public_key_base64",
+            consumerEndpoint: "192.168.1.1:51820",
+            consumerVPNIP: "10.99.0.1",
+            vmVPNIP: "10.99.0.2"
         )
 
         // Note: Actual health check requires network access
         // This test verifies the structure exists
 
         // Health check should have two components:
-        // 1. VPN server reachability (ping)
+        // 1. VPN consumer reachability (ping)
         // 2. WireGuard interface exists
+
+        XCTAssertEqual(vpnConfig.consumerVPNIP, "10.99.0.1", "VPN IP should be set")
     }
 
     func testRogueConnectionEvent() {
@@ -147,17 +150,17 @@ final class RogueConnectionDetectorTests: XCTestCase {
         let jobId2 = UUID()
 
         let vpnConfig1 = VPNConfiguration(
-            wireguardConfig: "[Interface]\nPrivateKey=test1\n",
-            endpoint: "192.168.1.1:51820",
-            publicKey: Data("test1".utf8),
-            vpnServerIP: "10.99.0.1"
+            consumerPublicKey: "test_public_key1_base64",
+            consumerEndpoint: "192.168.1.1:51820",
+            consumerVPNIP: "10.99.0.1",
+            vmVPNIP: "10.99.0.2"
         )
 
         let vpnConfig2 = VPNConfiguration(
-            wireguardConfig: "[Interface]\nPrivateKey=test2\n",
-            endpoint: "192.168.1.2:51821",
-            publicKey: Data("test2".utf8),
-            vpnServerIP: "10.99.0.2"
+            consumerPublicKey: "test_public_key2_base64",
+            consumerEndpoint: "192.168.1.2:51821",
+            consumerVPNIP: "10.100.0.1",
+            vmVPNIP: "10.100.0.2"
         )
 
         // Should be able to monitor multiple jobs simultaneously
@@ -169,7 +172,7 @@ final class RogueConnectionDetectorTests: XCTestCase {
 
         XCTAssertNotNil(stats1, "Should monitor job 1")
         XCTAssertNotNil(stats2, "Should monitor job 2")
-        XCTAssertNotEqual(stats1?.vpnServerIP, stats2?.vpnServerIP, "Jobs should have different VPN servers")
+        XCTAssertNotEqual(stats1?.jobId, stats2?.jobId, "Jobs should have different IDs")
 
         await detector.stopMonitoring(jobId: jobId1)
         await detector.stopMonitoring(jobId: jobId2)

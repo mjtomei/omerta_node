@@ -238,16 +238,7 @@ final class PeerDiscoveryTests: XCTestCase {
             peerId: "remote-peer",
             networkId: networkId,
             endpoint: "192.168.1.100:50051",
-            capabilities: [
-                ResourceCapability(
-                    type: .cpuOnly,
-                    availableCpuCores: 8,
-                    availableMemoryMb: 16384,
-                    hasGpu: false,
-                    gpu: nil,
-                    supportedWorkloadTypes: ["script"]
-                )
-            ]
+            capabilities: [TestResourceCapability.cpuOnly(cpuCores: 8, availableMemoryMB: 16384)]
         )
         await registry.registerPeer(from: announcement)
 
@@ -278,26 +269,14 @@ final class PeerDiscoveryTests: XCTestCase {
                 peerId: "peer-\(i)",
                 networkId: networkId,
                 endpoint: "192.168.1.\(i):50051",
-                capabilities: [
-                    ResourceCapability(
-                        type: .cpuOnly,
-                        availableCpuCores: 8,
-                        availableMemoryMb: 16384,
-                        hasGpu: false,
-                        gpu: nil,
-                        supportedWorkloadTypes: ["script"]
-                    )
-                ]
+                capabilities: [TestResourceCapability.cpuOnly(cpuCores: 8, availableMemoryMB: 16384)]
             )
             await registry.registerPeer(from: announcement)
         }
 
         let requirements = ResourceRequirements(
-            type: .cpuOnly,
             cpuCores: 4,
-            memoryMB: 8192,
-            gpu: nil,
-            maxRuntimeSeconds: 3600
+            memoryMB: 8192
         )
 
         let matching = await registry.findPeers(
@@ -493,54 +472,27 @@ final class PeerDiscoveryTests: XCTestCase {
             peerId: "test-peer",
             networkId: "test-network",
             endpoint: "localhost:50051",
-            capabilities: [
-                ResourceCapability(
-                    type: .cpuOnly,
-                    availableCpuCores: 8,
-                    availableMemoryMb: 16384,
-                    hasGpu: false,
-                    gpu: nil,
-                    supportedWorkloadTypes: ["script", "binary"]
-                )
-            ]
+            capabilities: [TestResourceCapability.cpuOnly(cpuCores: 8, availableMemoryMB: 16384)]
         )
 
         XCTAssertEqual(announcement.peerId, "test-peer")
         XCTAssertEqual(announcement.networkId, "test-network")
         XCTAssertEqual(announcement.endpoint, "localhost:50051")
         XCTAssertEqual(announcement.capabilities.count, 1)
-        XCTAssertEqual(announcement.capabilities[0].availableCpuCores, 8)
-        XCTAssertEqual(announcement.capabilities[0].availableMemoryMb, 16384)
+        XCTAssertEqual(announcement.capabilities[0].cpuCores, 8)
+        XCTAssertEqual(announcement.capabilities[0].availableMemoryMB, 16384)
     }
 
     func testAnnouncementWithGPUCapability() async throws {
-        let gpuCapability = GpuCapability(
-            gpuModel: "M1 Max",
-            totalVramMb: 32768,
-            availableVramMb: 16384,
-            supportedApis: ["Metal"],
-            supportsVirtualization: true
-        )
-
         let announcement = PeerAnnouncement.local(
             peerId: "gpu-peer",
             networkId: "test-network",
             endpoint: "localhost:50051",
-            capabilities: [
-                ResourceCapability(
-                    type: .gpuRequired,
-                    availableCpuCores: 8,
-                    availableMemoryMb: 16384,
-                    hasGpu: true,
-                    gpu: gpuCapability,
-                    supportedWorkloadTypes: ["script", "binary"]
-                )
-            ]
+            capabilities: [TestResourceCapability.withGPU(cpuCores: 8, availableMemoryMB: 16384, gpuVramMB: 32768)]
         )
 
-        XCTAssertTrue(announcement.capabilities[0].hasGpu)
         XCTAssertNotNil(announcement.capabilities[0].gpu)
-        XCTAssertEqual(announcement.capabilities[0].gpu?.gpuModel, "M1 Max")
-        XCTAssertEqual(announcement.capabilities[0].gpu?.totalVramMb, 32768)
+        XCTAssertEqual(announcement.capabilities[0].gpu?.model, "RTX 4090")
+        XCTAssertEqual(announcement.capabilities[0].gpu?.totalVramMB, 32768)
     }
 }

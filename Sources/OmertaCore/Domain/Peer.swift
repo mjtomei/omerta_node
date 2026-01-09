@@ -73,6 +73,26 @@ public struct PeerAnnouncement: Sendable {
         self.timestamp = timestamp
         self.signature = signature
     }
+
+    /// Create a local announcement for testing (unsigned)
+    public static func local(
+        peerId: String,
+        networkId: String,
+        endpoint: String,
+        capabilities: [ResourceCapability],
+        metadata: PeerMetadata = PeerMetadata(),
+        timestamp: Date = Date()
+    ) -> PeerAnnouncement {
+        PeerAnnouncement(
+            peerId: peerId,
+            networkId: networkId,
+            endpoint: endpoint,
+            capabilities: capabilities,
+            metadata: metadata,
+            timestamp: timestamp,
+            signature: Data()  // Empty signature for local/testing use
+        )
+    }
 }
 
 /// Peer query for discovery

@@ -2,68 +2,82 @@ import XCTest
 @testable import OmertaCore
 
 final class ResourceTests: XCTestCase {
-    
-    func testResourceRequirements() {
+
+    func testResourceRequirementsMinimal() {
+        // Default requirements - no specific constraints
+        let requirements = ResourceRequirements()
+
+        XCTAssertNil(requirements.cpuCores)
+        XCTAssertNil(requirements.cpuArchitecture)
+        XCTAssertNil(requirements.memoryMB)
+        XCTAssertNil(requirements.gpu)
+    }
+
+    func testResourceRequirementsWithCPU() {
         let requirements = ResourceRequirements(
-            type: .cpuOnly,
             cpuCores: 4,
-            memoryMB: 8192,
-            maxRuntimeSeconds: 3600
+            cpuArchitecture: .arm64,
+            memoryMB: 8192
         )
-        
-        XCTAssertEqual(requirements.type, .cpuOnly)
+
         XCTAssertEqual(requirements.cpuCores, 4)
+        XCTAssertEqual(requirements.cpuArchitecture, .arm64)
         XCTAssertEqual(requirements.memoryMB, 8192)
         XCTAssertNil(requirements.gpu)
     }
-    
+
     func testGPURequirements() {
         let gpuReq = GPURequirements(
+            model: "RTX 4090",
             vramMB: 16384,
-            requiredCapabilities: ["metal3", "neural-engine"],
-            metalOnly: true
+            vendor: .nvidia
         )
-        
+
         let requirements = ResourceRequirements(
-            type: .gpuRequired,
             cpuCores: 8,
             memoryMB: 32768,
             gpu: gpuReq
         )
-        
-        XCTAssertEqual(requirements.type, .gpuRequired)
+
         XCTAssertNotNil(requirements.gpu)
         XCTAssertEqual(requirements.gpu?.vramMB, 16384)
-        XCTAssertEqual(requirements.gpu?.requiredCapabilities.count, 2)
-        XCTAssertTrue(requirements.gpu?.metalOnly ?? false)
+        XCTAssertEqual(requirements.gpu?.vendor, .nvidia)
     }
-    
+
     func testResourceCapability() {
         let capability = ResourceCapability(
-            type: .cpuOnly,
-            availableCpuCores: 8,
+            cpuCores: 8,
+            cpuArchitecture: .arm64,
+            cpuModel: "Apple M1 Max",
+            totalMemoryMB: 65536,
             availableMemoryMB: 32768,
-            hasGPU: false,
-            supportedWorkloadTypes: ["script", "binary"]
+            totalStorageMB: 500000,
+            availableStorageMB: 250000,
+            gpu: nil,
+            networkBandwidthMbps: 1000,
+            availableImages: ["ubuntu-22.04", "alpine-3.18"]
         )
-        
-        XCTAssertEqual(capability.availableCpuCores, 8)
+
+        XCTAssertEqual(capability.cpuCores, 8)
+        XCTAssertEqual(capability.cpuArchitecture, .arm64)
         XCTAssertEqual(capability.availableMemoryMB, 32768)
-        XCTAssertFalse(capability.hasGPU)
-        XCTAssertEqual(capability.supportedWorkloadTypes.count, 2)
+        XCTAssertNil(capability.gpu)
+        XCTAssertEqual(capability.availableImages.count, 2)
     }
-    
-    func testResourceUsage() {
-        let usage = ResourceUsage(
-            cpuUsagePercent: 75.5,
-            memoryUsedMB: 16384,
-            memoryTotalMB: 32768,
-            gpuUsagePercent: nil
-        )
-        
-        XCTAssertEqual(usage.cpuUsagePercent, 75.5)
-        XCTAssertEqual(usage.memoryUsedMB, 16384)
-        XCTAssertEqual(usage.memoryTotalMB, 32768)
-        XCTAssertNil(usage.gpuUsagePercent)
+
+    func testCPUArchitecture() {
+        // Test architecture detection/comparison
+        XCTAssertEqual(CPUArchitecture.arm64.rawValue, "arm64")
+        XCTAssertEqual(CPUArchitecture.x86_64.rawValue, "x86_64")
+
+        // Different architectures should not be equal
+        XCTAssertNotEqual(CPUArchitecture.arm64, CPUArchitecture.x86_64)
+    }
+
+    func testGPUVendors() {
+        XCTAssertEqual(GPUVendor.nvidia.rawValue, "nvidia")
+        XCTAssertEqual(GPUVendor.amd.rawValue, "amd")
+        XCTAssertEqual(GPUVendor.apple.rawValue, "apple")
+        XCTAssertEqual(GPUVendor.intel.rawValue, "intel")
     }
 }

@@ -218,17 +218,23 @@ public struct VPNConfiguration: Sendable, Codable {
     /// VPN subnet (e.g., "10.99.0.0/24")
     public let vpnSubnet: String
 
+    /// Pre-shared key for WireGuard (base64-encoded, derived from network key)
+    /// Both sides already have this from network joining
+    public let presharedKey: String?
+
     public init(
         consumerPublicKey: String,
         consumerEndpoint: String,
         consumerVPNIP: String = "10.99.0.1",
         vmVPNIP: String = "10.99.0.2",
-        vpnSubnet: String = "10.99.0.0/24"
+        vpnSubnet: String = "10.99.0.0/24",
+        presharedKey: String? = nil
     ) {
         self.consumerPublicKey = consumerPublicKey
         self.consumerEndpoint = consumerEndpoint
         self.consumerVPNIP = consumerVPNIP
         self.vmVPNIP = vmVPNIP
         self.vpnSubnet = vpnSubnet
+        self.presharedKey = presharedKey
     }
 }

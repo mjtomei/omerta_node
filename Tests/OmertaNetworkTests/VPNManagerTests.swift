@@ -13,23 +13,22 @@ final class VPNManagerTests: XCTestCase {
 
     func testValidateConfiguration() async throws {
         let validConfig = VPNConfiguration(
-            wireguardConfig: "[Interface]\nPrivateKey=test\n",
-            endpoint: "192.168.1.1:51820",
-            publicKey: Data("test".utf8),
-            allowedIPs: "0.0.0.0/0",
-            vpnServerIP: "10.99.0.1"
+            consumerPublicKey: "test_public_key_base64_encoded",
+            consumerEndpoint: "192.168.1.1:51820",
+            consumerVPNIP: "10.99.0.1",
+            vmVPNIP: "10.99.0.2"
         )
 
         // Should not throw for valid configuration
         XCTAssertNoThrow(try validateTestConfig(validConfig))
     }
 
-    func testInvalidConfigurationEmptyWireguardConfig() {
+    func testInvalidConfigurationEmptyPublicKey() {
         let invalidConfig = VPNConfiguration(
-            wireguardConfig: "",
-            endpoint: "192.168.1.1:51820",
-            publicKey: Data("test".utf8),
-            vpnServerIP: "10.99.0.1"
+            consumerPublicKey: "",
+            consumerEndpoint: "192.168.1.1:51820",
+            consumerVPNIP: "10.99.0.1",
+            vmVPNIP: "10.99.0.2"
         )
 
         XCTAssertThrowsError(try validateTestConfig(invalidConfig))
@@ -37,10 +36,10 @@ final class VPNManagerTests: XCTestCase {
 
     func testInvalidConfigurationEmptyEndpoint() {
         let invalidConfig = VPNConfiguration(
-            wireguardConfig: "[Interface]\nPrivateKey=test\n",
-            endpoint: "",
-            publicKey: Data("test".utf8),
-            vpnServerIP: "10.99.0.1"
+            consumerPublicKey: "test_public_key_base64_encoded",
+            consumerEndpoint: "",
+            consumerVPNIP: "10.99.0.1",
+            vmVPNIP: "10.99.0.2"
         )
 
         XCTAssertThrowsError(try validateTestConfig(invalidConfig))
@@ -48,33 +47,16 @@ final class VPNManagerTests: XCTestCase {
 
     func testInvalidConfigurationBadEndpointFormat() {
         let invalidConfig = VPNConfiguration(
-            wireguardConfig: "[Interface]\nPrivateKey=test\n",
-            endpoint: "192.168.1.1", // Missing port
-            publicKey: Data("test".utf8),
-            vpnServerIP: "10.99.0.1"
+            consumerPublicKey: "test_public_key_base64_encoded",
+            consumerEndpoint: "192.168.1.1", // Missing port
+            consumerVPNIP: "10.99.0.1",
+            vmVPNIP: "10.99.0.2"
         )
 
         XCTAssertThrowsError(try validateTestConfig(invalidConfig))
     }
 
     func testActiveTunnelsTracking() async throws {
-        let jobId1 = UUID()
-        let jobId2 = UUID()
-
-        let config1 = VPNConfiguration(
-            wireguardConfig: "[Interface]\nPrivateKey=test1\n",
-            endpoint: "192.168.1.1:51820",
-            publicKey: Data("test1".utf8),
-            vpnServerIP: "10.99.0.1"
-        )
-
-        let config2 = VPNConfiguration(
-            wireguardConfig: "[Interface]\nPrivateKey=test2\n",
-            endpoint: "192.168.1.2:51821",
-            publicKey: Data("test2".utf8),
-            vpnServerIP: "10.99.0.2"
-        )
-
         // Initially empty
         let initialTunnels = await vpnManager.getActiveTunnels()
         XCTAssertEqual(initialTunnels.count, 0)
@@ -83,21 +65,37 @@ final class VPNManagerTests: XCTestCase {
         // This test verifies the tracking mechanism
     }
 
+    func testVPNConfigurationProperties() {
+        let config = VPNConfiguration(
+            consumerPublicKey: "test_public_key",
+            consumerEndpoint: "192.168.1.1:51820",
+            consumerVPNIP: "10.99.0.1",
+            vmVPNIP: "10.99.0.2",
+            vpnSubnet: "10.99.0.0/24"
+        )
+
+        XCTAssertEqual(config.consumerPublicKey, "test_public_key")
+        XCTAssertEqual(config.consumerEndpoint, "192.168.1.1:51820")
+        XCTAssertEqual(config.consumerVPNIP, "10.99.0.1")
+        XCTAssertEqual(config.vmVPNIP, "10.99.0.2")
+        XCTAssertEqual(config.vpnSubnet, "10.99.0.0/24")
+    }
+
     // Helper function to test configuration validation
     private func validateTestConfig(_ config: VPNConfiguration) throws {
-        guard !config.wireguardConfig.isEmpty else {
-            throw VPNError.invalidConfiguration("Empty WireGuard config")
+        guard !config.consumerPublicKey.isEmpty else {
+            throw VPNError.invalidConfiguration("Empty consumer public key")
         }
 
-        guard !config.endpoint.isEmpty else {
+        guard !config.consumerEndpoint.isEmpty else {
             throw VPNError.invalidConfiguration("Empty endpoint")
         }
 
-        guard !config.vpnServerIP.isEmpty else {
-            throw VPNError.invalidConfiguration("Empty VPN server IP")
+        guard !config.consumerVPNIP.isEmpty else {
+            throw VPNError.invalidConfiguration("Empty consumer VPN IP")
         }
 
-        let components = config.endpoint.split(separator: ":")
+        let components = config.consumerEndpoint.split(separator: ":")
         guard components.count == 2,
               let _ = UInt16(components[1]) else {
             throw VPNError.invalidConfiguration("Invalid endpoint format")

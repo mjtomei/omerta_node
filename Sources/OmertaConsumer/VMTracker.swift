@@ -108,20 +108,10 @@ public actor VMTracker {
         encoder.dateEncodingStrategy = .iso8601
 
         let data = try encoder.encode(container)
-
-        // Atomic write: write to temp file, then rename
-        let tempPath = persistencePath + ".tmp"
-        let tempURL = URL(fileURLWithPath: tempPath)
         let finalURL = URL(fileURLWithPath: persistencePath)
 
-        try data.write(to: tempURL, options: .atomic)
-
-        // Replace existing file if it exists
-        if FileManager.default.fileExists(atPath: persistencePath) {
-            _ = try FileManager.default.replaceItemAt(finalURL, withItemAt: tempURL)
-        } else {
-            try FileManager.default.moveItem(at: tempURL, to: finalURL)
-        }
+        // Simple atomic write - Foundation handles temp file internally
+        try data.write(to: finalURL, options: .atomic)
     }
 }
 

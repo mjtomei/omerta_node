@@ -13,6 +13,8 @@ public enum PacketFilterError: Error, CustomStringConvertible {
     case ruleParsingFailed(String)
     case anchorNotFound(String)
     case notEnabled
+    case invalidInterface(String)
+    case validationFailed(String)
 
     public var description: String {
         switch self {
@@ -26,6 +28,10 @@ public enum PacketFilterError: Error, CustomStringConvertible {
             return "Anchor not found: \(name)"
         case .notEnabled:
             return "Packet filter is not enabled"
+        case .invalidInterface(let name):
+            return "Invalid interface name '\(name)' - expected utun interface (e.g., utun0, utun10)"
+        case .validationFailed(let msg):
+            return "Rule validation failed: \(msg)"
         }
     }
 }
@@ -169,7 +175,29 @@ public class MacOSPacketFilterManager {
 
     /// Load rules into a named anchor from a configuration string
     /// This is the recommended approach for complex rules
-    public static func loadRulesIntoAnchor(anchor: String, rules: String) throws {
+    /// - Parameters:
+    ///   - anchor: The pf anchor name (e.g., "omerta/10-99-0-2")
+    ///   - rules: The pf rules to load
+    ///   - validate: If true, validate rules syntax before loading (default: true)
+    public static func loadRulesIntoAnchor(anchor: String, rules: String, validate: Bool = true) throws {
+        // Optional pre-validation: check for invalid interface names and syntax
+        if validate {
+            // Check for invalid interface names first
+            let invalidInterfaces = findInvalidInterfaces(in: rules)
+            if !invalidInterfaces.isEmpty {
+                throw PacketFilterError.invalidInterface(
+                    "Invalid interfaces in rules: \(invalidInterfaces.joined(separator: ", ")). " +
+                    "Ensure you're using actual system interface names (e.g., utun0) not logical names (e.g., wg-ABC)."
+                )
+            }
+
+            // Full syntax validation using pfctl -n (dry-run)
+            let syntaxResult = validateRules(rules)
+            if case .failure(let error) = syntaxResult {
+                throw error
+            }
+        }
+
         // Write rules to a temporary file
         let tempDir = FileManager.default.temporaryDirectory
         let rulesFile = tempDir.appendingPathComponent("omerta-pf-\(anchor.replacingOccurrences(of: "/", with: "-")).conf")
@@ -208,6 +236,113 @@ public class MacOSPacketFilterManager {
         try process.run()
         process.waitUntilExit()
         // Ignore errors - anchor might not exist
+    }
+
+    // MARK: - Validation
+
+    /// Validate pf rules syntax without loading them
+    /// Uses pfctl -nf to parse rules in dry-run mode
+    /// - Parameter rules: The rules string to validate
+    /// - Returns: Result with success or validation errors
+    public static func validateRules(_ rules: String) -> Result<Void, PacketFilterError> {
+        let tempDir = FileManager.default.temporaryDirectory
+        let tempFile = tempDir.appendingPathComponent("omerta-pf-validate-\(UUID().uuidString).conf")
+
+        do {
+            try rules.write(to: tempFile, atomically: true, encoding: .utf8)
+        } catch {
+            return .failure(.validationFailed("Failed to write temp file: \(error)"))
+        }
+        defer { try? FileManager.default.removeItem(at: tempFile) }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/sbin/pfctl")
+        // -n: Don't actually load rules (dry-run)
+        // -f: Load rules from file
+        process.arguments = ["-n", "-f", tempFile.path]
+
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        process.standardOutput = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return .failure(.validationFailed("Failed to run pfctl: \(error)"))
+        }
+
+        if process.terminationStatus != 0 {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorMsg = String(data: errorData, encoding: .utf8) ?? "Unknown syntax error"
+            return .failure(.validationFailed(errorMsg))
+        }
+
+        return .success(())
+    }
+
+    /// Check if an interface name is a valid macOS utun interface
+    /// - Parameter name: Interface name to validate
+    /// - Returns: true if the name matches utun pattern (utun0, utun1, etc.)
+    public static func isValidUtunInterface(_ name: String) -> Bool {
+        // utun interfaces on macOS follow the pattern utunN where N is a non-negative integer
+        let pattern = "^utun[0-9]+$"
+        return name.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    /// Check if an interface name is valid for use in pf rules
+    /// Accepts utun interfaces for VPN and common physical interfaces for external
+    /// - Parameter name: Interface name to validate
+    /// - Returns: true if valid for pf rules
+    public static func isValidPFInterface(_ name: String) -> Bool {
+        // Valid patterns:
+        // - utunN: Virtual tunnel interfaces (WireGuard)
+        // - enN: Ethernet/Wi-Fi interfaces
+        // - bridge: Bridge interfaces
+        // - lo: Loopback
+        // - vmnet: VM network interfaces
+        let patterns = [
+            "^utun[0-9]+$",
+            "^en[0-9]+$",
+            "^bridge[0-9]+$",
+            "^lo[0-9]*$",
+            "^vmnet[0-9]+$"
+        ]
+
+        return patterns.contains { pattern in
+            name.range(of: pattern, options: .regularExpression) != nil
+        }
+    }
+
+    /// Validate that interface names used in rules are valid system interfaces
+    /// - Parameter rules: Rules string to check
+    /// - Returns: Array of invalid interface names found, empty if all valid
+    public static func findInvalidInterfaces(in rules: String) -> [String] {
+        var invalid: [String] = []
+
+        // Pattern to find interface names in pf rules
+        // Matches: "on <interface>" in rules
+        let onPattern = "\\bon\\s+([a-zA-Z0-9_-]+)"
+
+        let regex = try? NSRegularExpression(pattern: onPattern, options: [])
+        let range = NSRange(rules.startIndex..., in: rules)
+
+        regex?.enumerateMatches(in: rules, options: [], range: range) { match, _, _ in
+            guard let match = match,
+                  let ifaceRange = Range(match.range(at: 1), in: rules) else { return }
+
+            let interfaceName = String(rules[ifaceRange])
+
+            // Skip dynamic interface syntax like (en0)
+            if interfaceName.hasPrefix("(") { return }
+
+            // Check if it's a valid interface
+            if !isValidPFInterface(interfaceName) {
+                invalid.append(interfaceName)
+            }
+        }
+
+        return invalid
     }
 
     /// Generate NAT rules for a VM
