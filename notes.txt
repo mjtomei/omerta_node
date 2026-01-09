@@ -11,6 +11,10 @@ While there are still legitimate security concerns like VM escapes and malicious
 - support for checkpoint and restart of VMs
 
 TODOs
+- quality of life improvements
+  - measure and limit VM energy consumption, use lower power CPU states where useful
+  - automatically disable sleep while plugged in
+  - automate killing or migration of VMs when user is at keyboard
 - replace CLI tools (wg-quick, ip, iptables) with native APIs for production:
   - Linux: use netlink API for interfaces/routing, WireGuard netlink for VPN config, nftables for NAT
   - macOS: use NetworkExtension framework for VPN, pf for NAT

@@ -1,25 +1,144 @@
-# VM Network Architecture: Filtered NAT with In-VM WireGuard
+# VM Network Architecture: In-VM WireGuard with Optional Filtering
 
 ## Overview
 
-This document describes the network architecture for Omerta VMs on macOS providers. The design achieves:
+This document describes the network architecture for Omerta VMs on macOS providers. Two networking modes are available:
 
+| Mode | Throughput | Isolation | Provider Overhead | Use Case |
+|------|------------|-----------|-------------------|----------|
+| **Direct** | ~10 Gbps | VM-side only | None | Trusted workloads, performance-critical |
+| **Filtered** | ~2-4 Gbps | Provider-enforced | Userspace NAT | Untrusted workloads, maximum security |
+
+Both modes share:
 - **No root privileges** on provider
 - **No restricted entitlements** (works without Apple approval)
-- **Strong isolation** - VM can only reach consumer
-- **High performance** - kernel WireGuard in VM
-- **Defense in depth** - multiple isolation layers
+- **In-VM kernel WireGuard** for encryption
+- **VM iptables** for defense in depth
 
-## Architecture
+## Network Mode Configuration
+
+```swift
+public enum VMNetworkMode: String, Codable {
+    /// Direct NAT - VM has full internet access, relies on VM-side isolation
+    /// Highest performance (~10 Gbps), lowest security
+    case direct
+
+    /// Sampled filtering - spot-check packets, terminate VM on violation
+    /// High performance (~8 Gbps), medium security
+    case sampled
+
+    /// Connection tracking - filter first packet per flow, fast-path rest
+    /// Good performance (~6 Gbps), good security
+    case conntrack
+
+    /// Full filtering - inspect every packet
+    /// Lower performance (~2-4 Gbps), maximum security
+    case filtered
+}
+```
+
+Provider configuration:
+```json
+{
+  "network": {
+    "mode": "conntrack",
+    "samplingRate": 0.01,  // for sampled mode: check 1% of packets
+    "allowModeOverride": false
+  }
+}
+```
+
+### Mode Comparison
+
+| Mode | Throughput | Security | CPU Overhead | Detection |
+|------|------------|----------|--------------|-----------|
+| `direct` | ~10 Gbps | VM-only | None | None |
+| `sampled` | ~8 Gbps | Probabilistic | ~5% | Eventual (may miss) |
+| `conntrack` | ~6 Gbps | Per-flow | ~15% | First packet |
+| `filtered` | ~2-4 Gbps | Per-packet | ~50% | Immediate |
+
+### Mode Details
+
+**`sampled` - Statistical Sampling:**
+- Check random subset of packets (e.g., 1%)
+- If violation detected → terminate VM immediately
+- Attacker could get lucky, but sustained abuse will be caught
+- Best for: trusted networks where you want a safety net
+
+**`conntrack` - Connection Tracking:**
+- Maintain hash table of seen (destIP, destPort) pairs
+- First packet to new destination → full allowlist check
+- Subsequent packets to same destination → hash lookup only
+- Best for: typical workloads with few unique destinations
+
+**`filtered` - Full Inspection:**
+- Every packet checked against allowlist
+- Guaranteed isolation
+- Best for: untrusted workloads, maximum security
+
+## Architecture: Direct Mode (Default)
+
+Uses `VZNATNetworkDeviceAttachment` - Apple's built-in NAT with kernel-level performance.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         Consumer (Linux)                             │
 │  ┌───────────────────────────────────────────────────────────────┐  │
 │  │  WireGuard Server (kernel)                                    │  │
-│  │  - Interface: wg0                                             │  │
 │  │  - Listens: UDP port 51900                                    │  │
-│  │  - Peer: Provider's NAT IP                                    │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+                                 ▲
+                                 │ WireGuard UDP (encrypted)
+                                 │
+┌────────────────────────────────┼────────────────────────────────────┐
+│                                │                                     │
+│  ┌─────────────────────────────┼─────────────────────────────────┐  │
+│  │      VZNATNetworkDeviceAttachment (kernel, ~10 Gbps)          │  │
+│  │      • Zero provider code in data path                        │  │
+│  │      • VM gets 192.168.64.x address                           │  │
+│  │      • Full internet access (filtered by VM only)             │  │
+│  └─────────────────────────────┼─────────────────────────────────┘  │
+│                                │                                     │
+│  ┌─────────────────────────────┼─────────────────────────────────┐  │
+│  │                           VM                                  │  │
+│  │                                                               │  │
+│  │  ┌─────────────────────────────────────────────────────────┐ │  │
+│  │  │  WireGuard Client (kernel) - FAST                       │ │  │
+│  │  │  - Endpoint: consumer:51900                             │ │  │
+│  │  │  - AllowedIPs: 0.0.0.0/0 (default route)               │ │  │
+│  │  └─────────────────────────────────────────────────────────┘ │  │
+│  │                                                               │  │
+│  │  ┌─────────────────────────────────────────────────────────┐ │  │
+│  │  │  iptables (PRIMARY isolation in direct mode)            │ │  │
+│  │  │  -P OUTPUT DROP                                         │ │  │
+│  │  │  -A OUTPUT -o wg0 -j ACCEPT                             │ │  │
+│  │  │  -A OUTPUT -o lo -j ACCEPT                              │ │  │
+│  │  │  -A OUTPUT -p udp --dport 51900 -d $CONSUMER -j ACCEPT  │ │  │
+│  │  └─────────────────────────────────────────────────────────┘ │  │
+│  │                                                               │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│                      Provider (macOS) - NO ROOT                      │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**Direct Mode Security:**
+- Isolation enforced by VM iptables only
+- A root workload inside VM could bypass iptables
+- Suitable for trusted workloads or when performance is critical
+- VM still cannot access provider's localhost (macOS NAT isolation)
+
+## Architecture: Filtered Mode
+
+Uses `VZFileHandleNetworkDeviceAttachment` - provider inspects every packet.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Consumer (Linux)                             │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │  WireGuard Server (kernel)                                    │  │
+│  │  - Listens: UDP port 51900                                    │  │
 │  └───────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────┘
                                  ▲
@@ -29,7 +148,7 @@ This document describes the network architecture for Omerta VMs on macOS provide
 ┌────────────────────────────────┼────────────────────────────────────┐
 │                                │                                     │
 │  ┌─────────────────────────────┼─────────────────────────────────┐  │
-│  │           FilteredNAT (userspace, NO ROOT)                    │  │
+│  │           FilteredNAT (userspace, ~2-4 Gbps)                  │  │
 │  │                                                               │  │
 │  │  ┌─────────────────────────────────────────────────────────┐ │  │
 │  │  │  Allowlist: [(consumer_ip, 51900)]                      │ │  │
@@ -51,7 +170,6 @@ This document describes the network architecture for Omerta VMs on macOS provide
 │  │                                                               │  │
 │  │  ┌─────────────────────────────────────────────────────────┐ │  │
 │  │  │  WireGuard Client (kernel) - FAST                       │ │  │
-│  │  │  - Interface: wg0                                       │ │  │
 │  │  │  - Endpoint: consumer:51900                             │ │  │
 │  │  │  - AllowedIPs: 0.0.0.0/0 (default route)               │ │  │
 │  │  └─────────────────────────────────────────────────────────┘ │  │
@@ -71,46 +189,30 @@ This document describes the network architecture for Omerta VMs on macOS provide
 
 ## Security Model
 
-### Three Layers of Isolation
+### Isolation Layers by Mode
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ Layer 1: Provider FilteredNAT (STRONGEST)                       │
-│ ─────────────────────────────────────────                       │
-│ • Provider-side, cannot be bypassed by VM                       │
-│ • Inspects every ethernet frame from VM                         │
-│ • Only forwards packets to consumer endpoint                    │
-│ • Everything else dropped before reaching network               │
-│                                                                 │
-│ Even if VM has root and disables all internal protections,      │
-│ it still cannot reach anything except the consumer.             │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ Layer 2: VM iptables                                            │
-│ ────────────────────                                            │
-│ • Kernel-enforced inside VM                                     │
-│ • Blocks non-WireGuard traffic at source                        │
-│ • Could be bypassed by root workload                            │
-│ • But Layer 1 catches any bypass attempt                        │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ Layer 3: WireGuard Routing                                      │
-│ ──────────────────────────                                      │
-│ • Default route via wg0                                         │
-│ • Traffic naturally flows through tunnel                        │
-│ • Provides encryption for all workload traffic                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+| Layer | Direct Mode | Filtered Mode |
+|-------|-------------|---------------|
+| Provider FilteredNAT | ❌ Not present | ✅ Primary isolation |
+| VM iptables | ⚠️ Primary (bypassable) | ✅ Defense in depth |
+| WireGuard routing | ✅ Encryption | ✅ Encryption |
 
 ### What VM Can Access
 
+**Direct Mode:**
+
 | Destination | Allowed | Enforced By |
 |-------------|---------|-------------|
-| Consumer WireGuard (UDP 51900) | ✅ | FilteredNAT allowlist |
+| Consumer WireGuard | ✅ | VM iptables |
+| Internet | ⚠️ Blocked by VM iptables | VM only (bypassable) |
+| Provider LAN | ⚠️ Blocked by VM iptables | VM only (bypassable) |
+| Provider localhost | ❌ | macOS NAT isolation |
+
+**Filtered Mode:**
+
+| Destination | Allowed | Enforced By |
+|-------------|---------|-------------|
+| Consumer WireGuard | ✅ | FilteredNAT allowlist |
 | Consumer other ports | ❌ | FilteredNAT drops |
 | Internet | ❌ | FilteredNAT drops |
 | Provider LAN | ❌ | FilteredNAT drops |
@@ -118,6 +220,8 @@ This document describes the network architecture for Omerta VMs on macOS provide
 | Other VMs | ❌ | FilteredNAT drops |
 
 ### Attack Scenarios
+
+**Filtered Mode:**
 
 | Attack | Result |
 |--------|--------|
@@ -128,16 +232,59 @@ This document describes the network architecture for Omerta VMs on macOS provide
 | VM tries DNS lookup | Dropped (unless consumer provides DNS) |
 | Malicious inbound traffic | FilteredNAT only accepts from consumer |
 
+**Direct Mode:**
+
+| Attack | Result |
+|--------|--------|
+| VM disables iptables | ⚠️ VM can reach internet |
+| VM spoofs source IP | Traffic may leak |
+| VM sends to random IP | ⚠️ Traffic reaches internet |
+| VM scans provider LAN | ⚠️ Possible (macOS NAT may limit) |
+| VM tries DNS lookup | ⚠️ Succeeds if iptables bypassed |
+| Malicious inbound traffic | Blocked by NAT (no port forwarding) |
+
 ## Implementation
 
-### Provider Components
-
-#### 1. VZFileHandleNetworkDeviceAttachment Setup
+### Network Mode Selection
 
 ```swift
 import Virtualization
 
-func createFilteredNetwork() -> (VZNetworkDeviceConfiguration, FilteredNAT) {
+public func createVMNetwork(
+    mode: VMNetworkMode,
+    consumerEndpoint: Endpoint?
+) -> VMNetworkResult {
+    switch mode {
+    case .direct:
+        return createDirectNetwork()
+    case .filtered:
+        guard let endpoint = consumerEndpoint else {
+            fatalError("Filtered mode requires consumer endpoint")
+        }
+        return createFilteredNetwork(consumerEndpoint: endpoint)
+    }
+}
+
+public enum VMNetworkResult {
+    case direct(VZNetworkDeviceConfiguration)
+    case filtered(VZNetworkDeviceConfiguration, FilteredNAT)
+}
+```
+
+### Direct Mode Setup
+
+```swift
+func createDirectNetwork() -> VMNetworkResult {
+    let networkDevice = VZVirtioNetworkDeviceConfiguration()
+    networkDevice.attachment = VZNATNetworkDeviceAttachment()
+    return .direct(networkDevice)
+}
+```
+
+### Filtered Mode Setup
+
+```swift
+func createFilteredNetwork(consumerEndpoint: Endpoint) -> VMNetworkResult {
     // Create pipe for VM network
     let (vmHandle, hostHandle) = createSocketPair()
 
@@ -153,10 +300,10 @@ func createFilteredNetwork() -> (VZNetworkDeviceConfiguration, FilteredNAT) {
     // Create filtered NAT that uses the host handle
     let filteredNAT = FilteredNAT(
         vmHandle: hostHandle,
-        allowedEndpoints: []  // Set when consumer connects
+        consumerEndpoint: consumerEndpoint
     )
 
-    return (networkDevice, filteredNAT)
+    return .filtered(networkDevice, filteredNAT)
 }
 ```
 
@@ -546,8 +693,10 @@ For initial implementation, start with basic async I/O. Optimize later if needed
 
 | Approach | Privileges | Performance | Security | Complexity |
 |----------|-----------|-------------|----------|------------|
-| **Filtered NAT (this doc)** | None | 2-4 Gbps | Excellent | Medium |
-| VZNATNetworkDeviceAttachment | None | 5-10 Gbps | Poor (open NAT) | Low |
+| **Direct mode** | None | ~10 Gbps | VM-only | Low |
+| **Sampled mode** | None | ~8 Gbps | Probabilistic | Low |
+| **Conntrack mode** | None | ~6 Gbps | Good | Medium |
+| **Filtered mode** | None | ~2-4 Gbps | Excellent | Medium |
 | WireGuard on provider (GotaTun) | Root | 3-5 Gbps | Good | Medium |
 | Network Extension | Restricted entitlement | 5-10 Gbps | Good | High |
 
@@ -749,44 +898,174 @@ public actor FilteredNAT {
 
 ---
 
-### Phase 7: File Handle Network Attachment
+### Phase 7: Filtering Strategies
 
-**File:** `Sources/OmertaNetwork/VPN/FileHandleNetwork.swift`
+**File:** `Sources/OmertaNetwork/VPN/FilteringStrategy.swift`
 
-**Deliverable:** Creates `VZFileHandleNetworkDeviceAttachment` and connects to FilteredNAT.
+**Deliverable:** Protocol and implementations for different filtering strategies.
+
+```swift
+/// Protocol for packet filtering strategies
+public protocol FilteringStrategy: Sendable {
+    /// Check if a packet should be forwarded
+    func shouldForward(packet: IPv4Packet) async -> FilterDecision
+
+    /// Called when violation detected (for logging/metrics)
+    func recordViolation(packet: IPv4Packet, reason: String) async
+}
+
+public enum FilterDecision {
+    case forward
+    case drop(reason: String)
+    case terminate(reason: String)  // Kill VM immediately
+}
+
+/// Full filtering - check every packet
+public actor FullFilterStrategy: FilteringStrategy {
+    private let allowlist: EndpointAllowlist
+
+    public func shouldForward(packet: IPv4Packet) async -> FilterDecision {
+        if await allowlist.isAllowed(address: packet.destinationAddress,
+                                      port: packet.destinationPort ?? 0) {
+            return .forward
+        }
+        return .drop(reason: "Not in allowlist")
+    }
+}
+
+/// Connection tracking - check first packet per flow
+public actor ConntrackStrategy: FilteringStrategy {
+    private let allowlist: EndpointAllowlist
+    private var seenFlows: Set<FlowKey> = []
+
+    public func shouldForward(packet: IPv4Packet) async -> FilterDecision {
+        let flow = FlowKey(dest: packet.destinationAddress,
+                          port: packet.destinationPort ?? 0)
+
+        // Fast path: already validated this flow
+        if seenFlows.contains(flow) {
+            return .forward
+        }
+
+        // Slow path: validate against allowlist
+        if await allowlist.isAllowed(address: flow.dest, port: flow.port) {
+            seenFlows.insert(flow)
+            return .forward
+        }
+
+        return .terminate(reason: "Connection to non-allowed endpoint")
+    }
+}
+
+/// Sampled filtering - check random subset
+public actor SampledStrategy: FilteringStrategy {
+    private let allowlist: EndpointAllowlist
+    private let sampleRate: Double  // 0.01 = 1%
+
+    public func shouldForward(packet: IPv4Packet) async -> FilterDecision {
+        // Only check sampled packets
+        guard Double.random(in: 0...1) < sampleRate else {
+            return .forward  // Skip check
+        }
+
+        if await allowlist.isAllowed(address: packet.destinationAddress,
+                                      port: packet.destinationPort ?? 0) {
+            return .forward
+        }
+
+        // Violation detected in sample - terminate
+        return .terminate(reason: "Sampled packet violated allowlist")
+    }
+}
+```
+
+**Unit Tests:** `FilteringStrategyTests.swift`
+- FullFilterStrategy blocks non-allowed traffic
+- ConntrackStrategy allows repeat flows without recheck
+- ConntrackStrategy terminates on new bad flow
+- SampledStrategy sometimes allows, sometimes checks
+- SampledStrategy terminates on sampled violation
+
+**Dependencies:** `EndpointAllowlist`, `IPv4Packet`
+
+**Verification:** `swift test --filter FilteringStrategy`
+
+---
+
+### Phase 8: VM Network Manager
+
+**File:** `Sources/OmertaNetwork/VPN/VMNetworkManager.swift`
+
+**Deliverable:** Unified manager that creates network for any mode.
 
 ```swift
 #if os(macOS)
 import Virtualization
 
-public struct FileHandleNetwork {
-    public let attachment: VZFileHandleNetworkDeviceAttachment
-    public let filteredNAT: FilteredNAT
+public actor VMNetworkManager {
 
-    public static func create(consumerEndpoint: Endpoint) throws -> FileHandleNetwork
+    public enum NetworkHandle {
+        case direct  // No cleanup needed
+        case filtered(task: Task<Void, Never>)  // Background processing task
+    }
 
-    /// Start processing loop
-    public func start() async
+    /// Create VM network configuration for specified mode
+    public static func createNetwork(
+        mode: VMNetworkMode,
+        consumerEndpoint: Endpoint,
+        samplingRate: Double = 0.01
+    ) throws -> (VZNetworkDeviceConfiguration, NetworkHandle) {
 
-    /// Stop and cleanup
-    public func stop()
+        switch mode {
+        case .direct:
+            let device = VZVirtioNetworkDeviceConfiguration()
+            device.attachment = VZNATNetworkDeviceAttachment()
+            return (device, .direct)
+
+        case .sampled:
+            let strategy = SampledStrategy(
+                allowlist: EndpointAllowlist([consumerEndpoint]),
+                sampleRate: samplingRate
+            )
+            return try createFilteredNetwork(strategy: strategy)
+
+        case .conntrack:
+            let strategy = ConntrackStrategy(
+                allowlist: EndpointAllowlist([consumerEndpoint])
+            )
+            return try createFilteredNetwork(strategy: strategy)
+
+        case .filtered:
+            let strategy = FullFilterStrategy(
+                allowlist: EndpointAllowlist([consumerEndpoint])
+            )
+            return try createFilteredNetwork(strategy: strategy)
+        }
+    }
+
+    private static func createFilteredNetwork(
+        strategy: FilteringStrategy
+    ) throws -> (VZNetworkDeviceConfiguration, NetworkHandle) {
+        // ... VZFileHandleNetworkDeviceAttachment setup
+    }
 }
 #endif
 ```
 
-**Integration Tests:** `FileHandleNetworkTests.swift`
-- Attachment creation succeeds
-- File handles are readable/writable
-- Write to host handle, read appears (mock VM side)
-- Cleanup releases resources
+**Integration Tests:** `VMNetworkManagerTests.swift`
+- Direct mode creates VZNATNetworkDeviceAttachment
+- Filtered mode creates VZFileHandleNetworkDeviceAttachment
+- Conntrack mode creates file handle with conntrack strategy
+- Sampled mode respects sample rate configuration
+- Cleanup stops background tasks
 
-**Dependencies:** `FilteredNAT`, Virtualization.framework
+**Dependencies:** Phases 1-7, Virtualization.framework
 
-**Verification:** `swift test --filter FileHandleNetwork` (macOS only)
+**Verification:** `swift test --filter VMNetworkManager` (macOS only)
 
 ---
 
-### Phase 8: VM WireGuard Setup
+### Phase 9: VM WireGuard Setup
 
 **Files:** `Resources/cloud-init/wireguard-setup.sh`, `Resources/cloud-init/iptables-setup.sh`
 
@@ -818,7 +1097,7 @@ iptables -A OUTPUT -o lo -j ACCEPT
 
 ---
 
-### Phase 9: Provider Integration
+### Phase 10: Provider Integration
 
 **File:** Modify `Sources/OmertaProvider/ProviderVPNManager.swift`
 
@@ -846,7 +1125,7 @@ public actor ProviderVPNManager {
 
 ---
 
-### Phase 10: End-to-End Testing
+### Phase 11: End-to-End Testing
 
 **Deliverable:** Full consumer-to-VM connectivity test.
 
@@ -863,7 +1142,7 @@ public actor ProviderVPNManager {
 
 ---
 
-### Phase 11: Performance Optimization
+### Phase 12: Performance Optimization
 
 **Files:** Modify `FilteredNAT.swift`, `FileHandleNetwork.swift`
 
@@ -893,7 +1172,7 @@ extension FileHandleNetwork {
 
 ---
 
-### Phase 12: Hardening
+### Phase 13: Hardening
 
 **Deliverable:** Error handling, edge cases, security hardening.
 
@@ -920,12 +1199,15 @@ extension FileHandleNetwork {
 | 4 | UDPForwarder | Unit | Phase 3 |
 | 5 | FramePacketBridge | Unit | Phase 1, 2, 3 |
 | 6 | FilteredNAT core | Unit | Phase 3, 4, 5 |
-| 7 | FileHandleNetwork | Integration | Phase 6 |
-| 8 | VM WireGuard scripts | Integration | None |
-| 9 | Provider integration | Integration | Phase 7, 8 |
-| 10 | E2E testing | E2E | Phase 9 |
-| 11 | Performance optimization | Performance | Phase 10 |
-| 12 | Hardening | Stress/Security | Phase 11 |
+| 7 | Filtering strategies | Unit | Phase 3, 2 |
+| 8 | VM Network Manager | Integration | Phase 6, 7 |
+| 9 | VM WireGuard scripts | Integration | None |
+| 10 | Provider integration | Integration | Phase 8, 9 |
+| 11 | E2E testing | E2E | Phase 10 |
+| 12 | Performance optimization | Performance | Phase 11 |
+| 13 | Hardening | Stress/Security | Phase 12 |
+
+**Note:** Direct mode (Phase 8) can be tested independently after Phase 9, without phases 1-7.
 
 ## Files to Create/Modify
 
@@ -939,27 +1221,29 @@ extension FileHandleNetwork {
 | `Sources/OmertaNetwork/VPN/UDPForwarder.swift` | 4 | UDP socket wrapper |
 | `Sources/OmertaNetwork/VPN/FramePacketBridge.swift` | 5 | Frame/packet conversion |
 | `Sources/OmertaNetwork/VPN/FilteredNAT.swift` | 6 | Main NAT implementation |
-| `Sources/OmertaNetwork/VPN/FileHandleNetwork.swift` | 7 | VZ attachment setup |
-| `Resources/cloud-init/wireguard-setup.sh` | 8 | VM WireGuard config |
-| `Resources/cloud-init/iptables-setup.sh` | 8 | VM firewall config |
+| `Sources/OmertaNetwork/VPN/FilteringStrategy.swift` | 7 | Full/Conntrack/Sampled strategies |
+| `Sources/OmertaNetwork/VPN/VMNetworkManager.swift` | 8 | Unified network mode manager |
+| `Resources/cloud-init/wireguard-setup.sh` | 9 | VM WireGuard config |
+| `Resources/cloud-init/iptables-setup.sh` | 9 | VM firewall config |
 | `Tests/OmertaNetworkTests/EthernetFrameTests.swift` | 1 | Unit tests |
 | `Tests/OmertaNetworkTests/IPv4PacketTests.swift` | 2 | Unit tests |
 | `Tests/OmertaNetworkTests/EndpointAllowlistTests.swift` | 3 | Unit tests |
 | `Tests/OmertaNetworkTests/UDPForwarderTests.swift` | 4 | Unit tests |
 | `Tests/OmertaNetworkTests/FramePacketBridgeTests.swift` | 5 | Unit tests |
 | `Tests/OmertaNetworkTests/FilteredNATTests.swift` | 6 | Unit tests |
-| `Tests/OmertaNetworkTests/FileHandleNetworkTests.swift` | 7 | Integration tests |
-| `Tests/OmertaNetworkTests/E2EConnectivityTests.swift` | 10 | E2E tests |
-| `Tests/OmertaNetworkTests/ThroughputBenchmarkTests.swift` | 11 | Performance tests |
-| `Tests/OmertaNetworkTests/LatencyBenchmarkTests.swift` | 11 | Performance tests |
+| `Tests/OmertaNetworkTests/FilteringStrategyTests.swift` | 7 | Unit tests |
+| `Tests/OmertaNetworkTests/VMNetworkManagerTests.swift` | 8 | Integration tests |
+| `Tests/OmertaNetworkTests/E2EConnectivityTests.swift` | 11 | E2E tests |
+| `Tests/OmertaNetworkTests/ThroughputBenchmarkTests.swift` | 12 | Performance tests |
+| `Tests/OmertaNetworkTests/LatencyBenchmarkTests.swift` | 12 | Performance tests |
 
 ### Modified Files
 
 | File | Phase | Changes |
 |------|-------|---------|
-| `Sources/OmertaProvider/ProviderVPNManager.swift` | 9 | Use FilteredNAT instead of WireGuard |
-| `Sources/OmertaVM/VirtualizationManager.swift` | 9 | Use VZFileHandleNetworkDeviceAttachment |
-| `Resources/cloud-init/*` | 8 | WireGuard + iptables setup |
+| `Sources/OmertaProvider/ProviderVPNManager.swift` | 10 | Use VMNetworkManager |
+| `Sources/OmertaVM/VirtualizationManager.swift` | 10 | Support all network modes |
+| `Resources/cloud-init/*` | 9 | WireGuard + iptables setup |
 
 ## Security Checklist
 
@@ -1016,6 +1300,31 @@ extension FileHandleNetwork {
 | `testInboundFromUnknown` | Packet from random IP | Dropped |
 | `testSetAllowedEndpoint` | Update allowlist | New endpoint allowed, old blocked |
 
+#### Filtering Strategies (`FilteringStrategyTests.swift`)
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| `testFullFilterAllowsValidTraffic` | Packet to consumer endpoint | `.forward` |
+| `testFullFilterDropsInvalidTraffic` | Packet to random IP | `.drop` |
+| `testConntrackFirstPacketChecked` | First packet to endpoint | Allowlist consulted, `.forward` |
+| `testConntrackRepeatPacketFastPath` | Second packet to same endpoint | No allowlist check, `.forward` |
+| `testConntrackBadFlowTerminates` | Packet to non-allowed endpoint | `.terminate` |
+| `testConntrackMultipleFlows` | Traffic to multiple allowed endpoints | All tracked separately |
+| `testSampledSkipsMostPackets` | 1000 packets at 1% rate | ~990 not checked |
+| `testSampledCatchesViolation` | Bad packet in sample | `.terminate` |
+| `testSampledAllowsGoodTraffic` | Good packets sampled | `.forward` |
+
+#### Network Mode Selection (`VMNetworkManagerTests.swift`)
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| `testDirectModeCreatesNATAttachment` | Create with `.direct` | `VZNATNetworkDeviceAttachment` |
+| `testFilteredModeCreatesFileHandle` | Create with `.filtered` | `VZFileHandleNetworkDeviceAttachment` |
+| `testConntrackModeUsesConntrackStrategy` | Create with `.conntrack` | ConntrackStrategy instance |
+| `testSampledModeUsesSampledStrategy` | Create with `.sampled` | SampledStrategy instance |
+| `testSamplingRateConfigurable` | Set sampling rate to 5% | Strategy uses 0.05 rate |
+| `testCleanupStopsBackgroundTasks` | Stop network handle | Background task cancelled |
+
 ### Integration Tests
 
 #### VM Network Setup (`VMNetworkIntegrationTests.swift`)
@@ -1038,20 +1347,58 @@ extension FileHandleNetwork {
 | `testEncryptedDataTransfer` | Send data through tunnel | Data received at consumer |
 | `testBidirectionalTraffic` | Consumer sends to VM | Response received |
 
+#### Mode-Specific E2E Tests (`E2EModeTests.swift`)
+
+| Test Case | Mode | Description | Expected Result |
+|-----------|------|-------------|-----------------|
+| `testDirectModeConnectivity` | direct | Full E2E in direct mode | WireGuard tunnel works |
+| `testDirectModePerformance` | direct | Throughput benchmark | ~10 Gbps |
+| `testFilteredModeConnectivity` | filtered | Full E2E in filtered mode | WireGuard tunnel works |
+| `testFilteredModeBlocking` | filtered | VM tries internet | Blocked |
+| `testConntrackModeConnectivity` | conntrack | Full E2E in conntrack mode | WireGuard tunnel works |
+| `testConntrackModeTerminatesOnBadFlow` | conntrack | VM tries internet | VM terminated |
+| `testSampledModeConnectivity` | sampled | Full E2E in sampled mode | WireGuard tunnel works |
+| `testSampledModeEventualDetection` | sampled | Sustained bad traffic | Eventually detected |
+| `testModeSwitchingAtRuntime` | all | Change mode while VM running | Not supported (clean restart) |
+
 ### Security Tests
 
-#### Isolation Verification (`SecurityIsolationTests.swift`)
+#### Isolation Verification by Mode (`SecurityIsolationTests.swift`)
+
+**Filtered Mode (guaranteed isolation):**
 
 | Test Case | Description | Expected Result |
 |-----------|-------------|-----------------|
-| `testVMCannotReachInternet` | VM tries to reach 8.8.8.8 | Packet dropped by FilteredNAT |
-| `testVMCannotReachProviderLAN` | VM tries 192.168.1.1 | Dropped |
-| `testVMCannotReachProviderHost` | VM tries provider's IP | Dropped |
-| `testVMCannotReachOtherVMs` | VM tries other VM's IP | Dropped |
-| `testVMCannotScanPorts` | Port scan attempt | All packets dropped |
-| `testDNSBlocked` | VM tries DNS lookup (53/udp) | Dropped (unless consumer provides) |
-| `testHTTPBlocked` | VM tries HTTP to internet | Dropped |
-| `testHTTPSBlocked` | VM tries HTTPS to internet | Dropped |
+| `testFilteredVMCannotReachInternet` | VM tries to reach 8.8.8.8 | Packet dropped |
+| `testFilteredVMCannotReachProviderLAN` | VM tries 192.168.1.1 | Dropped |
+| `testFilteredVMCannotReachProviderHost` | VM tries provider's IP | Dropped |
+| `testFilteredVMCannotReachOtherVMs` | VM tries other VM's IP | Dropped |
+| `testFilteredVMCannotScanPorts` | Port scan attempt | All packets dropped |
+| `testFilteredDNSBlocked` | VM tries DNS lookup (53/udp) | Dropped |
+
+**Conntrack Mode (terminates on violation):**
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| `testConntrackTerminatesOnInternetAccess` | VM tries 8.8.8.8 | VM terminated |
+| `testConntrackTerminatesOnLANAccess` | VM tries 192.168.1.1 | VM terminated |
+| `testConntrackAllowsRepeatedGoodTraffic` | Repeated consumer traffic | All forwarded |
+
+**Sampled Mode (probabilistic detection):**
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| `testSampledEventuallyDetectsAbuse` | 1000 bad packets | Detected within ~100 packets |
+| `testSampledMayMissSinglePacket` | Single bad packet | May or may not detect |
+| `testSampledHighRateDetectsQuickly` | 10% sample rate | Faster detection |
+
+**Direct Mode (VM-side only):**
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| `testDirectModeIptablesBlocks` | VM with iptables tries internet | Blocked by VM |
+| `testDirectModeBypassable` | VM disables iptables, tries internet | ⚠️ Traffic leaks |
+| `testDirectModeLocalhostBlocked` | VM tries provider localhost | Blocked by macOS NAT |
 
 #### Bypass Attempts (`SecurityBypassTests.swift`)
 
