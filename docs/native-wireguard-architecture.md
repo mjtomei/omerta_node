@@ -613,6 +613,328 @@ For initial implementation, start with basic async I/O. Optimize later if needed
 - [ ] Logging of blocked traffic for debugging
 - [ ] No sensitive data in logs
 
+## Test Plan
+
+### Unit Tests
+
+#### EthernetFrame Parser (`EthernetFrameTests.swift`)
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| `testParseValidIPv4Frame` | Parse well-formed IPv4 ethernet frame | Correct MAC addresses, etherType=0x0800, payload extracted |
+| `testParseValidARPFrame` | Parse ARP frame | etherType=0x0806, payload extracted |
+| `testParseIPv6Frame` | Parse IPv6 frame | etherType=0x86DD |
+| `testParseTruncatedFrame` | Frame < 14 bytes | Returns nil |
+| `testParseEmptyPayload` | Valid header, no payload | Valid frame with empty payload |
+| `testRoundTrip` | Parse then serialize | Identical bytes |
+| `testMACAddressExtraction` | Various MAC addresses | Correct 6-byte extraction |
+
+#### IPv4Packet Parser (`IPv4PacketTests.swift`)
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| `testParseValidUDPPacket` | Standard UDP packet | Correct src/dst IP, proto=17, port extraction |
+| `testParseValidTCPPacket` | Standard TCP packet | Correct src/dst IP, proto=6 |
+| `testParseICMPPacket` | ICMP echo request | proto=1, payload extracted |
+| `testParseWithIPOptions` | IP header with options | Correct header length, payload offset |
+| `testParseTruncatedHeader` | Packet < 20 bytes | Returns nil |
+| `testParseInvalidHeaderLength` | IHL field too small | Returns nil |
+| `testDestinationPortUDP` | UDP destination port | Correct port extraction |
+| `testDestinationPortTCP` | TCP destination port | Correct port extraction |
+| `testUDPPayloadExtraction` | Extract UDP payload | Correct offset (skip 8-byte UDP header) |
+
+#### FilteredNAT Allowlist (`FilteredNATTests.swift`)
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| `testAllowedEndpointPasses` | Packet to allowed endpoint | Forwarded |
+| `testBlockedEndpointDropped` | Packet to non-allowed endpoint | Dropped, logged |
+| `testEmptyAllowlistBlocksAll` | No endpoints configured | All packets dropped |
+| `testMultipleAllowedEndpoints` | Two allowed endpoints | Both pass, others blocked |
+| `testPortMismatchBlocked` | Correct IP, wrong port | Dropped |
+| `testIPMismatchBlocked` | Wrong IP, correct port | Dropped |
+| `testInboundFromAllowed` | Response from consumer | Accepted |
+| `testInboundFromUnknown` | Packet from random IP | Dropped |
+| `testSetAllowedEndpoint` | Update allowlist | New endpoint allowed, old blocked |
+
+### Integration Tests
+
+#### VM Network Setup (`VMNetworkIntegrationTests.swift`)
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| `testFileHandleAttachmentCreation` | Create VZFileHandleNetworkDeviceAttachment | Valid attachment, handles readable/writable |
+| `testVMReceivesFrames` | Send frame to VM handle | VM sees frame on eth0 |
+| `testVMSendsFrames` | VM sends packet | Frame readable from host handle |
+| `testARPResolution` | VM ARP request | FilteredNAT responds or forwards |
+| `testDHCPOptional` | VM boots without DHCP | Static IP configuration works |
+
+#### End-to-End Connectivity (`E2EConnectivityTests.swift`)
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| `testVMToConsumerPing` | Ping consumer from VM | ICMP reaches consumer (if allowed) |
+| `testVMToConsumerUDP` | UDP packet to consumer WireGuard port | Packet delivered |
+| `testWireGuardHandshake` | Full WireGuard handshake | Tunnel established |
+| `testEncryptedDataTransfer` | Send data through tunnel | Data received at consumer |
+| `testBidirectionalTraffic` | Consumer sends to VM | Response received |
+
+### Security Tests
+
+#### Isolation Verification (`SecurityIsolationTests.swift`)
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| `testVMCannotReachInternet` | VM tries to reach 8.8.8.8 | Packet dropped by FilteredNAT |
+| `testVMCannotReachProviderLAN` | VM tries 192.168.1.1 | Dropped |
+| `testVMCannotReachProviderHost` | VM tries provider's IP | Dropped |
+| `testVMCannotReachOtherVMs` | VM tries other VM's IP | Dropped |
+| `testVMCannotScanPorts` | Port scan attempt | All packets dropped |
+| `testDNSBlocked` | VM tries DNS lookup (53/udp) | Dropped (unless consumer provides) |
+| `testHTTPBlocked` | VM tries HTTP to internet | Dropped |
+| `testHTTPSBlocked` | VM tries HTTPS to internet | Dropped |
+
+#### Bypass Attempts (`SecurityBypassTests.swift`)
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| `testSpoofedSourceIP` | VM spoofs source IP | Still blocked (dest check) |
+| `testSpoofedSourceMAC` | VM spoofs MAC address | No effect on filtering |
+| `testFragmentedPacket` | Fragmented IP packet | Reassembled and checked, or dropped |
+| `testOversizedPacket` | Jumbo frame | Handled or dropped gracefully |
+| `testMalformedIPHeader` | Invalid IP header | Dropped, no crash |
+| `testMalformedEthernetFrame` | Truncated/corrupt frame | Dropped, no crash |
+| `testRapidEndpointChanges` | Attacker tries to race allowlist | Only configured endpoint allowed |
+| `testIPv6Blocked` | VM sends IPv6 | Dropped (IPv4 only allowlist) |
+| `testNonIPProtocol` | Raw ethernet frames | Dropped or handled |
+
+#### Defense in Depth Verification (`DefenseInDepthTests.swift`)
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| `testVMIptablesActive` | Check VM firewall rules | OUTPUT policy DROP, wg0 allowed |
+| `testVMIptablesSurvivesReboot` | Reboot VM | Rules persist |
+| `testVMWithoutIptables` | Disable VM iptables | FilteredNAT still blocks |
+| `testLayeredBlocking` | Both layers see blocked packet | Logged at both layers |
+
+### Performance Tests
+
+#### Throughput Benchmarks (`ThroughputBenchmarkTests.swift`)
+
+| Test Case | Target | Measurement Method |
+|-----------|--------|-------------------|
+| `testSmallPacketThroughput` | >100K pps | 64-byte UDP packets for 10s, count delivered |
+| `testLargePacketThroughput` | >2 Gbps | 1400-byte UDP packets for 10s, measure bandwidth |
+| `testMixedSizeThroughput` | >1.5 Gbps | Realistic packet size distribution |
+| `testSustainedThroughput` | Stable | 60-second continuous transfer, check for degradation |
+| `testBurstThroughput` | No drops | 1000 packets in <10ms bursts |
+| `testBidirectionalThroughput` | >1 Gbps each | Simultaneous upload/download |
+
+**Throughput Test Methodology:**
+
+```swift
+func measureThroughput(packetSize: Int, duration: TimeInterval) async -> ThroughputResult {
+    let startTime = ContinuousClock.now
+    var bytesSent: UInt64 = 0
+    var packetsSent: UInt64 = 0
+
+    while ContinuousClock.now - startTime < .seconds(duration) {
+        let packet = generateTestPacket(size: packetSize)
+        try await filteredNAT.forward(packet)
+        bytesSent += UInt64(packetSize)
+        packetsSent += 1
+    }
+
+    let elapsed = ContinuousClock.now - startTime
+    return ThroughputResult(
+        bytesPerSecond: Double(bytesSent) / elapsed.seconds,
+        packetsPerSecond: Double(packetsSent) / elapsed.seconds
+    )
+}
+```
+
+#### Latency Benchmarks (`LatencyBenchmarkTests.swift`)
+
+| Test Case | Target | Measurement Method |
+|-----------|--------|-------------------|
+| `testFrameProcessingLatency` | <100 μs p50 | Timestamp at ingress/egress, measure delta |
+| `testAllowlistCheckLatency` | <1 μs | Microbenchmark allowlist lookup |
+| `testE2ELatency` | <500 μs p50 | Round-trip ping through full stack |
+| `testLatencyUnderLoad` | <200 μs p50 | Measure latency at 50% throughput |
+| `testLatencyPercentiles` | p99 <1ms | Collect 10K samples, compute percentiles |
+| `testJitter` | <100 μs stddev | Measure latency variance |
+
+**Latency Test Methodology:**
+
+```swift
+func measureLatency(samples: Int) async -> LatencyResult {
+    var latencies: [Duration] = []
+
+    for _ in 0..<samples {
+        let packet = generateTestPacket()
+        let start = ContinuousClock.now
+        try await filteredNAT.forward(packet)
+        let end = ContinuousClock.now
+        latencies.append(end - start)
+    }
+
+    latencies.sort()
+    return LatencyResult(
+        p50: latencies[samples / 2],
+        p95: latencies[samples * 95 / 100],
+        p99: latencies[samples * 99 / 100],
+        mean: latencies.reduce(.zero, +) / samples,
+        stddev: calculateStdDev(latencies)
+    )
+}
+```
+
+#### Stress Tests (`StressTests.swift`)
+
+| Test Case | Description | Success Criteria |
+|-----------|-------------|------------------|
+| `testHighPacketRate` | 500K pps for 60s | No crashes, <1% packet loss |
+| `testMemoryStability` | 1M packets | Memory usage stable (no leaks) |
+| `testCPUUtilization` | Max throughput | CPU usage reasonable (<80% one core) |
+| `testLongRunning` | 1 hour continuous | No degradation, no memory growth |
+| `testConnectionChurn` | Rapid VM start/stop | Clean resource cleanup |
+| `testConcurrentVMs` | 4 VMs simultaneously | Fair bandwidth sharing |
+
+**Stress Test Methodology:**
+
+```swift
+func stressTest(duration: TimeInterval, targetPPS: Int) async -> StressResult {
+    let monitor = ResourceMonitor()
+    monitor.start()
+
+    let startMemory = monitor.currentMemory
+    var totalPackets: UInt64 = 0
+    var droppedPackets: UInt64 = 0
+
+    let startTime = ContinuousClock.now
+    while ContinuousClock.now - startTime < .seconds(duration) {
+        for _ in 0..<targetPPS / 100 {  // 10ms batches
+            let result = try? await filteredNAT.forward(generateTestPacket())
+            totalPackets += 1
+            if result == nil { droppedPackets += 1 }
+        }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+
+    monitor.stop()
+    return StressResult(
+        totalPackets: totalPackets,
+        droppedPackets: droppedPackets,
+        dropRate: Double(droppedPackets) / Double(totalPackets),
+        peakMemory: monitor.peakMemory,
+        memoryGrowth: monitor.peakMemory - startMemory,
+        peakCPU: monitor.peakCPUPercent
+    )
+}
+```
+
+#### Baseline Comparisons (`BaselineComparisonTests.swift`)
+
+| Comparison | Method |
+|------------|--------|
+| FilteredNAT vs VZNATNetworkDeviceAttachment | Same workload, measure throughput delta |
+| FilteredNAT vs raw socket forwarding | Measure filtering overhead |
+| With batching vs without batching | Measure batch optimization gains |
+| Dispatch I/O vs Foundation FileHandle | Compare I/O strategies |
+
+### Reliability Tests
+
+#### Error Handling (`ErrorHandlingTests.swift`)
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| `testVMHandleClose` | VM terminates unexpectedly | Clean shutdown, no crash |
+| `testNetworkSocketError` | UDP socket error | Reconnect or graceful failure |
+| `testResourceExhaustion` | Out of file descriptors | Graceful error, cleanup |
+| `testInvalidFrameRecovery` | Stream of invalid frames | Continue processing valid frames |
+| `testPartialRead` | Incomplete frame read | Buffer and wait for rest |
+
+#### Recovery (`RecoveryTests.swift`)
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| `testVMRestart` | Stop and start VM | New FilteredNAT instance works |
+| `testConsumerReconnect` | Consumer IP changes | Allowlist update, traffic flows |
+| `testProviderNetworkFlap` | Provider loses network briefly | Recovers when network returns |
+
+### Test Infrastructure
+
+#### Test Utilities
+
+```swift
+// Mock VM handle for unit tests
+class MockVMHandle: FileHandle {
+    var sentFrames: [Data] = []
+    var framesToReceive: [Data] = []
+
+    func simulateVMSends(_ frame: Data) {
+        framesToReceive.append(frame)
+    }
+}
+
+// Packet generators
+func generateTestPacket(
+    destIP: IPv4Address = .consumer,
+    destPort: UInt16 = 51900,
+    size: Int = 100
+) -> Data
+
+// Traffic generators for load testing
+actor TrafficGenerator {
+    func generateLoad(pps: Int, duration: TimeInterval) async
+    func generateBurst(packets: Int) async
+}
+
+// Metrics collectors
+class PerformanceMetrics {
+    func recordLatency(_ duration: Duration)
+    func recordThroughput(bytes: Int, duration: Duration)
+    func generateReport() -> PerformanceReport
+}
+```
+
+#### CI Integration
+
+```yaml
+# .github/workflows/test.yml
+performance-tests:
+  runs-on: macos-14  # Apple Silicon
+  steps:
+    - name: Run throughput benchmarks
+      run: swift test --filter ThroughputBenchmark
+
+    - name: Run latency benchmarks
+      run: swift test --filter LatencyBenchmark
+
+    - name: Compare against baseline
+      run: |
+        swift test --filter BaselineComparison
+        # Fail if >10% regression
+
+    - name: Upload performance results
+      uses: actions/upload-artifact@v3
+      with:
+        name: perf-results
+        path: .build/perf-*.json
+```
+
+### Performance Targets Summary
+
+| Metric | Target | Stretch Goal |
+|--------|--------|--------------|
+| Throughput (large packets) | 2 Gbps | 4 Gbps |
+| Throughput (small packets) | 100K pps | 200K pps |
+| Latency (p50) | 100 μs | 50 μs |
+| Latency (p99) | 500 μs | 200 μs |
+| Memory per VM | <10 MB | <5 MB |
+| CPU at max throughput | <80% | <50% |
+| Packet loss under load | <0.1% | 0% |
+
 ## References
 
 - [VZFileHandleNetworkDeviceAttachment](https://developer.apple.com/documentation/virtualization/vzfilehandlenetworkdeviceattachment)
