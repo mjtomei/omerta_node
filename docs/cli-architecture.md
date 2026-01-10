@@ -1321,7 +1321,7 @@ See `vm-network-architecture.md` for detailed implementation of VM-side isolatio
 | 2 | Provider VM boot | Unit, Integration | Phase 1 | macOS, Linux | Done |
 | 3 | Consumer WireGuard server | Unit, Integration | Phase 2 | All (needs sudo) | Done |
 | 4 | E2E CLI flow | E2E | Phases 1-3 | All | Done |
-| 4.5 | Standalone VM tests | Unit, Integration | Phase 2 | All | **Next** |
+| 4.5 | Standalone VM tests | Unit, Integration | Phase 2 | All | Done |
 | 5 | Consumer VM image | Unit, Integration | Phase 4 | All | |
 | 6 | Port forwarding | Unit, Integration | Phase 5 | All | |
 | 7 | Unified node | Unit, Integration | Phase 6 | All | |
