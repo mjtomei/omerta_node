@@ -586,6 +586,15 @@ public actor EphemeralVPN: VPNProvider {
         config: String,
         interfaceName: String
     ) async throws {
+        // Check if interface already exists (stale from previous run)
+        let existingInterfaces = (try? WireGuardCleanup.listOmertaInterfaces()) ?? []
+        if existingInterfaces.contains(interfaceName) || existingInterfaces.contains(where: { $0.contains(interfaceName) }) {
+            throw VPNError.tunnelStartFailed(
+                "WireGuard interface '\(interfaceName)' already exists from a previous session. " +
+                "Run 'sudo omerta vm cleanup' to remove stale interfaces before requesting a new VM."
+            )
+        }
+
         // Write config to user-writable temp directory
         // wg-quick accepts full paths to config files
         let configDir = FileManager.default.temporaryDirectory
