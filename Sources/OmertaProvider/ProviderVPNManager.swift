@@ -244,14 +244,14 @@ public actor ProviderVPNManager {
 
     // MARK: - Key Generation
 
-    private func generatePrivateKey() -> String {
+    private nonisolated func generatePrivateKey() -> String {
         // Generate random 32-byte key
         let keyData = SymmetricKey(size: .bits256)
         let keyBytes = keyData.withUnsafeBytes { Data($0) }
         return keyBytes.base64EncodedString()
     }
 
-    private func derivePublicKey(from privateKey: String) throws -> String {
+    private nonisolated func derivePublicKey(from privateKey: String) throws -> String {
         // Try native Curve25519 derivation first (works without wg binary)
         guard let privateKeyData = Data(base64Encoded: privateKey), privateKeyData.count == 32 else {
             throw ProviderVPNError.keyDerivationFailed
@@ -264,12 +264,11 @@ public actor ProviderVPNManager {
             return publicKeyData.base64EncodedString()
         } catch {
             // Fall back to wg binary if available
-            logger.debug("Native key derivation failed, trying wg binary: \(error)")
             return try derivePublicKeyUsingWG(from: privateKey)
         }
     }
 
-    private func derivePublicKeyUsingWG(from privateKey: String) throws -> String {
+    private nonisolated func derivePublicKeyUsingWG(from privateKey: String) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: WireGuardPaths.wg)
         process.arguments = ["pubkey"]
