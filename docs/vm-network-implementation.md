@@ -671,7 +671,7 @@ Each phase produces a testable artifact.
 | 9 | VM WireGuard scripts | All | Done |
 | 10 | Provider integration | macOS | Done |
 | 11 | E2E testing | macOS | Done |
-| 11.5 | Linux QEMU parity | Linux | Next |
+| 11.5 | Linux QEMU parity | Linux | Done |
 | 12 | Performance optimization | All | Pending |
 | 13 | Hardening | All | Pending |
 | 14 | eBPF kernel filtering | Linux | Pending |
