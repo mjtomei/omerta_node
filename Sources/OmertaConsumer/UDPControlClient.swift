@@ -2,6 +2,7 @@ import Foundation
 import NIOCore
 import NIOPosix
 import Crypto
+import Logging
 import OmertaCore
 
 /// Client for sending encrypted UDP control messages to provider daemons
@@ -12,6 +13,7 @@ public actor UDPControlClient {
     private let localPort: UInt16
     private let maxRetries: Int = 3
     private let retryTimeout: TimeInterval = 2.0
+    private let logger: Logger
 
     private var eventLoopGroup: MultiThreadedEventLoopGroup?
     private var channel: Channel?
@@ -20,6 +22,9 @@ public actor UDPControlClient {
         self.networkId = networkId
         self.networkKey = networkKey
         self.localPort = localPort
+        var logger = Logger(label: "com.omerta.consumer.udp-control")
+        logger.logLevel = .debug
+        self.logger = logger
     }
 
     // MARK: - VM Lifecycle
@@ -32,7 +37,8 @@ public actor UDPControlClient {
         vpnConfig: VPNConfiguration,
         consumerEndpoint: String,
         sshPublicKey: String,
-        sshUser: String = "omerta"
+        sshUser: String = "omerta",
+        reverseTunnelConfig: ReverseTunnelConfig? = nil
     ) async throws -> VMCreatedResponse {
         let request = RequestVMMessage(
             vmId: vmId,
@@ -40,7 +46,8 @@ public actor UDPControlClient {
             vpnConfig: vpnConfig,
             consumerEndpoint: consumerEndpoint,
             sshPublicKey: sshPublicKey,
-            sshUser: sshUser
+            sshUser: sshUser,
+            reverseTunnelConfig: reverseTunnelConfig
         )
 
         let message = ControlMessage(action: .requestVM(request))
@@ -128,15 +135,47 @@ public actor UDPControlClient {
         to endpoint: String
     ) async throws -> ControlMessage {
         var lastError: Error?
+        let startTime = Date()
 
         for attempt in 1...maxRetries {
             do {
-                return try await sendMessage(message, to: endpoint)
+                logger.debug("Sending message", metadata: [
+                    "action": "\(message.action)",
+                    "message_id": "\(message.messageId)",
+                    "endpoint": "\(endpoint)",
+                    "attempt": "\(attempt)/\(maxRetries)"
+                ])
+
+                let response = try await sendMessage(message, to: endpoint)
+                let elapsed = Date().timeIntervalSince(startTime)
+
+                logger.debug("Response received", metadata: [
+                    "action": "\(response.action)",
+                    "message_id": "\(message.messageId)",
+                    "elapsed_ms": "\(Int(elapsed * 1000))"
+                ])
+
+                return response
             } catch {
                 lastError = error
+                let elapsed = Date().timeIntervalSince(startTime)
+
                 if attempt < maxRetries {
+                    logger.debug("Request failed, retrying", metadata: [
+                        "message_id": "\(message.messageId)",
+                        "attempt": "\(attempt)/\(maxRetries)",
+                        "error": "\(error)",
+                        "elapsed_ms": "\(Int(elapsed * 1000))"
+                    ])
                     // Wait before retry
                     try await Task.sleep(nanoseconds: UInt64(0.5 * 1_000_000_000))
+                } else {
+                    logger.warning("Request failed after all retries", metadata: [
+                        "message_id": "\(message.messageId)",
+                        "attempts": "\(maxRetries)",
+                        "error": "\(error)",
+                        "elapsed_ms": "\(Int(elapsed * 1000))"
+                    ])
                 }
             }
         }

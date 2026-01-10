@@ -86,6 +86,7 @@ public struct RequestVMMessage: Codable, Sendable {
     public let consumerEndpoint: String  // For async notifications (IP:port)
     public let sshPublicKey: String  // Consumer's SSH public key for VM access
     public let sshUser: String  // Username to create in VM (default: "omerta")
+    public let reverseTunnelConfig: ReverseTunnelConfig?  // For macOS test mode (optional)
 
     public init(
         vmId: UUID = UUID(),
@@ -93,7 +94,8 @@ public struct RequestVMMessage: Codable, Sendable {
         vpnConfig: VPNConfiguration,
         consumerEndpoint: String,
         sshPublicKey: String,
-        sshUser: String = "omerta"
+        sshUser: String = "omerta",
+        reverseTunnelConfig: ReverseTunnelConfig? = nil
     ) {
         self.vmId = vmId
         self.requirements = requirements
@@ -101,6 +103,7 @@ public struct RequestVMMessage: Codable, Sendable {
         self.consumerEndpoint = consumerEndpoint
         self.sshPublicKey = sshPublicKey
         self.sshUser = sshUser
+        self.reverseTunnelConfig = reverseTunnelConfig
     }
 }
 

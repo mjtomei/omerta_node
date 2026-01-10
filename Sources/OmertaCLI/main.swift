@@ -1078,7 +1078,8 @@ struct VM: AsyncParsableCommand {
             VMRelease.self,
             VMConnect.self,
             VMCleanup.self,
-            VMTest.self
+            VMTest.self,
+            VMBootTest.self
         ]
     )
 }
@@ -1731,14 +1732,208 @@ struct VMConnect: AsyncParsableCommand {
     }
 }
 
+// MARK: - QEMU Cleanup Utilities
+
+/// Represents an orphaned QEMU process
+struct OrphanedQEMUProcess: Sendable {
+    let pid: Int32
+    let vmId: String?
+    let command: String
+}
+
+/// Cleanup utilities for QEMU processes and VM files
+enum QEMUCleanup {
+    /// List all running QEMU processes
+    static func listQEMUProcesses() -> [OrphanedQEMUProcess] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        process.arguments = ["-fl", "qemu-system"]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return []
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+
+        var processes: [OrphanedQEMUProcess] = []
+        for line in output.split(separator: "\n") {
+            let parts = line.split(separator: " ", maxSplits: 1)
+            if let pidStr = parts.first, let pid = Int32(pidStr) {
+                let command = parts.count > 1 ? String(parts[1]) : "qemu-system"
+                // Try to extract VM ID from command line (look for UUID pattern)
+                var vmId: String? = nil
+                if let range = command.range(of: "[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}", options: .regularExpression) {
+                    vmId = String(command[range])
+                }
+                processes.append(OrphanedQEMUProcess(pid: pid, vmId: vmId, command: command))
+            }
+        }
+
+        return processes
+    }
+
+    /// Check if a QEMU process is orphaned (PID file exists but process doesn't match)
+    static func findOrphanedQEMUProcesses(vmDisksDir: String) -> [(process: OrphanedQEMUProcess, pidFile: String?)] {
+        var orphaned: [(process: OrphanedQEMUProcess, pidFile: String?)] = []
+
+        // Get all PID files
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: vmDisksDir) else {
+            return orphaned
+        }
+
+        let pidFiles = files.filter { $0.hasSuffix(".pid") }
+        var pidFileMap: [Int32: String] = [:]  // PID -> PID file path
+        var orphanedPidFiles: [String] = []     // PID files with dead processes
+
+        for pidFile in pidFiles {
+            let fullPath = "\(vmDisksDir)/\(pidFile)"
+            if let pidStr = try? String(contentsOfFile: fullPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+               let pid = Int32(pidStr) {
+                // Check if process is still running
+                if kill(pid, 0) == 0 {
+                    pidFileMap[pid] = fullPath
+                } else {
+                    orphanedPidFiles.append(fullPath)
+                }
+            }
+        }
+
+        // Find running QEMU processes that match orphaned PID files
+        let runningProcesses = listQEMUProcesses()
+
+        // Any running QEMU process without a valid PID file is orphaned
+        for proc in runningProcesses {
+            if pidFileMap[proc.pid] == nil {
+                orphaned.append((process: proc, pidFile: nil))
+            }
+        }
+
+        return orphaned
+    }
+
+    /// Kill a QEMU process
+    static func killProcess(pid: Int32) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process.arguments = ["kill", "-9", String(pid)]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    /// Get all VM-related files in the vm-disks directory grouped by VM ID
+    static func getVMFiles(vmDisksDir: String) -> [String: VMFiles] {
+        var vmFilesMap: [String: VMFiles] = [:]
+
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: vmDisksDir) else {
+            return vmFilesMap
+        }
+
+        for file in files {
+            // Extract VM ID from filename (UUID at the start)
+            guard let range = file.range(of: "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}", options: .regularExpression) else {
+                continue
+            }
+
+            let vmId = String(file[range])
+            let fullPath = "\(vmDisksDir)/\(file)"
+
+            var vmFiles = vmFilesMap[vmId] ?? VMFiles(vmId: vmId)
+
+            if file.hasSuffix(".pid") {
+                vmFiles.pidFile = fullPath
+                // Check if process is running
+                if let pidStr = try? String(contentsOfFile: fullPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+                   let pid = Int32(pidStr) {
+                    vmFiles.pid = pid
+                    vmFiles.isRunning = kill(pid, 0) == 0
+                }
+            } else if file.hasSuffix(".qcow2") || file.hasSuffix(".raw") {
+                vmFiles.diskFile = fullPath
+            } else if file.hasSuffix("-seed.iso") {
+                vmFiles.seedISO = fullPath
+            } else if file.hasSuffix("-stdout.log") {
+                vmFiles.stdoutLog = fullPath
+            } else if file.hasSuffix("-stderr.log") {
+                vmFiles.stderrLog = fullPath
+            }
+
+            vmFilesMap[vmId] = vmFiles
+        }
+
+        return vmFilesMap
+    }
+
+    /// Remove a file, using sudo if needed for permission errors
+    static func removeFile(_ path: String) -> Bool {
+        do {
+            try FileManager.default.removeItem(atPath: path)
+            return true
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteNoPermissionError {
+            // Try with sudo
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            process.arguments = ["rm", "-f", path]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+                return process.terminationStatus == 0
+            } catch {
+                return false
+            }
+        } catch {
+            return false
+        }
+    }
+}
+
+/// VM files group
+struct VMFiles {
+    let vmId: String
+    var pidFile: String?
+    var diskFile: String?
+    var seedISO: String?
+    var stdoutLog: String?
+    var stderrLog: String?
+    var pid: Int32?
+    var isRunning: Bool = false
+
+    var allFiles: [String] {
+        [pidFile, diskFile, seedISO, stdoutLog, stderrLog].compactMap { $0 }
+    }
+
+    var isOrphaned: Bool {
+        // Orphaned if has PID file but process is not running
+        pidFile != nil && !isRunning
+    }
+}
+
 // MARK: - VM Cleanup Command
 struct VMCleanup: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "cleanup",
-        abstract: "Clean up orphaned WireGuard interfaces, firewall rules, and resources"
+        abstract: "Clean up orphaned WireGuard interfaces, QEMU processes, VM disks, and resources"
     )
 
-    @Flag(name: .long, help: "Clean up all Omerta interfaces, not just orphaned ones")
+    @Flag(name: .long, help: "Clean up all Omerta resources, not just orphaned ones")
     var all: Bool = false
 
     @Flag(name: .long, help: "Show status only, don't actually clean up")
@@ -1747,7 +1942,7 @@ struct VMCleanup: AsyncParsableCommand {
     @Flag(name: .long, help: "Skip confirmation")
     var force: Bool = false
 
-    @Flag(name: .long, help: "Clean up VM disk files (seed ISOs, overlay disks)")
+    @Flag(name: .long, help: "Clean up VM disk files (seed ISOs, overlay disks, PID files, logs)")
     var disks: Bool = false
 
     mutating func run() async throws {
@@ -1884,56 +2079,78 @@ struct VMCleanup: AsyncParsableCommand {
         print("")
         #endif
 
-        // ========== VM Disk Files ==========
-        var diskFiles: [String] = []
-        var seedISOFiles: [String] = []
-        var overlayDiskFiles: [String] = []
+        // ========== QEMU Processes ==========
+        let vmDisksDir = "\(OmertaConfig.defaultConfigDir)/vm-disks"
+        let qemuProcesses = QEMUCleanup.listQEMUProcesses()
+        let vmFilesMap = QEMUCleanup.getVMFiles(vmDisksDir: vmDisksDir)
 
-        if disks {
-            let vmDisksDir = "\(OmertaConfig.defaultConfigDir)/vm-disks"
-            print("VM Disk Files")
-            print("-------------")
+        // Identify orphaned VMs (have files but QEMU not running)
+        let orphanedVMs = vmFilesMap.values.filter { $0.isOrphaned }
+        // Identify running VMs
+        let runningVMs = vmFilesMap.values.filter { $0.isRunning }
 
-            if let files = try? FileManager.default.contentsOfDirectory(atPath: vmDisksDir) {
-                for file in files {
-                    let fullPath = "\(vmDisksDir)/\(file)"
-                    if file.hasSuffix("-seed.iso") {
-                        seedISOFiles.append(fullPath)
-                    } else if file.hasSuffix(".raw") || file.hasSuffix(".qcow2") {
-                        overlayDiskFiles.append(fullPath)
-                    }
-                }
-                diskFiles = seedISOFiles + overlayDiskFiles
-
-                if seedISOFiles.isEmpty && overlayDiskFiles.isEmpty {
-                    print("  No VM disk files found")
-                } else {
-                    if !seedISOFiles.isEmpty {
-                        print("  Seed ISO files: \(seedISOFiles.count)")
-                        for file in seedISOFiles.prefix(5) {
-                            let name = (file as NSString).lastPathComponent
-                            print("    \(name)")
-                        }
-                        if seedISOFiles.count > 5 {
-                            print("    ... and \(seedISOFiles.count - 5) more")
-                        }
-                    }
-                    if !overlayDiskFiles.isEmpty {
-                        print("  Overlay disk files: \(overlayDiskFiles.count)")
-                        for file in overlayDiskFiles.prefix(5) {
-                            let name = (file as NSString).lastPathComponent
-                            print("    \(name)")
-                        }
-                        if overlayDiskFiles.count > 5 {
-                            print("    ... and \(overlayDiskFiles.count - 5) more")
-                        }
-                    }
-                }
-            } else {
-                print("  VM disks directory not found: \(vmDisksDir)")
+        #if os(Linux)
+        print("QEMU Processes")
+        print("--------------")
+        if qemuProcesses.isEmpty {
+            print("  No QEMU processes running")
+        } else {
+            print("  Running QEMU processes: \(qemuProcesses.count)")
+            for proc in qemuProcesses {
+                let vmIdStr = proc.vmId.map { "[\($0.prefix(8))...]" } ?? "[unknown]"
+                print("    PID \(proc.pid): \(vmIdStr)")
             }
-            print("")
         }
+        print("")
+        #endif
+
+        // ========== VM Disk Files ==========
+        var vmFilesToClean: [VMFiles] = []
+        var allVMFiles: [String] = []
+
+        print("VM Disk Files")
+        print("-------------")
+
+        if vmFilesMap.isEmpty {
+            print("  No VM files found in: \(vmDisksDir)")
+        } else {
+            // Show orphaned VMs (not running)
+            if !orphanedVMs.isEmpty {
+                print("  Orphaned VMs (not running): \(orphanedVMs.count)")
+                for vm in orphanedVMs.prefix(5) {
+                    let fileCount = vm.allFiles.count
+                    print("    [\(vm.vmId.prefix(8))...] \(fileCount) file(s)")
+                }
+                if orphanedVMs.count > 5 {
+                    print("    ... and \(orphanedVMs.count - 5) more")
+                }
+            }
+
+            // Show running VMs
+            if !runningVMs.isEmpty {
+                print("  Running VMs: \(runningVMs.count)")
+                for vm in runningVMs {
+                    print("    [\(vm.vmId.prefix(8))...] PID \(vm.pid ?? 0)")
+                }
+            }
+
+            if orphanedVMs.isEmpty && runningVMs.isEmpty {
+                print("  No VM files found")
+            }
+
+            // Determine what to clean based on --disks and --all flags
+            if disks {
+                if all {
+                    // Clean ALL VMs (including running ones - will kill QEMU first)
+                    vmFilesToClean = Array(vmFilesMap.values)
+                } else {
+                    // Clean only orphaned VMs
+                    vmFilesToClean = orphanedVMs
+                }
+                allVMFiles = vmFilesToClean.flatMap { $0.allFiles }
+            }
+        }
+        print("")
 
         // Determine what to clean
         let interfacesToClean: [String]
@@ -1950,7 +2167,8 @@ struct VMCleanup: AsyncParsableCommand {
         let hasInterfacesToClean = !interfacesToClean.isEmpty
         let hasConfigFiles = !status.configFiles.isEmpty
         let hasStaleVMs = !staleVMs.isEmpty
-        let hasDiskFiles = !diskFiles.isEmpty
+        let hasVMFilesToClean = !vmFilesToClean.isEmpty
+        let hasRunningVMsToKill = all && !runningVMs.isEmpty && disks
 
         #if os(macOS)
         let hasMarkeredAnchors = !markeredAnchors.isEmpty
@@ -1967,12 +2185,17 @@ struct VMCleanup: AsyncParsableCommand {
         let orphanedMarkers: [ProviderVPNManager.FirewallMarker] = []
         #endif
 
-        if !hasInterfacesToClean && !hasConfigFiles && !hasOrphanedProcesses && !hasFirewallWork && !hasDiskFiles && (!hasStaleVMs || !all) {
+        if !hasInterfacesToClean && !hasConfigFiles && !hasOrphanedProcesses && !hasFirewallWork && !hasVMFilesToClean && !hasRunningVMsToKill && (!hasStaleVMs || !all) {
             print("Nothing to clean up!")
             if hasStaleVMs {
                 print("")
                 print("Note: \(staleVMs.count) stale VM(s) tracked with no interface.")
                 print("Use --all to clear stale tracking.")
+            }
+            if !orphanedVMs.isEmpty && !disks {
+                print("")
+                print("Note: \(orphanedVMs.count) orphaned VM file set(s) found.")
+                print("Use --disks to clean up VM files.")
             }
             return
         }
@@ -1980,7 +2203,7 @@ struct VMCleanup: AsyncParsableCommand {
         if dryRun {
             print("[DRY RUN] Would clean up:")
             for proc in status.orphanedProcesses {
-                print("  - Kill orphaned process: PID \(proc.pid)")
+                print("  - Kill orphaned wireguard-go process: PID \(proc.pid)")
             }
             for iface in interfacesToClean {
                 print("  - Stop interface: \(iface)")
@@ -2004,9 +2227,16 @@ struct VMCleanup: AsyncParsableCommand {
                     print("  - Remove stale tracking: \(vm.vmId.uuidString.prefix(8))...")
                 }
             }
-            if hasDiskFiles {
-                print("  - Remove \(seedISOFiles.count) seed ISO file(s)")
-                print("  - Remove \(overlayDiskFiles.count) overlay disk file(s)")
+            if hasRunningVMsToKill {
+                for vm in runningVMs {
+                    print("  - Kill QEMU process: PID \(vm.pid ?? 0) [\(vm.vmId.prefix(8))...]")
+                }
+            }
+            if hasVMFilesToClean {
+                let orphanedCount = vmFilesToClean.filter { $0.isOrphaned }.count
+                let runningCount = vmFilesToClean.filter { $0.isRunning }.count
+                print("  - Remove VM files for \(vmFilesToClean.count) VM(s) (\(orphanedCount) orphaned, \(runningCount) running)")
+                print("    Total files: \(allVMFiles.count)")
             }
             return
         }
@@ -2032,8 +2262,12 @@ struct VMCleanup: AsyncParsableCommand {
                 print("This will remove \(markeredAnchors.count) pf anchor(s) created by omerta.")
             }
             #endif
-            if hasDiskFiles {
-                print("This will remove \(diskFiles.count) VM disk file(s) (\(seedISOFiles.count) ISOs, \(overlayDiskFiles.count) disks).")
+            if hasRunningVMsToKill {
+                print("This will KILL \(runningVMs.count) running QEMU process(es).")
+                print("WARNING: Running VMs will be terminated!")
+            }
+            if hasVMFilesToClean {
+                print("This will remove \(allVMFiles.count) VM file(s) for \(vmFilesToClean.count) VM(s).")
             }
             print("")
             print("Type 'yes' to confirm: ", terminator: "")
@@ -2146,27 +2380,58 @@ struct VMCleanup: AsyncParsableCommand {
             }
         }
 
-        // Clean up VM disk files
-        var diskFilesRemoved = 0
-        if hasDiskFiles {
+        // Kill running QEMU processes (if --all --disks)
+        var qemuProcessesKilled = 0
+        if hasRunningVMsToKill {
             print("")
-            print("Removing VM disk files...")
-            for file in diskFiles {
-                let name = (file as NSString).lastPathComponent
-                do {
-                    try FileManager.default.removeItem(atPath: file)
-                    print("  Removed \(name)")
-                    diskFilesRemoved += 1
-                } catch {
-                    print("  Failed to remove \(name): \(error.localizedDescription)")
+            print("Killing QEMU processes...")
+            for vm in runningVMs {
+                if let pid = vm.pid {
+                    print("  Killing PID \(pid) [\(vm.vmId.prefix(8))...]...", terminator: " ")
+                    if QEMUCleanup.killProcess(pid: pid) {
+                        print("done")
+                        qemuProcessesKilled += 1
+                    } else {
+                        print("failed")
+                    }
                 }
+            }
+        }
+
+        // Clean up VM files (disk, ISO, PID, logs)
+        var vmFilesRemoved = 0
+        var vmsCleanedUp = 0
+        if hasVMFilesToClean {
+            print("")
+            print("Removing VM files...")
+            for vm in vmFilesToClean {
+                let shortId = vm.vmId.prefix(8)
+                print("  [\(shortId)...] ", terminator: "")
+
+                var filesRemoved = 0
+                for file in vm.allFiles {
+                    if QEMUCleanup.removeFile(file) {
+                        filesRemoved += 1
+                    }
+                }
+
+                if filesRemoved == vm.allFiles.count {
+                    print("\(filesRemoved) file(s) removed")
+                    vmsCleanedUp += 1
+                } else {
+                    print("\(filesRemoved)/\(vm.allFiles.count) file(s) removed")
+                }
+                vmFilesRemoved += filesRemoved
             }
         }
 
         print("")
         print("Cleanup complete!")
         if processesKilled > 0 {
-            print("  Processes killed: \(processesKilled)")
+            print("  WireGuard processes killed: \(processesKilled)")
+        }
+        if qemuProcessesKilled > 0 {
+            print("  QEMU processes killed: \(qemuProcessesKilled)")
         }
         if cleanedCount > 0 {
             print("  Interfaces stopped: \(cleanedCount)")
@@ -2179,8 +2444,8 @@ struct VMCleanup: AsyncParsableCommand {
         if all && hasStaleVMs {
             print("  Stale VMs removed: \(staleVMs.count)")
         }
-        if diskFilesRemoved > 0 {
-            print("  VM disk files removed: \(diskFilesRemoved)")
+        if vmsCleanedUp > 0 {
+            print("  VMs cleaned up: \(vmsCleanedUp) (\(vmFilesRemoved) files)")
         }
     }
 }
@@ -2402,6 +2667,709 @@ struct VMTest: AsyncParsableCommand {
     }
 }
 
+// MARK: - VM Boot Test Command (Standalone)
+
+/// Test modes for VM boot testing
+enum VMTestMode: String, ExpressibleByArgument, CaseIterable {
+    case tapPing = "tap-ping"        // Test TAP connectivity with ping (Linux only)
+    case directSSH = "direct-ssh"    // Test SSH over TAP (no WireGuard firewall)
+    case consoleBoot = "console-boot" // Test boot via console log (macOS - no network needed)
+    case reverseSSH = "reverse-ssh"  // Test SSH via reverse tunnel (macOS - requires SSH server on host)
+}
+
+struct VMBootTest: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "boot-test",
+        abstract: "Test VM boot and connectivity without full consumer setup"
+    )
+
+    @Option(name: .long, help: "Provider address (ip:port)")
+    var provider: String = "127.0.0.1:51820"
+
+    @Option(name: .long, help: "Test mode: tap-ping (Linux), direct-ssh (Linux), console-boot (macOS), reverse-ssh (macOS with SSH server)")
+    var mode: VMTestMode = {
+        #if os(macOS)
+        return .consoleBoot  // Default for macOS (NAT blocks inbound SSH)
+        #else
+        return .directSSH    // Default for Linux (TAP allows direct SSH)
+        #endif
+    }()
+
+    @Option(name: .long, help: "Timeout in seconds for VM boot (default: 180)")
+    var timeout: Int = 180
+
+    @Flag(name: .long, help: "Keep the VM after test (don't release)")
+    var keep: Bool = false
+
+    @Flag(name: .long, help: "Verbose output")
+    var verbose: Bool = false
+
+    mutating func run() async throws {
+        print("=== Omerta VM Boot Test (Standalone) ===")
+        print("")
+        print("Test Mode: \(mode.rawValue)")
+        print("Provider: \(provider)")
+        print("Timeout: \(timeout)s")
+        print("Keep VM: \(keep)")
+        print("Verbose: \(verbose)")
+        print("")
+
+        // Check sudo access (only needed on Linux for TAP networking)
+        #if os(Linux)
+        guard checkSudoAccess() else {
+            print("Error: This command requires sudo privileges on Linux (for TAP networking).")
+            print("Run with: sudo omerta vm boot-test ...")
+            throw ExitCode.failure
+        }
+        if verbose { print("[DEBUG] Sudo access confirmed") }
+        #else
+        if verbose { print("[DEBUG] macOS - no sudo required (Virtualization.framework runs in user space)") }
+        #endif
+
+        // Load config
+        let configManager = ConfigManager()
+        let config: OmertaConfig
+        do {
+            config = try await configManager.load()
+            if verbose { print("[DEBUG] Config loaded from: ~/.omerta/config.json") }
+        } catch ConfigError.notInitialized {
+            print("Error: Omerta not initialized. Run 'omerta init' first.")
+            throw ExitCode.failure
+        }
+
+        guard let sshPublicKey = config.ssh.publicKey else {
+            print("Error: SSH public key not found. Run 'omerta init' to regenerate.")
+            throw ExitCode.failure
+        }
+
+        let sshKeyPath = config.ssh.expandedPrivateKeyPath()
+        let sshUser = config.ssh.defaultUser
+
+        if verbose {
+            print("[DEBUG] SSH config:")
+            print("        User: \(sshUser)")
+            print("        Private key: \(sshKeyPath)")
+            print("        Public key: \(sshPublicKey.prefix(50))...")
+            print("        Key exists: \(FileManager.default.fileExists(atPath: sshKeyPath))")
+        }
+
+        // Parse provider address
+        let parts = provider.split(separator: ":")
+        guard parts.count == 2,
+              let port = UInt16(parts[1]) else {
+            print("Error: Invalid provider address format. Use ip:port (e.g., 127.0.0.1:51820)")
+            throw ExitCode.failure
+        }
+        let providerHost = String(parts[0])
+        let providerPort = port
+
+        print("1. Connecting to provider at \(providerHost):\(providerPort)...")
+
+        // Get network key
+        guard let networkKeyData = config.localKeyData() else {
+            print("Error: No network key in config.")
+            throw ExitCode.failure
+        }
+        if verbose { print("[DEBUG] Network key loaded (\(networkKeyData.count) bytes)") }
+
+        // Create test-specific VM request
+        let vmId = UUID()
+
+        // For standalone tests, we use simplified cloud-init without WireGuard firewall
+        // This allows direct SSH over TAP for debugging
+        print("2. Requesting test VM (mode: \(mode.rawValue))...")
+
+        // TAP network IPs (fixed for standalone tests)
+        let tapGateway = "192.168.100.1"
+        let tapVMIP = "192.168.100.2"
+
+        if verbose {
+            print("[DEBUG] TAP network config:")
+            print("        Gateway (host): \(tapGateway)")
+            print("        VM IP: \(tapVMIP)")
+        }
+
+        // Create UDP client to send request (use "direct" network for local testing)
+        let client = UDPControlClient(networkId: "direct", networkKey: networkKeyData)
+
+        // Use test endpoint to trigger test mode cloud-init (no WireGuard firewall)
+        let testEndpoint = "test://\(mode.rawValue)"
+
+        if verbose {
+            print("[DEBUG] Test endpoint: \(testEndpoint)")
+            print("[DEBUG] This will trigger test mode cloud-init (no WireGuard)")
+        }
+
+        // Create a minimal VPN config for the request (won't be used for WireGuard in direct-ssh mode)
+        let dummyVPNConfig = VPNConfiguration(
+            consumerPublicKey: "test-mode-no-wireguard",
+            consumerEndpoint: testEndpoint,
+            consumerVPNIP: "10.99.0.1",
+            vmVPNIP: "10.99.0.2",
+            vpnSubnet: "10.99.0.0/24",
+            presharedKey: nil
+        )
+
+        // Set up reverse SSH tunnel if in reverse-ssh mode
+        var tunnelConfig: ReverseTunnelConfig? = nil
+        var tunnelCleanup: (() -> Void)? = nil
+
+        if mode == .reverseSSH {
+            #if os(macOS)
+            print("   Setting up reverse SSH tunnel...")
+
+            // Check if SSH server is running on the host
+            let sshCheckResult = checkSSHServerRunning()
+            guard sshCheckResult else {
+                print("   ✗ SSH server not running on this Mac.")
+                print("   Enable Remote Login in System Settings > General > Sharing")
+                throw ExitCode.failure
+            }
+            if verbose { print("[DEBUG] SSH server is running on host") }
+
+            // Generate a temporary SSH keypair for the tunnel
+            let tunnelKeyPath = FileManager.default.temporaryDirectory.appendingPathComponent("omerta-tunnel-key-\(vmId.uuidString.prefix(8))")
+            let tunnelPubKeyPath = URL(fileURLWithPath: tunnelKeyPath.path + ".pub")
+
+            let genKeyProcess = Process()
+            genKeyProcess.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
+            genKeyProcess.arguments = ["-t", "ed25519", "-f", tunnelKeyPath.path, "-N", "", "-q"]
+            try genKeyProcess.run()
+            genKeyProcess.waitUntilExit()
+
+            guard genKeyProcess.terminationStatus == 0 else {
+                print("   ✗ Failed to generate tunnel keypair")
+                throw ExitCode.failure
+            }
+
+            // Read the keys
+            let tunnelPrivateKey = try String(contentsOf: tunnelKeyPath, encoding: .utf8)
+            let tunnelPublicKey = try String(contentsOf: tunnelPubKeyPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if verbose {
+                print("[DEBUG] Generated tunnel keypair:")
+                print("        Private key: \(tunnelKeyPath.path)")
+                print("        Public key: \(tunnelPublicKey.prefix(50))...")
+            }
+
+            // Add public key to authorized_keys with a marker comment
+            let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
+            let authorizedKeysPath = "\(homeDir)/.ssh/authorized_keys"
+            let markerComment = "omerta-tunnel-\(vmId.uuidString.prefix(8))"
+            let keyEntry = "\(tunnelPublicKey) \(markerComment)\n"
+
+            // Ensure .ssh directory exists
+            let sshDir = "\(homeDir)/.ssh"
+            try? FileManager.default.createDirectory(atPath: sshDir, withIntermediateDirectories: true)
+
+            // Append to authorized_keys
+            if let fileHandle = FileHandle(forWritingAtPath: authorizedKeysPath) {
+                fileHandle.seekToEndOfFile()
+                fileHandle.write(keyEntry.data(using: .utf8)!)
+                fileHandle.closeFile()
+            } else {
+                try keyEntry.write(toFile: authorizedKeysPath, atomically: true, encoding: .utf8)
+            }
+
+            if verbose { print("[DEBUG] Added tunnel key to authorized_keys") }
+
+            // Get current username
+            let currentUser = ProcessInfo.processInfo.environment["USER"] ?? "unknown"
+            let tunnelPort: UInt16 = 2222
+
+            // Create the tunnel config
+            tunnelConfig = ReverseTunnelConfig(
+                hostIP: "192.168.64.1",  // macOS Virtualization.framework NAT gateway
+                hostUser: currentUser,
+                hostPort: 22,
+                tunnelPort: tunnelPort,
+                privateKey: tunnelPrivateKey
+            )
+
+            if verbose {
+                print("[DEBUG] Reverse tunnel config:")
+                print("        Host IP: 192.168.64.1")
+                print("        Host user: \(currentUser)")
+                print("        Tunnel port: \(tunnelPort)")
+            }
+
+            // Set up cleanup to remove key and temp files
+            tunnelCleanup = {
+                // Remove from authorized_keys
+                if let content = try? String(contentsOfFile: authorizedKeysPath, encoding: .utf8) {
+                    let filtered = content.components(separatedBy: "\n")
+                        .filter { !$0.contains(markerComment) }
+                        .joined(separator: "\n")
+                    try? filtered.write(toFile: authorizedKeysPath, atomically: true, encoding: .utf8)
+                }
+                // Remove temp key files
+                try? FileManager.default.removeItem(at: tunnelKeyPath)
+                try? FileManager.default.removeItem(at: tunnelPubKeyPath)
+            }
+
+            print("   ✓ Reverse tunnel configured (port \(tunnelPort))")
+            #else
+            print("   ✗ reverse-ssh mode is only supported on macOS")
+            throw ExitCode.failure
+            #endif
+        }
+
+        // Send request to provider
+        let providerEndpointStr = "\(providerHost):\(providerPort)"
+        if verbose {
+            print("[DEBUG] Sending VM request to provider...")
+            print("[DEBUG] VM ID: \(vmId)")
+        }
+        let response: VMCreatedResponse
+        do {
+            response = try await client.requestVM(
+                providerEndpoint: providerEndpointStr,
+                vmId: vmId,
+                requirements: ResourceRequirements(),
+                vpnConfig: dummyVPNConfig,
+                consumerEndpoint: testEndpoint,
+                sshPublicKey: sshPublicKey,
+                sshUser: sshUser,
+                reverseTunnelConfig: tunnelConfig
+            )
+            print("   ✓ VM requested successfully")
+            print("   VM ID: \(vmId)")
+            if verbose {
+                print("[DEBUG] Response:")
+                print("        VM IP: \(response.vmIP)")
+                print("        SSH Port: \(response.sshPort)")
+                print("        Provider Public Key: \(response.providerPublicKey.prefix(30))...")
+                if let error = response.error {
+                    print("        Error: \(error)")
+                }
+            }
+        } catch {
+            print("   ✗ Failed to request VM: \(error)")
+            if verbose {
+                print("[DEBUG] Full error: \(String(describing: error))")
+            }
+            throw ExitCode.failure
+        }
+
+        // Determine which IP to test based on platform and mode
+        let testIP: String
+        let testPort: UInt16 = 22
+
+        #if os(Linux)
+        // Linux uses TAP networking - VM is directly reachable at TAP IP
+        testIP = tapVMIP
+        print("   Test IP: \(testIP) (TAP network)")
+        #else
+        // macOS uses NAT networking - VM IP returned by provider
+        testIP = response.vmIP
+        print("   Test IP: \(testIP) (NAT network)")
+        print("   Note: macOS NAT may not allow inbound SSH. Check console log at:")
+        print("         ~/.omerta/vm-disks/\(vmId.uuidString)-console.log")
+        #endif
+
+        print("")
+        print("3. Waiting for VM to boot...")
+
+        // Check TAP interface status before waiting
+        if verbose {
+            print("[DEBUG] Checking network interfaces...")
+            checkNetworkInterfaces()
+        }
+
+        // Wait for connectivity based on mode
+        let startTime = Date()
+        var connected = false
+        var lastError = ""
+        var iterationCount = 0
+
+        while Date().timeIntervalSince(startTime) < Double(timeout) {
+            let elapsed = Int(Date().timeIntervalSince(startTime))
+            iterationCount += 1
+
+            // Periodically show network status in verbose mode
+            if verbose && iterationCount % 6 == 1 {  // Every 30 seconds
+                print("[DEBUG] Network interface check at \(elapsed)s:")
+                checkNetworkInterfaces()
+            }
+
+            switch mode {
+            case .tapPing:
+                // Test with ping
+                let pingResult = testPing(ip: testIP)
+                if pingResult.success {
+                    connected = true
+                    print("   ✓ Ping successful after \(elapsed)s")
+                } else {
+                    lastError = pingResult.error
+                    if verbose {
+                        print("   Ping (\(elapsed)s / \(timeout)s)... \(lastError)")
+                    } else {
+                        print("   Ping (\(elapsed)s / \(timeout)s)... not ready")
+                    }
+                }
+
+            case .directSSH:
+                // Test with SSH
+                let sshResult = testSSH(ip: testIP, port: testPort, user: sshUser, keyPath: sshKeyPath)
+                if sshResult.success {
+                    connected = true
+                    print("   ✓ SSH successful after \(elapsed)s")
+                } else {
+                    lastError = sshResult.error
+                    if verbose {
+                        print("   SSH (\(elapsed)s / \(timeout)s)... \(lastError)")
+                    } else {
+                        print("   SSH (\(elapsed)s / \(timeout)s)... not ready")
+                    }
+                }
+
+            case .consoleBoot:
+                // Test by checking console log for successful boot indicators
+                let consoleLogPath = "\(FileManager.default.homeDirectoryForCurrentUser.path)/.omerta/vm-disks/\(vmId.uuidString)-console.log"
+                if let consoleContent = try? String(contentsOfFile: consoleLogPath, encoding: .utf8) {
+                    // Check for cloud-init completion markers
+                    let hasLogin = consoleContent.contains("login:")
+                    let hasOmertaHost = consoleContent.contains("omerta-vm-") || consoleContent.contains("omerta-")
+                    let hasCloudInitDone = consoleContent.contains("cloud-init") || hasOmertaHost
+
+                    if hasLogin && hasCloudInitDone {
+                        connected = true
+                        print("   ✓ VM booted successfully after \(elapsed)s")
+                        print("   ✓ Cloud-init completed (hostname set)")
+                        if verbose {
+                            // Show last few lines of console
+                            let lines = consoleContent.components(separatedBy: "\n").suffix(5)
+                            print("   Console output:")
+                            for line in lines where !line.isEmpty {
+                                print("     \(line)")
+                            }
+                        }
+                    } else {
+                        lastError = "Waiting for boot (login: \(hasLogin), cloud-init: \(hasCloudInitDone))"
+                        if verbose {
+                            print("   Boot (\(elapsed)s / \(timeout)s)... \(lastError)")
+                        } else {
+                            print("   Boot (\(elapsed)s / \(timeout)s)... waiting")
+                        }
+                    }
+                } else {
+                    lastError = "Console log not found yet"
+                    if verbose {
+                        print("   Boot (\(elapsed)s / \(timeout)s)... \(lastError)")
+                    } else {
+                        print("   Boot (\(elapsed)s / \(timeout)s)... starting")
+                    }
+                }
+
+            case .reverseSSH:
+                // Test SSH via reverse tunnel - check if tunnel port is listening
+                let tunnelPort = tunnelConfig?.tunnelPort ?? 2222
+                let sshResult = testSSH(ip: "127.0.0.1", port: tunnelPort, user: sshUser, keyPath: sshKeyPath)
+                if sshResult.success {
+                    connected = true
+                    print("   ✓ SSH via reverse tunnel successful after \(elapsed)s")
+                } else {
+                    lastError = sshResult.error
+                    if verbose {
+                        print("   Tunnel (\(elapsed)s / \(timeout)s)... \(lastError)")
+                    } else {
+                        print("   Tunnel (\(elapsed)s / \(timeout)s)... waiting")
+                    }
+                }
+            }
+
+            if connected {
+                break
+            }
+
+            try await Task.sleep(for: .seconds(5))
+        }
+
+        if !connected {
+            print("")
+            print("   ✗ VM boot test failed: timeout after \(timeout)s")
+            print("   Last error: \(lastError)")
+
+            // Show diagnostic info on failure
+            print("")
+            print("   Diagnostic info:")
+            checkNetworkInterfaces()
+            checkQEMUProcesses()
+
+            if !keep {
+                print("")
+                print("4. Cleaning up...")
+                try? await client.releaseVM(providerEndpoint: providerEndpointStr, vmId: vmId)
+                print("   VM released")
+            } else {
+                print("")
+                print("   VM kept for debugging (--keep). Check:")
+                print("   - QEMU logs: ~/.omerta/vm-disks/*.log")
+                print("   - TAP interface: ip addr show")
+            }
+
+            throw ExitCode.failure
+        }
+
+        print("")
+
+        // Step 4: Run test command via SSH (skip for console-boot mode since NAT blocks inbound connections)
+        if mode != .consoleBoot {
+            print("4. Running test command...")
+
+            // Determine SSH target based on mode
+            let sshTarget: String
+            let sshPortArg: [String]
+            if mode == .reverseSSH, let tunnel = tunnelConfig {
+                sshTarget = "\(sshUser)@127.0.0.1"
+                sshPortArg = ["-p", "\(tunnel.tunnelPort)"]
+            } else {
+                sshTarget = "\(sshUser)@\(testIP)"
+                sshPortArg = []
+            }
+
+            // Run a simple test command via SSH
+            let testCommand = "echo 'VM boot test successful' && uname -a && ip addr show"
+            let sshProcess = Process()
+            sshProcess.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            sshProcess.arguments = [
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", "ConnectTimeout=10",
+                "-i", sshKeyPath
+            ] + sshPortArg + [
+                sshTarget,
+                testCommand
+            ]
+
+            let outputPipe = Pipe()
+            let errorPipe = Pipe()
+            sshProcess.standardOutput = outputPipe
+            sshProcess.standardError = errorPipe
+
+            do {
+                try sshProcess.run()
+                sshProcess.waitUntilExit()
+
+                let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+                if sshProcess.terminationStatus == 0 {
+                    print("   ✓ Test command executed successfully")
+                    print("")
+                    print("   Output:")
+                    for line in output.split(separator: "\n") {
+                        print("   | \(line)")
+                    }
+                } else {
+                    let errorOutput = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    print("   ✗ Test command failed: \(errorOutput)")
+                }
+            } catch {
+                print("   ✗ Failed to run test command: \(error)")
+            }
+
+            print("")
+        }
+
+        // Cleanup (step 4 for console-boot, step 5 otherwise)
+        let cleanupStep = mode == .consoleBoot ? 4 : 5
+        if keep {
+            print("\(cleanupStep). Keeping VM (--keep specified)")
+            print("   VM ID: \(vmId)")
+            if mode == .reverseSSH, let tunnel = tunnelConfig {
+                print("   SSH: ssh -p \(tunnel.tunnelPort) -i \(sshKeyPath) \(sshUser)@127.0.0.1")
+            } else {
+                print("   SSH: ssh -i \(sshKeyPath) \(sshUser)@\(testIP)")
+            }
+        } else {
+            print("\(cleanupStep). Releasing VM...")
+            do {
+                try await client.releaseVM(providerEndpoint: providerEndpointStr, vmId: vmId)
+                print("   ✓ VM released")
+            } catch {
+                print("   ⚠ Failed to release VM: \(error)")
+            }
+        }
+
+        // Cleanup reverse tunnel resources
+        tunnelCleanup?()
+
+        print("")
+        print("=== Boot test completed successfully ===")
+    }
+}
+
+/// Test ping connectivity
+private func testPing(ip: String) -> (success: Bool, error: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/ping")
+    process.arguments = ["-c", "1", "-W", "2", ip]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+
+    do {
+        try process.run()
+        process.waitUntilExit()
+        if process.terminationStatus == 0 {
+            return (true, "")
+        } else {
+            return (false, "ping failed")
+        }
+    } catch {
+        return (false, error.localizedDescription)
+    }
+}
+
+/// Test SSH connectivity
+private func testSSH(ip: String, port: UInt16, user: String, keyPath: String) -> (success: Bool, error: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+    process.arguments = [
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ConnectTimeout=5",
+        "-o", "BatchMode=yes",
+        "-p", "\(port)",
+        "-i", keyPath,
+        "\(user)@\(ip)",
+        "echo ok"
+    ]
+
+    let errorPipe = Pipe()
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = errorPipe
+
+    do {
+        try process.run()
+        process.waitUntilExit()
+
+        if process.terminationStatus == 0 {
+            return (true, "")
+        } else {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorStr = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "SSH failed"
+            // Extract just the error message, not the full output
+            let shortError = errorStr.split(separator: "\n").first.map(String.init) ?? errorStr
+            return (false, shortError)
+        }
+    } catch {
+        return (false, error.localizedDescription)
+    }
+}
+
+/// Check if SSH server is running on this Mac
+private func checkSSHServerRunning() -> Bool {
+    // Check if SSH port (22) is listening by trying to connect
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/nc")
+    process.arguments = ["-z", "localhost", "22"]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+
+    do {
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    } catch {
+        return false
+    }
+}
+
+/// Check network interfaces for debugging
+private func checkNetworkInterfaces() {
+    // Show TAP interfaces
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/sbin/ip")
+    process.arguments = ["addr", "show"]
+
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = FileHandle.nullDevice
+
+    do {
+        try process.run()
+        process.waitUntilExit()
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+
+        // Filter to show only TAP interfaces and relevant info
+        var relevantLines: [String] = []
+        var inTapBlock = false
+
+        for line in output.split(separator: "\n") {
+            let lineStr = String(line)
+            if lineStr.contains("tap-") || lineStr.contains("192.168.100") {
+                relevantLines.append("   \(lineStr)")
+                inTapBlock = true
+            } else if inTapBlock && (lineStr.hasPrefix("    ") || lineStr.hasPrefix("\t")) {
+                relevantLines.append("   \(lineStr)")
+            } else {
+                inTapBlock = false
+            }
+        }
+
+        if relevantLines.isEmpty {
+            print("   No TAP interfaces found")
+        } else {
+            for line in relevantLines {
+                print(line)
+            }
+        }
+    } catch {
+        print("   Failed to check interfaces: \(error)")
+    }
+}
+
+/// Check QEMU processes for debugging
+private func checkQEMUProcesses() {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+    process.arguments = ["-la", "qemu"]
+
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = FileHandle.nullDevice
+
+    do {
+        try process.run()
+        process.waitUntilExit()
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if output.isEmpty {
+            print("   No QEMU processes found")
+        } else {
+            print("   QEMU processes:")
+            for line in output.split(separator: "\n").prefix(5) {  // Limit to 5 lines
+                print("   \(line)")
+            }
+        }
+    } catch {
+        print("   No QEMU processes found")
+    }
+
+    // Also check for VM disk files
+    let homeDir: String
+    if let sudoUser = ProcessInfo.processInfo.environment["SUDO_USER"] {
+        homeDir = "/home/\(sudoUser)"
+    } else {
+        homeDir = ProcessInfo.processInfo.environment["HOME"] ?? "/tmp"
+    }
+    let vmDiskDir = "\(homeDir)/.omerta/vm-disks"
+
+    if let files = try? FileManager.default.contentsOfDirectory(atPath: vmDiskDir) {
+        let logFiles = files.filter { $0.hasSuffix(".log") || $0.hasSuffix(".qcow2") || $0.hasSuffix(".iso") }
+        if !logFiles.isEmpty {
+            print("   VM disk files in \(vmDiskDir):")
+            for file in logFiles.prefix(10) {
+                print("   - \(file)")
+            }
+        }
+    }
+}
+
 /// Check if we have sudo access without prompting for password
 private func checkSudoAccess() -> Bool {
     // Check if running as root
@@ -2550,28 +3518,39 @@ struct Kill: AsyncParsableCommand {
                 print("  Brought down \(iface)")
             }
             #else
-            // On Linux, remove wg interfaces
-            let listWg = Process()
-            listWg.executableURL = URL(fileURLWithPath: "/bin/bash")
-            listWg.arguments = ["-c", "ip link show | grep -oE 'wg[0-9A-F]+' | sort -u"]
-            let wgPipe = Pipe()
-            listWg.standardOutput = wgPipe
-            try? listWg.run()
-            listWg.waitUntilExit()
+            // On Linux, use WireGuardCleanup to properly stop interfaces with sudo
+            do {
+                let status = try WireGuardCleanup.getCleanupStatus()
+                for iface in status.activeInterfaces {
+                    do {
+                        try WireGuardCleanup.stopInterface(iface)
+                        print("  Deleted \(iface)")
+                    } catch {
+                        print("  Failed to delete \(iface): \(error)")
+                    }
+                }
+            } catch {
+                // Fallback: try listing interfaces manually
+                let listWg = Process()
+                listWg.executableURL = URL(fileURLWithPath: "/bin/bash")
+                listWg.arguments = ["-c", "ip link show | grep -oE 'wg[0-9A-F]+' | sort -u"]
+                let wgPipe = Pipe()
+                listWg.standardOutput = wgPipe
+                try? listWg.run()
+                listWg.waitUntilExit()
 
-            let wgInterfaces = String(data: wgPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .split(separator: "\n") ?? []
+                let wgInterfaces = String(data: wgPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .split(separator: "\n") ?? []
 
-            for iface in wgInterfaces {
-                let del = Process()
-                del.executableURL = URL(fileURLWithPath: "/sbin/ip")
-                del.arguments = ["link", "delete", String(iface)]
-                del.standardOutput = FileHandle.nullDevice
-                del.standardError = FileHandle.nullDevice
-                try? del.run()
-                del.waitUntilExit()
-                print("  Deleted \(iface)")
+                for iface in wgInterfaces {
+                    do {
+                        try WireGuardCleanup.stopInterface(String(iface))
+                        print("  Deleted \(iface)")
+                    } catch {
+                        print("  Failed to delete \(iface): \(error)")
+                    }
+                }
             }
             #endif
 

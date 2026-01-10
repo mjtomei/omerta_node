@@ -709,6 +709,123 @@ kill $PROVIDER_PID
 
 ---
 
+### Phase 4.5: Standalone VM Tests
+
+**Goal:** VM boot and connectivity tests that don't require the full consumer setup.
+
+**Motivation:** The full E2E test (Phase 4) requires:
+- Consumer WireGuard server running
+- VM to establish WireGuard tunnel
+- SSH via WireGuard
+
+This makes debugging difficult. Standalone tests isolate each component.
+
+**New Files:**
+| File | Purpose |
+|------|---------|
+| `Sources/OmertaCLI/Commands/VMBootTest.swift` | VM boot test command |
+| `Tests/OmertaVMTests/StandaloneVMTests.swift` | Standalone VM test suite |
+
+**New CLI Commands:**
+
+```bash
+# Test VM boots and TAP connectivity (no WireGuard required)
+omerta vm boot-test --provider 127.0.0.1:51820 --timeout 120
+
+# Test VM with direct SSH (bypasses WireGuard firewall for debugging)
+omerta vm boot-test --provider 127.0.0.1:51820 --direct-ssh
+```
+
+**Test Modes:**
+
+| Mode | What It Tests | Requirements |
+|------|---------------|--------------|
+| TAP ping | VM boots, gets TAP IP, responds to ping | Provider only (Linux) |
+| Direct SSH | VM boots, SSH works over TAP | Provider only (Linux) |
+| Console boot | VM boots, hostname visible in console log | Provider only (macOS) |
+| Reverse SSH | VM boots, establishes reverse SSH tunnel to host | Provider + SSH server on host (macOS) |
+| Full E2E | VM boots, WireGuard connects to consumer | Consumer + Provider |
+
+**Implementation:**
+
+1. **TAP Ping Test**
+   - Provider boots VM with TAP networking
+   - VM gets IP 192.168.100.2 via cloud-init
+   - Host pings 192.168.100.2 via TAP interface
+   - No WireGuard or firewall rules needed
+
+2. **Direct SSH Test**
+   - Same as TAP ping, but also:
+   - Cloud-init allows SSH on TAP interface (no iptables DROP)
+   - Host SSHs to 192.168.100.2:22
+   - Validates cloud-init user creation, SSH key injection
+
+3. **Console Boot Test (macOS)**
+   - Provider boots VM with Virtualization.framework NAT networking
+   - VM gets IP via DHCP from macOS (192.168.64.x range)
+   - Test monitors VM console output for hostname pattern
+   - Validates: VM boots, cloud-init runs, network initializes
+   - No SSH required - useful when NAT prevents inbound connections
+
+4. **Reverse SSH Test (macOS)**
+   - Same as console boot, but also:
+   - Cloud-init installs SSH private key for tunnel
+   - VM establishes reverse SSH tunnel to host: `ssh -R 2222:localhost:22 user@192.168.64.1`
+   - Host connects through tunnel: `ssh -p 2222 localhost`
+   - Validates: VM has outbound connectivity (critical for WireGuard to consumer)
+   - Requires SSH server running on macOS host
+
+**Cloud-Init Test Modes:**
+
+```yaml
+# Direct SSH mode - no firewall, SSH on TAP interface
+test_mode: direct_ssh
+network_config:
+  ethernets:
+    id0:
+      match: {driver: "virtio*"}
+      addresses: ["192.168.100.2/24"]
+      routes: [{to: default, via: "192.168.100.1"}]
+```
+
+**Platform Support:**
+
+| Platform | TAP Ping | Direct SSH | Console Boot | Reverse SSH | Full E2E |
+|----------|----------|------------|--------------|-------------|----------|
+| Linux (QEMU) | ✅ | ✅ | N/A | N/A | ✅ |
+| macOS (Virtualization.framework) | N/A* | N/A* | ✅ | ✅ | ✅ |
+
+*macOS uses NAT networking (192.168.64.x) which doesn't allow inbound connections. Use `console-boot` to verify VM boots or `reverse-ssh` to verify SSH via reverse tunnel from VM to host.
+
+**Unit Tests:** `StandaloneVMTests.swift`
+- Cloud-init generates correct test mode config
+- TAP network config valid
+- Direct SSH config disables firewall
+- Reverse tunnel cloud-init includes private key and SSH config
+
+**Integration Tests:** `StandaloneVMIntegrationTests.swift`
+- VM boots and responds to ping (Linux)
+- Direct SSH works without WireGuard (Linux)
+- Console boot shows hostname in console log (macOS)
+- Reverse SSH tunnel establishes and allows SSH (macOS)
+
+**Dependencies:** Phase 2 (Provider VM Boot)
+
+**Verification:**
+```bash
+# Linux - direct SSH over TAP
+sudo omerta vm boot-test --provider 127.0.0.1:51820 --mode direct-ssh
+
+# macOS - console boot (verify VM boots via console log)
+omerta vm boot-test --provider 127.0.0.1:51820 --mode console-boot
+
+# macOS - reverse SSH (verify VM can make outbound connections)
+# Requires SSH server running on host: sudo systemsetup -setremotelogin on
+omerta vm boot-test --provider 127.0.0.1:51820 --mode reverse-ssh
+```
+
+---
+
 ### Phase 5: Consumer VM Image
 
 **Goal:** Pre-built VM image with consumer tools for "easy mode".
@@ -1009,6 +1126,171 @@ swift test --filter P2PDiscovery
 
 ---
 
+### Phase 10.5: Relay for NAT Traversal
+
+**Goal:** Enable connections when both consumer and provider are behind NAT.
+
+**Problem:** WireGuard requires at least one peer to have a routable endpoint. When both peers are behind NAT:
+- Consumer can't receive incoming WireGuard connections
+- Provider's VM can't reach consumer's WireGuard server
+- UDP hole punching requires coordination
+
+**Solution:** Nodes with routable IPs can act as relays to help establish direct WireGuard connections.
+
+**New Files:**
+| File | Purpose |
+|------|---------|
+| `Sources/OmertaNetwork/Relay/RelayServer.swift` | Relay server for NAT traversal |
+| `Sources/OmertaNetwork/Relay/RelayClient.swift` | Relay client for NATed peers |
+| `Sources/OmertaNetwork/Relay/STUNClient.swift` | STUN for public IP discovery |
+| `Sources/OmertaNetwork/Relay/HolePuncher.swift` | UDP hole punching coordinator |
+| `Tests/OmertaNetworkTests/RelayTests.swift` | Relay tests |
+| `Tests/OmertaNetworkTests/NATTraversalTests.swift` | NAT traversal tests |
+
+**Architecture:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           Relay-Assisted Connection                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Consumer (behind NAT)          Relay Node              Provider (behind NAT)
+│   ┌──────────────────┐       ┌──────────────────┐       ┌──────────────────┐ │
+│   │ Private: 10.0.0.5│       │ Public: 1.2.3.4  │       │ Private: 10.0.1.7│ │
+│   │                  │       │                  │       │                  │ │
+│   │ 1. Register ────────────►│ Relay Server     │◄───────── 2. Register   │ │
+│   │    w/ relay      │       │                  │       │    w/ relay      │ │
+│   │                  │       │ Tracks:          │       │                  │ │
+│   │ 3. Request VM ──────────►│ - Consumer's NAT │───────── 4. Forward      │ │
+│   │    (via relay)   │       │   endpoint       │       │    request       │ │
+│   │                  │       │ - Provider's NAT │       │                  │ │
+│   │                  │       │   endpoint       │       │ 5. Boot VM       │ │
+│   │                  │       │                  │       │                  │ │
+│   │ 6. Receive ◄────────────│ Exchange NAT     │───────── 6. Send NAT     │ │
+│   │    NAT endpoint  │       │ endpoints        │       │    endpoint      │ │
+│   │                  │       │                  │       │                  │ │
+│   │ 7. UDP hole punch ◄─────────────────────────────────► 7. UDP hole punch│ │
+│   │    (direct WG)   │       │ (relay may       │       │    (direct WG)   │ │
+│   │                  │       │  forward initial │       │                  │ │
+│   │ 8. Direct WireGuard tunnel established ◄─────────────► (no relay needed)│
+│   └──────────────────┘       └──────────────────┘       └──────────────────┘ │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Connection Modes:**
+
+| Mode | Consumer | Provider | How It Works |
+|------|----------|----------|--------------|
+| Direct | Public IP | Any | Consumer has routable endpoint |
+| Provider-Direct | NAT | Public IP | Provider VM initiates to consumer |
+| Relay-Assisted | NAT | NAT | Relay coordinates hole punching |
+| Relay-Forwarded | NAT | NAT | Relay forwards all traffic (fallback) |
+
+**Protocol:**
+
+1. **Registration**: NATed peers register with relay, relay tracks their NAT endpoints
+2. **Discovery**: Consumer discovers provider via P2P or direct address
+3. **Relay Request**: Consumer sends VM request to relay, relay forwards to provider
+4. **NAT Exchange**: Relay tells each peer the other's NAT endpoint
+5. **Hole Punch**: Both peers send UDP to each other's NAT endpoint simultaneously
+6. **Direct Connect**: WireGuard handshake completes over punched hole
+7. **Fallback**: If hole punch fails, relay forwards WireGuard traffic
+
+**STUN Integration:**
+
+```swift
+public actor STUNClient {
+    /// Discover public IP and port via STUN server
+    public func discoverPublicEndpoint(
+        localPort: UInt16,
+        stunServer: String = "stun.l.google.com:19302"
+    ) async throws -> (ip: String, port: UInt16)
+}
+```
+
+**Relay Server API:**
+
+```swift
+public actor RelayServer {
+    /// Register a peer's NAT endpoint
+    public func registerPeer(peerId: String, natEndpoint: String) async
+
+    /// Get a peer's NAT endpoint
+    public func getPeerEndpoint(peerId: String) async -> String?
+
+    /// Forward a message to a peer
+    public func forward(to peerId: String, message: Data) async throws
+
+    /// Coordinate hole punching between two peers
+    public func coordinateHolePunch(
+        peer1: String,
+        peer2: String
+    ) async throws -> (peer1Endpoint: String, peer2Endpoint: String)
+}
+```
+
+**Relay Client API:**
+
+```swift
+public actor RelayClient {
+    /// Connect to relay server
+    public func connect(relayAddress: String) async throws
+
+    /// Register this peer's NAT endpoint
+    public func register() async throws -> String  // Returns public endpoint
+
+    /// Request VM via relay
+    public func requestVM(
+        provider: String,
+        requirements: ResourceRequirements
+    ) async throws -> VMInfo
+
+    /// Attempt direct connection after hole punch
+    public func attemptDirectConnect(
+        peerEndpoint: String
+    ) async throws -> Bool
+}
+```
+
+**Platform Support:**
+
+| Platform | Relay Server | Relay Client | STUN | Hole Punch |
+|----------|--------------|--------------|------|------------|
+| Linux | ✅ | ✅ | ✅ | ✅ |
+| macOS | ✅ | ✅ | ✅ | ✅ |
+
+**Security Considerations:**
+
+- Relay only sees encrypted WireGuard traffic (if forwarding)
+- Relay can see NAT endpoints (metadata)
+- Relay cannot decrypt VM control messages (encrypted with network key)
+- Multiple relays can be used for redundancy
+- Peers can choose trusted relays
+
+**Unit Tests:** `RelayTests.swift`
+- STUN endpoint discovery works
+- Peer registration/lookup works
+- Message forwarding works
+- Hole punch coordination returns correct endpoints
+
+**Integration Tests:** `NATTraversalTests.swift`
+- Relay-assisted connection works (simulated NAT)
+- Hole punch succeeds between two NATed peers
+- Fallback to relay forwarding works
+- Direct connection after hole punch works
+
+**Dependencies:** Phase 10 (P2P Discovery)
+
+**Verification:**
+```bash
+swift test --filter Relay
+swift test --filter NATTraversal
+# Manual: Test with two machines behind different NATs
+```
+
+---
+
 ## Cross-Platform Support
 
 Both **provider** and **consumer** are designed to work on macOS and Linux.
@@ -1033,25 +1315,29 @@ See `vm-network-architecture.md` for detailed implementation of VM-side isolatio
 
 ## Phase Summary
 
-| Phase | Deliverable | Tests | Dependencies | Platform |
-|-------|-------------|-------|--------------|----------|
-| 1 | CLI integration | Unit, Integration | VM Network Phases 9-11.5 | All |
-| 2 | Provider VM boot | Unit, Integration | Phase 1 | macOS, Linux |
-| 3 | Consumer WireGuard server | Unit, Integration | Phase 2 | All (needs sudo) |
-| 4 | E2E CLI flow | E2E | Phases 1-3 | All |
-| 5 | Consumer VM image | Unit, Integration | Phase 4 | All |
-| 6 | Port forwarding | Unit, Integration | Phase 5 | All |
-| 7 | Unified node | Unit, Integration | Phase 6 | All |
-| 8 | Menu bar app | UI | Phase 7 | **macOS only** |
-| 9 | Key exchange UX | Unit | Phase 8 | **macOS only** |
-| 10 | P2P discovery | Unit, Integration | Phase 9 | All |
+| Phase | Deliverable | Tests | Dependencies | Platform | Status |
+|-------|-------------|-------|--------------|----------|--------|
+| 1 | CLI integration | Unit, Integration | VM Network Phases 9-11.5 | All | Done |
+| 2 | Provider VM boot | Unit, Integration | Phase 1 | macOS, Linux | Done |
+| 3 | Consumer WireGuard server | Unit, Integration | Phase 2 | All (needs sudo) | Done |
+| 4 | E2E CLI flow | E2E | Phases 1-3 | All | Done |
+| 4.5 | Standalone VM tests | Unit, Integration | Phase 2 | All | **Next** |
+| 5 | Consumer VM image | Unit, Integration | Phase 4 | All | |
+| 6 | Port forwarding | Unit, Integration | Phase 5 | All | |
+| 7 | Unified node | Unit, Integration | Phase 6 | All | |
+| 8 | Menu bar app | UI | Phase 7 | **macOS only** | |
+| 9 | Key exchange UX | Unit | Phase 8 | **macOS only** | |
+| 10 | P2P discovery | Unit, Integration | Phase 9 | All | |
+| 10.5 | Relay for NAT traversal | Unit, Integration | Phase 10 | All | |
 
 **Notes:**
 - VM network isolation for Linux is in `vm-network-architecture.md` Phase 11.5
 - Phases 1-4 enable full CLI E2E flow on both platforms
+- **Phase 4.5** adds standalone VM tests for debugging without consumer
 - Phases 5-7 enable "easy mode" with consumer VM
 - Phases 8-9 add macOS app UI
-- Phase 10 adds automatic peer discovery (future)
+- Phase 10 adds automatic peer discovery
+- **Phase 10.5** adds relay for NAT traversal (double-NAT scenarios)
 
 ---
 
@@ -1065,6 +1351,8 @@ See `vm-network-architecture.md` for detailed implementation of VM-side isolatio
 | `Tests/OmertaConsumerTests/ConsumerProviderHandshakeTests.swift` | 1 | Handshake tests |
 | `Tests/OmertaVMTests/VMBootTests.swift` | 2 | VM boot tests |
 | `Tests/OmertaVMTests/VMBootIntegrationTests.swift` | 2 | VM boot integration |
+| `Sources/OmertaCLI/Commands/VMBootTest.swift` | 4.5 | VM boot test command |
+| `Tests/OmertaVMTests/StandaloneVMTests.swift` | 4.5 | Standalone VM tests |
 | `Tests/OmertaConsumerTests/ConsumerWireGuardTests.swift` | 3 | Consumer WG tests |
 | `Tests/OmertaNetworkTests/FullE2ETests.swift` | 4 | Full E2E tests |
 | `scripts/test-e2e.sh` | 4 | E2E test script |
@@ -1090,6 +1378,12 @@ See `vm-network-architecture.md` for detailed implementation of VM-side isolatio
 | `Sources/OmertaNetwork/Discovery/PeerFinder.swift` | 10 | Peer finder |
 | `Tests/OmertaNetworkTests/DHTTests.swift` | 10 | DHT tests |
 | `Tests/OmertaNetworkTests/P2PDiscoveryIntegrationTests.swift` | 10 | P2P tests |
+| `Sources/OmertaNetwork/Relay/RelayServer.swift` | 10.5 | Relay server |
+| `Sources/OmertaNetwork/Relay/RelayClient.swift` | 10.5 | Relay client |
+| `Sources/OmertaNetwork/Relay/STUNClient.swift` | 10.5 | STUN client |
+| `Sources/OmertaNetwork/Relay/HolePuncher.swift` | 10.5 | UDP hole punching |
+| `Tests/OmertaNetworkTests/RelayTests.swift` | 10.5 | Relay tests |
+| `Tests/OmertaNetworkTests/NATTraversalTests.swift` | 10.5 | NAT traversal tests |
 
 ### Modified Files
 

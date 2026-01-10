@@ -238,3 +238,38 @@ public struct VPNConfiguration: Sendable, Codable {
         self.presharedKey = presharedKey
     }
 }
+
+// MARK: - Reverse SSH Tunnel Configuration
+
+/// Configuration for VM to establish a reverse SSH tunnel back to the host
+/// This is used on macOS where NAT networking doesn't allow inbound connections
+public struct ReverseTunnelConfig: Codable, Sendable {
+    /// Host IP from VM's perspective (NAT gateway, e.g., 192.168.64.1)
+    public let hostIP: String
+
+    /// Username on host to SSH as
+    public let hostUser: String
+
+    /// SSH port on host (usually 22)
+    public let hostPort: UInt16
+
+    /// Local port on host to forward to VM's SSH (e.g., 2222)
+    public let tunnelPort: UInt16
+
+    /// SSH private key for connecting to host (PEM format)
+    public let privateKey: String
+
+    public init(
+        hostIP: String = "192.168.64.1",  // Default macOS Virtualization.framework NAT gateway
+        hostUser: String,
+        hostPort: UInt16 = 22,
+        tunnelPort: UInt16 = 2222,
+        privateKey: String
+    ) {
+        self.hostIP = hostIP
+        self.hostUser = hostUser
+        self.hostPort = hostPort
+        self.tunnelPort = tunnelPort
+        self.privateKey = privateKey
+    }
+}

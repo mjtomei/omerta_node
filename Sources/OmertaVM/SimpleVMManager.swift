@@ -98,7 +98,13 @@ public actor SimpleVMManager {
         #else
         let archSuffix = "amd64"
         #endif
+        #if os(macOS)
+        // macOS Virtualization.framework requires raw disk images (not QCOW2)
+        self.baseImagePath = "\(homeDir)/.omerta/images/ubuntu-22.04-server-cloudimg-\(archSuffix).raw"
+        #else
+        // Linux QEMU supports QCOW2 directly
         self.baseImagePath = "\(homeDir)/.omerta/images/ubuntu-22.04-server-cloudimg-\(archSuffix).img"
+        #endif
         self.vmDiskDir = "\(homeDir)/.omerta/vm-disks"
 
         // Create VM disk directory if it doesn't exist
@@ -197,6 +203,7 @@ public actor SimpleVMManager {
     ///   - consumerPublicKey: Consumer's WireGuard public key (required for VM-side WireGuard)
     ///   - consumerEndpoint: Consumer's WireGuard endpoint ip:port (required for VM-side WireGuard)
     ///   - vpnIP: The WireGuard IP to assign to the VM (default: 10.200.200.2)
+    ///   - reverseTunnelConfig: Optional config for VM to establish reverse SSH tunnel (macOS test mode)
     /// - Returns: VMStartResult containing the VM's IP and WireGuard public key
     public func startVM(
         vmId: UUID,
@@ -205,7 +212,8 @@ public actor SimpleVMManager {
         sshUser: String = "omerta",
         consumerPublicKey: String,
         consumerEndpoint: String,
-        vpnIP: String? = nil
+        vpnIP: String? = nil,
+        reverseTunnelConfig: ReverseTunnelConfig? = nil
     ) async throws -> VMStartResult {
         logger.info("Starting VM", metadata: [
             "vm_id": "\(vmId)",
@@ -269,7 +277,8 @@ public actor SimpleVMManager {
             sshUser: sshUser,
             consumerPublicKey: consumerPublicKey,
             consumerEndpoint: consumerEndpoint,
-            vpnIP: vpnIP
+            vpnIP: vpnIP,
+            reverseTunnelConfig: reverseTunnelConfig
         )
         #else
         // Linux: Use QEMU/KVM
@@ -313,46 +322,96 @@ public actor SimpleVMManager {
             let vmIP = vpnIPValue
             let sshPort: UInt16 = 22  // SSH directly on VPN IP
 
-            // Create TAP interface
+            // Use a separate subnet for TAP physical network (different from WireGuard VPN)
+            // This allows the VM to reach external IPs (like consumer's WireGuard endpoint)
+            // TAP network: 192.168.100.0/24, VM gets .2, gateway is .1
+            let tapGatewayIP = "192.168.100.1"
+            let tapVMIP = "192.168.100.2"
+
+            // Create TAP interface with gateway IP
             let tapInterface = "tap-\(vmId.uuidString.prefix(8))"
-            try await createTapInterface(name: tapInterface)
+            try await createTapInterface(name: tapInterface, gatewayIP: tapGatewayIP, vmIP: "\(tapVMIP)/24")
             vmTapInterfaces[vmId] = tapInterface
 
             logger.info("Created TAP interface for VM", metadata: [
                 "vm_id": "\(vmId)",
                 "tap": "\(tapInterface)",
+                "vpn_ip": "\(vmIP)",
+                "tap_gateway": "\(tapGatewayIP)",
+                "tap_vm_ip": "\(tapVMIP)"
+            ])
+
+            // Generate cloud-init ISO
+            let seedISOPath = "\(vmDiskDir)/\(vmId.uuidString)-seed.iso"
+
+            // Check for test mode (used by standalone VM boot tests)
+            let isTestMode = consumerEndpoint.hasPrefix("test://")
+            let vmPublicKey: String
+
+            logger.info("VM start request", metadata: [
+                "vm_id": "\(vmId)",
+                "is_test_mode": "\(isTestMode)",
+                "consumer_endpoint": "\(consumerEndpoint)",
+                "tap_gateway": "\(tapGatewayIP)",
+                "tap_vm_ip": "\(tapVMIP)",
                 "vpn_ip": "\(vmIP)"
             ])
 
-            // Generate cloud-init ISO with WireGuard + firewall (Phase 11.5)
-            let seedISOPath = "\(vmDiskDir)/\(vmId.uuidString)-seed.iso"
+            if isTestMode {
+                // Test mode: simplified cloud-init with no WireGuard, internet blocked
+                logger.info("Using test mode cloud-init (no WireGuard, internet blocked)", metadata: [
+                    "consumer_endpoint": "\(consumerEndpoint)",
+                    "ssh_user": "\(sshUser)",
+                    "ssh_key_preview": "\(sshPublicKey.prefix(40))..."
+                ])
 
-            logger.info("Using VM-side WireGuard network isolation (Phase 9)", metadata: [
-                "consumer_endpoint": "\(consumerEndpoint)"
-            ])
+                try createTestModeCloudInitISO(
+                    at: seedISOPath,
+                    sshPublicKey: sshPublicKey,
+                    sshUser: sshUser,
+                    instanceId: vmId,
+                    tapVMIP: tapVMIP,
+                    tapGateway: tapGatewayIP
+                )
 
-            // Generate VM's WireGuard keypair
-            let (vmPrivateKey, vmPublicKey) = try generateWireGuardKeypair()
+                // No WireGuard key in test mode, return a placeholder
+                vmPublicKey = "test-mode-no-wireguard"
+                logger.info("Created test mode cloud-init ISO", metadata: [
+                    "path": "\(seedISOPath)",
+                    "iso_exists": "\(FileManager.default.fileExists(atPath: seedISOPath))"
+                ])
+            } else {
+                // Normal mode: full WireGuard + firewall cloud-init
+                logger.info("Using VM-side WireGuard network isolation (Phase 9)", metadata: [
+                    "consumer_endpoint": "\(consumerEndpoint)"
+                ])
 
-            // Create network isolation config
-            let vmAddress = "\(vpnIPValue)/24"
-            let vmNetConfig = VMNetworkConfigFactory.createForConsumer(
-                consumerPublicKey: consumerPublicKey,
-                consumerEndpoint: consumerEndpoint,
-                vmPrivateKey: vmPrivateKey,
-                vmAddress: vmAddress,
-                packageConfig: .debian
-            )
+                // Generate VM's WireGuard keypair
+                let (vmPrivateKey, generatedPublicKey) = try generateWireGuardKeypair()
+                vmPublicKey = generatedPublicKey
 
-            // Create combined cloud-init ISO with WireGuard + firewall + SSH
-            try createCombinedCloudInitISO(
-                at: seedISOPath,
-                vmNetConfig: vmNetConfig,
-                sshPublicKey: sshPublicKey,
-                sshUser: sshUser,
-                instanceId: vmId
-            )
-            logger.info("Created network isolation cloud-init ISO", metadata: ["path": "\(seedISOPath)"])
+                // Create network isolation config
+                let vmAddress = "\(vpnIPValue)/24"
+                let vmNetConfig = VMNetworkConfigFactory.createForConsumer(
+                    consumerPublicKey: consumerPublicKey,
+                    consumerEndpoint: consumerEndpoint,
+                    vmPrivateKey: vmPrivateKey,
+                    vmAddress: vmAddress,
+                    packageConfig: .debian
+                )
+
+                // Create combined cloud-init ISO with WireGuard + firewall + SSH + TAP network config
+                try createCombinedCloudInitISO(
+                    at: seedISOPath,
+                    vmNetConfig: vmNetConfig,
+                    sshPublicKey: sshPublicKey,
+                    sshUser: sshUser,
+                    instanceId: vmId,
+                    tapVMIP: tapVMIP,
+                    tapGateway: tapGatewayIP
+                )
+                logger.info("Created network isolation cloud-init ISO", metadata: ["path": "\(seedISOPath)"])
+            }
 
             // Build QEMU command with TAP networking
             let qemuArgs = try buildQEMUArgs(
@@ -368,7 +427,12 @@ public actor SimpleVMManager {
                 "vm_id": "\(vmId)",
                 "binary": "\(qemuBinary)",
                 "tap": "\(tapInterface)",
-                "vpn_ip": "\(vmIP)"
+                "vpn_ip": "\(vmIP)",
+                "overlay_exists": "\(FileManager.default.fileExists(atPath: overlayPath))",
+                "seed_iso_exists": "\(FileManager.default.fileExists(atPath: seedISOPath))"
+            ])
+            logger.info("QEMU arguments", metadata: [
+                "args": "\(qemuArgs.joined(separator: " "))"
             ])
 
             // Start QEMU process
@@ -495,7 +559,7 @@ public actor SimpleVMManager {
 
     #if os(Linux)
     /// Create a TAP interface for VM networking (Linux only)
-    private func createTapInterface(name: String) async throws {
+    private func createTapInterface(name: String, gatewayIP: String? = nil, vmIP: String? = nil) async throws {
         logger.info("Creating TAP interface", metadata: ["name": "\(name)"])
 
         // Create TAP interface
@@ -516,6 +580,19 @@ public actor SimpleVMManager {
             throw VMError.tapCreationFailed(errorMessage)
         }
 
+        // Assign gateway IP to TAP interface if provided
+        if let gateway = gatewayIP {
+            let addrProcess = Process()
+            addrProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            addrProcess.arguments = ["ip", "addr", "add", "\(gateway)/24", "dev", name]
+            addrProcess.standardOutput = FileHandle.nullDevice
+            addrProcess.standardError = FileHandle.nullDevice
+
+            try? addrProcess.run()
+            addrProcess.waitUntilExit()
+            logger.info("Assigned IP to TAP interface", metadata: ["interface": "\(name)", "ip": "\(gateway)/24"])
+        }
+
         // Bring interface up
         let upProcess = Process()
         upProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
@@ -524,6 +601,16 @@ public actor SimpleVMManager {
         try upProcess.run()
         upProcess.waitUntilExit()
 
+        // Enable IP forwarding
+        let forwardProcess = Process()
+        forwardProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        forwardProcess.arguments = ["sysctl", "-w", "net.ipv4.ip_forward=1"]
+        forwardProcess.standardOutput = FileHandle.nullDevice
+        forwardProcess.standardError = FileHandle.nullDevice
+
+        try? forwardProcess.run()
+        forwardProcess.waitUntilExit()
+
         // Enable proxy ARP on the TAP interface so it can reach the gateway
         let proxyArpProcess = Process()
         proxyArpProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
@@ -531,6 +618,17 @@ public actor SimpleVMManager {
 
         try? proxyArpProcess.run()
         proxyArpProcess.waitUntilExit()
+
+        // Add NAT/masquerade rule so VM can reach external IPs (like consumer's WireGuard)
+        let natProcess = Process()
+        natProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        natProcess.arguments = ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "!lo", "-s", vmIP ?? "10.0.0.0/8", "-j", "MASQUERADE"]
+        natProcess.standardOutput = FileHandle.nullDevice
+        natProcess.standardError = FileHandle.nullDevice
+
+        try? natProcess.run()
+        natProcess.waitUntilExit()
+        logger.info("Added NAT masquerade rule for TAP network")
 
         logger.info("TAP interface created and configured", metadata: ["name": "\(name)"])
     }
@@ -755,7 +853,8 @@ public actor SimpleVMManager {
         sshUser: String,
         consumerPublicKey: String,
         consumerEndpoint: String,
-        vpnIP: String?
+        vpnIP: String?,
+        reverseTunnelConfig: ReverseTunnelConfig?
     ) async throws -> VMStartResult {
         // 1. Verify base image exists
         guard FileManager.default.fileExists(atPath: baseImagePath) else {
@@ -768,35 +867,72 @@ public actor SimpleVMManager {
         try await createRawOverlay(basePath: baseImagePath, overlayPath: rawOverlayPath)
         logger.info("Created raw overlay disk", metadata: ["path": "\(rawOverlayPath)"])
 
-        // 3. Generate cloud-init ISO with WireGuard + firewall (Phase 9)
+        // 3. Generate cloud-init ISO
         let seedISOPath = "\(vmDiskDir)/\(vmId.uuidString)-seed.iso"
 
-        logger.info("Using VM-side WireGuard network isolation (Phase 9)", metadata: [
-            "consumer_endpoint": "\(consumerEndpoint)"
+        // Check for test mode (used by standalone VM boot tests)
+        let isTestMode = consumerEndpoint.hasPrefix("test://")
+        let vmPublicKey: String
+
+        logger.info("VM start request (macOS)", metadata: [
+            "vm_id": "\(vmId)",
+            "is_test_mode": "\(isTestMode)",
+            "consumer_endpoint": "\(consumerEndpoint)",
+            "has_reverse_tunnel": "\(reverseTunnelConfig != nil)"
         ])
 
-        // Generate VM's WireGuard keypair
-        let (vmPrivateKey, vmPublicKey) = try generateWireGuardKeypair()
+        if isTestMode {
+            // Test mode: simplified cloud-init with optional reverse SSH tunnel
+            logger.info("Using test mode cloud-init for macOS", metadata: [
+                "consumer_endpoint": "\(consumerEndpoint)",
+                "ssh_user": "\(sshUser)",
+                "reverse_tunnel": "\(reverseTunnelConfig != nil)"
+            ])
 
-        // Create network isolation config
-        let vmAddress = vpnIP.map { "\($0)/24" } ?? "10.200.200.2/24"
-        let vmNetConfig = VMNetworkConfigFactory.createForConsumer(
-            consumerPublicKey: consumerPublicKey,
-            consumerEndpoint: consumerEndpoint,
-            vmPrivateKey: vmPrivateKey,
-            vmAddress: vmAddress,
-            packageConfig: .debian
-        )
+            try createTestModeCloudInitISOMacOS(
+                at: seedISOPath,
+                sshPublicKey: sshPublicKey,
+                sshUser: sshUser,
+                instanceId: vmId,
+                reverseTunnelConfig: reverseTunnelConfig
+            )
 
-        // Create combined cloud-init ISO with WireGuard + firewall + SSH
-        try createCombinedCloudInitISO(
-            at: seedISOPath,
-            vmNetConfig: vmNetConfig,
-            sshPublicKey: sshPublicKey,
-            sshUser: sshUser,
-            instanceId: vmId
-        )
-        logger.info("Created network isolation cloud-init ISO", metadata: ["path": "\(seedISOPath)"])
+            // No WireGuard key in test mode
+            vmPublicKey = "test-mode-no-wireguard"
+            logger.info("Created test mode cloud-init ISO (macOS)", metadata: [
+                "path": "\(seedISOPath)",
+                "iso_exists": "\(FileManager.default.fileExists(atPath: seedISOPath))"
+            ])
+        } else {
+            // Normal mode: full WireGuard + firewall cloud-init
+            logger.info("Using VM-side WireGuard network isolation (Phase 9)", metadata: [
+                "consumer_endpoint": "\(consumerEndpoint)"
+            ])
+
+            // Generate VM's WireGuard keypair
+            let (vmPrivateKey, generatedPublicKey) = try generateWireGuardKeypair()
+            vmPublicKey = generatedPublicKey
+
+            // Create network isolation config
+            let vmAddress = vpnIP.map { "\($0)/24" } ?? "10.200.200.2/24"
+            let vmNetConfig = VMNetworkConfigFactory.createForConsumer(
+                consumerPublicKey: consumerPublicKey,
+                consumerEndpoint: consumerEndpoint,
+                vmPrivateKey: vmPrivateKey,
+                vmAddress: vmAddress,
+                packageConfig: .debian
+            )
+
+            // Create combined cloud-init ISO with WireGuard + firewall + SSH
+            try createCombinedCloudInitISO(
+                at: seedISOPath,
+                vmNetConfig: vmNetConfig,
+                sshPublicKey: sshPublicKey,
+                sshUser: sshUser,
+                instanceId: vmId
+            )
+            logger.info("Created network isolation cloud-init ISO", metadata: ["path": "\(seedISOPath)"])
+        }
 
         // 4. Create VM configuration
         let config = try await createVMConfiguration(
@@ -931,6 +1067,23 @@ public actor SimpleVMManager {
 
         config.storageDevices = storageDevices
 
+        // Serial console - write to log file for debugging
+        // Note: Virtualization.framework serial ports need both read and write handles
+        let consoleLogPath = "\(vmDiskDir)/\(vmId.uuidString)-console.log"
+        if FileManager.default.createFile(atPath: consoleLogPath, contents: nil) {
+            if let logHandle = FileHandle(forWritingAtPath: consoleLogPath) {
+                // Create a pipe for the read end (VM reads from this)
+                let inputPipe = Pipe()
+                let consolePort = VZVirtioConsoleDeviceSerialPortConfiguration()
+                consolePort.attachment = VZFileHandleSerialPortAttachment(
+                    fileHandleForReading: inputPipe.fileHandleForReading,
+                    fileHandleForWriting: logHandle
+                )
+                config.serialPorts = [consolePort]
+                logger.info("Console output will be logged to: \(consoleLogPath)")
+            }
+        }
+
         // Validate configuration
         try config.validate()
 
@@ -941,6 +1094,7 @@ public actor SimpleVMManager {
 
         return config
     }
+
     #endif  // os(macOS) - Virtualization.framework functions
 
     // MARK: - Cloud-Init (Cross-Platform)
@@ -951,7 +1105,9 @@ public actor SimpleVMManager {
         vmNetConfig: VMNetworkConfig,
         sshPublicKey: String,
         sshUser: String,
-        instanceId: UUID
+        instanceId: UUID,
+        tapVMIP: String? = nil,
+        tapGateway: String? = nil
     ) throws {
         // Generate user-data with network isolation config
         var userData = CloudInitGenerator.generateNetworkIsolationUserData(config: vmNetConfig)
@@ -991,6 +1147,244 @@ public actor SimpleVMManager {
         // Write meta-data
         let metaDataPath = tempDir.appendingPathComponent("meta-data")
         try metaData.write(to: metaDataPath, atomically: true, encoding: .utf8)
+
+        // Write network-config for TAP interface if provided
+        if let vmIP = tapVMIP, let gateway = tapGateway {
+            let networkConfig = """
+            version: 2
+            ethernets:
+              id0:
+                match:
+                  driver: virtio*
+                addresses:
+                  - \(vmIP)/24
+                routes:
+                  - to: default
+                    via: \(gateway)
+                nameservers:
+                  addresses: ["8.8.8.8", "8.8.4.4"]
+            """
+            let networkConfigPath = tempDir.appendingPathComponent("network-config")
+            try networkConfig.write(to: networkConfigPath, atomically: true, encoding: .utf8)
+            logger.info("Added TAP network config to cloud-init", metadata: [
+                "vm_ip": "\(vmIP)",
+                "gateway": "\(gateway)"
+            ])
+        }
+
+        // Create ISO using platform-specific method
+        try CloudInitGenerator.createISOFromDirectory(from: tempDir.path, to: outputPath)
+    }
+
+    /// Create a simplified cloud-init for test mode (no WireGuard, with internet-blocking firewall)
+    /// This is used for standalone VM boot tests that only need SSH access over TAP
+    private func createTestModeCloudInitISO(
+        at outputPath: String,
+        sshPublicKey: String,
+        sshUser: String,
+        instanceId: UUID,
+        tapVMIP: String,
+        tapGateway: String
+    ) throws {
+        // Generate user-data with simplified config (no WireGuard, internet-blocking firewall)
+        let userData = """
+        #cloud-config
+
+        # Test Mode VM Configuration
+        # No WireGuard, SSH only over TAP, internet access blocked
+
+        hostname: omerta-test-\(instanceId.uuidString.prefix(8))
+
+        # SSH User Configuration
+        users:
+          - name: \(sshUser)
+            sudo: ALL=(ALL) NOPASSWD:ALL
+            shell: /bin/bash
+            ssh_authorized_keys:
+              - \(sshPublicKey)
+
+        # Firewall rules to block internet access (only allow TAP gateway)
+        runcmd:
+          - echo "Setting up test mode firewall (blocking internet)..."
+          # Flush existing rules
+          - iptables -F
+          - iptables -X
+          # Default policies
+          - iptables -P INPUT DROP
+          - iptables -P FORWARD DROP
+          - iptables -P OUTPUT DROP
+          # Allow loopback
+          - iptables -A INPUT -i lo -j ACCEPT
+          - iptables -A OUTPUT -o lo -j ACCEPT
+          # Allow established connections
+          - iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+          - iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+          # Allow SSH from TAP network only
+          - iptables -A INPUT -p tcp --dport 22 -s 192.168.100.0/24 -j ACCEPT
+          - iptables -A OUTPUT -p tcp --sport 22 -d 192.168.100.0/24 -j ACCEPT
+          # Allow ICMP (ping) from TAP network only
+          - iptables -A INPUT -p icmp -s 192.168.100.0/24 -j ACCEPT
+          - iptables -A OUTPUT -p icmp -d 192.168.100.0/24 -j ACCEPT
+          # Allow DNS for internal resolution only (no external)
+          - iptables -A OUTPUT -p udp --dport 53 -d 192.168.100.1 -j ACCEPT
+          - iptables -A INPUT -p udp --sport 53 -s 192.168.100.1 -j ACCEPT
+          # Block everything else (already dropped by default policy)
+          - echo "Test mode firewall configured - internet access blocked"
+          - iptables -L -v -n
+
+        final_message: "Test VM ready - SSH accessible at \(tapVMIP)"
+        """
+
+        // Generate meta-data
+        let metaData = """
+        instance-id: omerta-test-\(instanceId.uuidString)
+        local-hostname: omerta-test-\(instanceId.uuidString.prefix(8))
+        """
+
+        // Generate network-config for TAP interface
+        let networkConfig = """
+        version: 2
+        ethernets:
+          id0:
+            match:
+              driver: virtio*
+            addresses:
+              - \(tapVMIP)/24
+            routes:
+              - to: default
+                via: \(tapGateway)
+        """
+
+        // Create temp directory for cloud-init files
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cloudinit-test-\(instanceId.uuidString.prefix(8))")
+
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        // Write user-data
+        let userDataPath = tempDir.appendingPathComponent("user-data")
+        try userData.write(to: userDataPath, atomically: true, encoding: .utf8)
+
+        // Write meta-data
+        let metaDataPath = tempDir.appendingPathComponent("meta-data")
+        try metaData.write(to: metaDataPath, atomically: true, encoding: .utf8)
+
+        // Write network-config
+        let networkConfigPath = tempDir.appendingPathComponent("network-config")
+        try networkConfig.write(to: networkConfigPath, atomically: true, encoding: .utf8)
+
+        logger.info("Created test mode cloud-init (no WireGuard, internet blocked)", metadata: [
+            "vm_ip": "\(tapVMIP)",
+            "gateway": "\(tapGateway)"
+        ])
+
+        // Create ISO using platform-specific method
+        try CloudInitGenerator.createISOFromDirectory(from: tempDir.path, to: outputPath)
+    }
+
+    /// Create a cloud-init for macOS test mode with optional reverse SSH tunnel
+    /// macOS VMs use NAT networking, so inbound connections require a reverse tunnel
+    private func createTestModeCloudInitISOMacOS(
+        at outputPath: String,
+        sshPublicKey: String,
+        sshUser: String,
+        instanceId: UUID,
+        reverseTunnelConfig: ReverseTunnelConfig?
+    ) throws {
+        let hostname = "omerta-vm-\(instanceId.uuidString.prefix(8).lowercased())"
+
+        // Build user-data YAML
+        var lines: [String] = [
+            "#cloud-config",
+            "hostname: \(hostname)",
+            "",
+            "users:",
+            "  - name: \(sshUser)",
+            "    sudo: ALL=(ALL) NOPASSWD:ALL",
+            "    shell: /bin/bash",
+            "    ssh_authorized_keys:",
+            "      - \(sshPublicKey)",
+            "",
+            "ssh_pwauth: true",
+            "chpasswd:",
+            "  list: |",
+            "    \(sshUser):omerta123",
+            "  expire: false",
+            ""
+        ]
+
+        // Add write_files for tunnel key if needed
+        if let tunnel = reverseTunnelConfig {
+            lines.append("write_files:")
+            lines.append("  - path: /root/.ssh/tunnel_key")
+            lines.append("    permissions: '0600'")
+            lines.append("    content: |")
+            // Add each line of the private key with proper indentation
+            for keyLine in tunnel.privateKey.split(separator: "\n") {
+                lines.append("      \(keyLine)")
+            }
+            lines.append("  - path: /root/.ssh/config")
+            lines.append("    permissions: '0600'")
+            lines.append("    content: |")
+            lines.append("      Host *")
+            lines.append("        StrictHostKeyChecking no")
+            lines.append("        UserKnownHostsFile /dev/null")
+            lines.append("")
+        }
+
+        // Add runcmd
+        lines.append("runcmd:")
+        lines.append("  - systemctl enable ssh")
+        lines.append("  - systemctl start ssh")
+
+        if let tunnel = reverseTunnelConfig {
+            lines.append("  - mkdir -p /root/.ssh && chmod 700 /root/.ssh")
+            lines.append("  - sleep 10")
+            // Use nohup to run the tunnel in background
+            lines.append("  - nohup ssh -i /root/.ssh/tunnel_key -o ConnectTimeout=30 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R \(tunnel.tunnelPort):localhost:22 -N \(tunnel.hostUser)@\(tunnel.hostIP) -p \(tunnel.hostPort) > /var/log/tunnel.log 2>&1 &")
+            lines.append("  - echo 'Reverse SSH tunnel started'")
+        }
+
+        lines.append("  - touch /etc/cloud/cloud-init.disabled")
+        lines.append("")
+        lines.append("final_message: \"macOS Test VM ready - \(hostname)\"")
+
+        let userData = lines.joined(separator: "\n")
+
+        // Generate meta-data
+        let metaData = """
+        instance-id: \(instanceId.uuidString)
+        local-hostname: \(hostname)
+        """
+
+        // Create temp directory for cloud-init files
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cloudinit-macos-test-\(instanceId.uuidString.prefix(8))")
+
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        // Write user-data
+        let userDataPath = tempDir.appendingPathComponent("user-data")
+        try userData.write(to: userDataPath, atomically: true, encoding: .utf8)
+
+        // Write meta-data
+        let metaDataPath = tempDir.appendingPathComponent("meta-data")
+        try metaData.write(to: metaDataPath, atomically: true, encoding: .utf8)
+
+        // No network-config needed - macOS NAT handles DHCP
+
+        logger.info("Created macOS test mode cloud-init", metadata: [
+            "hostname": "\(hostname)",
+            "has_reverse_tunnel": "\(reverseTunnelConfig != nil)"
+        ])
 
         // Create ISO using platform-specific method
         try CloudInitGenerator.createISOFromDirectory(from: tempDir.path, to: outputPath)
@@ -1314,8 +1708,10 @@ public enum VMError: Error, CustomStringConvertible {
             return "Ubuntu cloud image not found. Download to ~/.omerta/images/ubuntu-22.04-server-cloudimg-arm64.img"
             #elseif os(Linux)
             return "Ubuntu cloud image not found. Download to ~/.omerta/images/ubuntu-22.04-server-cloudimg-amd64.img"
+            #elseif arch(arm64)
+            return "Ubuntu raw disk image not found. Convert QCOW2 to raw: qemu-img convert -f qcow2 -O raw <input>.img ~/.omerta/images/ubuntu-22.04-server-cloudimg-arm64.raw"
             #else
-            return "Ubuntu disk image not found. Install to ~/Library/Application Support/Omerta/ubuntu-22.04.raw"
+            return "Ubuntu raw disk image not found. Convert QCOW2 to raw: qemu-img convert -f qcow2 -O raw <input>.img ~/.omerta/images/ubuntu-22.04-server-cloudimg-amd64.raw"
             #endif
         case .cloudInitNotFound:
             return "Cloud-init seed not found. Create ~/Library/Application Support/Omerta/seed.iso"

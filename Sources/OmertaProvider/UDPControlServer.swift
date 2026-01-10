@@ -245,7 +245,8 @@ public actor UDPControlServer {
             sshUser: request.sshUser,
             consumerPublicKey: request.vpnConfig.consumerPublicKey,
             consumerEndpoint: request.consumerEndpoint,
-            vpnIP: vmVPNIP
+            vpnIP: vmVPNIP,
+            reverseTunnelConfig: request.reverseTunnelConfig
         )
 
         logger.info("VM started successfully", metadata: [
@@ -269,11 +270,13 @@ public actor UDPControlServer {
         )
         activeVMs[request.vmId] = activeVM
 
-        // 4. Return response with VM's WireGuard public key
-        // Consumer needs this to add VM as a peer on their WireGuard server
+        // 4. Return response with VM's actual IP and WireGuard public key
+        // For direct-ssh test mode, use actual VM IP (NAT or TAP)
+        // For production WireGuard mode, consumer connects via VPN tunnel
+        let responseIP = vmResult.vmIP  // Actual VM IP from vmManager
         let response = VMCreatedResponse(
             vmId: request.vmId,
-            vmIP: vmVPNIP,
+            vmIP: responseIP,
             sshPort: 22,
             providerPublicKey: vmResult.vmWireGuardPublicKey
         )
@@ -281,13 +284,15 @@ public actor UDPControlServer {
         return .vmCreated(response)
     }
 
-    /// Handle VM release
+    /// Handle VM release (idempotent - returns success even if VM already released)
     private func handleReleaseVM(_ request: ReleaseVMMessage) async throws -> ControlAction {
         logger.info("Handling VM release", metadata: ["vm_id": "\(request.vmId)"])
 
+        // Idempotent: if VM not found, it's already released - return success
         guard activeVMs[request.vmId] != nil else {
-            logger.warning("VM not found", metadata: ["vm_id": "\(request.vmId)"])
-            throw ProviderError.vmNotFound(request.vmId)
+            logger.info("VM already released (idempotent)", metadata: ["vm_id": "\(request.vmId)"])
+            let response = VMReleasedResponse(vmId: request.vmId)
+            return .vmReleased(response)
         }
 
         // 1. Stop the VM
