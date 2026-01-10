@@ -343,10 +343,18 @@ private final class ResponseHandler: ChannelInboundHandler, @unchecked Sendable 
     }
 
     func waitForResponse() async throws -> ControlMessage {
-        try await withCheckedThrowingContinuation { continuation in
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                lock.lock()
+                responseContinuation = continuation
+                lock.unlock()
+            }
+        } onCancel: {
             lock.lock()
-            responseContinuation = continuation
+            let cont = responseContinuation
+            responseContinuation = nil
             lock.unlock()
+            cont?.resume(throwing: CancellationError())
         }
     }
 

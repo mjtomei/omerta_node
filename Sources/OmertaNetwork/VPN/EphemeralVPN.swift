@@ -451,7 +451,63 @@ public actor EphemeralVPN: VPNProvider {
         // IP address on the network that can route to the TAP interface
 
         // Try to get the default route interface's IP address
-        #if os(Linux)
+        #if os(macOS)
+        // On macOS, get the IP of the default interface
+        // First, find the default interface using route
+        let routeProcess = Process()
+        routeProcess.executableURL = URL(fileURLWithPath: "/sbin/route")
+        routeProcess.arguments = ["-n", "get", "default"]
+
+        let routePipe = Pipe()
+        routeProcess.standardOutput = routePipe
+        routeProcess.standardError = Pipe()
+
+        try? routeProcess.run()
+        routeProcess.waitUntilExit()
+
+        let routeData = routePipe.fileHandleForReading.readDataToEndOfFile()
+        let routeOutput = String(data: routeData, encoding: .utf8) ?? ""
+
+        // Parse output like: "interface: en0"
+        var interfaceName: String?
+        for line in routeOutput.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("interface:") {
+                interfaceName = trimmed.replacingOccurrences(of: "interface:", with: "").trimmingCharacters(in: .whitespaces)
+                break
+            }
+        }
+
+        if let iface = interfaceName {
+            // Get IP address of that interface using ifconfig
+            let ifconfigProcess = Process()
+            ifconfigProcess.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
+            ifconfigProcess.arguments = [iface]
+
+            let ifconfigPipe = Pipe()
+            ifconfigProcess.standardOutput = ifconfigPipe
+            ifconfigProcess.standardError = Pipe()
+
+            try? ifconfigProcess.run()
+            ifconfigProcess.waitUntilExit()
+
+            let ifconfigData = ifconfigPipe.fileHandleForReading.readDataToEndOfFile()
+            let ifconfigOutput = String(data: ifconfigData, encoding: .utf8) ?? ""
+
+            // Parse "inet 192.168.1.100 netmask ..."
+            for line in ifconfigOutput.split(separator: "\n") {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("inet ") && !trimmed.contains("127.0.0.1") {
+                    let parts = trimmed.split(separator: " ")
+                    if parts.count >= 2 {
+                        let ipAddress = String(parts[1])
+                        logger.info("Using macOS interface IP for endpoint", metadata: ["interface": "\(iface)", "ip": "\(ipAddress)"])
+                        return ipAddress
+                    }
+                }
+            }
+        }
+        #elseif os(Linux)
         // On Linux, get the IP of the interface with the default route
         let routeProcess = Process()
         routeProcess.executableURL = URL(fileURLWithPath: "/sbin/ip")

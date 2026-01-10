@@ -25,6 +25,10 @@ public actor SimpleVMManager {
     #if os(Linux)
     /// Track TAP interfaces for cleanup (Linux only - macOS uses vmnet)
     private var vmTapInterfaces: [UUID: String] = [:]
+    /// Track allocated TAP subnet indices (0-254) to avoid conflicts between VMs
+    /// Each VM gets 192.168.(100+index).0/24
+    private var allocatedTapSubnets: [UUID: UInt8] = [:]
+    private var usedTapSubnetIndices: Set<UInt8> = []
     #endif
 
     public struct RunningVM: Sendable {
@@ -322,11 +326,11 @@ public actor SimpleVMManager {
             let vmIP = vpnIPValue
             let sshPort: UInt16 = 22  // SSH directly on VPN IP
 
-            // Use a separate subnet for TAP physical network (different from WireGuard VPN)
-            // This allows the VM to reach external IPs (like consumer's WireGuard endpoint)
-            // TAP network: 192.168.100.0/24, VM gets .2, gateway is .1
-            let tapGatewayIP = "192.168.100.1"
-            let tapVMIP = "192.168.100.2"
+            // Allocate unique TAP subnet for this VM (avoids conflicts when running multiple VMs)
+            // Each VM gets 192.168.(100+index).0/24 where index is 0-154
+            let subnetIndex = allocateTapSubnet(for: vmId)
+            let tapGatewayIP = "192.168.\(100 + Int(subnetIndex)).1"
+            let tapVMIP = "192.168.\(100 + Int(subnetIndex)).2"
 
             // Create TAP interface with gateway IP
             let tapInterface = "tap-\(vmId.uuidString.prefix(8))"
@@ -558,6 +562,29 @@ public actor SimpleVMManager {
     }
 
     #if os(Linux)
+    /// Allocate a unique TAP subnet index for a VM
+    /// Returns index 0-154, resulting in subnets 192.168.100.0/24 through 192.168.254.0/24
+    private func allocateTapSubnet(for vmId: UUID) -> UInt8 {
+        // Find first available index
+        for index: UInt8 in 0...154 {
+            if !usedTapSubnetIndices.contains(index) {
+                usedTapSubnetIndices.insert(index)
+                allocatedTapSubnets[vmId] = index
+                return index
+            }
+        }
+        // Fallback (shouldn't happen with < 155 VMs)
+        logger.warning("TAP subnet pool exhausted, reusing index 0")
+        return 0
+    }
+
+    /// Release the TAP subnet allocated to a VM
+    private func releaseTapSubnet(for vmId: UUID) {
+        if let index = allocatedTapSubnets.removeValue(forKey: vmId) {
+            usedTapSubnetIndices.remove(index)
+        }
+    }
+
     /// Create a TAP interface for VM networking (Linux only)
     private func createTapInterface(name: String, gatewayIP: String? = nil, vmIP: String? = nil) async throws {
         logger.info("Creating TAP interface", metadata: ["name": "\(name)"])
@@ -620,15 +647,67 @@ public actor SimpleVMManager {
         proxyArpProcess.waitUntilExit()
 
         // Add NAT/masquerade rule so VM can reach external IPs (like consumer's WireGuard)
+        // Use the TAP network subnet (derived from gateway IP), not the VPN IP
+        let tapSubnet = gatewayIP.map { ip -> String in
+            // Convert gateway like "192.168.100.1" to subnet "192.168.100.0/24"
+            let parts = ip.split(separator: ".")
+            if parts.count == 4 {
+                return "\(parts[0]).\(parts[1]).\(parts[2]).0/24"
+            }
+            return "192.168.100.0/24"  // fallback
+        } ?? "192.168.100.0/24"
+
+        // Auto-detect outbound interface from default route
+        let routeProcess = Process()
+        routeProcess.executableURL = URL(fileURLWithPath: "/bin/sh")
+        routeProcess.arguments = ["-c", "ip route show default | awk '/default/ {print $5}' | head -1"]
+        let routePipe = Pipe()
+        routeProcess.standardOutput = routePipe
+        routeProcess.standardError = FileHandle.nullDevice
+        try? routeProcess.run()
+        routeProcess.waitUntilExit()
+        let routeData = routePipe.fileHandleForReading.readDataToEndOfFile()
+        let outInterface = String(data: routeData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "eth0"
+        logger.info("Detected outbound interface", metadata: ["interface": "\(outInterface)"])
+
+        // Run iptables directly (omertad runs as root)
+        // MASQUERADE rule with output interface for traffic from TAP subnet
         let natProcess = Process()
-        natProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        natProcess.arguments = ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "!lo", "-s", vmIP ?? "10.0.0.0/8", "-j", "MASQUERADE"]
+        natProcess.executableURL = URL(fileURLWithPath: "/usr/sbin/iptables")
+        natProcess.arguments = ["-t", "nat", "-A", "POSTROUTING", "-s", tapSubnet, "-o", outInterface, "-j", "MASQUERADE"]
+
+        let natError = Pipe()
         natProcess.standardOutput = FileHandle.nullDevice
-        natProcess.standardError = FileHandle.nullDevice
+        natProcess.standardError = natError
 
         try? natProcess.run()
         natProcess.waitUntilExit()
-        logger.info("Added NAT masquerade rule for TAP network")
+
+        if natProcess.terminationStatus != 0 {
+            let errorData = natError.fileHandleForReading.readDataToEndOfFile()
+            let errorMessage = String(data: errorData, encoding: .utf8) ?? ""
+            logger.warning("NAT masquerade rule failed", metadata: ["error": "\(errorMessage)", "subnet": "\(tapSubnet)"])
+        } else {
+            logger.info("Added NAT masquerade rule for TAP network", metadata: ["subnet": "\(tapSubnet)", "outInterface": "\(outInterface)"])
+        }
+
+        // Insert FORWARD rules at beginning of chain (use -I instead of -A to ensure they're before any DROP rules)
+        let forwardProcess2 = Process()
+        forwardProcess2.executableURL = URL(fileURLWithPath: "/usr/sbin/iptables")
+        forwardProcess2.arguments = ["-I", "FORWARD", "1", "-s", tapSubnet, "-j", "ACCEPT"]
+        forwardProcess2.standardOutput = FileHandle.nullDevice
+        forwardProcess2.standardError = FileHandle.nullDevice
+        try? forwardProcess2.run()
+        forwardProcess2.waitUntilExit()
+
+        // Also allow established/related connections back (insert at position 2)
+        let forwardProcess3 = Process()
+        forwardProcess3.executableURL = URL(fileURLWithPath: "/usr/sbin/iptables")
+        forwardProcess3.arguments = ["-I", "FORWARD", "2", "-d", tapSubnet, "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"]
+        forwardProcess3.standardOutput = FileHandle.nullDevice
+        forwardProcess3.standardError = FileHandle.nullDevice
+        try? forwardProcess3.run()
+        forwardProcess3.waitUntilExit()
 
         logger.info("TAP interface created and configured", metadata: ["name": "\(name)"])
     }
@@ -1186,6 +1265,15 @@ public actor SimpleVMManager {
         tapVMIP: String,
         tapGateway: String
     ) throws {
+        // Derive TAP subnet from gateway IP (e.g., 192.168.101.1 -> 192.168.101.0/24)
+        let tapSubnet: String
+        let gatewayParts = tapGateway.split(separator: ".")
+        if gatewayParts.count == 4 {
+            tapSubnet = "\(gatewayParts[0]).\(gatewayParts[1]).\(gatewayParts[2]).0/24"
+        } else {
+            tapSubnet = "192.168.100.0/24"  // fallback
+        }
+
         // Generate user-data with simplified config (no WireGuard, internet-blocking firewall)
         let userData = """
         #cloud-config
@@ -1220,14 +1308,14 @@ public actor SimpleVMManager {
           - iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
           - iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
           # Allow SSH from TAP network only
-          - iptables -A INPUT -p tcp --dport 22 -s 192.168.100.0/24 -j ACCEPT
-          - iptables -A OUTPUT -p tcp --sport 22 -d 192.168.100.0/24 -j ACCEPT
+          - iptables -A INPUT -p tcp --dport 22 -s \(tapSubnet) -j ACCEPT
+          - iptables -A OUTPUT -p tcp --sport 22 -d \(tapSubnet) -j ACCEPT
           # Allow ICMP (ping) from TAP network only
-          - iptables -A INPUT -p icmp -s 192.168.100.0/24 -j ACCEPT
-          - iptables -A OUTPUT -p icmp -d 192.168.100.0/24 -j ACCEPT
+          - iptables -A INPUT -p icmp -s \(tapSubnet) -j ACCEPT
+          - iptables -A OUTPUT -p icmp -d \(tapSubnet) -j ACCEPT
           # Allow DNS for internal resolution only (no external)
-          - iptables -A OUTPUT -p udp --dport 53 -d 192.168.100.1 -j ACCEPT
-          - iptables -A INPUT -p udp --sport 53 -s 192.168.100.1 -j ACCEPT
+          - iptables -A OUTPUT -p udp --dport 53 -d \(tapGateway) -j ACCEPT
+          - iptables -A INPUT -p udp --sport 53 -s \(tapGateway) -j ACCEPT
           # Block everything else (already dropped by default policy)
           - echo "Test mode firewall configured - internet access blocked"
           - iptables -L -v -n
@@ -1477,6 +1565,9 @@ public actor SimpleVMManager {
                 vmTapInterfaces.removeValue(forKey: vmId)
                 logger.info("Cleaned up TAP interface", metadata: ["tap": "\(tapInterface)"])
             }
+
+            // Release the TAP subnet allocation
+            releaseTapSubnet(for: vmId)
             #endif
         }
 

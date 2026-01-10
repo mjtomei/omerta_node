@@ -1131,6 +1131,14 @@ struct VMRequest: AsyncParsableCommand {
     var dryRun: Bool = false
 
     mutating func run() async throws {
+        // Check for root/sudo (required for WireGuard)
+        if !dryRun && getuid() != 0 {
+            print("Error: This command requires sudo to create WireGuard tunnels.")
+            print("Run with: sudo omerta vm request ...")
+            print("Or use --dry-run to skip VPN setup (for testing)")
+            throw ExitCode.failure
+        }
+
         // Validate inputs
         guard provider != nil || network != nil else {
             print("Error: Must specify either --provider or --network")
@@ -1836,6 +1844,57 @@ enum QEMUCleanup {
         }
     }
 
+    #if os(Linux)
+    /// List all TAP interfaces created by Omerta (tap-XXXXXXXX pattern)
+    static func listTAPInterfaces() -> [String] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/sbin/ip")
+        process.arguments = ["link", "show"]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return []
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+
+        var tapInterfaces: [String] = []
+        // Look for lines like "117: tap-F0F03B68: <BROADCAST,..."
+        for line in output.split(separator: "\n") {
+            let lineStr = String(line)
+            if let range = lineStr.range(of: "tap-[0-9A-Fa-f]{8}", options: .regularExpression) {
+                tapInterfaces.append(String(lineStr[range]))
+            }
+        }
+
+        return tapInterfaces
+    }
+
+    /// Delete a TAP interface
+    static func deleteTAPInterface(_ name: String) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process.arguments = ["ip", "link", "delete", name]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+    #endif
+
     /// Get all VM-related files in the vm-disks directory grouped by VM ID
     static func getVMFiles(vmDisksDir: String) -> [String: VMFiles] {
         var vmFilesMap: [String: VMFiles] = [:]
@@ -2398,6 +2457,25 @@ struct VMCleanup: AsyncParsableCommand {
             }
         }
 
+        // Clean up TAP interfaces (Linux only)
+        #if os(Linux)
+        var tapInterfacesCleaned = 0
+        let tapInterfaces = QEMUCleanup.listTAPInterfaces()
+        if !tapInterfaces.isEmpty && (all || hasRunningVMsToKill) {
+            print("")
+            print("Cleaning TAP interfaces...")
+            for tap in tapInterfaces {
+                print("  Removing \(tap)...", terminator: " ")
+                if QEMUCleanup.deleteTAPInterface(tap) {
+                    print("done")
+                    tapInterfacesCleaned += 1
+                } else {
+                    print("failed")
+                }
+            }
+        }
+        #endif
+
         // Clean up VM files (disk, ISO, PID, logs)
         var vmFilesRemoved = 0
         var vmsCleanedUp = 0
@@ -2433,6 +2511,11 @@ struct VMCleanup: AsyncParsableCommand {
         if qemuProcessesKilled > 0 {
             print("  QEMU processes killed: \(qemuProcessesKilled)")
         }
+        #if os(Linux)
+        if tapInterfacesCleaned > 0 {
+            print("  TAP interfaces removed: \(tapInterfacesCleaned)")
+        }
+        #endif
         if cleanedCount > 0 {
             print("  Interfaces stopped: \(cleanedCount)")
         }

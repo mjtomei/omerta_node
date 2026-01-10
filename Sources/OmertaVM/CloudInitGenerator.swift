@@ -325,13 +325,15 @@ public struct VMNetworkConfig: Codable, Sendable {
         public let allowWireGuardInterface: Bool // Always true
         public let allowDHCP: Bool               // For initial network setup
         public let allowDNS: Bool                // Usually false (use WG DNS)
+        public let allowPackageInstall: Bool     // Allow DNS/HTTP/HTTPS for package installation (DEVELOPMENT ONLY)
         public let customRules: [String]?        // Additional iptables rules
 
-        public init(allowLoopback: Bool = true, allowWireGuardInterface: Bool = true, allowDHCP: Bool = true, allowDNS: Bool = false, customRules: [String]? = nil) {
+        public init(allowLoopback: Bool = true, allowWireGuardInterface: Bool = true, allowDHCP: Bool = true, allowDNS: Bool = false, allowPackageInstall: Bool = false, customRules: [String]? = nil) {
             self.allowLoopback = allowLoopback
             self.allowWireGuardInterface = allowWireGuardInterface
             self.allowDHCP = allowDHCP
             self.allowDNS = allowDNS
+            self.allowPackageInstall = allowPackageInstall
             self.customRules = customRules
         }
     }
@@ -486,6 +488,21 @@ extension CloudInitGenerator {
         """
         }
 
+        // Allow DNS and HTTP/HTTPS for package installation (DEVELOPMENT ONLY)
+        // WARNING: This creates a security window where VM has unrestricted network access
+        // For production, use pre-built images with WireGuard pre-installed
+        if config.firewall.allowPackageInstall {
+            yaml += """
+              # DEVELOPMENT ONLY: Allow DNS/HTTP/HTTPS for package installation
+              # This opens network access before WireGuard isolation is active
+              iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+              iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+              iptables -A OUTPUT -p tcp --dport 80 -j ACCEPT
+              iptables -A OUTPUT -p tcp --dport 443 -j ACCEPT
+
+        """
+        }
+
         if config.firewall.allowWireGuardInterface {
             yaml += """
               # Allow all traffic on WireGuard interface
@@ -529,21 +546,22 @@ extension CloudInitGenerator {
           # Create omerta directory
           - mkdir -p /etc/omerta
 
-          # Apply firewall rules first (defense in depth)
-          - /etc/omerta/firewall.sh
-
-          # Start WireGuard
+          # Start WireGuard FIRST (before firewall)
           - wg-quick up wg0
 
           # Verify WireGuard is running
           - wg show wg0
 
+          # Apply firewall rules AFTER WireGuard is up
+          # This ensures the tunnel can establish before we lock down
+          - /etc/omerta/firewall.sh
+
           # Signal completion
           - /etc/omerta/setup-complete.sh
 
-        # Ensure firewall starts on reboot
+        # Ensure firewall starts on reboot (only if WireGuard is configured)
         bootcmd:
-          - test -f /etc/omerta/firewall.sh && /etc/omerta/firewall.sh || true
+          - test -f /etc/wireguard/wg0.conf && test -f /etc/omerta/firewall.sh && /etc/omerta/firewall.sh || true
         """
 
         return yaml
@@ -625,6 +643,9 @@ public struct VMNetworkConfigFactory {
                 allowWireGuardInterface: true,
                 allowDHCP: true,
                 allowDNS: false,
+                // Only allow package install if packages are specified (DEVELOPMENT ONLY)
+                // For production, use pre-built images with WireGuard pre-installed
+                allowPackageInstall: packageConfig != nil,
                 customRules: nil
             ),
             packageConfig: packageConfig,

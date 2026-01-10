@@ -244,7 +244,7 @@ public actor UDPControlServer {
             sshPublicKey: request.sshPublicKey,
             sshUser: request.sshUser,
             consumerPublicKey: request.vpnConfig.consumerPublicKey,
-            consumerEndpoint: request.consumerEndpoint,
+            consumerEndpoint: request.vpnConfig.consumerEndpoint,  // Use VPN endpoint, not control plane
             vpnIP: vmVPNIP,
             reverseTunnelConfig: request.reverseTunnelConfig
         )

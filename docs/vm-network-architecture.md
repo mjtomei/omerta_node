@@ -243,6 +243,75 @@ Uses `VZFileHandleNetworkDeviceAttachment` - provider inspects every packet.
 | VM tries DNS lookup | ⚠️ Succeeds if iptables bypassed |
 | Malicious inbound traffic | Blocked by NAT (no port forwarding) |
 
+### Boot-Time Network Isolation
+
+**Critical Security Consideration:** The VM must be network-isolated from the provider's network until the WireGuard tunnel is established. This prevents the VM from:
+- Accessing the provider's LAN during the boot window
+- Reaching the internet before firewall rules are applied
+- Communicating with any endpoint other than the consumer
+
+**The Problem: Package Installation**
+
+If the VM image doesn't have WireGuard pre-installed, cloud-init must download packages during boot. This creates a security window where the VM needs network access before isolation is enforced:
+
+| Approach | Boot-time Isolation | Complexity | Recommended |
+|----------|---------------------|------------|-------------|
+| **Pre-built image** | ✅ Full isolation | Image maintenance | ✅ Production |
+| **Offline packages** | ✅ Full isolation | Seed ISO packaging | ✅ Alternative |
+| **Online install** | ❌ Network exposed | Minimal | ⚠️ Development only |
+
+**Recommended: Pre-built VM Image**
+
+For production deployments, use VM images with WireGuard and iptables pre-installed:
+
+```bash
+# Ubuntu/Debian base image
+apt-get install -y wireguard iptables cloud-init
+
+# Alpine base image
+apk add wireguard-tools iptables cloud-init
+```
+
+With packages pre-installed:
+1. Firewall rules can be applied immediately in `bootcmd` (before networking starts)
+2. WireGuard can start before any outbound connections are possible
+3. The VM never has unrestricted network access
+
+**Alternative: Offline Package Installation**
+
+Include `.deb` or `.apk` packages in the cloud-init seed ISO:
+
+```yaml
+write_files:
+  - path: /var/cache/apt/archives/wireguard.deb
+    encoding: base64
+    content: <base64-encoded-deb>
+
+bootcmd:
+  - dpkg -i /var/cache/apt/archives/wireguard.deb
+  - /etc/omerta/firewall.sh  # Apply isolation immediately
+```
+
+**Development Mode: Online Installation (Not Recommended)**
+
+For development/testing only, packages can be installed at boot with temporary network access:
+
+```yaml
+# WARNING: Opens network access before WireGuard is configured
+packages:
+  - wireguard-tools
+  - iptables
+
+runcmd:
+  - wg-quick up wg0
+  - /etc/omerta/firewall.sh  # Isolation only after packages installed
+```
+
+**Security implications of online installation:**
+- VM has ~30-60 seconds of unrestricted network access during boot
+- Provider LAN is exposed during this window
+- Acceptable only for trusted development environments
+
 ## Implementation
 
 ### Network Mode Selection
@@ -1755,6 +1824,8 @@ final class VMWireGuardIntegrationTests: XCTestCase {
 
 #### Package Installation via Cloud-Init
 
+> ⚠️ **Security Warning:** Online package installation requires network access before WireGuard isolation is active. See [Boot-Time Network Isolation](#boot-time-network-isolation) for security implications. **Use pre-built images for production.**
+
 Cloud-init can automatically install required packages on first boot. The configuration model includes an optional packages list:
 
 ```swift
@@ -1773,15 +1844,13 @@ public struct VMNetworkConfig: Codable, Sendable {
 The generated cloud-config includes:
 
 ```yaml
-# Package installation
+# Package installation (DEVELOPMENT ONLY - see security warning above)
 package_update: true
 package_upgrade: false
 packages:
   - wireguard-tools
   - iptables
 ```
-
-**Note:** The VM image only needs `cloud-init` pre-installed. Cloud-init will install `wireguard-tools` and `iptables` on first boot.
 
 For Alpine (where package names differ):
 - `wireguard-tools` → same
@@ -1791,20 +1860,21 @@ For Ubuntu/Debian:
 - `wireguard-tools` → `wireguard`
 - `iptables` → `iptables`
 
-#### VM Image Minimum Requirements
+#### VM Image Requirements
 
-The VM image needs only:
-- `cloud-init` (must be pre-installed for cloud-init to work)
-- Network connectivity during first boot (for package downloads)
+**Production (Recommended):** Pre-install WireGuard and iptables for full boot-time isolation:
 
-For offline VMs or faster boot, pre-install:
-```
+```bash
 # Alpine
 apk add wireguard-tools iptables cloud-init
 
 # Ubuntu/Debian
 apt-get install wireguard iptables cloud-init
 ```
+
+With packages pre-installed, cloud-init can apply firewall rules in `bootcmd` before any network access occurs.
+
+**Development Only:** Minimal image with just `cloud-init` pre-installed. Packages download during boot, creating a ~30-60 second window of unrestricted network access.
 
 #### Verification
 
