@@ -446,22 +446,70 @@ public actor EphemeralVPN: VPNProvider {
     }
 
     private func determineServerEndpoint() async throws -> String {
-        // Try to get public IP or use hostname
-        // For simplicity, use hostname for now
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/hostname")
-        process.arguments = ["-f"]
+        // Get the machine's IP address that the VM can reach
+        // The VM connects via TAP interface on the same host, so we need the host's
+        // IP address on the network that can route to the TAP interface
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
+        // Try to get the default route interface's IP address
+        #if os(Linux)
+        // On Linux, get the IP of the interface with the default route
+        let routeProcess = Process()
+        routeProcess.executableURL = URL(fileURLWithPath: "/sbin/ip")
+        routeProcess.arguments = ["route", "get", "8.8.8.8"]
 
-        try process.run()
-        process.waitUntilExit()
+        let routePipe = Pipe()
+        routeProcess.standardOutput = routePipe
+        routeProcess.standardError = Pipe()
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let hostname = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "localhost"
+        try? routeProcess.run()
+        routeProcess.waitUntilExit()
 
-        return hostname
+        let routeData = routePipe.fileHandleForReading.readDataToEndOfFile()
+        let routeOutput = String(data: routeData, encoding: .utf8) ?? ""
+
+        // Parse output like: "8.8.8.8 via 192.168.1.1 dev eth0 src 192.168.1.100 uid 0"
+        // We want the "src" address
+        if let srcRange = routeOutput.range(of: "src ") {
+            let afterSrc = routeOutput[srcRange.upperBound...]
+            if let endRange = afterSrc.firstIndex(where: { $0.isWhitespace }) {
+                let ipAddress = String(afterSrc[..<endRange])
+                if !ipAddress.isEmpty && ipAddress != "127.0.0.1" {
+                    logger.info("Using source IP for endpoint", metadata: ["ip": "\(ipAddress)"])
+                    return ipAddress
+                }
+            }
+        }
+        #endif
+
+        // Fallback: try hostname -I to get IP addresses (Linux)
+        let hostIProcess = Process()
+        hostIProcess.executableURL = URL(fileURLWithPath: "/bin/hostname")
+        hostIProcess.arguments = ["-I"]
+
+        let hostIPipe = Pipe()
+        hostIProcess.standardOutput = hostIPipe
+        hostIProcess.standardError = Pipe()
+
+        try? hostIProcess.run()
+        hostIProcess.waitUntilExit()
+
+        if hostIProcess.terminationStatus == 0 {
+            let data = hostIPipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            // hostname -I returns space-separated IPs, take the first non-localhost one
+            let ips = output.split(separator: " ").map(String.init)
+            for ip in ips {
+                if !ip.hasPrefix("127.") && !ip.contains(":") {  // Skip localhost and IPv6
+                    logger.info("Using hostname -I IP for endpoint", metadata: ["ip": "\(ip)"])
+                    return ip
+                }
+            }
+        }
+
+        // Last resort: use 127.0.0.1 for local testing
+        // This works when consumer and provider are on the same machine
+        logger.warning("Could not determine external IP, using 127.0.0.1")
+        return "127.0.0.1"
     }
 
     /// Generate server config WITHOUT peer - peer will be added dynamically

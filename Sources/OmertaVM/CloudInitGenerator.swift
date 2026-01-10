@@ -172,21 +172,46 @@ public enum CloudInitGenerator {
 
     #if os(macOS)
     private static func createISOmacOS(from directory: String, to outputPath: String) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-        process.arguments = [
-            "makehybrid",
-            "-o", outputPath,
-            "-hfs",
-            "-joliet",
-            "-iso",
-            "-default-volume-name", "cidata",
-            directory
-        ]
+        // Prefer mkisofs/genisoimage if available (creates proper ISO9660 that Linux/cloud-init can read)
+        // Fall back to hdiutil which creates hybrid format
+        let isoBinaries = ["/opt/homebrew/bin/mkisofs", "/usr/local/bin/mkisofs",
+                          "/opt/homebrew/bin/genisoimage", "/usr/local/bin/genisoimage"]
 
+        var executablePath: String?
+        for binary in isoBinaries {
+            if FileManager.default.fileExists(atPath: binary) {
+                executablePath = binary
+                break
+            }
+        }
+
+        let process = Process()
         let errorPipe = Pipe()
         process.standardError = errorPipe
         process.standardOutput = FileHandle.nullDevice
+
+        if let executable = executablePath {
+            // Use mkisofs/genisoimage for proper ISO9660 (cloud-init compatible)
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = [
+                "-output", outputPath,
+                "-volid", "cidata",
+                "-joliet",
+                "-rock",
+                directory
+            ]
+        } else {
+            // Fall back to hdiutil - use ISO9660 only (no HFS which Linux can't read)
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+            process.arguments = [
+                "makehybrid",
+                "-o", outputPath,
+                "-joliet",
+                "-iso",
+                "-default-volume-name", "cidata",
+                directory
+            ]
+        }
 
         try process.run()
         process.waitUntilExit()
