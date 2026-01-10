@@ -77,7 +77,8 @@ public actor ConsumerClient {
     }
 
     /// Release a VM and cleanup resources
-    public func releaseVM(_ connection: VMConnection) async throws {
+    /// - Parameter forceLocalCleanup: If true, clean up local resources even if provider communication fails
+    public func releaseVM(_ connection: VMConnection, forceLocalCleanup: Bool = false) async throws {
         logger.info("Releasing VM", metadata: ["vm_id": "\(connection.vmId)"])
 
         do {
@@ -89,12 +90,51 @@ public actor ConsumerClient {
             )
 
             logger.info("Provider acknowledged VM release", metadata: ["vm_id": "\(connection.vmId)"])
+        } catch let error as ConsumerError {
+            // Check if this is a key/protocol error vs network error
+            switch error {
+            case .decryptionFailed, .invalidResponse, .providerError:
+                // These errors indicate a protocol/key mismatch - don't clean up locally
+                // unless force is specified, as the VM may still be running
+                if !forceLocalCleanup {
+                    logger.error("Provider release failed due to protocol error", metadata: [
+                        "vm_id": "\(connection.vmId)",
+                        "error": "\(error)"
+                    ])
+                    throw error
+                }
+                logger.warning("Provider release failed, forcing local cleanup", metadata: [
+                    "vm_id": "\(connection.vmId)",
+                    "error": "\(error)"
+                ])
+            case .providerTimeout, .providerUnavailable:
+                // Network errors - provider might be down, warn but allow cleanup
+                logger.warning("Provider unreachable, proceeding with local cleanup", metadata: [
+                    "vm_id": "\(connection.vmId)",
+                    "error": "\(error)"
+                ])
+            default:
+                if !forceLocalCleanup {
+                    throw error
+                }
+                logger.warning("Provider release failed, forcing local cleanup", metadata: [
+                    "vm_id": "\(connection.vmId)",
+                    "error": "\(error)"
+                ])
+            }
         } catch {
-            logger.warning("Failed to notify provider of VM release", metadata: [
+            // Unknown error type
+            if !forceLocalCleanup {
+                logger.error("Failed to release VM on provider", metadata: [
+                    "vm_id": "\(connection.vmId)",
+                    "error": "\(error)"
+                ])
+                throw error
+            }
+            logger.warning("Provider release failed, forcing local cleanup", metadata: [
                 "vm_id": "\(connection.vmId)",
                 "error": "\(error)"
             ])
-            // Continue with cleanup even if provider notification fails
         }
 
         // 2. Tear down VPN

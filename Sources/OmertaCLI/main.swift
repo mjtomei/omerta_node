@@ -1654,8 +1654,11 @@ struct VMRelease: AsyncParsableCommand {
     @Option(name: .long, help: "Network key (hex encoded). Uses local key from config if not specified.")
     var networkKey: String?
 
-    @Flag(name: .long, help: "Skip confirmation")
-    var force: Bool = false
+    @Flag(name: [.customShort("y"), .long], help: "Skip confirmation prompt")
+    var yes: Bool = false
+
+    @Flag(name: .long, help: "Force local cleanup even if provider communication fails (use with caution)")
+    var forceLocal: Bool = false
 
     mutating func run() async throws {
         // Load config to get local key if not specified
@@ -1710,7 +1713,7 @@ struct VMRelease: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        if !force {
+        if !yes {
             print("Release VM \(vm.vmId.uuidString.prefix(8))... at \(vm.vmIP)?")
             print("Type 'yes' to confirm: ", terminator: "")
 
@@ -1729,10 +1732,18 @@ struct VMRelease: AsyncParsableCommand {
             networkKey: keyData
         )
 
-        try await client.releaseVM(vm)
-
-        print("")
-        print("VM released successfully")
+        do {
+            try await client.releaseVM(vm, forceLocalCleanup: forceLocal)
+            print("")
+            print("VM released successfully")
+        } catch {
+            print("")
+            print("Error: Failed to release VM: \(error)")
+            print("")
+            print("The provider may be unreachable or using a different network key.")
+            print("If you're sure the VM is no longer running, use --force-local to clean up local resources.")
+            throw ExitCode.failure
+        }
     }
 }
 
