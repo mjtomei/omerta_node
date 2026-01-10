@@ -150,14 +150,24 @@ public struct VMConnection: Sendable, Codable, Identifiable {
         self.networkId = networkId
     }
 
+    /// Path to Omerta's dedicated known_hosts file
+    public static let knownHostsPath = "~/.omerta/known_hosts"
+
+    /// Common SSH options for Omerta VMs
+    /// - Uses dedicated known_hosts file to avoid polluting user's main file
+    /// - Auto-accepts new host keys (ephemeral VMs have unique keys each time)
+    private var sshOptions: String {
+        "-o UserKnownHostsFile=\(Self.knownHostsPath) -o StrictHostKeyChecking=accept-new"
+    }
+
     /// SSH command for accessing the VM
     public var sshCommand: String {
-        "ssh \(sshUser)@\(vmIP) -i \(sshKeyPath)"
+        "ssh \(sshOptions) -i \(sshKeyPath) \(sshUser)@\(vmIP)"
     }
 
     /// SCP command template for file transfer
     public var scpCommand: String {
-        "scp -i \(sshKeyPath) <local_file> \(sshUser)@\(vmIP):<remote_path>"
+        "scp \(sshOptions) -i \(sshKeyPath) <local_file> \(sshUser)@\(vmIP):<remote_path>"
     }
 }
 

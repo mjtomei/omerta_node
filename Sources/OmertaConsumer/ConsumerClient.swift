@@ -124,6 +124,44 @@ public actor ConsumerClient {
         await vmTracker.getVM(vmId)
     }
 
+    /// Wait for WireGuard connection to be established
+    /// Returns true if connected within timeout, false otherwise
+    public func waitForConnection(
+        vmId: UUID,
+        timeout: Duration = .seconds(120),
+        pollInterval: Duration = .seconds(2)
+    ) async throws -> Bool {
+        logger.info("Waiting for WireGuard connection", metadata: ["vm_id": "\(vmId)", "timeout_secs": "\(timeout.components.seconds)"])
+
+        let startTime = ContinuousClock.now
+        var lastStatus = ""
+
+        while ContinuousClock.now - startTime < timeout {
+            do {
+                let connected = try await ephemeralVPN.isClientConnected(for: vmId)
+                if connected {
+                    logger.info("WireGuard connection established", metadata: ["vm_id": "\(vmId)"])
+                    return true
+                }
+
+                // Log status periodically
+                let elapsed = ContinuousClock.now - startTime
+                let status = "Waiting for VM to connect... (\(Int(elapsed.components.seconds))s)"
+                if status != lastStatus {
+                    print(status)
+                    lastStatus = status
+                }
+            } catch {
+                logger.warning("Error checking connection status", metadata: ["error": "\(error)"])
+            }
+
+            try await Task.sleep(for: pollInterval)
+        }
+
+        logger.warning("Timeout waiting for WireGuard connection", metadata: ["vm_id": "\(vmId)"])
+        return false
+    }
+
     /// Resume tracking VMs after consumer crash/restart
     public func resumeTracking() async throws {
         logger.info("Resuming VM tracking from disk")

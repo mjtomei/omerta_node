@@ -1130,6 +1130,12 @@ struct VMRequest: AsyncParsableCommand {
     @Flag(name: .long, help: "Dry run - skip VPN setup (for testing without sudo)")
     var dryRun: Bool = false
 
+    @Flag(name: .long, help: "Wait for WireGuard connection before exiting")
+    var wait: Bool = false
+
+    @Option(name: .long, help: "Timeout in seconds when using --wait (default: 120)")
+    var waitTimeout: Int = 120
+
     mutating func run() async throws {
         // Check for root/sudo (required for WireGuard)
         if !dryRun && getuid() != 0 {
@@ -1213,7 +1219,9 @@ struct VMRequest: AsyncParsableCommand {
                 providerEndpoint: providerEndpoint,
                 networkKey: keyData,
                 requirements: requirements,
-                dryRun: dryRun
+                dryRun: dryRun,
+                wait: wait,
+                waitTimeout: waitTimeout
             )
         } else if let networkId = network {
             // Network discovery mode
@@ -1223,7 +1231,9 @@ struct VMRequest: AsyncParsableCommand {
                 requirements: requirements,
                 retry: retry,
                 maxRetries: maxRetries,
-                dryRun: dryRun
+                dryRun: dryRun,
+                wait: wait,
+                waitTimeout: waitTimeout
             )
         }
     }
@@ -1232,7 +1242,9 @@ struct VMRequest: AsyncParsableCommand {
         providerEndpoint: String,
         networkKey: Data,
         requirements: ResourceRequirements,
-        dryRun: Bool
+        dryRun: Bool,
+        wait: Bool,
+        waitTimeout: Int
     ) async throws {
         print("Connecting to provider: \(providerEndpoint)")
         if dryRun {
@@ -1304,6 +1316,23 @@ struct VMRequest: AsyncParsableCommand {
             retryOnFailure: false
         )
 
+        // Wait for WireGuard connection if requested
+        if wait && !dryRun {
+            print("")
+            print("Waiting for VM to establish WireGuard connection...")
+            let connected = try await client.waitForConnection(
+                vmId: connection.vmId,
+                timeout: .seconds(waitTimeout)
+            )
+            if !connected {
+                print("Warning: WireGuard connection not established within \(waitTimeout)s")
+                print("The VM may still be booting. You can check connection status with:")
+                print("  sudo wg show \(connection.vpnInterface)")
+            } else {
+                print("WireGuard connection established!")
+            }
+        }
+
         printVMConnection(connection)
     }
 
@@ -1313,7 +1342,9 @@ struct VMRequest: AsyncParsableCommand {
         requirements: ResourceRequirements,
         retry: Bool,
         maxRetries: Int,
-        dryRun: Bool
+        dryRun: Bool,
+        wait: Bool,
+        waitTimeout: Int
     ) async throws {
         print("Discovering providers in network: \(networkId)")
         if dryRun {
@@ -1386,6 +1417,23 @@ struct VMRequest: AsyncParsableCommand {
         )
 
         await peerDiscovery.stop()
+
+        // Wait for WireGuard connection if requested
+        if wait && !dryRun {
+            print("")
+            print("Waiting for VM to establish WireGuard connection...")
+            let connected = try await client.waitForConnection(
+                vmId: connection.vmId,
+                timeout: .seconds(waitTimeout)
+            )
+            if !connected {
+                print("Warning: WireGuard connection not established within \(waitTimeout)s")
+                print("The VM may still be booting. You can check connection status with:")
+                print("  sudo wg show \(connection.vpnInterface)")
+            } else {
+                print("WireGuard connection established!")
+            }
+        }
 
         printVMConnection(connection)
     }
@@ -2503,6 +2551,23 @@ struct VMCleanup: AsyncParsableCommand {
             }
         }
 
+        // Clean up Omerta known_hosts file (if --all)
+        var knownHostsCleared = false
+        if all {
+            let knownHostsPath = NSString(string: VMConnection.knownHostsPath).expandingTildeInPath
+            if FileManager.default.fileExists(atPath: knownHostsPath) {
+                print("")
+                print("Clearing Omerta known_hosts...")
+                do {
+                    try FileManager.default.removeItem(atPath: knownHostsPath)
+                    print("  Removed \(knownHostsPath)")
+                    knownHostsCleared = true
+                } catch {
+                    print("  Failed to remove known_hosts: \(error)")
+                }
+            }
+        }
+
         print("")
         print("Cleanup complete!")
         if processesKilled > 0 {
@@ -2529,6 +2594,9 @@ struct VMCleanup: AsyncParsableCommand {
         }
         if vmsCleanedUp > 0 {
             print("  VMs cleaned up: \(vmsCleanedUp) (\(vmFilesRemoved) files)")
+        }
+        if knownHostsCleared {
+            print("  SSH known_hosts cleared")
         }
     }
 }
