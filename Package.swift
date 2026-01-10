@@ -132,5 +132,10 @@ let package = Package(
             dependencies: ["OmertaProvider"],
             path: "Tests/OmertaProviderTests"
         ),
+        .testTarget(
+            name: "OmertaConsumerTests",
+            dependencies: ["OmertaConsumer", "OmertaCore"],
+            path: "Tests/OmertaConsumerTests"
+        ),
     ]
 )
