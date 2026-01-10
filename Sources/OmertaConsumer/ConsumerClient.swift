@@ -251,7 +251,7 @@ public actor ConsumerClient {
         // 2. Create VPN tunnel
         logger.info("Creating VPN tunnel")
         let vmId = UUID()
-        let vpnConfig = try await ephemeralVPN.createVPNForJob(vmId)
+        let vpnConfig = try await ephemeralVPN.createVPNForJob(vmId, providerEndpoint: provider.endpoint)
 
         logger.info("VPN tunnel created", metadata: ["vm_id": "\(vmId)"])
 
@@ -555,7 +555,7 @@ public actor DirectProviderClient {
 
         // 1. Create VPN tunnel
         let vmId = UUID()
-        let vpnConfig = try await ephemeralVPN.createVPNForJob(vmId)
+        let vpnConfig = try await ephemeralVPN.createVPNForJob(vmId, providerEndpoint: providerEndpoint)
         logger.info("VPN tunnel created", metadata: ["vm_id": "\(vmId)"])
 
         do {

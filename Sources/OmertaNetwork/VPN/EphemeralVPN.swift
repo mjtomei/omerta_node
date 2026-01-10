@@ -103,7 +103,8 @@ public actor EphemeralVPN: VPNProvider {
     /// Create an ephemeral VPN server for a job
     /// Provider will connect to this server after receiving the VPNConfiguration
     /// Call addProviderPeer() after receiving provider's public key
-    public func createVPNForJob(_ jobId: UUID) async throws -> VPNConfiguration {
+    /// - Parameter providerEndpoint: Optional provider endpoint (e.g., "127.0.0.1:51820") to help determine correct consumer endpoint
+    public func createVPNForJob(_ jobId: UUID, providerEndpoint: String? = nil) async throws -> VPNConfiguration {
         logger.info("Creating ephemeral VPN for job", metadata: ["job_id": "\(jobId)"])
 
         // Generate key pair for server (consumer)
@@ -114,7 +115,7 @@ public actor EphemeralVPN: VPNProvider {
         let port = allocatePort()
 
         // Determine server IP (this machine's IP or specified endpoint)
-        let serverEndpoint = try await determineServerEndpoint()
+        let serverEndpoint = try await determineServerEndpoint(providerEndpoint: providerEndpoint)
         let endpoint = "\(serverEndpoint):\(port)"
 
         // VPN network addresses - use unique subnet per job to avoid conflicts
@@ -445,13 +446,81 @@ public actor EphemeralVPN: VPNProvider {
         return port
     }
 
-    private func determineServerEndpoint() async throws -> String {
+    #if os(macOS)
+    /// Get the IP address of the vmnet bridge interface (used by Virtualization.framework)
+    /// Returns nil if no vmnet bridge is found
+    private func getVmnetBridgeIP() -> String? {
+        // Virtualization.framework creates bridge100, bridge101, etc. for vmnet
+        // These bridges have IPs like 192.168.64.1, 192.168.65.1, etc.
+        let ifconfigProcess = Process()
+        ifconfigProcess.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
+        ifconfigProcess.arguments = ["-a"]
+
+        let ifconfigPipe = Pipe()
+        ifconfigProcess.standardOutput = ifconfigPipe
+        ifconfigProcess.standardError = Pipe()
+
+        try? ifconfigProcess.run()
+        ifconfigProcess.waitUntilExit()
+
+        let ifconfigData = ifconfigPipe.fileHandleForReading.readDataToEndOfFile()
+        let ifconfigOutput = String(data: ifconfigData, encoding: .utf8) ?? ""
+
+        // Look for bridge100+ interfaces with 192.168.64.x IPs (vmnet)
+        var currentInterface = ""
+        for line in ifconfigOutput.split(separator: "\n") {
+            let lineStr = String(line)
+
+            // Check for interface header like "bridge100: flags=..."
+            if lineStr.contains(": flags=") && !lineStr.hasPrefix("\t") {
+                currentInterface = lineStr.split(separator: ":").first.map(String.init) ?? ""
+            }
+
+            // If we're in a bridge interface, look for vmnet IP (192.168.64.x range)
+            if currentInterface.hasPrefix("bridge") {
+                let trimmed = lineStr.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("inet 192.168.") {
+                    let parts = trimmed.split(separator: " ")
+                    if parts.count >= 2 {
+                        let ip = String(parts[1])
+                        // Verify it's in the vmnet range (192.168.64.x - 192.168.127.x typically)
+                        let octets = ip.split(separator: ".")
+                        if octets.count == 4,
+                           let thirdOctet = Int(octets[2]),
+                           thirdOctet >= 64 && thirdOctet <= 127 {
+                            logger.debug("Found vmnet bridge", metadata: ["interface": "\(currentInterface)", "ip": "\(ip)"])
+                            return ip
+                        }
+                    }
+                }
+            }
+        }
+
+        return nil
+    }
+    #endif
+
+    private func determineServerEndpoint(providerEndpoint: String? = nil) async throws -> String {
         // Get the machine's IP address that the VM can reach
         // The VM connects via TAP interface on the same host, so we need the host's
         // IP address on the network that can route to the TAP interface
 
+        // Check if provider is localhost (for special handling on macOS)
+        let isLocalhostProvider = providerEndpoint?.hasPrefix("127.0.0.1") == true ||
+                                  providerEndpoint?.hasPrefix("localhost") == true
+
         // Try to get the default route interface's IP address
         #if os(macOS)
+        // On macOS with localhost provider, check for vmnet bridge interface
+        // Virtualization.framework VMs can't reach the host's en0 IP through NAT hairpin,
+        // but they CAN reach the vmnet bridge IP (typically 192.168.64.1 on bridge100)
+        if isLocalhostProvider {
+            if let bridgeIP = getVmnetBridgeIP() {
+                logger.info("Using vmnet bridge IP for localhost provider", metadata: ["ip": "\(bridgeIP)"])
+                return bridgeIP
+            }
+        }
+
         // On macOS, get the IP of the default interface
         // First, find the default interface using route
         let routeProcess = Process()
