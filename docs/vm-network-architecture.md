@@ -670,7 +670,196 @@ xsk_socket__create(&xsk, ifname, queue_id, umem, &rx, &tx, &cfg);
 
 With AF_XDP, can achieve **10+ Gbps** approaching line rate.
 
-#### 3. DPDK (Data Plane Development Kit)
+#### 3. eBPF/TC - Kernel-Level Filtering (Linux Only, Recommended)
+
+eBPF (extended Berkeley Packet Filter) allows running sandboxed programs directly in the Linux kernel. For VM traffic filtering, **TC (Traffic Control) eBPF** is ideal because it works on both ingress and egress.
+
+**Performance:** 10-24 Mpps per core (near line-rate)
+
+**How it works:**
+1. Attach eBPF program to VM's tap/virtio-net interface
+2. Store allowlist in eBPF map (kernel hash table)
+3. Kernel filters packets - they never reach userspace unless allowed
+4. Swift manages loading/configuration via libbpf FFI
+
+```c
+// eBPF program for VM egress filtering (compiled with clang)
+#include <linux/bpf.h>
+#include <bpf/bpf_helpers.h>
+
+struct flow_key {
+    __be32 dest_ip;
+    __be16 dest_port;
+};
+
+// Allowlist stored in kernel - populated from userspace
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 64);
+    __type(key, struct flow_key);
+    __type(value, __u8);
+} allowlist_map SEC(".maps");
+
+SEC("tc")
+int filter_vm_egress(struct __sk_buff *skb) {
+    void *data = (void *)(long)skb->data;
+    void *data_end = (void *)(long)skb->data_end;
+
+    // Parse ethernet header
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end)
+        return TC_ACT_SHOT;
+
+    // Only filter IPv4
+    if (eth->h_proto != bpf_htons(ETH_P_IP))
+        return TC_ACT_OK;
+
+    // Parse IP header
+    struct iphdr *ip = (void *)(eth + 1);
+    if ((void *)(ip + 1) > data_end)
+        return TC_ACT_SHOT;
+
+    // Only filter UDP (WireGuard)
+    if (ip->protocol != IPPROTO_UDP)
+        return TC_ACT_SHOT;
+
+    // Parse UDP header
+    struct udphdr *udp = (void *)ip + (ip->ihl * 4);
+    if ((void *)(udp + 1) > data_end)
+        return TC_ACT_SHOT;
+
+    // Build lookup key
+    struct flow_key key = {
+        .dest_ip = ip->daddr,
+        .dest_port = udp->dest,
+    };
+
+    // O(1) kernel hash table lookup
+    if (bpf_map_lookup_elem(&allowlist_map, &key))
+        return TC_ACT_OK;   // Allowed - forward packet
+
+    return TC_ACT_SHOT;     // Not allowed - drop packet
+}
+
+char LICENSE[] SEC("license") = "GPL";
+```
+
+**Swift integration via libbpf:**
+
+```swift
+// Load and attach eBPF program
+import CLibbpf  // FFI wrapper
+
+public class EBPFFilter {
+    private var obj: OpaquePointer?
+    private var prog: OpaquePointer?
+    private var mapFd: Int32 = -1
+
+    public func load(interfaceName: String) throws {
+        // Load compiled eBPF object
+        obj = bpf_object__open("vm_filter.bpf.o")
+        guard obj != nil else { throw EBPFError.loadFailed }
+
+        bpf_object__load(obj)
+
+        // Get program and map
+        prog = bpf_object__find_program_by_name(obj, "filter_vm_egress")
+        mapFd = bpf_object__find_map_fd_by_name(obj, "allowlist_map")
+
+        // Attach to TC on interface
+        let ifindex = if_nametoindex(interfaceName)
+        // ... tc qdisc and filter setup via netlink
+    }
+
+    public func setAllowedEndpoint(_ endpoint: Endpoint) throws {
+        var key = FlowKey(
+            destIP: endpoint.address.networkOrder,
+            destPort: endpoint.port.bigEndian
+        )
+        var value: UInt8 = 1
+
+        bpf_map_update_elem(mapFd, &key, &value, BPF_ANY)
+    }
+
+    public func removeEndpoint(_ endpoint: Endpoint) throws {
+        var key = FlowKey(
+            destIP: endpoint.address.networkOrder,
+            destPort: endpoint.port.bigEndian
+        )
+        bpf_map_delete_elem(mapFd, &key)
+    }
+}
+```
+
+**Advantages:**
+- Filtering happens at kernel level - no syscall overhead per packet
+- Packets are dropped before reaching userspace (zero copy for blocked traffic)
+- Allowlist updates are instant (eBPF map operations are atomic)
+- Works with existing VM tap interfaces
+
+**Requirements:**
+- Linux kernel 4.18+ (for TC eBPF)
+- CAP_BPF capability (or root) to load programs
+- libbpf library
+- clang/llvm for compiling eBPF programs
+
+#### 4. Network Extension / NEFilterPacketProvider (macOS)
+
+macOS provides `NEFilterPacketProvider` for kernel-assisted packet filtering with 5-10 Gbps performance.
+
+**Entitlement Clarification (as of January 2026):**
+
+Contrary to some outdated sources, `com.apple.developer.networking.networkextension` is **NOT a restricted entitlement** requiring special pre-approval:
+
+- **No approval form needed**: Any paid Apple Developer Program member can enable it directly
+- **Enable in Xcode**: Add "Network Extensions" capability, check "packet-filter-provider"
+- **Enable in Developer Portal**: Check "Network Extensions" when creating/editing App ID
+- **Standard App Review**: Apple reviews apps with this entitlement closely (due to network interception power), but no pre-entitlement approval is needed
+
+**Common points of confusion:**
+- `com.apple.vm.networking` (for Virtualization.framework network access) **IS restricted** and requires a request form - this is separate from NetworkExtension
+- Early NetworkExtension (2015-2016) required requests, but this is long obsolete
+- New features like "url-filter-provider" (2025) require capability requests, but packet-filter does not
+
+**Implementation approach:**
+
+```swift
+import NetworkExtension
+
+class PacketFilterProvider: NEFilterPacketProvider {
+    override func startFilter(completionHandler: @escaping (Error?) -> Void) {
+        // Configure packet filtering rules
+        completionHandler(nil)
+    }
+
+    override func handleNewFlow(_ flow: NEFilterFlow) -> NEFilterNewFlowVerdict {
+        // Check against allowlist
+        guard let socketFlow = flow as? NEFilterSocketFlow,
+              let remoteEndpoint = socketFlow.remoteEndpoint as? NWHostEndpoint else {
+            return .drop()
+        }
+
+        if isAllowed(host: remoteEndpoint.hostname, port: remoteEndpoint.port) {
+            return .allow()
+        }
+        return .drop()
+    }
+}
+```
+
+**Advantages:**
+- Kernel-level filtering (5-10 Gbps)
+- Standard entitlement (no special approval)
+- Works with system extension model
+- User-visible consent for transparency
+
+**Considerations:**
+- Requires system extension (user must approve in System Settings)
+- More complex deployment than userspace
+- App Store review scrutiny (but not blocked)
+- Consider for future version after userspace approach is proven
+
+#### 5. DPDK (Data Plane Development Kit)
 
 For extreme performance (25+ Gbps), but requires:
 - Dedicated NIC
@@ -681,24 +870,30 @@ Probably overkill for Omerta's use case.
 
 ### Recommended Approach
 
-| Platform | Method | Expected Throughput |
-|----------|--------|-------------------|
-| macOS | Dispatch I/O + batching | 3-5 Gbps |
-| Linux | io_uring | 5-8 Gbps |
-| Linux (advanced) | AF_XDP | 10+ Gbps |
+| Platform | Method | Expected Throughput | Complexity |
+|----------|--------|-------------------|------------|
+| macOS | Dispatch I/O + batching | 3-5 Gbps | Low |
+| macOS | **NEFilterPacketProvider** | **5-10 Gbps** | Medium |
+| Linux | Userspace (io_uring) | 5-8 Gbps | Low |
+| Linux | **eBPF/TC (recommended)** | **10+ Gbps** | Medium |
+| Linux (advanced) | AF_XDP | 10+ Gbps | High |
 
-For initial implementation, start with basic async I/O. Optimize later if needed.
+**Recommended path:**
+1. Start with userspace filtering (Phases 1-7, already implemented)
+2. Add eBPF acceleration for Linux (Phase 14)
+3. Add NEFilterPacketProvider for macOS (Phase 15) - standard entitlement, no special approval
 
 ## Comparison with Alternatives
 
-| Approach | Privileges | Performance | Security | Complexity |
-|----------|-----------|-------------|----------|------------|
-| **Direct mode** | None | ~10 Gbps | VM-only | Low |
-| **Sampled mode** | None | ~8 Gbps | Probabilistic | Low |
-| **Conntrack mode** | None | ~6 Gbps | Good | Medium |
-| **Filtered mode** | None | ~2-4 Gbps | Excellent | Medium |
-| WireGuard on provider (GotaTun) | Root | 3-5 Gbps | Good | Medium |
-| Network Extension | Restricted entitlement | 5-10 Gbps | Good | High |
+| Approach | Privileges | Performance | Security | Complexity | Platform |
+|----------|-----------|-------------|----------|------------|----------|
+| **Direct mode** | None | ~10 Gbps | VM-only | Low | All |
+| **Sampled mode** | None | ~8 Gbps | Probabilistic | Low | All |
+| **Conntrack mode** | None | ~6 Gbps | Good | Medium | All |
+| **Filtered mode** | None | ~2-4 Gbps | Excellent | Medium | All |
+| **eBPF/TC filtered** | CAP_BPF | **~10+ Gbps** | Excellent | Medium | Linux |
+| **NEFilterPacketProvider** | Standard entitlement | **5-10 Gbps** | Excellent | Medium | macOS |
+| WireGuard on provider (GotaTun) | Root | 3-5 Gbps | Good | Medium | All |
 
 ## Implementation Phases
 
@@ -1065,35 +1260,561 @@ public actor VMNetworkManager {
 
 ---
 
-### Phase 9: VM WireGuard Setup
+### Phase 9: VM WireGuard Setup (Cloud-Init)
 
-**Files:** `Resources/cloud-init/wireguard-setup.sh`, `Resources/cloud-init/iptables-setup.sh`
+**Goal:** Portable WireGuard and firewall configuration using cloud-init, works across:
+- Different Linux distributions (Ubuntu, Alpine, Debian)
+- Different VM platforms (macOS Virtualization.framework, QEMU)
+- Dynamic per-session configuration (keys, endpoints)
 
-**Deliverable:** Scripts that configure WireGuard and iptables inside VM.
+#### Files
 
-```bash
-# wireguard-setup.sh
-#!/bin/bash
-wg-quick up /etc/wireguard/wg0.conf
-ip link show wg0 || exit 1
+| File | Purpose |
+|------|---------|
+| `Sources/OmertaVM/CloudInit/CloudInitConfig.swift` | Configuration model |
+| `Sources/OmertaVM/CloudInit/CloudInitGenerator.swift` | Generates cloud-init userdata |
+| `Sources/OmertaVM/CloudInit/CloudInitISO.swift` | Creates NoCloud ISO for VM |
+| `Resources/cloud-init/meta-data.template` | Instance metadata template |
+| `Resources/cloud-init/user-data.template` | Cloud-config YAML template |
+| `Tests/OmertaVMTests/CloudInitTests.swift` | Unit tests |
 
-# iptables-setup.sh
-#!/bin/bash
-iptables -P OUTPUT DROP
-iptables -A OUTPUT -o wg0 -j ACCEPT
-iptables -A OUTPUT -o lo -j ACCEPT
-# ... etc
+#### Cloud-Init Configuration Model
+
+```swift
+/// Configuration for VM network isolation via WireGuard
+public struct VMNetworkConfig: Codable, Sendable {
+    /// WireGuard interface configuration
+    public struct WireGuard: Codable, Sendable {
+        public let privateKey: String      // Base64 WG private key
+        public let address: String         // e.g., "10.200.200.2/24"
+        public let listenPort: UInt16?     // Optional, usually not needed for client
+
+        public struct Peer: Codable, Sendable {
+            public let publicKey: String   // Consumer's public key
+            public let endpoint: String    // e.g., "203.0.113.50:51820"
+            public let allowedIPs: String  // e.g., "0.0.0.0/0, ::/0"
+            public let persistentKeepalive: UInt16?  // e.g., 25
+        }
+        public let peer: Peer
+    }
+    public let wireGuard: WireGuard
+
+    /// Firewall configuration
+    public struct Firewall: Codable, Sendable {
+        public let allowLoopback: Bool           // Always true
+        public let allowWireGuardInterface: Bool // Always true
+        public let allowDHCP: Bool               // For initial network setup
+        public let allowDNS: Bool                // Usually false (use WG DNS)
+        public let customRules: [String]?        // Additional iptables rules
+    }
+    public let firewall: Firewall
+
+    /// VM metadata
+    public let instanceId: String        // Unique per VM instance
+    public let hostname: String          // e.g., "omerta-vm-abc123"
+}
 ```
 
-**Integration Tests:** `VMWireGuardTests.swift`
-- VM boots with WireGuard configured
-- `wg show` returns expected peer
-- iptables rules match expected
-- Outbound non-wg0 traffic blocked
+#### Cloud-Init Generator
 
-**Dependencies:** VM image with WireGuard tools
+```swift
+public struct CloudInitGenerator {
 
-**Verification:** Boot test VM, run verification script
+    /// Generate cloud-init user-data YAML
+    public static func generateUserData(config: VMNetworkConfig) -> String {
+        """
+        #cloud-config
+
+        # Omerta VM Network Isolation Configuration
+        # Generated: \(ISO8601DateFormatter().string(from: Date()))
+        # Instance: \(config.instanceId)
+
+        hostname: \(config.hostname)
+
+        # Write WireGuard configuration
+        write_files:
+          - path: /etc/wireguard/wg0.conf
+            permissions: '0600'
+            content: |
+              [Interface]
+              PrivateKey = \(config.wireGuard.privateKey)
+              Address = \(config.wireGuard.address)
+              \(config.wireGuard.listenPort.map { "ListenPort = \($0)" } ?? "")
+
+              [Peer]
+              PublicKey = \(config.wireGuard.peer.publicKey)
+              Endpoint = \(config.wireGuard.peer.endpoint)
+              AllowedIPs = \(config.wireGuard.peer.allowedIPs)
+              \(config.wireGuard.peer.persistentKeepalive.map { "PersistentKeepalive = \($0)" } ?? "")
+
+          - path: /etc/omerta/firewall.sh
+            permissions: '0755'
+            content: |
+              #!/bin/sh
+              set -e
+
+              # Flush existing rules
+              iptables -F
+              iptables -X
+              ip6tables -F
+              ip6tables -X
+
+              # Default policies: DROP everything
+              iptables -P INPUT DROP
+              iptables -P FORWARD DROP
+              iptables -P OUTPUT DROP
+              ip6tables -P INPUT DROP
+              ip6tables -P FORWARD DROP
+              ip6tables -P OUTPUT DROP
+
+              # Allow established connections
+              iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+              iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+              \(config.firewall.allowLoopback ? """
+              # Allow loopback
+              iptables -A INPUT -i lo -j ACCEPT
+              iptables -A OUTPUT -o lo -j ACCEPT
+              ip6tables -A INPUT -i lo -j ACCEPT
+              ip6tables -A OUTPUT -o lo -j ACCEPT
+              """ : "")
+
+              \(config.firewall.allowDHCP ? """
+              # Allow DHCP (for initial network config)
+              iptables -A OUTPUT -p udp --dport 67:68 -j ACCEPT
+              iptables -A INPUT -p udp --sport 67:68 -j ACCEPT
+              """ : "")
+
+              \(config.firewall.allowWireGuardInterface ? """
+              # Allow all traffic on WireGuard interface
+              iptables -A INPUT -i wg0 -j ACCEPT
+              iptables -A OUTPUT -o wg0 -j ACCEPT
+              ip6tables -A INPUT -i wg0 -j ACCEPT
+              ip6tables -A OUTPUT -o wg0 -j ACCEPT
+              """ : "")
+
+              # Allow WireGuard UDP to establish tunnel (before wg0 is up)
+              # This allows the initial handshake through eth0/ens*
+              iptables -A OUTPUT -p udp --dport \(config.wireGuard.peer.endpoint.split(separator: ":").last ?? "51820") -j ACCEPT
+
+              \(config.firewall.customRules?.joined(separator: "\n") ?? "")
+
+              echo "Firewall configured successfully"
+
+          - path: /etc/omerta/setup-complete.sh
+            permissions: '0755'
+            content: |
+              #!/bin/sh
+              # Signal that setup is complete
+              echo "OMERTA_SETUP_COMPLETE" > /run/omerta-ready
+              echo "VM network isolation active"
+
+        # Run commands on first boot
+        runcmd:
+          # Apply firewall rules first (defense in depth)
+          - /etc/omerta/firewall.sh
+
+          # Start WireGuard
+          - wg-quick up wg0
+
+          # Verify WireGuard is running
+          - wg show wg0
+
+          # Signal completion
+          - /etc/omerta/setup-complete.sh
+
+        # Ensure WireGuard starts on reboot
+        bootcmd:
+          - /etc/omerta/firewall.sh
+        """
+    }
+
+    /// Generate cloud-init meta-data
+    public static func generateMetaData(config: VMNetworkConfig) -> String {
+        """
+        instance-id: \(config.instanceId)
+        local-hostname: \(config.hostname)
+        """
+    }
+}
+```
+
+#### Cloud-Init ISO Generator
+
+For VMs that use NoCloud datasource (most common):
+
+```swift
+public struct CloudInitISO {
+
+    /// Create a cloud-init ISO image (NoCloud datasource)
+    /// Returns path to the generated ISO file
+    public static func create(
+        config: VMNetworkConfig,
+        outputPath: URL
+    ) throws -> URL {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cloud-init-\(config.instanceId)")
+
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        // Write meta-data
+        let metaData = CloudInitGenerator.generateMetaData(config: config)
+        try metaData.write(to: tempDir.appendingPathComponent("meta-data"), atomically: true, encoding: .utf8)
+
+        // Write user-data
+        let userData = CloudInitGenerator.generateUserData(config: config)
+        try userData.write(to: tempDir.appendingPathComponent("user-data"), atomically: true, encoding: .utf8)
+
+        // Create ISO using platform-specific tool
+        let isoPath = outputPath.appendingPathComponent("cidata-\(config.instanceId).iso")
+
+        #if os(macOS)
+        // Use hdiutil on macOS
+        try createISOmacOS(sourceDir: tempDir, outputPath: isoPath)
+        #else
+        // Use genisoimage/mkisofs on Linux
+        try createISOLinux(sourceDir: tempDir, outputPath: isoPath)
+        #endif
+
+        // Cleanup temp directory
+        try? FileManager.default.removeItem(at: tempDir)
+
+        return isoPath
+    }
+
+    #if os(macOS)
+    private static func createISOmacOS(sourceDir: URL, outputPath: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+        process.arguments = [
+            "makehybrid",
+            "-iso",
+            "-joliet",
+            "-o", outputPath.path,
+            "-volname", "cidata",
+            sourceDir.path
+        ]
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw CloudInitError.isoCreationFailed
+        }
+    }
+    #else
+    private static func createISOLinux(sourceDir: URL, outputPath: URL) throws {
+        let process = Process()
+        // Try genisoimage first, fall back to mkisofs
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/genisoimage")
+        process.arguments = [
+            "-output", outputPath.path,
+            "-volid", "cidata",
+            "-joliet",
+            "-rock",
+            sourceDir.path
+        ]
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw CloudInitError.isoCreationFailed
+        }
+    }
+    #endif
+}
+
+public enum CloudInitError: Error {
+    case isoCreationFailed
+    case invalidConfiguration(String)
+}
+```
+
+#### Integration with VM Platforms
+
+**macOS (Virtualization.framework):**
+```swift
+extension VZVirtualMachineConfiguration {
+    /// Attach cloud-init ISO as secondary disk
+    mutating func attachCloudInitISO(_ isoPath: URL) throws {
+        let attachment = try VZDiskImageStorageDeviceAttachment(
+            url: isoPath,
+            readOnly: true
+        )
+        let disk = VZVirtioBlockDeviceConfiguration(attachment: attachment)
+        self.storageDevices.append(disk)
+    }
+}
+```
+
+**Linux (QEMU):**
+```swift
+extension QEMUVMConfiguration {
+    /// Add cloud-init ISO to QEMU command line
+    func cloudInitArguments(isoPath: URL) -> [String] {
+        ["-drive", "file=\(isoPath.path),if=virtio,format=raw,readonly=on"]
+    }
+}
+```
+
+#### Convenience Factory
+
+```swift
+public struct VMNetworkConfigFactory {
+
+    /// Create a standard VM network config for consumer connection
+    public static func createForConsumer(
+        consumerPublicKey: String,
+        consumerEndpoint: String,  // "ip:port"
+        vmPrivateKey: String? = nil  // Auto-generate if nil
+    ) -> VMNetworkConfig {
+        let privateKey = vmPrivateKey ?? generateWireGuardPrivateKey()
+        let instanceId = UUID().uuidString.prefix(8).lowercased()
+
+        return VMNetworkConfig(
+            wireGuard: .init(
+                privateKey: privateKey,
+                address: "10.200.200.2/24",
+                listenPort: nil,
+                peer: .init(
+                    publicKey: consumerPublicKey,
+                    endpoint: consumerEndpoint,
+                    allowedIPs: "0.0.0.0/0, ::/0",
+                    persistentKeepalive: 25
+                )
+            ),
+            firewall: .init(
+                allowLoopback: true,
+                allowWireGuardInterface: true,
+                allowDHCP: true,
+                allowDNS: false,  // Use WireGuard DNS
+                customRules: nil
+            ),
+            instanceId: "omerta-\(instanceId)",
+            hostname: "omerta-vm-\(instanceId)"
+        )
+    }
+
+    /// Generate WireGuard keypair
+    public static func generateWireGuardKeyPair() -> (privateKey: String, publicKey: String) {
+        // Use wg genkey | wg pubkey or native Curve25519
+        // Implementation depends on available crypto libraries
+        fatalError("TODO: Implement using Crypto framework or shell out to wg")
+    }
+}
+```
+
+#### Unit Tests
+
+```swift
+// CloudInitTests.swift
+import XCTest
+@testable import OmertaVM
+
+final class CloudInitTests: XCTestCase {
+
+    func testGenerateUserData() {
+        let config = VMNetworkConfig(
+            wireGuard: .init(
+                privateKey: "test-private-key-base64==",
+                address: "10.200.200.2/24",
+                listenPort: nil,
+                peer: .init(
+                    publicKey: "consumer-public-key-base64==",
+                    endpoint: "203.0.113.50:51820",
+                    allowedIPs: "0.0.0.0/0",
+                    persistentKeepalive: 25
+                )
+            ),
+            firewall: .init(
+                allowLoopback: true,
+                allowWireGuardInterface: true,
+                allowDHCP: true,
+                allowDNS: false,
+                customRules: nil
+            ),
+            instanceId: "test-instance-123",
+            hostname: "omerta-vm-test"
+        )
+
+        let userData = CloudInitGenerator.generateUserData(config: config)
+
+        // Verify cloud-config header
+        XCTAssertTrue(userData.hasPrefix("#cloud-config"))
+
+        // Verify WireGuard config is present
+        XCTAssertTrue(userData.contains("PrivateKey = test-private-key-base64=="))
+        XCTAssertTrue(userData.contains("PublicKey = consumer-public-key-base64=="))
+        XCTAssertTrue(userData.contains("Endpoint = 203.0.113.50:51820"))
+        XCTAssertTrue(userData.contains("AllowedIPs = 0.0.0.0/0"))
+
+        // Verify firewall rules
+        XCTAssertTrue(userData.contains("iptables -P OUTPUT DROP"))
+        XCTAssertTrue(userData.contains("-o wg0 -j ACCEPT"))
+        XCTAssertTrue(userData.contains("-i lo -j ACCEPT"))
+    }
+
+    func testGenerateMetaData() {
+        let config = VMNetworkConfig(/* ... */)
+        let metaData = CloudInitGenerator.generateMetaData(config: config)
+
+        XCTAssertTrue(metaData.contains("instance-id: test-instance-123"))
+        XCTAssertTrue(metaData.contains("local-hostname: omerta-vm-test"))
+    }
+
+    func testFirewallRulesBlockNonWireGuard() {
+        let config = VMNetworkConfigFactory.createForConsumer(
+            consumerPublicKey: "test-key",
+            consumerEndpoint: "1.2.3.4:51820"
+        )
+        let userData = CloudInitGenerator.generateUserData(config: config)
+
+        // Default policy should be DROP
+        XCTAssertTrue(userData.contains("iptables -P OUTPUT DROP"))
+        XCTAssertTrue(userData.contains("iptables -P INPUT DROP"))
+        XCTAssertTrue(userData.contains("ip6tables -P OUTPUT DROP"))
+
+        // Only wg0 and lo should be allowed
+        XCTAssertTrue(userData.contains("-o wg0 -j ACCEPT"))
+        XCTAssertTrue(userData.contains("-o lo -j ACCEPT"))
+
+        // No general internet access rules
+        XCTAssertFalse(userData.contains("-o eth0 -j ACCEPT"))
+    }
+
+    func testCreateISO() throws {
+        let config = VMNetworkConfigFactory.createForConsumer(
+            consumerPublicKey: "test-key",
+            consumerEndpoint: "1.2.3.4:51820"
+        )
+
+        let tempDir = FileManager.default.temporaryDirectory
+        let isoPath = try CloudInitISO.create(config: config, outputPath: tempDir)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: isoPath.path))
+
+        // Cleanup
+        try? FileManager.default.removeItem(at: isoPath)
+    }
+}
+```
+
+#### Integration Tests (require VM)
+
+```swift
+// VMWireGuardIntegrationTests.swift
+final class VMWireGuardIntegrationTests: XCTestCase {
+
+    func testVMBootsWithWireGuardConfigured() async throws {
+        // Create cloud-init config
+        let config = VMNetworkConfigFactory.createForConsumer(
+            consumerPublicKey: testConsumerPublicKey,
+            consumerEndpoint: "\(testConsumerIP):51820"
+        )
+
+        // Create ISO
+        let isoPath = try CloudInitISO.create(config: config, outputPath: tempDir)
+
+        // Boot VM with cloud-init ISO attached
+        let vm = try await bootTestVM(cloudInitISO: isoPath)
+        defer { vm.stop() }
+
+        // Wait for cloud-init to complete
+        try await vm.waitForFile("/run/omerta-ready", timeout: 60)
+
+        // Verify WireGuard is running
+        let wgOutput = try await vm.execute("wg show wg0")
+        XCTAssertTrue(wgOutput.contains("peer:"))
+        XCTAssertTrue(wgOutput.contains(testConsumerPublicKey))
+    }
+
+    func testOutboundNonWireGuardBlocked() async throws {
+        let vm = try await bootTestVMWithNetworkIsolation()
+        defer { vm.stop() }
+
+        // Try to ping external IP (should fail)
+        let pingResult = try? await vm.execute("ping -c 1 -W 2 8.8.8.8")
+        XCTAssertNil(pingResult, "Direct internet access should be blocked")
+
+        // Try to reach via WireGuard (should work if consumer is running)
+        // This would require a test consumer endpoint
+    }
+
+    func testIptablesRulesApplied() async throws {
+        let vm = try await bootTestVMWithNetworkIsolation()
+        defer { vm.stop() }
+
+        let iptables = try await vm.execute("iptables -L -n")
+
+        // Verify default DROP policies
+        XCTAssertTrue(iptables.contains("Chain OUTPUT (policy DROP)"))
+        XCTAssertTrue(iptables.contains("Chain INPUT (policy DROP)"))
+
+        // Verify wg0 is allowed
+        XCTAssertTrue(iptables.contains("ACCEPT") && iptables.contains("wg0"))
+    }
+}
+```
+
+#### Package Installation via Cloud-Init
+
+Cloud-init can automatically install required packages on first boot. The configuration model includes an optional packages list:
+
+```swift
+public struct VMNetworkConfig: Codable, Sendable {
+    // ... existing fields ...
+
+    /// Packages to install (distribution-specific)
+    public struct PackageConfig: Codable, Sendable {
+        public let packages: [String]      // Package names to install
+        public let updateFirst: Bool       // apt-get update / apk update first
+    }
+    public let packageConfig: PackageConfig?
+}
+```
+
+The generated cloud-config includes:
+
+```yaml
+# Package installation
+package_update: true
+package_upgrade: false
+packages:
+  - wireguard-tools
+  - iptables
+```
+
+**Note:** The VM image only needs `cloud-init` pre-installed. Cloud-init will install `wireguard-tools` and `iptables` on first boot.
+
+For Alpine (where package names differ):
+- `wireguard-tools` → same
+- `iptables` → same
+
+For Ubuntu/Debian:
+- `wireguard-tools` → `wireguard`
+- `iptables` → `iptables`
+
+#### VM Image Minimum Requirements
+
+The VM image needs only:
+- `cloud-init` (must be pre-installed for cloud-init to work)
+- Network connectivity during first boot (for package downloads)
+
+For offline VMs or faster boot, pre-install:
+```
+# Alpine
+apk add wireguard-tools iptables cloud-init
+
+# Ubuntu/Debian
+apt-get install wireguard iptables cloud-init
+```
+
+#### Verification
+
+```bash
+# Unit tests (no VM required)
+swift test --filter CloudInit
+
+# Integration tests (requires VM image)
+swift test --filter VMWireGuardIntegration
+```
 
 ---
 
@@ -1139,6 +1860,84 @@ public actor ProviderVPNManager {
 **Dependencies:** All previous phases, test infrastructure
 
 **Verification:** `swift test --filter E2E`
+
+---
+
+### Phase 11.5: Linux QEMU VM Network Parity
+
+**Goal:** Linux QEMU VMs use Phase 9 cloud-init network isolation (same as macOS).
+
+**Current Gap:**
+- macOS `startVMMacOS()` uses `VMNetworkConfigFactory.createForConsumer()` with WireGuard + iptables
+- Linux `startVMQEMU()` accepts `consumerPublicKey`/`consumerEndpoint` but doesn't use them
+
+**File:** `Sources/OmertaVM/SimpleVMManager.swift`
+
+**Deliverable:** Linux QEMU VMs boot with:
+- WireGuard client configured via cloud-init
+- iptables rules blocking non-WireGuard traffic
+- Same network isolation as macOS VMs
+
+```swift
+#if os(Linux)
+private func startVMQEMU(...) async throws -> String {
+    // Check if we should use VM-side WireGuard network isolation (Phase 9)
+    let useNetworkIsolation = consumerPublicKey != nil && consumerEndpoint != nil
+
+    if useNetworkIsolation, let consumerPubKey = consumerPublicKey,
+       let consumerEP = consumerEndpoint {
+        // Phase 9: Use network isolation cloud-init with WireGuard + firewall
+        let vmPrivateKeyBytes = (0..<32).map { _ in UInt8.random(in: 0...255) }
+        let vmPrivateKey = Data(vmPrivateKeyBytes).base64EncodedString()
+
+        let vmAddress = vpnIP.map { "\($0)/24" } ?? "10.200.200.2/24"
+        let vmNetConfig = VMNetworkConfigFactory.createForConsumer(
+            consumerPublicKey: consumerPubKey,
+            consumerEndpoint: consumerEP,
+            vmPrivateKey: vmPrivateKey,
+            vmAddress: vmAddress,
+            packageConfig: .debian
+        )
+
+        try createCombinedCloudInitISO(
+            at: seedISOPath,
+            vmNetConfig: vmNetConfig,
+            sshPublicKey: sshPublicKey,
+            sshUser: sshUser,
+            instanceId: vmId
+        )
+    } else {
+        // Basic cloud-init without network isolation
+        try CloudInitGenerator.createSeedISO(...)
+    }
+    // ... rest of QEMU boot
+}
+#endif
+```
+
+**Unit Tests:** Existing `CloudInitTests.swift` covers config generation (cross-platform)
+
+**Integration Tests:** `Tests/OmertaVMTests/LinuxVMNetworkTests.swift`
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| `testLinuxVMWithNetworkIsolation` | Boot QEMU VM with consumer params | VM boots with WireGuard configured |
+| `testLinuxVMWireGuardInterface` | Check wg0 interface in VM | Interface exists with correct config |
+| `testLinuxVMIptables` | Check iptables rules in VM | DROP default, WireGuard traffic allowed |
+| `testLinuxVMConnectsToConsumer` | VM connects to consumer WG | Handshake successful |
+| `testLinuxVMFallbackWithoutParams` | Boot without consumer params | Basic cloud-init, no WireGuard |
+
+**Dependencies:** Phase 9 (Cloud-Init), Phase 10 (Provider Integration concepts)
+
+**Verification:**
+```bash
+# On Linux:
+swift test --filter LinuxVMNetwork
+# Manual: Boot VM and verify
+ssh omerta@<vm-ip> "ip link show wg0 && sudo iptables -L"
+```
+
+**Platform:** Linux only (macOS already has this via `startVMMacOS`)
 
 ---
 
@@ -1189,25 +1988,113 @@ extension FileHandleNetwork {
 
 ---
 
+### Phase 14: eBPF Kernel Filtering (Linux Only)
+
+**Files:**
+- `Sources/OmertaNetwork/VPN/EBPFFilter.swift` - Swift wrapper for libbpf
+- `Sources/OmertaNetwork/VPN/ebpf/vm_filter.bpf.c` - eBPF program source
+- `Sources/CLibbpf/` - C shim for libbpf FFI
+
+**Deliverable:** Kernel-level packet filtering using eBPF/TC for 10+ Gbps performance on Linux.
+
+```swift
+#if os(Linux)
+/// eBPF-accelerated packet filter for Linux
+public actor EBPFFilter {
+    /// Load eBPF program and attach to interface
+    public func attach(to interfaceName: String) throws
+
+    /// Update allowlist in eBPF map (instant, no reload)
+    public func setAllowedEndpoints(_ endpoints: [Endpoint]) throws
+
+    /// Detach and cleanup
+    public func detach()
+
+    /// Get filtering statistics from eBPF map
+    public var statistics: EBPFFilterStatistics { get async }
+}
+
+/// Integration with existing FilteredNAT
+extension FilteredNAT {
+    /// Use eBPF for filtering instead of userspace
+    public func enableEBPFAcceleration(interface: String) async throws
+}
+#endif
+```
+
+**eBPF Program Features:**
+- TC egress filter on VM tap interface
+- Allowlist stored in BPF_MAP_TYPE_HASH
+- Statistics in BPF_MAP_TYPE_PERCPU_ARRAY
+- Atomic allowlist updates via map operations
+
+**Unit Tests:** `EBPFFilterTests.swift` (Linux only)
+- Load/attach eBPF program
+- Allowlist map operations
+- Verify packets filtered correctly
+- Statistics collection
+- Cleanup on detach
+
+**Integration Tests:**
+- Compare filtering results: eBPF vs userspace
+- Throughput benchmark: expect 10+ Gbps
+- Latency benchmark: expect <10μs
+
+**Build Requirements:**
+- Linux kernel 4.18+ with BTF support
+- libbpf-dev package
+- clang/llvm for compiling eBPF
+- CAP_BPF or root for loading programs
+
+**Build Integration:**
+```swift
+// Package.swift
+#if os(Linux)
+targets: [
+    .systemLibrary(
+        name: "CLibbpf",
+        pkgConfig: "libbpf",
+        providers: [.apt(["libbpf-dev"])]
+    ),
+    .executableTarget(
+        name: "omertad",
+        dependencies: ["OmertaNetwork", "CLibbpf"],
+        linkerSettings: [.linkedLibrary("bpf")]
+    )
+]
+#endif
+```
+
+**Verification:** `swift test --filter EBPF` (Linux with CAP_BPF)
+
+---
+
 ## Phase Summary
 
-| Phase | Deliverable | Tests | Dependencies |
-|-------|-------------|-------|--------------|
-| 1 | EthernetFrame parser | Unit | None |
-| 2 | IPv4Packet parser | Unit | None |
-| 3 | EndpointAllowlist | Unit | Phase 2 |
-| 4 | UDPForwarder | Unit | Phase 3 |
-| 5 | FramePacketBridge | Unit | Phase 1, 2, 3 |
-| 6 | FilteredNAT core | Unit | Phase 3, 4, 5 |
-| 7 | Filtering strategies | Unit | Phase 3, 2 |
-| 8 | VM Network Manager | Integration | Phase 6, 7 |
-| 9 | VM WireGuard scripts | Integration | None |
-| 10 | Provider integration | Integration | Phase 8, 9 |
-| 11 | E2E testing | E2E | Phase 10 |
-| 12 | Performance optimization | Performance | Phase 11 |
-| 13 | Hardening | Stress/Security | Phase 12 |
+| Phase | Deliverable | Tests | Dependencies | Platform |
+|-------|-------------|-------|--------------|----------|
+| 1 | EthernetFrame parser | Unit | None | All |
+| 2 | IPv4Packet parser | Unit | None | All |
+| 3 | EndpointAllowlist | Unit | Phase 2 | All |
+| 4 | UDPForwarder | Unit | Phase 3 | All |
+| 5 | FramePacketBridge | Unit | Phase 1, 2, 3 | All |
+| 6 | FilteredNAT core | Unit | Phase 3, 4, 5 | All |
+| 7 | Filtering strategies | Unit | Phase 3, 2 | All |
+| 8 | VM Network Manager | Integration | Phase 6, 7 | macOS |
+| 9 | VM WireGuard scripts | Integration | None | All |
+| 10 | Provider integration | Integration | Phase 8, 9 | macOS |
+| 11 | E2E testing | E2E | Phase 10 | macOS |
+| **11.5** | **Linux QEMU VM network parity** | Integration | Phase 9 | **Linux only** |
+| 12 | Performance optimization | Performance | Phase 11 | All |
+| 13 | Hardening | Stress/Security | Phase 12 | All |
+| 14 | eBPF kernel filtering | Performance | Phase 6 | **Linux only** |
+| 15 | NEFilterPacketProvider | Performance | Phase 6 | **macOS only** |
 
-**Note:** Direct mode (Phase 8) can be tested independently after Phase 9, without phases 1-7.
+**Notes:**
+- Direct mode (Phase 8) can be tested independently after Phase 9, without phases 1-7.
+- **Phase 11.5** brings Linux QEMU VMs to parity with macOS for cloud-init network isolation.
+- Phase 14 (eBPF) is optional - provides 10+ Gbps on Linux but requires CAP_BPF.
+- Phase 15 (NEFilterPacketProvider) is optional - provides 5-10 Gbps on macOS with standard entitlement (no special approval needed).
 
 ## Files to Create/Modify
 
@@ -1234,8 +2121,18 @@ extension FileHandleNetwork {
 | `Tests/OmertaNetworkTests/FilteringStrategyTests.swift` | 7 | Unit tests |
 | `Tests/OmertaNetworkTests/VMNetworkManagerTests.swift` | 8 | Integration tests |
 | `Tests/OmertaNetworkTests/E2EConnectivityTests.swift` | 11 | E2E tests |
+| `Tests/OmertaVMTests/LinuxVMNetworkTests.swift` | 11.5 | Linux VM network isolation tests |
 | `Tests/OmertaNetworkTests/ThroughputBenchmarkTests.swift` | 12 | Performance tests |
 | `Tests/OmertaNetworkTests/LatencyBenchmarkTests.swift` | 12 | Performance tests |
+| `Sources/OmertaNetwork/VPN/EBPFFilter.swift` | 14 | eBPF Swift wrapper (Linux) |
+| `Sources/OmertaNetwork/VPN/ebpf/vm_filter.bpf.c` | 14 | eBPF program source |
+| `Sources/CLibbpf/module.modulemap` | 14 | libbpf FFI module |
+| `Sources/CLibbpf/shim.h` | 14 | libbpf header shim |
+| `Tests/OmertaNetworkTests/EBPFFilterTests.swift` | 14 | eBPF unit tests (Linux) |
+| `Sources/OmertaNetwork/VPN/NEPacketFilter.swift` | 15 | NEFilterPacketProvider wrapper (macOS) |
+| `Sources/OmertaNetworkExtension/PacketFilterProvider.swift` | 15 | System extension provider |
+| `Sources/OmertaNetworkExtension/Info.plist` | 15 | Extension configuration |
+| `Tests/OmertaNetworkTests/NEPacketFilterTests.swift` | 15 | Network Extension tests (macOS) |
 
 ### Modified Files
 
@@ -1243,6 +2140,7 @@ extension FileHandleNetwork {
 |------|-------|---------|
 | `Sources/OmertaProvider/ProviderVPNManager.swift` | 10 | Use VMNetworkManager |
 | `Sources/OmertaVM/VirtualizationManager.swift` | 10 | Support all network modes |
+| `Sources/OmertaVM/SimpleVMManager.swift` | 11.5 | Use VMNetworkConfig in Linux QEMU path |
 | `Resources/cloud-init/*` | 9 | WireGuard + iptables setup |
 
 ## Security Checklist
@@ -1603,6 +2501,37 @@ class PerformanceMetrics {
     func generateReport() -> PerformanceReport
 }
 ```
+
+#### Dual-Platform Testing
+
+All unit tests for phases 1-7 must pass on both platforms:
+
+| Platform | Test Environment | Notes |
+|----------|-----------------|-------|
+| **macOS** | `user@mac.local` | Apple Silicon, Virtualization.framework available |
+| **Linux** | Local development machine | aarch64, no Virtualization.framework |
+
+**Platform-specific code:**
+- Phases 1-7 (parsers, allowlist, forwarder, strategies): Must work on both platforms
+- Phase 8+ (VMNetworkManager): macOS only (uses Virtualization.framework)
+
+**Testing procedure for each phase:**
+```bash
+# On Linux (local)
+swift test --filter <TestName>
+
+# On macOS (remote)
+ssh user@mac.local "cd /path/to/omerta && swift test --filter <TestName>"
+```
+
+**Verification checklist:**
+- [x] Phase 1: EthernetFrameTests - Linux ✓ (16 tests) macOS ✓ (16 tests)
+- [x] Phase 2: IPv4PacketTests - Linux ✓ (24 tests) macOS ✓ (24 tests)
+- [x] Phase 3: EndpointAllowlistTests - Linux ✓ (22 tests) macOS ✓ (22 tests)
+- [x] Phase 4: UDPForwarderTests - Linux ✓ (11 tests) macOS ✓ (11 tests)
+- [x] Phase 5: FramePacketBridgeTests - Linux ✓ (15 tests) macOS ✓ (15 tests)
+- [x] Phase 6: FilteredNATTests - Linux ✓ (12 tests) macOS ✓ (12 tests)
+- [x] Phase 7: FilteringStrategyTests - Linux ✓ (16 tests) macOS ✓ (16 tests)
 
 #### CI Integration
 

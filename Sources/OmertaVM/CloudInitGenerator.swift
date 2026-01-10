@@ -158,6 +158,18 @@ public enum CloudInitGenerator {
         #endif
     }
 
+    /// Create ISO from a directory containing cloud-init files (cross-platform)
+    /// - Parameters:
+    ///   - directory: Path to directory containing user-data, meta-data, etc.
+    ///   - outputPath: Path for output ISO file
+    public static func createISOFromDirectory(from directory: String, to outputPath: String) throws {
+        #if os(macOS)
+        try createISOmacOS(from: directory, to: outputPath)
+        #else
+        try createISOLinux(from: directory, to: outputPath)
+        #endif
+    }
+
     #if os(macOS)
     private static func createISOmacOS(from directory: String, to outputPath: String) throws {
         let process = Process()
@@ -247,11 +259,362 @@ public enum CloudInitGenerator {
     }
 }
 
+// MARK: - VM Network Isolation (Phase 9)
+
+/// Configuration for VM network isolation via WireGuard
+public struct VMNetworkConfig: Codable, Sendable {
+
+    /// WireGuard interface configuration
+    public struct WireGuard: Codable, Sendable {
+        public let privateKey: String      // Base64 WG private key
+        public let address: String         // e.g., "10.200.200.2/24"
+        public let listenPort: UInt16?     // Optional, usually not needed for client
+
+        public struct Peer: Codable, Sendable {
+            public let publicKey: String   // Consumer's public key
+            public let endpoint: String    // e.g., "203.0.113.50:51820"
+            public let allowedIPs: String  // e.g., "0.0.0.0/0, ::/0"
+            public let persistentKeepalive: UInt16?  // e.g., 25
+
+            public init(publicKey: String, endpoint: String, allowedIPs: String = "0.0.0.0/0, ::/0", persistentKeepalive: UInt16? = 25) {
+                self.publicKey = publicKey
+                self.endpoint = endpoint
+                self.allowedIPs = allowedIPs
+                self.persistentKeepalive = persistentKeepalive
+            }
+        }
+        public let peer: Peer
+
+        public init(privateKey: String, address: String, listenPort: UInt16? = nil, peer: Peer) {
+            self.privateKey = privateKey
+            self.address = address
+            self.listenPort = listenPort
+            self.peer = peer
+        }
+    }
+    public let wireGuard: WireGuard
+
+    /// Firewall configuration
+    public struct Firewall: Codable, Sendable {
+        public let allowLoopback: Bool           // Always true
+        public let allowWireGuardInterface: Bool // Always true
+        public let allowDHCP: Bool               // For initial network setup
+        public let allowDNS: Bool                // Usually false (use WG DNS)
+        public let customRules: [String]?        // Additional iptables rules
+
+        public init(allowLoopback: Bool = true, allowWireGuardInterface: Bool = true, allowDHCP: Bool = true, allowDNS: Bool = false, customRules: [String]? = nil) {
+            self.allowLoopback = allowLoopback
+            self.allowWireGuardInterface = allowWireGuardInterface
+            self.allowDHCP = allowDHCP
+            self.allowDNS = allowDNS
+            self.customRules = customRules
+        }
+    }
+    public let firewall: Firewall
+
+    /// Package installation configuration
+    public struct PackageConfig: Codable, Sendable {
+        public let packages: [String]      // Package names to install
+        public let updateFirst: Bool       // apt-get update / apk update first
+
+        public init(packages: [String] = ["wireguard-tools", "iptables"], updateFirst: Bool = true) {
+            self.packages = packages
+            self.updateFirst = updateFirst
+        }
+
+        /// Default packages for Ubuntu/Debian
+        public static let debian = PackageConfig(packages: ["wireguard", "iptables"])
+
+        /// Default packages for Alpine
+        public static let alpine = PackageConfig(packages: ["wireguard-tools", "iptables"])
+    }
+    public let packageConfig: PackageConfig?
+
+    /// VM metadata
+    public let instanceId: String        // Unique per VM instance
+    public let hostname: String          // e.g., "omerta-vm-abc123"
+
+    public init(wireGuard: WireGuard, firewall: Firewall = Firewall(), packageConfig: PackageConfig? = .debian, instanceId: String? = nil, hostname: String? = nil) {
+        let id = instanceId ?? "omerta-\(UUID().uuidString.prefix(8).lowercased())"
+        self.wireGuard = wireGuard
+        self.firewall = firewall
+        self.packageConfig = packageConfig
+        self.instanceId = id
+        self.hostname = hostname ?? "omerta-vm-\(id.suffix(8))"
+    }
+}
+
+// MARK: - VM Network Config Generation
+
+extension CloudInitGenerator {
+
+    /// Generate cloud-init user-data for VM network isolation
+    public static func generateNetworkIsolationUserData(config: VMNetworkConfig) -> String {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+
+        // Extract port from endpoint for firewall rule
+        let endpointPort = config.wireGuard.peer.endpoint.split(separator: ":").last.map(String.init) ?? "51820"
+
+        var yaml = """
+        #cloud-config
+
+        # Omerta VM Network Isolation Configuration
+        # Generated: \(timestamp)
+        # Instance: \(config.instanceId)
+
+        hostname: \(config.hostname)
+
+        """
+
+        // Package installation
+        if let pkgConfig = config.packageConfig {
+            yaml += """
+
+            # Package installation
+            package_update: \(pkgConfig.updateFirst)
+            package_upgrade: false
+            packages:
+
+            """
+            for package in pkgConfig.packages {
+                yaml += "  - \(package)\n"
+            }
+        }
+
+        // WireGuard configuration file
+        yaml += """
+
+        # Write WireGuard configuration
+        write_files:
+          - path: /etc/wireguard/wg0.conf
+            permissions: '0600'
+            content: |
+              [Interface]
+              PrivateKey = \(config.wireGuard.privateKey)
+              Address = \(config.wireGuard.address)
+
+        """
+
+        if let listenPort = config.wireGuard.listenPort {
+            yaml += "      ListenPort = \(listenPort)\n"
+        }
+
+        yaml += """
+
+              [Peer]
+              PublicKey = \(config.wireGuard.peer.publicKey)
+              Endpoint = \(config.wireGuard.peer.endpoint)
+              AllowedIPs = \(config.wireGuard.peer.allowedIPs)
+
+        """
+
+        if let keepalive = config.wireGuard.peer.persistentKeepalive {
+            yaml += "      PersistentKeepalive = \(keepalive)\n"
+        }
+
+        // Firewall script
+        yaml += """
+
+          - path: /etc/omerta/firewall.sh
+            permissions: '0755'
+            content: |
+              #!/bin/sh
+              set -e
+
+              # Flush existing rules
+              iptables -F
+              iptables -X
+              ip6tables -F 2>/dev/null || true
+              ip6tables -X 2>/dev/null || true
+
+              # Default policies: DROP everything
+              iptables -P INPUT DROP
+              iptables -P FORWARD DROP
+              iptables -P OUTPUT DROP
+              ip6tables -P INPUT DROP 2>/dev/null || true
+              ip6tables -P FORWARD DROP 2>/dev/null || true
+              ip6tables -P OUTPUT DROP 2>/dev/null || true
+
+              # Allow established connections
+              iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+              iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+        """
+
+        if config.firewall.allowLoopback {
+            yaml += """
+              # Allow loopback
+              iptables -A INPUT -i lo -j ACCEPT
+              iptables -A OUTPUT -o lo -j ACCEPT
+              ip6tables -A INPUT -i lo -j ACCEPT 2>/dev/null || true
+              ip6tables -A OUTPUT -o lo -j ACCEPT 2>/dev/null || true
+
+        """
+        }
+
+        if config.firewall.allowDHCP {
+            yaml += """
+              # Allow DHCP (for initial network config)
+              iptables -A OUTPUT -p udp --dport 67:68 -j ACCEPT
+              iptables -A INPUT -p udp --sport 67:68 -j ACCEPT
+
+        """
+        }
+
+        if config.firewall.allowWireGuardInterface {
+            yaml += """
+              # Allow all traffic on WireGuard interface
+              iptables -A INPUT -i wg0 -j ACCEPT
+              iptables -A OUTPUT -o wg0 -j ACCEPT
+              ip6tables -A INPUT -i wg0 -j ACCEPT 2>/dev/null || true
+              ip6tables -A OUTPUT -o wg0 -j ACCEPT 2>/dev/null || true
+
+        """
+        }
+
+        // Allow WireGuard handshake
+        yaml += """
+              # Allow WireGuard UDP to establish tunnel (before wg0 is up)
+              iptables -A OUTPUT -p udp --dport \(endpointPort) -j ACCEPT
+
+        """
+
+        // Custom rules
+        if let customRules = config.firewall.customRules {
+            yaml += "      # Custom rules\n"
+            for rule in customRules {
+                yaml += "      \(rule)\n"
+            }
+        }
+
+        yaml += """
+
+              echo "Firewall configured successfully"
+
+          - path: /etc/omerta/setup-complete.sh
+            permissions: '0755'
+            content: |
+              #!/bin/sh
+              # Signal that setup is complete
+              echo "OMERTA_SETUP_COMPLETE" > /run/omerta-ready
+              echo "VM network isolation active"
+
+        # Run commands on first boot
+        runcmd:
+          # Create omerta directory
+          - mkdir -p /etc/omerta
+
+          # Apply firewall rules first (defense in depth)
+          - /etc/omerta/firewall.sh
+
+          # Start WireGuard
+          - wg-quick up wg0
+
+          # Verify WireGuard is running
+          - wg show wg0
+
+          # Signal completion
+          - /etc/omerta/setup-complete.sh
+
+        # Ensure firewall starts on reboot
+        bootcmd:
+          - test -f /etc/omerta/firewall.sh && /etc/omerta/firewall.sh || true
+        """
+
+        return yaml
+    }
+
+    /// Generate cloud-init meta-data for VM network isolation config
+    public static func generateNetworkIsolationMetaData(config: VMNetworkConfig) -> String {
+        """
+        instance-id: \(config.instanceId)
+        local-hostname: \(config.hostname)
+        """
+    }
+
+    /// Create a cloud-init seed ISO for VM network isolation
+    public static func createNetworkIsolationISO(
+        config: VMNetworkConfig,
+        outputPath: String
+    ) throws {
+        let expandedPath = expandPath(outputPath)
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cloudinit-network-\(config.instanceId)")
+
+        try FileManager.default.createDirectory(
+            at: tempDir,
+            withIntermediateDirectories: true
+        )
+
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        // Write user-data
+        let userData = generateNetworkIsolationUserData(config: config)
+        let userDataPath = tempDir.appendingPathComponent("user-data")
+        try userData.write(to: userDataPath, atomically: true, encoding: .utf8)
+
+        // Write meta-data
+        let metaData = generateNetworkIsolationMetaData(config: config)
+        let metaDataPath = tempDir.appendingPathComponent("meta-data")
+        try metaData.write(to: metaDataPath, atomically: true, encoding: .utf8)
+
+        // Create ISO
+        #if os(macOS)
+        try createISOmacOS(from: tempDir.path, to: expandedPath)
+        #else
+        try createISOLinux(from: tempDir.path, to: expandedPath)
+        #endif
+    }
+}
+
+// MARK: - VM Network Config Factory
+
+public struct VMNetworkConfigFactory {
+
+    /// Create a standard VM network config for consumer connection
+    public static func createForConsumer(
+        consumerPublicKey: String,
+        consumerEndpoint: String,
+        vmPrivateKey: String,
+        vmAddress: String = "10.200.200.2/24",
+        packageConfig: VMNetworkConfig.PackageConfig? = .debian
+    ) -> VMNetworkConfig {
+        let instanceId = "omerta-\(UUID().uuidString.prefix(8).lowercased())"
+
+        return VMNetworkConfig(
+            wireGuard: .init(
+                privateKey: vmPrivateKey,
+                address: vmAddress,
+                listenPort: nil,
+                peer: .init(
+                    publicKey: consumerPublicKey,
+                    endpoint: consumerEndpoint,
+                    allowedIPs: "0.0.0.0/0, ::/0",
+                    persistentKeepalive: 25
+                )
+            ),
+            firewall: .init(
+                allowLoopback: true,
+                allowWireGuardInterface: true,
+                allowDHCP: true,
+                allowDNS: false,
+                customRules: nil
+            ),
+            packageConfig: packageConfig,
+            instanceId: instanceId,
+            hostname: "omerta-vm-\(instanceId.suffix(8))"
+        )
+    }
+}
+
 // MARK: - Errors
 
 public enum CloudInitError: Error, CustomStringConvertible {
     case isoCreationFailed(String)
     case directoryCreationFailed(String)
+    case invalidConfiguration(String)
 
     public var description: String {
         switch self {
@@ -259,6 +622,8 @@ public enum CloudInitError: Error, CustomStringConvertible {
             return "Failed to create cloud-init ISO: \(reason)"
         case .directoryCreationFailed(let reason):
             return "Failed to create directory: \(reason)"
+        case .invalidConfiguration(let reason):
+            return "Invalid cloud-init configuration: \(reason)"
         }
     }
 }

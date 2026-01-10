@@ -178,22 +178,24 @@ public actor SimpleVMManager {
 
     // MARK: - VM Lifecycle
 
-    /// Start a VM with specified resources
+    /// Start a VM with specified resources and WireGuard network isolation
     /// - Parameters:
     ///   - vmId: Unique identifier for this VM
     ///   - requirements: CPU/memory requirements
     ///   - sshPublicKey: Consumer's SSH public key for access
     ///   - sshUser: Username for SSH access
-    ///   - vpnIP: The VPN IP to assign to the VM (e.g., "10.166.104.2")
-    ///   - vpnGateway: The VPN gateway IP (e.g., "10.166.104.254")
-    /// - Returns: The VM's IP address (same as vpnIP when using TAP networking)
+    ///   - consumerPublicKey: Consumer's WireGuard public key (required for VM-side WireGuard)
+    ///   - consumerEndpoint: Consumer's WireGuard endpoint ip:port (required for VM-side WireGuard)
+    ///   - vpnIP: The WireGuard IP to assign to the VM (default: 10.200.200.2)
+    /// - Returns: The VM's WireGuard IP address
     public func startVM(
         vmId: UUID,
         requirements: ResourceRequirements,
         sshPublicKey: String,
         sshUser: String = "omerta",
-        vpnIP: String? = nil,
-        vpnGateway: String? = nil
+        consumerPublicKey: String,
+        consumerEndpoint: String,
+        vpnIP: String? = nil
     ) async throws -> String {
         logger.info("Starting VM", metadata: [
             "vm_id": "\(vmId)",
@@ -252,18 +254,20 @@ public actor SimpleVMManager {
             requirements: requirements,
             sshPublicKey: sshPublicKey,
             sshUser: sshUser,
-            vpnIP: vpnIP,
-            vpnGateway: vpnGateway
+            consumerPublicKey: consumerPublicKey,
+            consumerEndpoint: consumerEndpoint,
+            vpnIP: vpnIP
         )
         #else
-        // Linux: Use QEMU/KVM with TAP networking
+        // Linux: Use QEMU/KVM
         return try await startVMQEMU(
             vmId: vmId,
             requirements: requirements,
             sshPublicKey: sshPublicKey,
             sshUser: sshUser,
-            vpnIP: vpnIP,
-            vpnGateway: vpnGateway
+            consumerPublicKey: consumerPublicKey,
+            consumerEndpoint: consumerEndpoint,
+            vpnIP: vpnIP
         )
         #endif
     }
@@ -274,8 +278,9 @@ public actor SimpleVMManager {
         requirements: ResourceRequirements,
         sshPublicKey: String,
         sshUser: String,
-        vpnIP: String?,
-        vpnGateway: String?
+        consumerPublicKey: String,
+        consumerEndpoint: String,
+        vpnIP: String?
     ) async throws -> String {
         // 1. Verify base image exists
         guard FileManager.default.fileExists(atPath: baseImagePath) else {
@@ -288,9 +293,9 @@ public actor SimpleVMManager {
         logger.info("Created overlay disk", metadata: ["path": "\(overlayPath)"])
 
         // 3. Determine if we're using TAP networking (when vpnIP is provided)
-        // TAP networking is only supported on Linux; macOS uses SLIRP
+        // TAP networking gives VM a specific IP on the host network
         #if os(Linux)
-        if let vpnIPValue = vpnIP, let vpnGatewayValue = vpnGateway {
+        if let vpnIPValue = vpnIP {
             // TAP networking: VM gets VPN IP directly (Linux only)
             let vmIP = vpnIPValue
             let sshPort: UInt16 = 22  // SSH directly on VPN IP
@@ -306,20 +311,36 @@ public actor SimpleVMManager {
                 "vpn_ip": "\(vmIP)"
             ])
 
-            // Generate cloud-init ISO with VPN network config
+            // Generate cloud-init ISO with WireGuard + firewall (Phase 11.5)
             let seedISOPath = "\(vmDiskDir)/\(vmId.uuidString)-seed.iso"
-            try CloudInitGenerator.createSeedISO(
+
+            logger.info("Using VM-side WireGuard network isolation (Phase 11.5)", metadata: [
+                "consumer_endpoint": "\(consumerEndpoint)"
+            ])
+
+            // Generate VM's WireGuard keypair
+            let vmPrivateKeyBytes = (0..<32).map { _ in UInt8.random(in: 0...255) }
+            let vmPrivateKey = Data(vmPrivateKeyBytes).base64EncodedString()
+
+            // Create network isolation config
+            let vmAddress = "\(vpnIPValue)/24"
+            let vmNetConfig = VMNetworkConfigFactory.createForConsumer(
+                consumerPublicKey: consumerPublicKey,
+                consumerEndpoint: consumerEndpoint,
+                vmPrivateKey: vmPrivateKey,
+                vmAddress: vmAddress,
+                packageConfig: .debian
+            )
+
+            // Create combined cloud-init ISO with WireGuard + firewall + SSH
+            try createCombinedCloudInitISO(
                 at: seedISOPath,
+                vmNetConfig: vmNetConfig,
                 sshPublicKey: sshPublicKey,
                 sshUser: sshUser,
-                instanceId: vmId,
-                networkConfig: CloudInitGenerator.NetworkConfig(
-                    ipAddress: vpnIPValue,
-                    gateway: vpnGatewayValue,
-                    prefixLength: 24
-                )
+                instanceId: vmId
             )
-            logger.info("Created cloud-init ISO with TAP network config", metadata: ["path": "\(seedISOPath)"])
+            logger.info("Created network isolation cloud-init ISO", metadata: ["path": "\(seedISOPath)"])
 
             // Build QEMU command with TAP networking
             let qemuArgs = try buildQEMUArgs(
@@ -376,19 +397,40 @@ public actor SimpleVMManager {
         }
         #endif
 
-        // SLIRP user-mode networking (used on macOS always, and on Linux as fallback)
+        // SLIRP user-mode networking (used on Linux as fallback when no TAP)
         let vmIP = generateVMNATIP()
         let sshPort = allocatePort()
 
-        // Generate cloud-init ISO with DHCP (default)
+        // Generate cloud-init ISO with WireGuard + firewall (Phase 11.5)
         let seedISOPath = "\(vmDiskDir)/\(vmId.uuidString)-seed.iso"
-        try CloudInitGenerator.createSeedISO(
+
+        logger.info("Using VM-side WireGuard network isolation (Phase 11.5) with SLIRP", metadata: [
+            "consumer_endpoint": "\(consumerEndpoint)"
+        ])
+
+        // Generate VM's WireGuard keypair
+        let vmPrivateKeyBytes = (0..<32).map { _ in UInt8.random(in: 0...255) }
+        let vmPrivateKey = Data(vmPrivateKeyBytes).base64EncodedString()
+
+        // Create network isolation config
+        let vmAddress = vpnIP.map { "\($0)/24" } ?? "10.200.200.2/24"
+        let vmNetConfig = VMNetworkConfigFactory.createForConsumer(
+            consumerPublicKey: consumerPublicKey,
+            consumerEndpoint: consumerEndpoint,
+            vmPrivateKey: vmPrivateKey,
+            vmAddress: vmAddress,
+            packageConfig: .debian
+        )
+
+        // Create combined cloud-init ISO with WireGuard + firewall + SSH
+        try createCombinedCloudInitISO(
             at: seedISOPath,
+            vmNetConfig: vmNetConfig,
             sshPublicKey: sshPublicKey,
             sshUser: sshUser,
             instanceId: vmId
         )
-        logger.info("Created cloud-init ISO", metadata: ["path": "\(seedISOPath)"])
+        logger.info("Created network isolation cloud-init ISO", metadata: ["path": "\(seedISOPath)"])
 
         // Build QEMU command with SLIRP networking
         let qemuArgs = try buildQEMUArgsSlirp(
@@ -693,45 +735,58 @@ public actor SimpleVMManager {
     #endif  // os(Linux) - QEMU functions
 
     #if os(macOS)
-    /// Start a VM using macOS Virtualization.framework
-    /// Returns the VM's NAT IP address (from vmnet network)
+    /// Start a VM using macOS Virtualization.framework with WireGuard network isolation
+    /// Returns the VM's WireGuard IP address
     private func startVMMacOS(
         vmId: UUID,
         requirements: ResourceRequirements,
         sshPublicKey: String,
         sshUser: String,
-        vpnIP: String?,
-        vpnGateway: String?
+        consumerPublicKey: String,
+        consumerEndpoint: String,
+        vpnIP: String?
     ) async throws -> String {
-        // Note: macOS Virtualization.framework uses NAT networking via vmnet
-        // The VM gets an IP on the 192.168.64.0/24 network that is routable from host
-        // We use DNAT via pf to forward VPN IP traffic to this NAT IP
-        if vpnIP != nil {
-            logger.info("VPN IP requested - will use NAT routing to forward traffic")
-        }
-
         // 1. Verify base image exists
         guard FileManager.default.fileExists(atPath: baseImagePath) else {
             throw VMError.diskImageNotFound
         }
 
         // 2. Create overlay disk for this VM (copy-on-write)
-        let overlayPath = "\(vmDiskDir)/\(vmId.uuidString).qcow2"
         // For Virtualization.framework, we need a raw disk, not qcow2
-        // Convert base image to raw overlay
         let rawOverlayPath = "\(vmDiskDir)/\(vmId.uuidString).raw"
         try await createRawOverlay(basePath: baseImagePath, overlayPath: rawOverlayPath)
         logger.info("Created raw overlay disk", metadata: ["path": "\(rawOverlayPath)"])
 
-        // 3. Generate dynamic cloud-init ISO with consumer's SSH key
+        // 3. Generate cloud-init ISO with WireGuard + firewall (Phase 9)
         let seedISOPath = "\(vmDiskDir)/\(vmId.uuidString)-seed.iso"
-        try CloudInitGenerator.createSeedISO(
+
+        logger.info("Using VM-side WireGuard network isolation (Phase 9)", metadata: [
+            "consumer_endpoint": "\(consumerEndpoint)"
+        ])
+
+        // Generate VM's WireGuard keypair
+        let vmPrivateKeyBytes = (0..<32).map { _ in UInt8.random(in: 0...255) }
+        let vmPrivateKey = Data(vmPrivateKeyBytes).base64EncodedString()
+
+        // Create network isolation config
+        let vmAddress = vpnIP.map { "\($0)/24" } ?? "10.200.200.2/24"
+        let vmNetConfig = VMNetworkConfigFactory.createForConsumer(
+            consumerPublicKey: consumerPublicKey,
+            consumerEndpoint: consumerEndpoint,
+            vmPrivateKey: vmPrivateKey,
+            vmAddress: vmAddress,
+            packageConfig: .debian
+        )
+
+        // Create combined cloud-init ISO with WireGuard + firewall + SSH
+        try createCombinedCloudInitISO(
             at: seedISOPath,
+            vmNetConfig: vmNetConfig,
             sshPublicKey: sshPublicKey,
             sshUser: sshUser,
             instanceId: vmId
         )
-        logger.info("Created cloud-init ISO", metadata: ["path": "\(seedISOPath)"])
+        logger.info("Created network isolation cloud-init ISO", metadata: ["path": "\(seedISOPath)"])
 
         // 4. Create VM configuration
         let config = try await createVMConfiguration(
@@ -874,6 +929,63 @@ public actor SimpleVMManager {
 
         return config
     }
+    #endif  // os(macOS) - Virtualization.framework functions
+
+    // MARK: - Cloud-Init (Cross-Platform)
+
+    /// Create a combined cloud-init ISO with network isolation + SSH access
+    private func createCombinedCloudInitISO(
+        at outputPath: String,
+        vmNetConfig: VMNetworkConfig,
+        sshPublicKey: String,
+        sshUser: String,
+        instanceId: UUID
+    ) throws {
+        // Generate user-data with network isolation config
+        var userData = CloudInitGenerator.generateNetworkIsolationUserData(config: vmNetConfig)
+
+        // Append SSH user configuration
+        // The network isolation config sets hostname, we add SSH user separately
+        let sshConfig = """
+
+        # SSH User Configuration
+        users:
+          - name: \(sshUser)
+            sudo: ALL=(ALL) NOPASSWD:ALL
+            shell: /bin/bash
+            ssh_authorized_keys:
+              - \(sshPublicKey)
+        """
+
+        userData += sshConfig
+
+        // Generate meta-data
+        let metaData = CloudInitGenerator.generateNetworkIsolationMetaData(config: vmNetConfig)
+
+        // Create temp directory for cloud-init files
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cloudinit-combined-\(instanceId.uuidString.prefix(8))")
+
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        // Write user-data
+        let userDataPath = tempDir.appendingPathComponent("user-data")
+        try userData.write(to: userDataPath, atomically: true, encoding: .utf8)
+
+        // Write meta-data
+        let metaDataPath = tempDir.appendingPathComponent("meta-data")
+        try metaData.write(to: metaDataPath, atomically: true, encoding: .utf8)
+
+        // Create ISO using platform-specific method
+        try CloudInitGenerator.createISOFromDirectory(from: tempDir.path, to: outputPath)
+    }
+
+    #if os(macOS)
+    // MARK: - macOS EFI Support
 
     /// Get the real user's home directory (handles sudo correctly)
     private func getRealUserHomeDir() -> String {

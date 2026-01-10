@@ -2,7 +2,12 @@ import Foundation
 import Logging
 import OmertaCore
 import OmertaNetwork
+import OmertaVM
 import Crypto
+
+#if os(macOS)
+@preconcurrency import Virtualization
+#endif
 
 /// Manages provider-side WireGuard tunnels connecting to consumer VPN servers
 /// Sets up NAT routing from VPN network to VM NAT addresses
@@ -1360,6 +1365,197 @@ rdr on \(actualInterface) proto {tcp, udp} from any to \(vmVPNIP) -> \(vmNATIP)
         }
     }
 }
+
+// MARK: - Phase 10: VM Network Integration
+
+#if os(macOS)
+/// Result of VM network setup containing all necessary components
+public struct VMNetworkSetup: Sendable {
+    /// Network device configuration for the VM
+    public let networkDevice: VZVirtioNetworkDeviceConfiguration
+
+    /// Handle for cleanup
+    public let handle: VMNetworkHandle
+
+    /// Path to cloud-init ISO (attach to VM as secondary drive)
+    public let cloudInitISOPath: String
+
+    /// VM's WireGuard public key (derived from private key)
+    public let vmPublicKey: String
+
+    /// VM's WireGuard private key (used in cloud-init config)
+    public let vmPrivateKey: String
+}
+
+extension ProviderVPNManager {
+
+    /// Set up VM network with isolation via WireGuard and firewall
+    ///
+    /// This integrates:
+    /// - VMNetworkManager (Phase 8) for network device configuration
+    /// - CloudInitGenerator (Phase 9) for VM-side WireGuard and firewall
+    ///
+    /// - Parameters:
+    ///   - vmId: Unique identifier for the VM
+    ///   - mode: Network mode (direct, sampled, conntrack, filtered)
+    ///   - consumerPublicKey: Consumer's WireGuard public key
+    ///   - consumerEndpoint: Consumer's WireGuard endpoint (ip:port)
+    ///   - vmAddress: VM's WireGuard IP address (default: 10.200.200.2/24)
+    ///   - outputDirectory: Directory for cloud-init ISO
+    /// - Returns: VMNetworkSetup with network device, handle, and cloud-init ISO path
+    @MainActor
+    public func setupVMNetwork(
+        vmId: UUID,
+        mode: VMNetworkMode,
+        consumerPublicKey: String,
+        consumerEndpoint: String,
+        vmAddress: String = "10.200.200.2/24",
+        outputDirectory: String? = nil
+    ) async throws -> VMNetworkSetup {
+        logger.info("Setting up VM network", metadata: [
+            "vm_id": "\(vmId)",
+            "mode": "\(mode.rawValue)",
+            "consumer_endpoint": "\(consumerEndpoint)"
+        ])
+
+        // Parse endpoint to create Endpoint type
+        let endpointParts = consumerEndpoint.split(separator: ":")
+        guard endpointParts.count == 2,
+              let port = UInt16(endpointParts[1]) else {
+            throw ProviderVPNError.natSetupFailed("Invalid consumer endpoint format: \(consumerEndpoint)")
+        }
+
+        let ipComponents = String(endpointParts[0]).split(separator: ".").compactMap { UInt8($0) }
+        guard ipComponents.count == 4 else {
+            throw ProviderVPNError.natSetupFailed("Invalid IP address in endpoint: \(consumerEndpoint)")
+        }
+
+        let endpoint = Endpoint(
+            address: IPv4Address(ipComponents[0], ipComponents[1], ipComponents[2], ipComponents[3]),
+            port: port
+        )
+
+        // 1. Create VM network configuration using VMNetworkManager (Phase 8)
+        let networkConfig = try VMNetworkManager.createNetwork(
+            mode: mode,
+            consumerEndpoint: endpoint
+        )
+
+        // 2. Generate WireGuard keypair for VM
+        let vmPrivateKey = generatePrivateKey()
+        let vmPublicKey: String
+        if dryRun {
+            vmPublicKey = Data((0..<32).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
+        } else {
+            vmPublicKey = try derivePublicKey(from: vmPrivateKey)
+        }
+
+        // 3. Create cloud-init configuration for VM (Phase 9)
+        let vmNetworkConfig = VMNetworkConfigFactory.createForConsumer(
+            consumerPublicKey: consumerPublicKey,
+            consumerEndpoint: consumerEndpoint,
+            vmPrivateKey: vmPrivateKey,
+            vmAddress: vmAddress
+        )
+
+        // 4. Create cloud-init ISO
+        let outputDir = outputDirectory ?? configDirectory
+        let isoPath = "\(outputDir)/cidata-\(vmId.uuidString.prefix(8)).iso"
+
+        if !dryRun {
+            try CloudInitGenerator.createNetworkIsolationISO(
+                config: vmNetworkConfig,
+                outputPath: isoPath
+            )
+            logger.info("Created cloud-init ISO", metadata: ["path": "\(isoPath)"])
+        } else {
+            logger.info("DRY RUN: Would create cloud-init ISO", metadata: ["path": "\(isoPath)"])
+        }
+
+        logger.info("VM network setup complete", metadata: [
+            "vm_id": "\(vmId)",
+            "mode": "\(mode.rawValue)",
+            "vm_public_key": "\(vmPublicKey.prefix(20))..."
+        ])
+
+        return VMNetworkSetup(
+            networkDevice: networkConfig.networkDevice,
+            handle: networkConfig.handle,
+            cloudInitISOPath: isoPath,
+            vmPublicKey: vmPublicKey,
+            vmPrivateKey: vmPrivateKey
+        )
+    }
+
+    /// Set up filtered NAT for VM (convenience method)
+    ///
+    /// Creates a VM network in filtered mode with cloud-init configuration.
+    /// Attaches the network device and cloud-init ISO to the VM configuration.
+    ///
+    /// - Parameters:
+    ///   - vmId: Unique identifier for the VM
+    ///   - consumerPublicKey: Consumer's WireGuard public key
+    ///   - consumerEndpoint: Consumer's WireGuard endpoint (ip:port)
+    ///   - vmConfig: VM configuration to modify (adds network device and cloud-init disk)
+    /// - Returns: VMNetworkSetup with cleanup handle and VM public key
+    @MainActor
+    public func setupFilteredNAT(
+        vmId: UUID,
+        consumerPublicKey: String,
+        consumerEndpoint: String,
+        vmConfig: inout VZVirtualMachineConfiguration
+    ) async throws -> VMNetworkSetup {
+        let setup = try await setupVMNetwork(
+            vmId: vmId,
+            mode: .filtered,
+            consumerPublicKey: consumerPublicKey,
+            consumerEndpoint: consumerEndpoint
+        )
+
+        // Add network device to VM configuration
+        vmConfig.networkDevices = [setup.networkDevice]
+
+        // Attach cloud-init ISO as secondary disk (if not in dry-run and file exists)
+        if !dryRun && FileManager.default.fileExists(atPath: setup.cloudInitISOPath) {
+            let isoURL = URL(fileURLWithPath: setup.cloudInitISOPath)
+            let attachment = try VZDiskImageStorageDeviceAttachment(
+                url: isoURL,
+                readOnly: true
+            )
+            let ciDisk = VZVirtioBlockDeviceConfiguration(attachment: attachment)
+            vmConfig.storageDevices.append(ciDisk)
+
+            logger.info("Attached cloud-init ISO to VM", metadata: [
+                "vm_id": "\(vmId)",
+                "iso_path": "\(setup.cloudInitISOPath)"
+            ])
+        }
+
+        return setup
+    }
+
+    /// Clean up VM network resources
+    ///
+    /// - Parameters:
+    ///   - handle: Network handle from setup
+    ///   - cloudInitISOPath: Optional path to cloud-init ISO to remove
+    public func cleanupVMNetwork(
+        handle: VMNetworkHandle,
+        cloudInitISOPath: String? = nil
+    ) async {
+        // Clean up network handle
+        await MainActor.run {
+            VMNetworkManager.cleanup(handle)
+        }
+
+        // Remove cloud-init ISO
+        if let isoPath = cloudInitISOPath {
+            try? FileManager.default.removeItem(atPath: isoPath)
+            logger.info("Removed cloud-init ISO", metadata: ["path": "\(isoPath)"])
+        }
+    }
+}
+#endif
 
 // MARK: - Errors
 

@@ -247,8 +247,9 @@ public actor UDPControlServer {
             requirements: request.requirements,
             sshPublicKey: request.sshPublicKey,
             sshUser: request.sshUser,
-            vpnIP: vmVPNIP,
-            vpnGateway: providerVPNIP
+            consumerPublicKey: request.vpnConfig.consumerPublicKey,
+            consumerEndpoint: request.consumerEndpoint,
+            vpnIP: vmVPNIP
         )
 
         logger.info("VM started successfully", metadata: [
