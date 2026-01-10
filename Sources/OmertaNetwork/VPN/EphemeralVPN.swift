@@ -511,14 +511,20 @@ public actor EphemeralVPN: VPNProvider {
 
         // Try to get the default route interface's IP address
         #if os(macOS)
-        // On macOS with localhost provider, check for vmnet bridge interface
+        // On macOS with localhost provider, use vmnet bridge IP
         // Virtualization.framework VMs can't reach the host's en0 IP through NAT hairpin,
-        // but they CAN reach the vmnet bridge IP (typically 192.168.64.1 on bridge100)
+        // but they CAN reach the vmnet bridge IP (192.168.64.1 on bridge100)
         if isLocalhostProvider {
+            // First try to detect an existing bridge
             if let bridgeIP = getVmnetBridgeIP() {
                 logger.info("Using vmnet bridge IP for localhost provider", metadata: ["ip": "\(bridgeIP)"])
                 return bridgeIP
             }
+            // If no bridge exists yet (VM not started), use the well-known default vmnet IP
+            // Virtualization.framework always creates bridge100 with 192.168.64.1 for the first VM
+            let defaultVmnetIP = "192.168.64.1"
+            logger.info("Using default vmnet bridge IP for localhost provider (bridge not yet created)", metadata: ["ip": "\(defaultVmnetIP)"])
+            return defaultVmnetIP
         }
 
         // On macOS, get the IP of the default interface
