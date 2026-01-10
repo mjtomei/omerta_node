@@ -1,6 +1,7 @@
 import Foundation
 import Logging
 import OmertaCore
+import Crypto
 
 #if os(Linux)
 import Glibc
@@ -39,6 +40,15 @@ public actor SimpleVMManager {
         // Not Sendable by default, but we only access on main actor
         public let vzVM: VZVirtualMachine?
         #endif
+    }
+
+    /// Result of starting a VM - includes the VM's WireGuard public key
+    /// so the consumer can add it as a peer
+    public struct VMStartResult: Sendable {
+        /// VM's IP address (NAT IP on macOS, VPN IP on Linux with TAP)
+        public let vmIP: String
+        /// VM's WireGuard public key (derived from generated private key)
+        public let vmWireGuardPublicKey: String
     }
 
     public init(dryRun: Bool = false) {
@@ -187,7 +197,7 @@ public actor SimpleVMManager {
     ///   - consumerPublicKey: Consumer's WireGuard public key (required for VM-side WireGuard)
     ///   - consumerEndpoint: Consumer's WireGuard endpoint ip:port (required for VM-side WireGuard)
     ///   - vpnIP: The WireGuard IP to assign to the VM (default: 10.200.200.2)
-    /// - Returns: The VM's WireGuard IP address
+    /// - Returns: VMStartResult containing the VM's IP and WireGuard public key
     public func startVM(
         vmId: UUID,
         requirements: ResourceRequirements,
@@ -196,7 +206,7 @@ public actor SimpleVMManager {
         consumerPublicKey: String,
         consumerEndpoint: String,
         vpnIP: String? = nil
-    ) async throws -> String {
+    ) async throws -> VMStartResult {
         logger.info("Starting VM", metadata: [
             "vm_id": "\(vmId)",
             "cpu_cores": "\(requirements.cpuCores ?? 0)",
@@ -238,13 +248,16 @@ public actor SimpleVMManager {
             #endif
             activeVMs[vmId] = runningVM
 
+            // Generate simulated WireGuard public key for dry-run
+            let simulatedPublicKey = Data((0..<32).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
+
             logger.info("DRY RUN: VM simulated successfully", metadata: [
                 "vm_id": "\(vmId)",
                 "vm_ip": "\(vmIP)",
                 "ssh_port": "\(sshPort)"
             ])
 
-            return vmIP
+            return VMStartResult(vmIP: vmIP, vmWireGuardPublicKey: simulatedPublicKey)
         }
 
         #if os(macOS)
@@ -281,7 +294,7 @@ public actor SimpleVMManager {
         consumerPublicKey: String,
         consumerEndpoint: String,
         vpnIP: String?
-    ) async throws -> String {
+    ) async throws -> VMStartResult {
         // 1. Verify base image exists
         guard FileManager.default.fileExists(atPath: baseImagePath) else {
             throw VMError.diskImageNotFound
@@ -314,13 +327,12 @@ public actor SimpleVMManager {
             // Generate cloud-init ISO with WireGuard + firewall (Phase 11.5)
             let seedISOPath = "\(vmDiskDir)/\(vmId.uuidString)-seed.iso"
 
-            logger.info("Using VM-side WireGuard network isolation (Phase 11.5)", metadata: [
+            logger.info("Using VM-side WireGuard network isolation (Phase 9)", metadata: [
                 "consumer_endpoint": "\(consumerEndpoint)"
             ])
 
             // Generate VM's WireGuard keypair
-            let vmPrivateKeyBytes = (0..<32).map { _ in UInt8.random(in: 0...255) }
-            let vmPrivateKey = Data(vmPrivateKeyBytes).base64EncodedString()
+            let (vmPrivateKey, vmPublicKey) = try generateWireGuardKeypair()
 
             // Create network isolation config
             let vmAddress = "\(vpnIPValue)/24"
@@ -389,7 +401,7 @@ public actor SimpleVMManager {
                 "ssh_command": "ssh \(sshUser)@\(vmIP)"
             ])
 
-            return vmIP
+            return VMStartResult(vmIP: vmIP, vmWireGuardPublicKey: vmPublicKey)
         }
         #else
         if vpnIP != nil {
@@ -404,13 +416,12 @@ public actor SimpleVMManager {
         // Generate cloud-init ISO with WireGuard + firewall (Phase 11.5)
         let seedISOPath = "\(vmDiskDir)/\(vmId.uuidString)-seed.iso"
 
-        logger.info("Using VM-side WireGuard network isolation (Phase 11.5) with SLIRP", metadata: [
+        logger.info("Using VM-side WireGuard network isolation (Phase 9) with SLIRP", metadata: [
             "consumer_endpoint": "\(consumerEndpoint)"
         ])
 
         // Generate VM's WireGuard keypair
-        let vmPrivateKeyBytes = (0..<32).map { _ in UInt8.random(in: 0...255) }
-        let vmPrivateKey = Data(vmPrivateKeyBytes).base64EncodedString()
+        let (vmPrivateKey, vmPublicKey) = try generateWireGuardKeypair()
 
         // Create network isolation config
         let vmAddress = vpnIP.map { "\($0)/24" } ?? "10.200.200.2/24"
@@ -479,7 +490,7 @@ public actor SimpleVMManager {
             "ssh_command": "ssh -p \(sshPort) \(sshUser)@localhost"
         ])
 
-        return vmIP
+        return VMStartResult(vmIP: vmIP, vmWireGuardPublicKey: vmPublicKey)
     }
 
     #if os(Linux)
@@ -736,7 +747,7 @@ public actor SimpleVMManager {
 
     #if os(macOS)
     /// Start a VM using macOS Virtualization.framework with WireGuard network isolation
-    /// Returns the VM's WireGuard IP address
+    /// Returns VMStartResult with VM's IP and WireGuard public key
     private func startVMMacOS(
         vmId: UUID,
         requirements: ResourceRequirements,
@@ -745,7 +756,7 @@ public actor SimpleVMManager {
         consumerPublicKey: String,
         consumerEndpoint: String,
         vpnIP: String?
-    ) async throws -> String {
+    ) async throws -> VMStartResult {
         // 1. Verify base image exists
         guard FileManager.default.fileExists(atPath: baseImagePath) else {
             throw VMError.diskImageNotFound
@@ -765,8 +776,7 @@ public actor SimpleVMManager {
         ])
 
         // Generate VM's WireGuard keypair
-        let vmPrivateKeyBytes = (0..<32).map { _ in UInt8.random(in: 0...255) }
-        let vmPrivateKey = Data(vmPrivateKeyBytes).base64EncodedString()
+        let (vmPrivateKey, vmPublicKey) = try generateWireGuardKeypair()
 
         // Create network isolation config
         let vmAddress = vpnIP.map { "\($0)/24" } ?? "10.200.200.2/24"
@@ -845,7 +855,7 @@ public actor SimpleVMManager {
             "ssh_command": "ssh \(sshUser)@\(vmIP)"
         ])
 
-        return vmIP
+        return VMStartResult(vmIP: vmIP, vmWireGuardPublicKey: vmPublicKey)
     }
 
     /// Create a raw disk overlay backed by the base image (for Virtualization.framework)
@@ -1247,6 +1257,21 @@ public actor SimpleVMManager {
     }
 
     // MARK: - Private Helpers
+
+    /// Generate a WireGuard keypair (private + public key)
+    /// Returns (privateKey, publicKey) as base64-encoded strings
+    private func generateWireGuardKeypair() throws -> (privateKey: String, publicKey: String) {
+        // Generate random 32-byte private key
+        let privateKeyBytes = (0..<32).map { _ in UInt8.random(in: 0...255) }
+        let privateKeyData = Data(privateKeyBytes)
+        let privateKey = privateKeyData.base64EncodedString()
+
+        // Derive public key using Curve25519
+        let curve25519Private = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: privateKeyData)
+        let publicKey = curve25519Private.publicKey.rawRepresentation.base64EncodedString()
+
+        return (privateKey, publicKey)
+    }
 
     private func generateVMNATIP() -> String {
         // Use 192.168.64.0/24 for NAT (macOS convention, also works for libvirt)

@@ -21,8 +21,7 @@ public actor UDPControlServer {
 
     // VM management
     private let vmManager: SimpleVMManager
-    private let vpnHealthMonitor: VPNHealthMonitor
-    private let providerVPNManager: ProviderVPNManager
+    // Note: No host-side VPN manager needed - WireGuard runs inside the VM (Phase 9)
 
     // VM tracking - includes networkId for responses
     private var activeVMs: [UUID: ActiveVM] = [:]
@@ -33,9 +32,7 @@ public actor UDPControlServer {
         let consumerEndpoint: String
         let vpnConfig: VPNConfiguration
         let vmIP: String          // VPN IP (e.g., 10.99.0.2)
-        let tapInterface: String  // TAP interface (e.g., tap-abc12345)
-        let vpnInterface: String
-        let providerPublicKey: String
+        let vmWireGuardPublicKey: String  // VM's WireGuard public key (for consumer to add as peer)
         let createdAt: Date
     }
 
@@ -43,15 +40,11 @@ public actor UDPControlServer {
         networkKeys: [String: Data],
         port: UInt16 = 51820,
         vmManager: SimpleVMManager? = nil,
-        vpnHealthMonitor: VPNHealthMonitor = VPNHealthMonitor(),
-        providerVPNManager: ProviderVPNManager? = nil,
         dryRun: Bool = false
     ) {
         self.networkKeys = networkKeys
         self.port = port
         self.vmManager = vmManager ?? SimpleVMManager(dryRun: dryRun)
-        self.vpnHealthMonitor = vpnHealthMonitor
-        self.providerVPNManager = providerVPNManager ?? ProviderVPNManager(dryRun: dryRun)
 
         var logger = Logger(label: "com.omerta.provider.udp-control")
         logger.logLevel = .info
@@ -242,7 +235,10 @@ public actor UDPControlServer {
             "gateway": "\(providerVPNIP)"
         ])
 
-        let vmIP = try await vmManager.startVM(
+        // Start VM with cloud-init that configures WireGuard inside the VM
+        // The VM's WireGuard will connect OUT to the consumer's WireGuard server
+        // No host-side VPN tunnel needed (Phase 9 architecture)
+        let vmResult = try await vmManager.startVM(
             vmId: request.vmId,
             requirements: request.requirements,
             sshPublicKey: request.sshPublicKey,
@@ -254,88 +250,32 @@ public actor UDPControlServer {
 
         logger.info("VM started successfully", metadata: [
             "vm_id": "\(request.vmId)",
-            "vm_ip": "\(vmIP)",
+            "vm_ip": "\(vmResult.vmIP)",
             "vpn_ip": "\(vmVPNIP)",
-            "using_nat": "\(vmIP != vmVPNIP)"
+            "vm_public_key": "\(vmResult.vmWireGuardPublicKey.prefix(8))..."
         ])
 
-        // 3. Create VPN tunnel connecting to consumer's WireGuard server
-        // - TAP networking (Linux): route directly to the TAP interface (no NAT)
-        // - NAT networking (macOS/SLIRP): use DNAT to forward VPN IP to VM's NAT IP
-        let vpnInterface = "wg-\(request.vmId.uuidString.prefix(8))"
-        let tapInterface = "tap-\(request.vmId.uuidString.prefix(8))"
-        let providerPublicKey: String
-
-        // If VM's actual IP differs from VPN IP, we need NAT routing
-        let vmNATIP: String? = (vmIP != vmVPNIP) ? vmIP : nil
-
-        do {
-            providerPublicKey = try await providerVPNManager.createTunnel(
-                vmId: request.vmId,
-                vpnConfig: request.vpnConfig,
-                tapInterface: tapInterface,
-                vmNATIP: vmNATIP
-            )
-            logger.info("VPN tunnel created", metadata: [
-                "vm_id": "\(request.vmId)",
-                "interface": "\(vpnInterface)"
-            ])
-        } catch {
-            // VPN setup failed - clean up VM
-            logger.error("VPN tunnel creation failed, cleaning up VM", metadata: [
-                "vm_id": "\(request.vmId)",
-                "error": "\(error)"
-            ])
-            try? await vmManager.stopVM(vmId: request.vmId)
-            throw ProviderError.vpnSetupFailed("Failed to create VPN tunnel: \(error)")
-        }
-
-        // 4. Start VPN health monitoring
-        await vpnHealthMonitor.startMonitoring(
-            vmId: request.vmId,
-            vpnInterface: vpnInterface,
-            consumerPublicKey: request.vpnConfig.consumerPublicKey
-        ) { [weak self] deadVmId in
-            guard let self = self else { return }
-
-            await self.logger.error("VPN tunnel died - killing VM", metadata: [
-                "vm_id": "\(deadVmId)"
-            ])
-
-            // Clean up VPN tunnel
-            try? await self.providerVPNManager.destroyTunnel(vmId: deadVmId)
-
-            // Kill VM
-            try? await self.vmManager.stopVM(vmId: deadVmId)
-
-            // Remove from tracking
-            await self.removeVM(deadVmId)
-        }
-
-        logger.info("VPN health monitoring started", metadata: ["vm_id": "\(request.vmId)"])
-
-        // 5. Track active VM
-        // Consumer accesses VM via the VPN IP
+        // 3. Track active VM
+        // Consumer accesses VM via the VPN IP through the WireGuard tunnel
+        // The VM's WireGuard connects OUT to the consumer - no host-side tunnel needed
         let activeVM = ActiveVM(
             vmId: request.vmId,
             networkId: networkId,
             consumerEndpoint: request.consumerEndpoint,
             vpnConfig: request.vpnConfig,
             vmIP: vmVPNIP,
-            tapInterface: tapInterface,
-            vpnInterface: vpnInterface,
-            providerPublicKey: providerPublicKey,
+            vmWireGuardPublicKey: vmResult.vmWireGuardPublicKey,
             createdAt: Date()
         )
         activeVMs[request.vmId] = activeVM
 
-        // 6. Return response with provider's public key
-        // Consumer needs this to add provider as a peer on their WireGuard server
+        // 4. Return response with VM's WireGuard public key
+        // Consumer needs this to add VM as a peer on their WireGuard server
         let response = VMCreatedResponse(
             vmId: request.vmId,
             vmIP: vmVPNIP,
             sshPort: 22,
-            providerPublicKey: providerPublicKey
+            providerPublicKey: vmResult.vmWireGuardPublicKey
         )
 
         return .vmCreated(response)
@@ -345,31 +285,13 @@ public actor UDPControlServer {
     private func handleReleaseVM(_ request: ReleaseVMMessage) async throws -> ControlAction {
         logger.info("Handling VM release", metadata: ["vm_id": "\(request.vmId)"])
 
-        guard let vm = activeVMs[request.vmId] else {
+        guard activeVMs[request.vmId] != nil else {
             logger.warning("VM not found", metadata: ["vm_id": "\(request.vmId)"])
             throw ProviderError.vmNotFound(request.vmId)
         }
 
-        // 1. Stop VPN health monitoring
-        await vpnHealthMonitor.stopMonitoring(vmId: request.vmId)
-        logger.info("VPN health monitoring stopped", metadata: ["vm_id": "\(request.vmId)"])
-
-        // 2. Destroy VPN tunnel (includes NAT cleanup and firewall rules)
-        do {
-            try await providerVPNManager.destroyTunnel(vmId: request.vmId)
-            logger.info("VPN tunnel destroyed", metadata: [
-                "vm_id": "\(request.vmId)",
-                "interface": "\(vm.vpnInterface)"
-            ])
-        } catch {
-            logger.warning("Failed to destroy VPN tunnel", metadata: [
-                "vm_id": "\(request.vmId)",
-                "error": "\(error)"
-            ])
-            // Continue with cleanup even if VPN teardown fails
-        }
-
-        // 3. Kill the VM
+        // 1. Stop the VM
+        // The VM's internal WireGuard tunnel will be cleaned up when the VM stops
         do {
             try await vmManager.stopVM(vmId: request.vmId)
             logger.info("VM stopped", metadata: ["vm_id": "\(request.vmId)"])
@@ -381,12 +303,12 @@ public actor UDPControlServer {
             // Continue with cleanup even if VM stop fails
         }
 
-        // 4. Remove from tracking
+        // 2. Remove from tracking
         removeVM(request.vmId)
 
         logger.info("VM released successfully", metadata: ["vm_id": "\(request.vmId)"])
 
-        // 5. Return response
+        // 3. Return response
         let response = VMReleasedResponse(vmId: request.vmId)
         return .vmReleased(response)
     }
