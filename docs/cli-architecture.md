@@ -322,51 +322,206 @@ $ ssh omerta@10.0.0.2
 
 ## Test Plan
 
-### Unit Tests (Keep/Expand)
+### Test Pyramid Strategy
 
-| Test | Status | Notes |
-|------|--------|-------|
-| CloudInitTests | ✅ Working | 28 tests, Phase 9 |
-| IPv4PacketTests | ✅ Working | Packet parsing |
-| EthernetFrameTests | ✅ Working | Frame parsing |
-| ProviderVPNIntegrationTests | ✅ Working | 15 tests, mocked |
+Tests are organized in layers, from fastest/simplest to slowest/most comprehensive:
 
-### Integration Tests (Add)
+```
+                    ┌─────────────┐
+                    │   E2E Tests │  Requires: 2 machines, sudo, VMs
+                    │  (Manual)   │  Run: Before releases
+                    └──────┬──────┘
+                   ┌───────┴───────┐
+                   │  Integration  │  Requires: Single machine, may need sudo
+                   │    Tests      │  Run: CI on both Linux & macOS
+                   └───────┬───────┘
+              ┌────────────┴────────────┐
+              │    Component Tests      │  Requires: No privileges
+              │  (In-process mocking)   │  Run: Every commit
+              └────────────┬────────────┘
+         ┌─────────────────┴─────────────────┐
+         │           Unit Tests              │  Requires: Nothing
+         │  (Pure functions, serialization)  │  Run: Every commit
+         └───────────────────────────────────┘
+```
 
-| Test | Priority | Description |
-|------|----------|-------------|
-| ConsumerProviderHandshake | High | Full UDP message exchange |
-| VMBootMacOS | High | Virtualization.framework boot with cloud-init |
-| VMBootLinux | High | QEMU/KVM boot with cloud-init |
-| WireGuardVMConnection | High | VM-to-VM WireGuard tunnel |
-| SSHOverWireGuard | High | SSH through WireGuard tunnel |
-| ConsumerVMBoot | High | Consumer VM boots and accepts connections |
+### Level 1: Unit Tests (No privileges, fast)
 
-### E2E Tests (Add)
+| Test File | Tests | Description |
+|-----------|-------|-------------|
+| `CLIIntegrationTests.swift` | ✅ 17 | Config, SSH keys, local key generation |
+| `ConsumerProviderHandshakeTests.swift` | ✅ 21 | Message envelope, encryption, serialization |
+| `CloudInitTests.swift` | ✅ 28 | Cloud-init file generation |
+| `NetworkIsolationTests.swift` | ✅ 7 | VM network config generation |
+| `FilteringStrategyTests.swift` | ✅ | Filtering mode selection |
+| `EthernetFrameTests.swift` | ✅ | Frame parsing |
+| `IPv4PacketTests.swift` | ✅ | Packet parsing |
 
-| Test | Priority | Description |
-|------|----------|-------------|
-| AppFullFlow | Critical | App boots, request VM, SSH works |
-| CLIFullFlow | Critical | omerta + omertad CLI flow |
-| BidirectionalPeering | High | Both peers provide VMs to each other |
-| MultipleVMs | Medium | Multiple provider VMs simultaneously |
-| VMCleanup | Medium | VM release cleans up properly |
-| HostMonitoring | Medium | Host can see/filter VM traffic |
+**Run:** `swift test` (all platforms, no privileges)
 
-### Manual Test Script
+### Level 2: Component Tests (No privileges, in-process)
+
+| Test File | Description | What It Validates |
+|-----------|-------------|-------------------|
+| `UDPControlProtocolTests.swift` | In-process client/server | Message routing, encryption, response matching |
+| `VMConfigurationTests.swift` | VM config validation | CPU/memory limits, disk paths, network config |
+| `WireGuardConfigTests.swift` | WG config generation | Valid wg-quick format, key formats, peer config |
+| `CloudInitISOTests.swift` | ISO generation | Valid ISO9660, correct file structure |
+
+**Run:** `swift test --filter Component` (all platforms, no privileges)
+
+### Level 3: Integration Tests (May need privileges)
+
+#### 3a: Provider-side (needs entitlements on macOS, root on Linux for QEMU)
+
+| Test File | Platform | Description |
+|-----------|----------|-------------|
+| `ProviderVMBootTests.swift` | macOS | VM boots via Virtualization.framework |
+| `ProviderVMBootTests.swift` | Linux | VM boots via QEMU/KVM |
+| `CloudInitExecutionTests.swift` | Both | Cloud-init runs, WG interface created |
+| `VMNetworkIsolationTests.swift` | Both | iptables rules block non-WG traffic |
+
+**Run:**
+- macOS: `swift test --filter ProviderVMBoot` (needs signed binary with entitlements)
+- Linux: `sudo swift test --filter ProviderVMBoot` (needs KVM access)
+
+#### 3b: Consumer-side (needs sudo for WireGuard)
+
+| Test File | Platform | Description |
+|-----------|----------|-------------|
+| `ConsumerWireGuardTests.swift` | Both | WG server starts, peer can be added |
+| `EphemeralVPNTests.swift` | Both | VPN lifecycle (create, add peer, cleanup) |
+
+**Run:** `sudo swift test --filter ConsumerWireGuard`
+
+#### 3c: Protocol Tests (no privileges, localhost UDP)
+
+| Test File | Description |
+|-----------|-------------|
+| `UDPControlServerTests.swift` | Server accepts connections, routes messages |
+| `UDPControlClientTests.swift` | Client sends requests, receives responses |
+| `ControlProtocolE2ETests.swift` | Full request/response cycle over localhost |
+
+**Run:** `swift test --filter UDPControl`
+
+### Level 4: E2E Tests (Manual, needs 2 machines)
+
+| Test | Setup | Validates |
+|------|-------|-----------|
+| Local loopback | Single machine, provider + consumer | Protocol works over localhost |
+| Cross-machine | 2 machines on same network | Full network path |
+| Cross-network | 2 machines on different networks | NAT traversal (if applicable) |
+
+**Scripts:**
 
 ```bash
+# test-local-loopback.sh (single machine)
 #!/bin/bash
-# test-e2e.sh
+set -e
 
-# Machine A (192.168.1.100):
-omertad start
+# Start provider (no sudo needed)
+omertad start --dry-run &
+PROVIDER_PID=$!
+sleep 2
 
-# Machine B:
-ssh -p 2222 localhost  # Into consumer VM
-omerta vm request --provider 192.168.1.100
-ssh omerta@10.0.0.2 "echo 'E2E test passed'"
+# Request VM (consumer dry-run to test protocol)
+omerta vm request --provider 127.0.0.1:51820 --dry-run
+
+# Cleanup
+kill $PROVIDER_PID
+echo "Local loopback test passed!"
 ```
+
+```bash
+# test-provider-vm-boot.sh (tests actual VM boot)
+#!/bin/bash
+set -e
+
+# macOS: Sign binary first
+codesign --force --sign - --entitlements entitlements.plist .build/release/omertad
+
+# Start provider (real mode)
+omertad start &
+PROVIDER_PID=$!
+sleep 2
+
+# Request VM (consumer dry-run, but provider creates real VM)
+omerta vm request --provider 127.0.0.1:51820 --dry-run
+
+# Check VM is running
+omerta vm list
+
+# Cleanup
+omerta vm release --all
+kill $PROVIDER_PID
+```
+
+```bash
+# test-full-e2e.sh (needs 2 machines + sudo)
+#!/bin/bash
+# Run on consumer machine
+
+PROVIDER_IP=${1:-192.168.1.100}
+
+# This needs sudo for consumer WireGuard
+sudo omerta vm request --provider $PROVIDER_IP
+
+# Test SSH through WireGuard tunnel
+ssh -o ConnectTimeout=30 omerta@10.0.0.2 "echo 'E2E test passed!'"
+
+# Cleanup
+sudo omerta vm release
+```
+
+### CI Configuration
+
+```yaml
+# .github/workflows/test.yml
+jobs:
+  unit-tests:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run unit tests
+        run: swift test
+
+  integration-tests-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run protocol tests
+        run: swift test --filter UDPControl
+      - name: Run provider VM tests (QEMU)
+        run: |
+          sudo apt-get install -y qemu-system-x86
+          sudo swift test --filter ProviderVMBoot
+
+  integration-tests-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and sign
+        run: |
+          swift build -c release
+          codesign --force --sign - --entitlements entitlements.plist .build/release/omertad
+      - name: Run protocol tests
+        run: swift test --filter UDPControl
+      - name: Run provider VM tests (Virtualization.framework)
+        run: swift test --filter ProviderVMBoot
+```
+
+### Test Files to Create
+
+| File | Level | Priority | Description |
+|------|-------|----------|-------------|
+| `Tests/OmertaProviderTests/UDPControlProtocolTests.swift` | 2 | High | In-process client/server protocol |
+| `Tests/OmertaVMTests/VMConfigurationTests.swift` | 2 | High | VM config validation |
+| `Tests/OmertaVMTests/ProviderVMBootTests.swift` | 3a | High | Real VM boot (platform-specific) |
+| `Tests/OmertaNetworkTests/ControlProtocolE2ETests.swift` | 3c | High | Localhost UDP roundtrip |
+| `Tests/OmertaConsumerTests/ConsumerWireGuardTests.swift` | 3b | Medium | WireGuard server lifecycle |
 
 ---
 

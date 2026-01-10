@@ -790,6 +790,7 @@ public actor SimpleVMManager {
 
         // 4. Create VM configuration
         let config = try await createVMConfiguration(
+            vmId: vmId,
             requirements: requirements,
             diskPath: rawOverlayPath,
             seedISOPath: seedISOPath
@@ -860,6 +861,7 @@ public actor SimpleVMManager {
 
     /// Create VM configuration for Virtualization.framework
     private func createVMConfiguration(
+        vmId: UUID,
         requirements: ResourceRequirements,
         diskPath: String,
         seedISOPath: String
@@ -879,8 +881,8 @@ public actor SimpleVMManager {
         let platform = VZGenericPlatformConfiguration()
         config.platform = platform
 
-        // EFI boot loader for Ubuntu cloud image
-        let efiVariableStore = try getOrCreateEFIVariableStore()
+        // EFI boot loader for Ubuntu cloud image (per-VM EFI store)
+        let efiVariableStore = try getOrCreateEFIVariableStore(vmId: vmId)
         let bootloader = VZEFIBootLoader()
         bootloader.variableStore = efiVariableStore
         config.bootLoader = bootloader
@@ -1000,10 +1002,10 @@ public actor SimpleVMManager {
         }
     }
 
-    private func getOrCreateEFIVariableStore() throws -> VZEFIVariableStore {
+    private func getOrCreateEFIVariableStore(vmId: UUID) throws -> VZEFIVariableStore {
         let homeDir = getRealUserHomeDir()
-        let efiDir = "\(homeDir)/.omerta"
-        let efiPath = "\(efiDir)/efi-vars.bin"
+        let efiDir = "\(homeDir)/.omerta/vm-disks"
+        let efiPath = "\(efiDir)/\(vmId)-efi-vars.bin"
         let efiURL = URL(fileURLWithPath: efiPath)
 
         // Create directory if needed
@@ -1012,12 +1014,11 @@ public actor SimpleVMManager {
             withIntermediateDirectories: true
         )
 
+        // Always create a fresh EFI store for each VM to avoid permission/state issues
         if FileManager.default.fileExists(atPath: efiPath) {
-            return try VZEFIVariableStore(url: efiURL)
-        } else {
-            // Create new EFI variable store
-            return try VZEFIVariableStore(creatingVariableStoreAt: efiURL)
+            try? FileManager.default.removeItem(atPath: efiPath)
         }
+        return try VZEFIVariableStore(creatingVariableStoreAt: efiURL)
     }
     #endif
 
