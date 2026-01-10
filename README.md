@@ -1,6 +1,6 @@
 # Omerta
 
-A privacy-preserving, peer-to-peer compute sharing platform for macOS.
+A privacy-preserving, peer-to-peer compute sharing platform for macOS and Linux.
 
 ## Overview
 
@@ -13,7 +13,7 @@ Omerta allows you to share compute resources (CPU and GPU) with others in a secu
 - **Social Networks**: Join compute networks via shared keys (like Discord servers)
 - **Multi-Network**: Participate in multiple networks simultaneously
 - **Flexible Filtering**: Control who can use your resources via peer ID, IP, reputation, etc.
-- **GPU Support**: Metal-based GPU workloads on macOS VMs
+- **GPU Support**: Metal GPU passthrough (macOS), NVIDIA/AMD passthrough (Linux, planned)
 - **Both Provider & Consumer**: Share your resources AND use others' compute
 
 ## Architecture
@@ -40,70 +40,83 @@ Omerta allows you to share compute resources (CPU and GPU) with others in a secu
 ## Requirements
 
 ### Hardware
-- **Required**: Apple Silicon Mac (M1/M2/M3/M4)
-- **Recommended**: 32GB+ RAM (for running multiple VMs)
-- **Recommended**: 500GB+ free disk space (VM images can be large)
+
+**macOS:**
+- Apple Silicon Mac (M1/M2/M3/M4) or Intel Mac with Hypervisor support
+- 16GB+ RAM recommended (for running VMs)
+
+**Linux:**
+- x86_64 or ARM64 processor with KVM support
+- 16GB+ RAM recommended
+- `/dev/kvm` accessible (add user to `kvm` group)
 
 ### Software
 
-#### Runtime Dependencies (Required)
-- **macOS 14.0+** (Sonoma or later) - Required for Virtualization.framework
-- **WireGuard Tools** - Required for VPN routing
-  ```bash
-  brew install wireguard-tools
-  ```
+**macOS:**
+- macOS 14.0+ (Sonoma) - Required for Virtualization.framework
+- WireGuard Tools: `brew install wireguard-tools`
+- Swift 5.9+ (for building from source)
 
-#### Build Dependencies (Only for building from source)
-- **Xcode 15.0+** or **Xcode Command Line Tools**
+**Linux:**
+- QEMU with KVM: `sudo apt install qemu-system-x86 qemu-utils`
+- WireGuard Tools: `sudo apt install wireguard-tools`
+- Swift 5.9+ (for building from source)
+
+#### Build Dependencies (both platforms)
 - **Swift 5.9+**
 - **Protocol Buffer Compiler** (for regenerating protocol files)
   ```bash
+  # macOS
   brew install protobuf swift-protobuf
-  ```
 
-#### Optional Dependencies
-- **Linux Kernel** - Required for VM execution (auto-downloaded on first run)
-- **Homebrew** - Recommended for easy dependency installation on macOS
+  # Linux
+  sudo apt install protobuf-compiler
+  ```
 
 ## Installation
 
-### Quick Install (Recommended)
+### Quick Install
 
-Use the automated installation script:
+Use the installation script (works on macOS and Linux):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/omerta/omerta/main/Scripts/install.sh | bash
+# Clone the repository
+git clone https://github.com/omerta/omerta.git
+cd omerta
+
+# Run install script
+./Scripts/install.sh
 ```
 
 This script will:
-- ✅ Check system requirements (macOS 14+)
-- ✅ Install WireGuard if missing
-- ✅ Set up necessary directories
-- ✅ Install Omerta binaries (if available)
+- Check system requirements
+- Install WireGuard if missing
+- Set up necessary directories (`~/.omerta/`)
+- Build and install Omerta binaries
 
 ### Manual Installation
 
 #### 1. Install Dependencies
 
-**On macOS:**
+**macOS:**
 ```bash
-# Install Homebrew (if not already installed)
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# Install WireGuard
 brew install wireguard-tools
 ```
 
-**On Linux (for development):**
+**Linux (Debian/Ubuntu):**
 ```bash
-# Debian/Ubuntu
-sudo apt-get install wireguard-tools
+sudo apt-get update
+sudo apt-get install -y wireguard-tools qemu-system-x86 qemu-utils
 
-# Fedora/RHEL
-sudo dnf install wireguard-tools
+# Enable KVM access
+sudo usermod -aG kvm $USER
+# Log out and back in for group change to take effect
+```
 
-# Arch Linux
-sudo pacman -S wireguard-tools
+**Linux (Fedora/RHEL):**
+```bash
+sudo dnf install -y wireguard-tools qemu-kvm qemu-img
+sudo usermod -aG kvm $USER
 ```
 
 #### 2. Build from Source
@@ -144,7 +157,7 @@ Checking system dependencies...
 ✅ All dependencies satisfied
 ```
 
-### 2. Create a Network
+### Quick Start
 
 ```bash
 # Start as provider (shares your compute)
@@ -186,7 +199,7 @@ omerta/
 │   └── compute.proto       # gRPC protocol definitions
 ├── Sources/
 │   ├── OmertaCore/         # Core business logic (platform-agnostic)
-│   ├── OmertaVM/           # VM lifecycle management (macOS only)
+│   ├── OmertaVM/           # VM lifecycle management (Virtualization.framework on macOS, QEMU on Linux)
 │   ├── OmertaNetwork/      # gRPC + DHT networking
 │   ├── OmertaProvider/     # Provider daemon
 │   ├── OmertaConsumer/     # Consumer client
@@ -281,10 +294,13 @@ swift run omerta submit \
 
 ## Configuration
 
-Configuration is stored in `~/Library/Application Support/Omerta/`:
+Configuration is stored in platform-specific locations:
+
+**macOS:** `~/Library/Application Support/Omerta/`
+**Linux:** `~/.config/omerta/`
 
 ```
-~/Library/Application Support/Omerta/
+<config-dir>/
 ├── config.json          # Main configuration
 ├── networks.json        # Joined networks
 ├── filters.json         # Filter rules
@@ -295,103 +311,96 @@ Configuration is stored in `~/Library/Application Support/Omerta/`:
     └── omerta.log
 ```
 
-### Home Directory Structure
+### Runtime Directory
 
-Additional runtime files are stored in `~/.omerta/`:
+Runtime files are stored in `~/.omerta/` (both platforms):
 
 ```
 ~/.omerta/
 ├── vpn/                 # VPN configuration files
 ├── kernel/
-│   └── vmlinuz         # Linux kernel for VMs
+│   └── vmlinuz         # Linux kernel for VMs (macOS only)
+├── images/             # VM disk images
 ├── jobs/               # Job working directories
 └── logs/               # Execution logs
 ```
 
 ## Troubleshooting
 
-### Missing Dependencies
-
-If you see an error about missing dependencies:
-
-```bash
-❌ Missing required dependencies:
-  WireGuard Tools
-    Install: brew install wireguard-tools
-```
-
-**Solution:**
-1. Run the installation script: `bash Scripts/install.sh`
-2. Or manually install: `brew install wireguard-tools`
-3. Verify: `omerta check-deps`
-
 ### WireGuard Not Found
 
-**Symptom:** `wg: command not found` or similar errors
+**Symptom:** `wg: command not found`
 
 **Solution:**
 ```bash
-# Check if WireGuard is installed
-which wg
-which wg-quick
-
-# If not found, install it
+# macOS
 brew install wireguard-tools
 
-# Verify installation
-wg --version
+# Linux (Debian/Ubuntu)
+sudo apt install wireguard-tools
 ```
 
-### macOS Version Too Old
-
-**Symptom:** Error about Virtualization.framework or macOS version
-
-**Solution:** Omerta requires macOS 14 (Sonoma) or later. This is a hard requirement due to Virtualization.framework features. Please upgrade macOS.
-
-### Virtualization Entitlement Missing
+### macOS: Virtualization Entitlement Missing
 
 **Symptom:** `Error Domain=VZErrorDomain Code=2 "The process doesn't have the 'com.apple.security.virtualization' entitlement"`
 
-**Solution:** The Omerta binary needs to be code-signed with virtualization entitlements. This is automatically done for release builds. If building from source:
+**Solution:** Build with release configuration (automatically signs with entitlements):
 ```bash
-# Build with release configuration
 swift build -c release
-
-# Or use a pre-signed release binary
 ```
 
-### Linux Kernel Missing
+### macOS: Version Too Old
 
-**Symptom:** Error about missing kernel when executing VMs
+**Symptom:** Error about Virtualization.framework
+
+**Solution:** Omerta requires macOS 14 (Sonoma) or later for Virtualization.framework.
+
+### Linux: KVM Not Available
+
+**Symptom:** `KVM not available` or slow VM performance
 
 **Solution:**
 ```bash
-# Download Linux kernel for VMs
-mkdir -p ~/.omerta/kernel
-curl -L <kernel-url> -o ~/.omerta/kernel/vmlinuz
+# Check if KVM is available
+ls -la /dev/kvm
 
-# Or let Omerta download it automatically on first run
+# Add user to kvm group
+sudo usermod -aG kvm $USER
+# Log out and back in
+
+# If /dev/kvm doesn't exist, enable virtualization in BIOS/UEFI
 ```
 
-### Permission Denied Errors
+### Linux: QEMU Not Found
+
+**Symptom:** `QEMU not found`
+
+**Solution:**
+```bash
+# Debian/Ubuntu
+sudo apt install qemu-system-x86 qemu-utils
+
+# Fedora/RHEL
+sudo dnf install qemu-kvm qemu-img
+```
+
+### Permission Denied (VPN)
 
 **Symptom:** Permission errors when creating VPN tunnels
 
-**Solution:** WireGuard operations may require root privileges. Omerta will prompt for sudo when needed. Alternatively:
-```bash
-# Allow your user to run wg without sudo (optional, less secure)
-sudo visudo
-# Add: your_username ALL=(ALL) NOPASSWD: /usr/bin/wg, /usr/bin/wg-quick
-```
+**Solution:** WireGuard operations require root. Omerta prompts for sudo when needed.
 
 ## Security
 
 ### VM Isolation
 
-- Every job runs in a fresh macOS VM (using Virtualization.framework)
+- Every job runs in a fresh Linux VM
+  - macOS: Apple Virtualization.framework
+  - Linux: QEMU with KVM acceleration
 - VM is destroyed immediately after job completes
 - No persistent state between jobs
-- Strong hardware-level isolation
+- Hardware-level isolation via hypervisor
+- All VM traffic routed through requester's VPN (see [VM Network Architecture](docs/vm-network-architecture.md))
 
 ### Network Security
 
@@ -406,6 +415,21 @@ sudo visudo
 - Per-peer filtering (whitelist/blacklist by peer ID or IP)
 - Reputation system to track peer behavior
 - Manual approval queue for suspicious requests
+
+## Documentation
+
+Detailed technical documentation is available in the [`docs/`](docs/) directory:
+
+| Document | Description |
+|----------|-------------|
+| [CLI Architecture](docs/cli-architecture.md) | CLI design and implementation plan |
+| [VM Network Architecture](docs/vm-network-architecture.md) | Network isolation modes and security model |
+| [VM Network Implementation](docs/vm-network-implementation.md) | Phased implementation details |
+| [VM Network Tests](docs/vm-network-tests.md) | Test specifications and performance targets |
+| [Rogue Detection](docs/rogue-detection.md) | Traffic monitoring and violation detection |
+| [Enhancements](docs/enhancements.md) | Future improvements and platform support |
+
+For testing instructions, see [README_TESTING.md](README_TESTING.md).
 
 ## Roadmap
 
@@ -431,7 +455,8 @@ Contributions are welcome! Please read CONTRIBUTING.md for guidelines.
 
 ## Acknowledgments
 
-- Built with Swift and Apple's Virtualization.framework
-- Uses gRPC for RPC and Protocol Buffers for serialization
+- Built with Swift
+- VM isolation via Apple Virtualization.framework (macOS) and QEMU/KVM (Linux)
 - Network discovery via Kademlia DHT
 - VPN tunneling via WireGuard
+- gRPC and Protocol Buffers for serialization

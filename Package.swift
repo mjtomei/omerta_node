@@ -129,7 +129,7 @@ let package = Package(
         ),
         .testTarget(
             name: "OmertaProviderTests",
-            dependencies: ["OmertaProvider"],
+            dependencies: ["OmertaProvider", "OmertaConsumer", "OmertaCore"],
             path: "Tests/OmertaProviderTests"
         ),
         .testTarget(

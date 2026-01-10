@@ -260,13 +260,21 @@ public actor SimpleVMManager {
             #endif
             activeVMs[vmId] = runningVM
 
-            // Generate simulated WireGuard public key for dry-run
-            let simulatedPublicKey = Data((0..<32).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
+            // Check for test mode (test:// prefix means no WireGuard)
+            let isTestMode = consumerEndpoint.hasPrefix("test://")
+            let simulatedPublicKey: String
+            if isTestMode {
+                simulatedPublicKey = "test-mode-no-wireguard"
+            } else {
+                // Generate simulated WireGuard public key for dry-run
+                simulatedPublicKey = Data((0..<32).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
+            }
 
             logger.info("DRY RUN: VM simulated successfully", metadata: [
                 "vm_id": "\(vmId)",
                 "vm_ip": "\(vmIP)",
-                "ssh_port": "\(sshPort)"
+                "ssh_port": "\(sshPort)",
+                "test_mode": "\(isTestMode)"
             ])
 
             return VMStartResult(vmIP: vmIP, vmWireGuardPublicKey: simulatedPublicKey)

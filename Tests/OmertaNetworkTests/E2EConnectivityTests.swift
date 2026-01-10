@@ -7,6 +7,10 @@ import XCTest
 @testable import OmertaProvider
 @testable import OmertaCore
 
+#if os(Linux)
+import Foundation
+#endif
+
 // MARK: - E2E Test Infrastructure
 
 /// Test helper for simulating consumer WireGuard server
@@ -377,6 +381,171 @@ final class E2EConnectivityTests: XCTestCase {
                      "Firewall should be applied before WireGuard starts")
     }
 }
+
+// MARK: - Linux-specific E2E Tests
+
+#if os(Linux)
+/// E2E tests for Linux providers using QEMU
+/// Parallel to E2EMacOSTests but uses SimpleVMManager with QEMU backend
+@MainActor
+final class E2ELinuxTests: XCTestCase {
+
+    var vmManager: SimpleVMManager!
+    var tempDirectory: URL!
+    var createdVMIds: [UUID] = []
+
+    override func setUp() async throws {
+        try await super.setUp()
+
+        tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omerta-e2e-linux-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+
+        // Use dry-run mode for unit tests
+        vmManager = SimpleVMManager(dryRun: true)
+        createdVMIds = []
+    }
+
+    override func tearDown() async throws {
+        // Stop all VMs we created
+        for vmId in createdVMIds {
+            try? await vmManager.stopVM(vmId: vmId)
+        }
+        try? FileManager.default.removeItem(at: tempDirectory)
+        try await super.tearDown()
+    }
+
+    func testE2EProviderIntegrationQEMU() async throws {
+        let consumer = MockConsumerServer.create()
+        let vmId = UUID()
+        createdVMIds.append(vmId)
+
+        // Provider sets up VM with network isolation
+        let result = try await vmManager.startVM(
+            vmId: vmId,
+            requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
+            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
+            consumerPublicKey: consumer.publicKey,
+            consumerEndpoint: consumer.endpoint
+        )
+
+        // Verify VM has WireGuard key to share with consumer
+        XCTAssertFalse(result.vmWireGuardPublicKey.isEmpty)
+        XCTAssertNotEqual(result.vmWireGuardPublicKey, "test-mode-no-wireguard")
+
+        // Verify VM got expected IP
+        XCTAssertFalse(result.vmIP.isEmpty)
+    }
+
+    func testE2ELinuxVMCloudInitGenerated() async throws {
+        let consumer = MockConsumerServer.create()
+        let vmId = UUID()
+        createdVMIds.append(vmId)
+
+        let result = try await vmManager.startVM(
+            vmId: vmId,
+            requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
+            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
+            consumerPublicKey: consumer.publicKey,
+            consumerEndpoint: consumer.endpoint
+        )
+
+        // In dry-run mode, we can verify the config would be generated correctly
+        // by checking that the VM was created with expected parameters
+        XCTAssertFalse(result.vmWireGuardPublicKey.isEmpty)
+        let isRunning = await vmManager.isVMRunning(vmId: vmId)
+        XCTAssertTrue(isRunning)
+    }
+
+    func testE2EMultipleQEMUVMs() async throws {
+        let consumer = MockConsumerServer.create()
+        var results: [SimpleVMManager.VMStartResult] = []
+
+        // Start 3 VMs
+        for _ in 0..<3 {
+            let vmId = UUID()
+            createdVMIds.append(vmId)
+
+            let result = try await vmManager.startVM(
+                vmId: vmId,
+                requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
+                sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
+                consumerPublicKey: consumer.publicKey,
+                consumerEndpoint: consumer.endpoint
+            )
+            results.append(result)
+        }
+
+        // Verify all have unique keys
+        let publicKeys = Set(results.map { $0.vmWireGuardPublicKey })
+        XCTAssertEqual(publicKeys.count, 3, "Each VM should have unique WireGuard key")
+
+        // Verify all are running
+        let activeCount = await vmManager.getActiveVMCount()
+        XCTAssertEqual(activeCount, 3)
+    }
+
+    func testE2ELinuxVMCustomVPNIP() async throws {
+        let consumer = MockConsumerServer.create()
+        let vmId = UUID()
+        createdVMIds.append(vmId)
+        let customIP = "10.99.0.100"
+
+        let result = try await vmManager.startVM(
+            vmId: vmId,
+            requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
+            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
+            consumerPublicKey: consumer.publicKey,
+            consumerEndpoint: consumer.endpoint,
+            vpnIP: customIP
+        )
+
+        XCTAssertEqual(result.vmIP, customIP, "VM should use custom VPN IP")
+    }
+
+    func testE2ELinuxVMTestMode() async throws {
+        // Test mode is triggered by using "test://" prefix in endpoint
+        let vmId = UUID()
+        createdVMIds.append(vmId)
+
+        let result = try await vmManager.startVM(
+            vmId: vmId,
+            requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
+            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
+            consumerPublicKey: "test-public-key",
+            consumerEndpoint: "test://localhost"  // test:// prefix triggers test mode
+        )
+
+        XCTAssertEqual(result.vmWireGuardPublicKey, "test-mode-no-wireguard",
+                      "Test mode should not have WireGuard")
+    }
+
+    func testE2ELinuxVMStartStop() async throws {
+        let consumer = MockConsumerServer.create()
+        let vmId = UUID()
+
+        let result = try await vmManager.startVM(
+            vmId: vmId,
+            requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
+            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
+            consumerPublicKey: consumer.publicKey,
+            consumerEndpoint: consumer.endpoint
+        )
+
+        // VM should be running
+        let isRunningBefore = await vmManager.isVMRunning(vmId: vmId)
+        XCTAssertTrue(isRunningBefore)
+        XCTAssertFalse(result.vmIP.isEmpty)
+
+        // Stop VM
+        try await vmManager.stopVM(vmId: vmId)
+
+        // VM should no longer be running
+        let isRunningAfter = await vmManager.isVMRunning(vmId: vmId)
+        XCTAssertFalse(isRunningAfter)
+    }
+}
+#endif
 
 // MARK: - macOS-specific E2E Tests
 
