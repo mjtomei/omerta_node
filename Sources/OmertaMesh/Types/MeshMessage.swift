@@ -186,8 +186,8 @@ public struct MeshEnvelope: Codable, Sendable {
     /// The actual message
     public let payload: MeshMessage
 
-    /// Ed25519 signature over the envelope
-    public let signature: String
+    /// Ed25519 signature over the envelope (base64)
+    public var signature: String
 
     public init(
         messageId: String = UUID().uuidString,
@@ -206,4 +206,63 @@ public struct MeshEnvelope: Codable, Sendable {
         self.payload = payload
         self.signature = signature
     }
+
+    /// Get the data that should be signed (everything except signature)
+    public func dataToSign() throws -> Data {
+        // Create a copy without signature for signing
+        let signable = SignableEnvelope(
+            messageId: messageId,
+            fromPeerId: fromPeerId,
+            toPeerId: toPeerId,
+            hopCount: hopCount,
+            timestamp: timestamp,
+            payload: payload
+        )
+        // Use sorted keys for deterministic JSON encoding
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        return try encoder.encode(signable)
+    }
+
+    /// Create a signed envelope using the given keypair
+    public static func signed(
+        messageId: String = UUID().uuidString,
+        from keypair: IdentityKeypair,
+        to toPeerId: PeerId?,
+        payload: MeshMessage
+    ) throws -> MeshEnvelope {
+        var envelope = MeshEnvelope(
+            messageId: messageId,
+            fromPeerId: keypair.peerId,
+            toPeerId: toPeerId,
+            payload: payload
+        )
+
+        let dataToSign = try envelope.dataToSign()
+        let sig = try keypair.sign(dataToSign)
+        envelope.signature = sig.base64
+
+        return envelope
+    }
+
+    /// Verify the signature using the sender's public key
+    public func verifySignature(publicKeyBase64: String) -> Bool {
+        guard let sigData = Data(base64Encoded: signature),
+              let dataToSign = try? dataToSign() else {
+            return false
+        }
+
+        let sig = Signature(data: sigData)
+        return sig.verify(dataToSign, publicKeyBase64: publicKeyBase64)
+    }
+}
+
+/// Internal struct for signing (excludes signature field)
+private struct SignableEnvelope: Codable {
+    let messageId: String
+    let fromPeerId: PeerId
+    let toPeerId: PeerId?
+    let hopCount: Int
+    let timestamp: Date
+    let payload: MeshMessage
 }

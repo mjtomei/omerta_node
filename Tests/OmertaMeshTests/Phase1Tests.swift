@@ -1,0 +1,477 @@
+// Phase1Tests.swift - Tests for core transport layer (Phase 1)
+
+import XCTest
+import NIOCore
+import NIOPosix
+@testable import OmertaMesh
+
+final class Phase1Tests: XCTestCase {
+
+    // MARK: - Identity Tests
+
+    /// Test keypair generation
+    func testKeypairGeneration() throws {
+        let keypair = IdentityKeypair()
+
+        // Check keys are non-empty
+        XCTAssertFalse(keypair.publicKeyData.isEmpty)
+        XCTAssertFalse(keypair.privateKeyData.isEmpty)
+
+        // Check peer ID is derived from public key
+        XCTAssertEqual(keypair.peerId, keypair.publicKeyBase64)
+    }
+
+    /// Test signing and verification
+    func testSignAndVerify() throws {
+        let keypair = IdentityKeypair()
+        let message = "Hello, mesh network!".data(using: .utf8)!
+
+        // Sign the message
+        let signature = try keypair.sign(message)
+
+        // Verify with correct key
+        XCTAssertTrue(signature.verify(message, publicKey: keypair.publicKey))
+
+        // Verify with base64 key
+        XCTAssertTrue(signature.verify(message, publicKeyBase64: keypair.publicKeyBase64))
+
+        // Tampered message should fail
+        let tamperedMessage = "Hello, tampered!".data(using: .utf8)!
+        XCTAssertFalse(signature.verify(tamperedMessage, publicKey: keypair.publicKey))
+    }
+
+    /// Test keypair serialization
+    func testKeypairSerialization() throws {
+        let original = IdentityKeypair()
+
+        // Export and reimport
+        let exported = original.privateKeyBase64
+        let restored = try IdentityKeypair(privateKeyBase64: exported)
+
+        // Should have same peer ID
+        XCTAssertEqual(original.peerId, restored.peerId)
+
+        // Should produce same signatures
+        let message = "Test message".data(using: .utf8)!
+        let sig1 = try original.sign(message)
+        let sig2 = try restored.sign(message)
+
+        XCTAssertEqual(sig1.base64, sig2.base64)
+    }
+
+    // MARK: - Envelope Tests
+
+    /// Test envelope signing and verification
+    func testEnvelopeSignature() throws {
+        let keypair = IdentityKeypair()
+
+        // First, test basic signing works
+        let testData = "test".data(using: .utf8)!
+        let testSig = try keypair.sign(testData)
+        XCTAssertTrue(testSig.verify(testData, publicKey: keypair.publicKey), "Basic signing should work")
+
+        // Now test envelope signing
+        // Manually create the envelope and sign it step by step
+        let messageId = UUID().uuidString
+        let timestamp = Date()
+
+        var envelope = MeshEnvelope(
+            messageId: messageId,
+            fromPeerId: keypair.peerId,
+            toPeerId: "recipient",
+            hopCount: 0,
+            timestamp: timestamp,
+            payload: .ping(recentPeers: []),
+            signature: ""
+        )
+
+        // Get data to sign BEFORE signing
+        let dataToSignBefore = try envelope.dataToSign()
+
+        // Sign the data
+        let sig = try keypair.sign(dataToSignBefore)
+        envelope.signature = sig.base64
+
+        // Get data to sign AFTER signing
+        let dataToSignAfter = try envelope.dataToSign()
+
+        // Debug: print the JSON to see what's different
+        if dataToSignBefore != dataToSignAfter {
+            print("BEFORE: \(String(data: dataToSignBefore, encoding: .utf8) ?? "nil")")
+            print("AFTER:  \(String(data: dataToSignAfter, encoding: .utf8) ?? "nil")")
+        }
+
+        // These should be the same!
+        XCTAssertEqual(dataToSignBefore, dataToSignAfter, "dataToSign should be consistent")
+
+        // Verify the signature
+        XCTAssertTrue(sig.verify(dataToSignAfter, publicKey: keypair.publicKey), "Signature should verify")
+
+        // Signature should be present
+        XCTAssertFalse(envelope.signature.isEmpty)
+
+        // Verification through the envelope method should succeed
+        XCTAssertTrue(envelope.verifySignature(publicKeyBase64: keypair.publicKeyBase64))
+
+        // Wrong key should fail
+        let otherKeypair = IdentityKeypair()
+        XCTAssertFalse(envelope.verifySignature(publicKeyBase64: otherKeypair.publicKeyBase64))
+    }
+
+    /// Test envelope serialization
+    func testEnvelopeSerialization() throws {
+        let keypair = IdentityKeypair()
+
+        let original = try MeshEnvelope.signed(
+            from: keypair,
+            to: "recipient",
+            payload: .ping(recentPeers: ["peer1", "peer2"])
+        )
+
+        // Encode and decode
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(MeshEnvelope.self, from: data)
+
+        // Should preserve all fields
+        XCTAssertEqual(original.messageId, decoded.messageId)
+        XCTAssertEqual(original.fromPeerId, decoded.fromPeerId)
+        XCTAssertEqual(original.toPeerId, decoded.toPeerId)
+        XCTAssertEqual(original.signature, decoded.signature)
+
+        // Signature should still verify
+        XCTAssertTrue(decoded.verifySignature(publicKeyBase64: keypair.publicKeyBase64))
+    }
+
+    // MARK: - UDP Socket Tests
+
+    /// Test basic UDP send and receive
+    func testUDPSendReceive() async throws {
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        defer { try? group.syncShutdownGracefully() }
+
+        let socket1 = UDPSocket(eventLoopGroup: group)
+        let socket2 = UDPSocket(eventLoopGroup: group)
+
+        try await socket1.bind(host: "127.0.0.1", port: 0)
+        try await socket2.bind(host: "127.0.0.1", port: 0)
+
+        defer {
+            Task {
+                await socket1.close()
+                await socket2.close()
+            }
+        }
+
+        _ = await socket1.port!
+        let port2 = await socket2.port!
+
+        // Set up receiver
+        let receivedExpectation = expectation(description: "Data received")
+        var receivedData: Data?
+
+        await socket2.onReceive { data, _ in
+            receivedData = data
+            receivedExpectation.fulfill()
+        }
+
+        // Send data
+        let testData = "Hello UDP!".data(using: .utf8)!
+        try await socket1.send(testData, to: "127.0.0.1:\(port2)")
+
+        await fulfillment(of: [receivedExpectation], timeout: 5.0)
+
+        XCTAssertEqual(receivedData, testData)
+    }
+
+    // MARK: - MeshNode Tests
+
+    /// Test two nodes exchanging ping/pong
+    func testTwoNodePingPong() async throws {
+        let nodeA = try await MeshNode(port: 0)
+        let nodeB = try await MeshNode(port: 0)
+
+        defer {
+            Task {
+                await nodeA.stop()
+                await nodeB.stop()
+            }
+        }
+
+        try await nodeA.start()
+        try await nodeB.start()
+
+        let portB = await nodeB.port!
+
+        // A sends ping to B
+        let response = try await nodeA.sendAndReceive(
+            .ping(recentPeers: []),
+            to: "127.0.0.1:\(portB)",
+            timeout: 5.0
+        )
+
+        // Should get pong back
+        if case .pong = response {
+            // Success
+        } else {
+            XCTFail("Expected pong response, got \(response)")
+        }
+    }
+
+    /// Test message deduplication
+    func testMessageDeduplication() async throws {
+        let nodeA = try await MeshNode(port: 0)
+        let nodeB = try await MeshNode(port: 0)
+
+        defer {
+            Task {
+                await nodeA.stop()
+                await nodeB.stop()
+            }
+        }
+
+        try await nodeA.start()
+        try await nodeB.start()
+
+        // Track received messages on B
+        var receivedCount = 0
+        await nodeB.onMessage { message, _ in
+            receivedCount += 1
+            if case .ping = message {
+                return .pong(recentPeers: [])
+            }
+            return nil
+        }
+
+        let portB = await nodeB.port!
+
+        // Create a signed envelope with a fixed message ID
+        let keypair = IdentityKeypair()
+        let envelope = try MeshEnvelope.signed(
+            messageId: "test-dedup-id",
+            from: keypair,
+            to: nil,
+            payload: .ping(recentPeers: [])
+        )
+        let data = try JSONEncoder().encode(envelope)
+
+        // Send same message twice
+        try await Task.sleep(nanoseconds: 100_000_000) // Wait for handler setup
+
+        // Use UDP socket directly to send duplicate
+        let socket = UDPSocket()
+        try await socket.bind(port: 0)
+        defer { Task { await socket.close() } }
+
+        try await socket.send(data, to: "127.0.0.1:\(portB)")
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try await socket.send(data, to: "127.0.0.1:\(portB)")
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Should only receive once due to deduplication
+        XCTAssertEqual(receivedCount, 1, "Message should be deduplicated")
+    }
+
+    /// Test invalid signature rejection (when peer is known)
+    func testInvalidSignatureRejection() async throws {
+        let nodeA = try await MeshNode(port: 0)
+        let nodeB = try await MeshNode(port: 0)
+
+        defer {
+            Task {
+                await nodeA.stop()
+                await nodeB.stop()
+            }
+        }
+
+        try await nodeA.start()
+        try await nodeB.start()
+
+        // Add nodeA's public key to nodeB so it can verify signatures
+        try await nodeB.addPeer(publicKeyBase64: nodeA.identity.publicKeyBase64)
+
+        // Create envelope with wrong signature
+        let nodeAPeerId = await nodeA.peerId
+        let nodeBPeerId = await nodeB.peerId
+        var envelope = MeshEnvelope(
+            fromPeerId: nodeAPeerId,
+            toPeerId: nodeBPeerId,
+            payload: .ping(recentPeers: [])
+        )
+        envelope.signature = "invalid-signature-base64"
+
+        // B should reject it
+        let accepted = await nodeB.receiveEnvelope(envelope)
+        XCTAssertFalse(accepted, "Invalid signature should be rejected")
+    }
+
+    /// Test concurrent messages
+    func testConcurrentMessages() async throws {
+        let nodeA = try await MeshNode(port: 0)
+        let nodeB = try await MeshNode(port: 0)
+
+        try await nodeA.start()
+        try await nodeB.start()
+
+        let portB = await nodeB.port!
+
+        // Send multiple concurrent pings
+        var results: [MeshMessage] = []
+        do {
+            results = try await withThrowingTaskGroup(of: MeshMessage.self) { group in
+                for _ in 0..<5 {
+                    group.addTask {
+                        try await nodeA.sendAndReceive(
+                            .ping(recentPeers: []),
+                            to: "127.0.0.1:\(portB)",
+                            timeout: 5.0
+                        )
+                    }
+                }
+
+                var responses: [MeshMessage] = []
+                for try await response in group {
+                    responses.append(response)
+                }
+                return responses
+            }
+        } catch {
+            // Clean up before rethrowing
+            await nodeA.stop()
+            await nodeB.stop()
+            throw error
+        }
+
+        // Clean up
+        await nodeA.stop()
+        await nodeB.stop()
+
+        // All should get pong responses
+        XCTAssertEqual(results.count, 5)
+        for result in results {
+            if case .pong = result {
+                // Good
+            } else {
+                XCTFail("Expected pong, got \(result)")
+            }
+        }
+    }
+
+    /// Test timeout behavior
+    func testTimeout() async throws {
+        let nodeA = try await MeshNode(port: 0)
+
+        defer {
+            Task {
+                await nodeA.stop()
+            }
+        }
+
+        try await nodeA.start()
+
+        // Try to send to non-existent node
+        do {
+            _ = try await nodeA.sendAndReceive(
+                .ping(recentPeers: []),
+                to: "127.0.0.1:59999",  // Unlikely to be listening
+                timeout: 0.5
+            )
+            XCTFail("Should have timed out")
+        } catch MeshNodeError.timeout {
+            // Expected
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    // MARK: - Peer Connection Tests
+
+    /// Test peer connection state management
+    func testPeerConnectionState() async throws {
+        let keypair = IdentityKeypair()
+        let connection = PeerConnection(
+            peerId: keypair.peerId,
+            publicKey: keypair.publicKey,
+            endpoints: ["127.0.0.1:5000"]
+        )
+
+        // Initial state
+        let initialState = await connection.state
+        if case .disconnected = initialState {
+            // Good
+        } else {
+            XCTFail("Should start disconnected")
+        }
+
+        // Mark connecting
+        await connection.markConnecting()
+        let connectingState = await connection.state
+        if case .connecting = connectingState {
+            // Good
+        } else {
+            XCTFail("Should be connecting")
+        }
+
+        // Mark connected
+        await connection.markConnected()
+        let connectedState = await connection.state
+        if case .connected = connectedState {
+            // Good
+        } else {
+            XCTFail("Should be connected")
+        }
+
+        // Last seen should be set
+        let lastSeen = await connection.lastSeen
+        XCTAssertNotNil(lastSeen)
+    }
+
+    /// Test peer endpoint management
+    func testPeerEndpointManagement() async throws {
+        let keypair = IdentityKeypair()
+        let connection = PeerConnection(
+            peerId: keypair.peerId,
+            publicKey: keypair.publicKey,
+            endpoints: []
+        )
+
+        // Add endpoints
+        await connection.addEndpoint("1.2.3.4:5000")
+        await connection.addEndpoint("5.6.7.8:5000")
+
+        let endpoints = await connection.endpoints
+        XCTAssertEqual(endpoints.count, 2)
+
+        // Set active
+        await connection.setActiveEndpoint("1.2.3.4:5000")
+        let active = await connection.activeEndpoint
+        XCTAssertEqual(active, "1.2.3.4:5000")
+
+        // Remove endpoint
+        await connection.removeEndpoint("1.2.3.4:5000")
+        let newActive = await connection.activeEndpoint
+        XCTAssertEqual(newActive, "5.6.7.8:5000")
+    }
+
+    /// Test message deduplication in peer connection
+    func testPeerMessageDeduplication() async throws {
+        let keypair = IdentityKeypair()
+        let connection = PeerConnection(
+            peerId: keypair.peerId,
+            publicKey: keypair.publicKey,
+            endpoints: []
+        )
+
+        let messageId = "test-message-123"
+
+        // First time should not be seen
+        let firstCheck = await connection.hasSeenMessage(messageId)
+        XCTAssertFalse(firstCheck)
+
+        // Mark as seen
+        await connection.markMessageSeen(messageId)
+
+        // Now should be seen
+        let secondCheck = await connection.hasSeenMessage(messageId)
+        XCTAssertTrue(secondCheck)
+    }
+}
