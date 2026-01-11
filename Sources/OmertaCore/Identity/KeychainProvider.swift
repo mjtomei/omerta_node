@@ -23,6 +23,8 @@ public struct KeychainProvider: Sendable {
     public func save(key: String, data: Data) throws {
         var query = baseQuery(key: key)
         query[kSecValueData as String] = data
+        // Allow access after device unlock (works for CLI tools)
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
 
         // Delete existing item first
         SecItemDelete(query as CFDictionary)
