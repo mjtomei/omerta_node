@@ -48,45 +48,41 @@ final class Phase1Tests: XCTestCase {
         let exported = original.privateKeyBase64
         let restored = try IdentityKeypair(privateKeyBase64: exported)
 
-        // Debug: check private key data
-        let origBytes = original.privateKeyData.map { String(format: "%02x", $0) }.joined()
-        let restBytes = restored.privateKeyData.map { String(format: "%02x", $0) }.joined()
-        print("Original private key: \(origBytes)")
-        print("Restored private key: \(restBytes)")
-        print("Keys match: \(original.privateKeyData == restored.privateKeyData)")
-
-        // Debug: print public keys
-        print("Original public key: \(original.publicKeyBase64)")
-        print("Restored public key: \(restored.publicKeyBase64)")
-
         // Should have same peer ID (derived from public key)
         XCTAssertEqual(original.peerId, restored.peerId, "Peer IDs should match")
 
         // Private key data should round-trip
         XCTAssertEqual(original.privateKeyData, restored.privateKeyData, "Private key data should match")
 
-        // Test that same key produces consistent signatures
+        // Public key data should match
+        XCTAssertEqual(original.publicKeyData, restored.publicKeyData, "Public key data should match")
+
+        // Test that signatures from both keys verify correctly
+        // Note: CryptoKit may use randomized Ed25519 signing, so we don't test for
+        // determinism - only that signatures verify with the correct public key
         let message = "Test message".data(using: .utf8)!
-        let sig1a = try original.sign(message)
-        let sig1b = try original.sign(message)
-        print("Original signs consistently: \(sig1a.base64 == sig1b.base64)")
 
-        // Test restored key consistency
-        let sig2a = try restored.sign(message)
-        let sig2b = try restored.sign(message)
-        print("Restored signs consistently: \(sig2a.base64 == sig2b.base64)")
+        let sigOriginal = try original.sign(message)
+        let sigRestored = try restored.sign(message)
 
-        print("Sig1: \(sig1a.base64)")
-        print("Sig2: \(sig2a.base64)")
+        // Original key's signature should verify with original's public key
+        XCTAssertTrue(sigOriginal.verify(message, publicKey: original.publicKey),
+                      "Original signature should verify with original key")
 
-        // Both keys should be internally consistent
-        XCTAssertEqual(sig1a.base64, sig1b.base64, "Original should be deterministic")
-        XCTAssertEqual(sig2a.base64, sig2b.base64, "Restored should be deterministic")
+        // Restored key's signature should verify with restored's public key
+        XCTAssertTrue(sigRestored.verify(message, publicKey: restored.publicKey),
+                      "Restored signature should verify with restored key")
 
-        // Cross-key comparison - might fail on macOS due to CryptoKit behavior
-        // For now, just verify that signatures from restored key verify correctly
-        XCTAssertTrue(sig2a.verify(message, publicKey: restored.publicKey), "Restored signature should verify")
-        XCTAssertTrue(sig2a.verify(message, publicKeyBase64: original.publicKeyBase64), "Restored sig should verify with original pubkey")
+        // Cross-verification: both public keys are the same, so both should work
+        XCTAssertTrue(sigOriginal.verify(message, publicKeyBase64: restored.publicKeyBase64),
+                      "Original sig should verify with restored pubkey")
+        XCTAssertTrue(sigRestored.verify(message, publicKeyBase64: original.publicKeyBase64),
+                      "Restored sig should verify with original pubkey")
+
+        // Wrong message should fail
+        let wrongMessage = "Wrong message".data(using: .utf8)!
+        XCTAssertFalse(sigOriginal.verify(wrongMessage, publicKey: original.publicKey),
+                       "Signature should not verify wrong message")
     }
 
     // MARK: - Envelope Tests
