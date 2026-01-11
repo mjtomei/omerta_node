@@ -264,10 +264,7 @@ final class Phase2Tests: XCTestCase {
     // MARK: - Error Handling Tests
 
     /// Test timeout handling
-    /// Currently skipped due to complex async cancellation semantics that cause hangs in batch runs
     func testSTUNTimeout() async throws {
-        throw XCTSkip("Skipping timeout test - async cancellation needs further work")
-
         let client = STUNClient()
 
         // Connect to a port that won't respond
@@ -322,10 +319,11 @@ final class Phase2Tests: XCTestCase {
 
     /// Test with real Google STUN servers
     /// This test requires internet connectivity
-    /// Currently skipped due to async timeout cancellation issues causing hangs in batch runs
     func testRealSTUNDetection() async throws {
-        // Skip due to async cancellation issues (same root cause as testSTUNTimeout)
-        throw XCTSkip("Skipping network test - async cancellation needs further work")
+        // Skip in CI environments
+        if ProcessInfo.processInfo.environment["CI"] != nil {
+            throw XCTSkip("Skipping network test in CI")
+        }
 
         let detector = NATDetector(stunServers: [
             "stun.l.google.com:19302",

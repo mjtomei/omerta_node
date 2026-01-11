@@ -53,74 +53,89 @@ public actor STUNClient {
         let (host, port) = try parseServerAddress(server)
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer {
-            try? group.syncShutdownGracefully()
-        }
 
-        // Create response handler before bootstrap
-        let handler = STUNResponseHandler()
+        // Ensure cleanup happens even on error/cancellation
+        var channel: Channel? = nil
+        var timeoutTask: Scheduled<Void>? = nil
+        var responsePromise: EventLoopPromise<Data>? = nil
 
-        let bootstrap = DatagramBootstrap(group: group)
-            .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-            .channelInitializer { channel in
-                channel.pipeline.addHandler(handler)
-            }
+        do {
+            // Create response handler with promise for the response
+            let eventLoop = group.next()
+            responsePromise = eventLoop.makePromise(of: Data.self)
+            let handler = STUNResponseHandler(responsePromise: responsePromise!)
 
-        let channel = try await bootstrap.bind(host: "0.0.0.0", port: Int(localPort)).get()
-        defer {
-            try? channel.close().wait()
-        }
-
-        // Get actual local port
-        guard let localAddr = channel.localAddress, let actualLocalPort = localAddr.port else {
-            throw STUNError.bindFailed
-        }
-
-        // Resolve server address
-        let serverSocketAddress = try SocketAddress.makeAddressResolvingHost(host, port: port)
-
-        // Create binding request
-        let request = STUNMessage.bindingRequest()
-        let requestData = request.encode()
-
-        var buffer = channel.allocator.buffer(capacity: requestData.count)
-        buffer.writeBytes(requestData)
-        let envelope = AddressedEnvelope(remoteAddress: serverSocketAddress, data: buffer)
-
-        let startTime = Date()
-        try await channel.writeAndFlush(envelope)
-
-        // Wait for response with timeout
-        let response = try await withThrowingTaskGroup(of: STUNBindingResult?.self) { group in
-            group.addTask {
-                try await self.waitForResponse(
-                    handler: handler,
-                    expectedTransactionId: request.transactionId,
-                    localPort: UInt16(actualLocalPort),
-                    serverAddress: server,
-                    startTime: startTime
-                )
-            }
-
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                return nil
-            }
-
-            for try await result in group {
-                // Always cancel remaining tasks when first result arrives
-                group.cancelAll()
-                if let result = result {
-                    return result
+            let bootstrap = DatagramBootstrap(group: group)
+                .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+                .channelInitializer { channel in
+                    channel.pipeline.addHandler(handler)
                 }
-                // Timeout fired (nil result) - break to throw timeout
-                break
+
+            channel = try await bootstrap.bind(host: "0.0.0.0", port: Int(localPort)).get()
+
+            guard let channel = channel else {
+                throw STUNError.bindFailed
             }
 
-            throw STUNError.timeout
-        }
+            // Get actual local port
+            guard let localAddr = channel.localAddress, let actualLocalPort = localAddr.port else {
+                throw STUNError.bindFailed
+            }
 
-        return response
+            // Schedule timeout on the event loop - this will fail the promise
+            timeoutTask = eventLoop.scheduleTask(in: .milliseconds(Int64(timeout * 1000))) {
+                responsePromise?.fail(STUNError.timeout)
+            }
+
+            // Resolve server address
+            let serverSocketAddress = try SocketAddress.makeAddressResolvingHost(host, port: port)
+
+            // Create binding request
+            let request = STUNMessage.bindingRequest()
+            let requestData = request.encode()
+
+            var buffer = channel.allocator.buffer(capacity: requestData.count)
+            buffer.writeBytes(requestData)
+            let envelope = AddressedEnvelope(remoteAddress: serverSocketAddress, data: buffer)
+
+            let startTime = Date()
+            try await channel.writeAndFlush(envelope)
+
+            // Wait for response (will throw STUNError.timeout if timeout fires first)
+            let responseData = try await responsePromise!.futureResult.get()
+
+            // Cancel timeout since we got a response
+            timeoutTask?.cancel()
+            timeoutTask = nil
+
+            let rtt = Date().timeIntervalSince(startTime)
+
+            // Decode and validate response
+            let result = try decodeResponse(
+                responseData: responseData,
+                expectedTransactionId: request.transactionId,
+                localPort: UInt16(actualLocalPort),
+                serverAddress: server,
+                rtt: rtt
+            )
+
+            // Clean up
+            try await channel.close()
+            try await group.shutdownGracefully()
+
+            return result
+
+        } catch {
+            // Clean up on error
+            timeoutTask?.cancel()
+            // Fail the promise to avoid "leaking promise" assertion
+            responsePromise?.fail(error)
+            if let channel = channel {
+                try? await channel.close()
+            }
+            try? await group.shutdownGracefully()
+            throw error
+        }
     }
 
     /// Query multiple STUN servers and compare results
@@ -166,19 +181,13 @@ public actor STUNClient {
         return (String(parts[0]), port)
     }
 
-    private func waitForResponse(
-        handler: STUNResponseHandler,
+    private func decodeResponse(
+        responseData: Data,
         expectedTransactionId: Data,
         localPort: UInt16,
         serverAddress: String,
-        startTime: Date
-    ) async throws -> STUNBindingResult {
-        guard let responseData = await handler.waitForResponse() else {
-            throw STUNError.noResponse
-        }
-
-        let rtt = Date().timeIntervalSince(startTime)
-
+        rtt: TimeInterval
+    ) throws -> STUNBindingResult {
         // Decode response
         let response = try STUNMessage.decode(from: responseData)
 
@@ -214,13 +223,17 @@ public actor STUNClient {
 
 // MARK: - Response Handler
 
+/// Handler that receives STUN responses and fulfills a promise
 private final class STUNResponseHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = AddressedEnvelope<ByteBuffer>
 
-    private var responseData: Data?
-    private var continuation: CheckedContinuation<Data?, Never>?
-    private var isCancelled = false
+    private let responsePromise: EventLoopPromise<Data>
+    private var hasResponded = false
     private let lock = NSLock()
+
+    init(responsePromise: EventLoopPromise<Data>) {
+        self.responsePromise = responsePromise
+    }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let envelope = unwrapInboundIn(data)
@@ -231,51 +244,22 @@ private final class STUNResponseHandler: ChannelInboundHandler, @unchecked Senda
         }
 
         lock.lock()
-        responseData = Data(bytes)
-        if let cont = continuation {
-            continuation = nil
-            lock.unlock()
-            cont.resume(returning: responseData)
-        } else {
-            lock.unlock()
-        }
+        defer { lock.unlock() }
+
+        // Only fulfill the promise once
+        guard !hasResponded else { return }
+        hasResponded = true
+
+        responsePromise.succeed(Data(bytes))
     }
 
-    func waitForResponse() async -> Data? {
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
         lock.lock()
-        if let data = responseData {
-            lock.unlock()
-            return data
-        }
+        defer { lock.unlock() }
 
-        // Check if already cancelled before we start waiting
-        if Task.isCancelled {
-            lock.unlock()
-            return nil
-        }
+        guard !hasResponded else { return }
+        hasResponded = true
 
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { cont in
-                // Check if cancelled while we were setting up
-                if self.isCancelled {
-                    self.lock.unlock()
-                    cont.resume(returning: nil)
-                } else {
-                    self.continuation = cont
-                    self.lock.unlock()
-                }
-            }
-        } onCancel: {
-            // Mark as cancelled and resume continuation if set
-            self.lock.lock()
-            self.isCancelled = true
-            if let cont = self.continuation {
-                self.continuation = nil
-                self.lock.unlock()
-                cont.resume(returning: nil)
-            } else {
-                self.lock.unlock()
-            }
-        }
+        responsePromise.fail(error)
     }
 }
