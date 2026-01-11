@@ -59,6 +59,7 @@ struct OmertaCLI: AsyncParsableCommand {
             Network.self,
             VPN.self,
             VM.self,
+            NAT.self,
             Status.self,
             CheckDeps.self,
             Kill.self
@@ -3717,6 +3718,483 @@ struct Kill: AsyncParsableCommand {
             #endif
 
             print("Cleanup complete")
+        }
+    }
+}
+
+// MARK: - NAT Commands
+
+struct NAT: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "nat",
+        abstract: "NAT traversal testing and diagnostics",
+        subcommands: [
+            NATDetect.self,
+            NATPunch.self,
+            NATRelayTest.self,
+            NATStatus.self,
+            NATConfig.self
+        ],
+        defaultSubcommand: NATStatus.self
+    )
+}
+
+// MARK: - NAT Detect Command
+
+struct NATDetect: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "detect",
+        abstract: "Detect NAT type and discover public endpoint"
+    )
+
+    @Option(name: .long, help: "STUN server to use (default: stun.l.google.com:19302)")
+    var stunServer: String?
+
+    @Option(name: .long, help: "Local port to use (default: auto)")
+    var localPort: UInt16 = 0
+
+    @Flag(name: .long, help: "Show detailed output")
+    var verbose: Bool = false
+
+    mutating func run() async throws {
+        print("NAT Type Detection")
+        print("==================")
+        print("")
+
+        // Load config for STUN servers
+        let configManager = OmertaCore.ConfigManager()
+        let natConfig = (try? await configManager.load())?.nat ?? OmertaCore.NATConfig()
+
+        // Determine STUN server
+        let server = stunServer ?? natConfig.stunServers.first ?? "stun.l.google.com:19302"
+
+        if verbose {
+            print("Using STUN server: \(server)")
+            if localPort > 0 {
+                print("Local port: \(localPort)")
+            }
+            print("")
+        }
+
+        print("Discovering endpoint...")
+
+        do {
+            let stunClient = STUNClient()
+            let servers = [server] + natConfig.stunServers.filter { $0 != server }.prefix(2)
+
+            let (natType, result) = try await stunClient.detectNATType(
+                servers: servers,
+                timeout: natConfig.timeoutInterval
+            )
+
+            print("")
+            print("Results:")
+            print("  NAT Type: \(natType.description)")
+            print("  Public Endpoint: \(result.publicAddress):\(result.publicPort)")
+
+            if verbose {
+                print("")
+                print("Details:")
+                print("  Local Port: \(result.localPort)")
+                print("  STUN Server: \(result.serverAddress)")
+                print("  RTT: \(String(format: "%.1f", result.rtt * 1000))ms")
+            }
+
+            // Provide connectivity assessment
+            print("")
+            print("Connectivity:")
+            switch natType {
+            case .fullCone:
+                print("  ✓ Excellent - Direct connections from any peer")
+            case .restrictedCone:
+                print("  ✓ Good - Direct connections with hole punching")
+            case .portRestrictedCone:
+                print("  ○ Fair - Direct connections usually possible")
+            case .symmetric:
+                print("  △ Limited - May require relay for some peers")
+            case .unknown:
+                print("  ? Unknown - Could not determine NAT type")
+            }
+
+        } catch {
+            print("")
+            print("Error: \(error)")
+            throw ExitCode.failure
+        }
+    }
+}
+
+// MARK: - NAT Punch Command
+
+struct NATPunch: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "punch",
+        abstract: "Test hole punch to a specific peer"
+    )
+
+    @Option(name: .long, help: "Peer ID to connect to")
+    var peer: String
+
+    @Option(name: .long, help: "Rendezvous server URL")
+    var rendezvous: String?
+
+    @Option(name: .long, help: "Network ID for signaling")
+    var network: String = "default"
+
+    @Option(name: .long, help: "Timeout in seconds")
+    var timeout: Int = 30
+
+    @Flag(name: .long, help: "Show detailed output")
+    var verbose: Bool = false
+
+    mutating func run() async throws {
+        print("Hole Punch Test")
+        print("===============")
+        print("")
+
+        // Load config
+        let configManager = OmertaCore.ConfigManager()
+        let config = try await configManager.load()
+        let natConfig = config.nat ?? OmertaCore.NATConfig()
+
+        // Get rendezvous URL
+        guard let rendezvousURL = rendezvous ?? natConfig.rendezvousServer else {
+            print("Error: No rendezvous server configured")
+            print("")
+            print("Either specify --rendezvous or configure in ~/.omerta/config.json:")
+            print("  \"nat\": { \"rendezvousServer\": \"ws://rendezvous.example.com:8080\" }")
+            throw ExitCode.failure
+        }
+
+        guard let url = URL(string: rendezvousURL) else {
+            print("Error: Invalid rendezvous URL: \(rendezvousURL)")
+            throw ExitCode.failure
+        }
+
+        print("Target Peer: \(peer)")
+        print("Rendezvous: \(rendezvousURL)")
+        print("")
+
+        // Generate temporary peer ID and public key for this test
+        let myPeerId = "test-\(UUID().uuidString.prefix(8))"
+        let myPublicKey = "test-key-\(UUID().uuidString.prefix(8))"
+
+        print("Connecting to rendezvous...")
+
+        let p2pConfig = P2PSessionConfig(
+            peerId: myPeerId,
+            networkId: network,
+            publicKey: myPublicKey,
+            rendezvousURL: url,
+            localPort: natConfig.localPort,
+            holePunchTimeout: Double(timeout)
+        )
+
+        let session = P2PSession(config: p2pConfig)
+
+        do {
+            let endpoint = try await session.start()
+
+            print("Our endpoint: \(endpoint.endpoint)")
+            print("Our NAT type: \(endpoint.natType.description)")
+            print("")
+            print("Attempting hole punch to peer \(peer)...")
+
+            let startTime = Date()
+            let result = try await session.connectToPeer(peerId: peer)
+            let elapsed = Date().timeIntervalSince(startTime)
+
+            print("")
+            print("Result: SUCCESS")
+            print("  Connection Method: \(result.method)")
+            print("  Remote Endpoint: \(result.remoteEndpoint)")
+            if let rtt = result.rtt {
+                print("  RTT: \(String(format: "%.1f", rtt * 1000))ms")
+            }
+            print("  Time to Connect: \(String(format: "%.2f", elapsed))s")
+
+            await session.stop()
+
+        } catch {
+            print("")
+            print("Result: FAILED")
+            print("  Error: \(error)")
+
+            await session.stop()
+            throw ExitCode.failure
+        }
+    }
+}
+
+// MARK: - NAT Relay Test Command
+
+struct NATRelayTest: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "relay-test",
+        abstract: "Test relay connection to a peer"
+    )
+
+    @Option(name: .long, help: "Peer ID to connect to")
+    var peer: String
+
+    @Option(name: .long, help: "Relay server endpoint")
+    var relay: String?
+
+    @Option(name: .long, help: "Rendezvous server URL")
+    var rendezvous: String?
+
+    @Flag(name: .long, help: "Show detailed output")
+    var verbose: Bool = false
+
+    mutating func run() async throws {
+        print("Relay Connection Test")
+        print("=====================")
+        print("")
+
+        // Load config
+        let configManager = OmertaCore.ConfigManager()
+        let natConfig = (try? await configManager.load())?.nat ?? OmertaCore.NATConfig()
+
+        // Get rendezvous URL
+        guard let rendezvousURL = rendezvous ?? natConfig.rendezvousServer else {
+            print("Error: No rendezvous server configured")
+            print("")
+            print("Either specify --rendezvous or configure in ~/.omerta/config.json")
+            throw ExitCode.failure
+        }
+
+        print("Target Peer: \(peer)")
+        print("Rendezvous: \(rendezvousURL)")
+        if let relayEndpoint = relay {
+            print("Relay: \(relayEndpoint)")
+        }
+        print("")
+
+        print("Note: Relay testing requires both peers to be connected to the rendezvous server.")
+        print("The relay will be assigned automatically if direct hole punch fails.")
+        print("")
+
+        // For now, just show what would happen
+        print("To test relay:")
+        print("  1. Ensure peer '\(peer)' is connected to the rendezvous server")
+        print("  2. Run 'omerta nat punch --peer \(peer)' - if both sides are symmetric NAT,")
+        print("     the rendezvous server will automatically assign a relay")
+        print("")
+        print("Relay mode adds ~8 bytes overhead per packet (session token + length header)")
+    }
+}
+
+// MARK: - NAT Status Command
+
+struct NATStatus: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "status",
+        abstract: "Show NAT traversal status and configuration"
+    )
+
+    @Flag(name: .long, help: "Show detailed output")
+    var verbose: Bool = false
+
+    mutating func run() async throws {
+        print("NAT Traversal Status")
+        print("====================")
+        print("")
+
+        // Load config
+        let configManager = OmertaCore.ConfigManager()
+        let config = try? await configManager.load()
+        let natConfig = config?.nat
+
+        // Configuration
+        print("Configuration:")
+        if let natConfig = natConfig {
+            if let rendezvous = natConfig.rendezvousServer {
+                print("  Rendezvous Server: \(rendezvous)")
+            } else {
+                print("  Rendezvous Server: (not configured)")
+            }
+            print("  STUN Servers: \(natConfig.stunServers.joined(separator: ", "))")
+            print("  Prefer Direct: \(natConfig.preferDirect)")
+            print("  Hole Punch Timeout: \(natConfig.holePunchTimeout)ms")
+            print("  Probe Count: \(natConfig.probeCount)")
+            if natConfig.localPort > 0 {
+                print("  Local Port: \(natConfig.localPort)")
+            } else {
+                print("  Local Port: auto")
+            }
+        } else {
+            print("  (using defaults - no NAT configuration in ~/.omerta/config.json)")
+            print("  STUN Servers: \(OmertaCore.NATConfig.defaultSTUNServers.joined(separator: ", "))")
+        }
+
+        print("")
+
+        // Quick NAT detection
+        print("Current Status:")
+        print("  Detecting NAT type...")
+
+        do {
+            let stunClient = STUNClient()
+            let servers = natConfig?.stunServers ?? OmertaCore.NATConfig.defaultSTUNServers
+
+            let (natType, result) = try await stunClient.detectNATType(
+                servers: servers,
+                timeout: natConfig?.timeoutInterval ?? 5.0
+            )
+
+            print("  NAT Type: \(natType.description)")
+            print("  Public Endpoint: \(result.publicAddress):\(result.publicPort)")
+
+            if verbose {
+                print("")
+                print("Detailed Info:")
+                print("  Local Port: \(result.localPort)")
+                print("  STUN Response From: \(result.serverAddress)")
+                print("  RTT: \(String(format: "%.1f", result.rtt * 1000))ms")
+            }
+
+        } catch {
+            print("  Error detecting NAT type: \(error)")
+        }
+
+        print("")
+        print("Commands:")
+        print("  omerta nat detect      - Detailed NAT detection")
+        print("  omerta nat punch       - Test hole punch to peer")
+        print("  omerta nat config      - Configure NAT settings")
+    }
+}
+
+// MARK: - NAT Config Command
+
+struct NATConfig: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "config",
+        abstract: "Configure NAT traversal settings"
+    )
+
+    @Option(name: .long, help: "Set rendezvous server URL")
+    var rendezvous: String?
+
+    @Option(name: .long, help: "Add STUN server")
+    var addStun: String?
+
+    @Option(name: .long, help: "Remove STUN server")
+    var removeStun: String?
+
+    @Option(name: .long, help: "Set hole punch timeout (ms)")
+    var timeout: Int?
+
+    @Option(name: .long, help: "Set probe count")
+    var probeCount: Int?
+
+    @Option(name: .long, help: "Set local port (0 for auto)")
+    var localPort: UInt16?
+
+    @Flag(name: .long, help: "Reset to defaults")
+    var reset: Bool = false
+
+    @Flag(name: .long, help: "Show current configuration")
+    var show: Bool = false
+
+    mutating func run() async throws {
+        let configManager = OmertaCore.ConfigManager()
+
+        // Show current config
+        if show || (rendezvous == nil && addStun == nil && removeStun == nil &&
+                    timeout == nil && probeCount == nil && localPort == nil && !reset) {
+            let config = try? await configManager.load()
+            let natConfig = config?.nat ?? OmertaCore.NATConfig()
+
+            print("NAT Configuration")
+            print("=================")
+            print("")
+            print("Rendezvous Server: \(natConfig.rendezvousServer ?? "(not set)")")
+            print("STUN Servers:")
+            for server in natConfig.stunServers {
+                print("  - \(server)")
+            }
+            print("Prefer Direct: \(natConfig.preferDirect)")
+            print("Hole Punch Timeout: \(natConfig.holePunchTimeout)ms")
+            print("Probe Count: \(natConfig.probeCount)")
+            print("Local Port: \(natConfig.localPort == 0 ? "auto" : String(natConfig.localPort))")
+            return
+        }
+
+        // Reset to defaults
+        if reset {
+            try await configManager.update { config in
+                config.nat = OmertaCore.NATConfig()
+            }
+            print("NAT configuration reset to defaults")
+            return
+        }
+
+        // Update configuration
+        try await configManager.update { config in
+            var natConfig = config.nat ?? OmertaCore.NATConfig()
+
+            if let url = rendezvous {
+                natConfig.rendezvousServer = url
+                print("Set rendezvous server: \(url)")
+            }
+
+            if let server = addStun {
+                if !natConfig.stunServers.contains(server) {
+                    natConfig.stunServers.append(server)
+                    print("Added STUN server: \(server)")
+                } else {
+                    print("STUN server already configured: \(server)")
+                }
+            }
+
+            if let server = removeStun {
+                if let index = natConfig.stunServers.firstIndex(of: server) {
+                    natConfig.stunServers.remove(at: index)
+                    print("Removed STUN server: \(server)")
+                } else {
+                    print("STUN server not found: \(server)")
+                }
+            }
+
+            if let t = timeout {
+                natConfig.holePunchTimeout = t
+                print("Set hole punch timeout: \(t)ms")
+            }
+
+            if let count = probeCount {
+                natConfig.probeCount = count
+                print("Set probe count: \(count)")
+            }
+
+            if let port = localPort {
+                natConfig.localPort = port
+                print("Set local port: \(port == 0 ? "auto" : String(port))")
+            }
+
+            config.nat = natConfig
+        }
+
+        print("")
+        print("Configuration saved to ~/.omerta/config.json")
+    }
+}
+
+// MARK: - NATType Description Extension
+
+extension NATType {
+    var description: String {
+        switch self {
+        case .fullCone:
+            return "Full Cone"
+        case .restrictedCone:
+            return "Restricted Cone"
+        case .portRestrictedCone:
+            return "Port-Restricted Cone"
+        case .symmetric:
+            return "Symmetric"
+        case .unknown:
+            return "Unknown"
         }
     }
 }

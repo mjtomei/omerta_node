@@ -11,17 +11,20 @@ public struct OmertaConfig: Codable, Sendable {
     public var networks: [String: NetworkConfig]
     public var defaultNetwork: String?
     public var localKey: String?  // Auto-generated key for local/direct connections
+    public var nat: NATConfig?    // NAT traversal configuration
 
     public init(
         ssh: SSHConfig = SSHConfig(),
         networks: [String: NetworkConfig] = [:],
         defaultNetwork: String? = nil,
-        localKey: String? = nil
+        localKey: String? = nil,
+        nat: NATConfig? = nil
     ) {
         self.ssh = ssh
         self.networks = networks
         self.defaultNetwork = defaultNetwork
         self.localKey = localKey
+        self.nat = nat
     }
 
     /// Get the local key as Data, or nil if not set
@@ -127,6 +130,57 @@ public struct NetworkConfig: Codable, Sendable {
         self.key = key
         self.name = name
         self.description = description
+    }
+}
+
+// MARK: - NAT Configuration
+
+/// Configuration for NAT traversal
+public struct NATConfig: Codable, Sendable {
+    /// Rendezvous server URL (WebSocket)
+    public var rendezvousServer: String?
+
+    /// STUN servers for NAT type detection
+    public var stunServers: [String]
+
+    /// Prefer direct connections over relay
+    public var preferDirect: Bool
+
+    /// Hole punch timeout in milliseconds
+    public var holePunchTimeout: Int
+
+    /// Number of probe packets for hole punching
+    public var probeCount: Int
+
+    /// Local port for NAT traversal (0 = auto)
+    public var localPort: UInt16
+
+    public init(
+        rendezvousServer: String? = nil,
+        stunServers: [String] = NATConfig.defaultSTUNServers,
+        preferDirect: Bool = true,
+        holePunchTimeout: Int = 5000,
+        probeCount: Int = 5,
+        localPort: UInt16 = 0
+    ) {
+        self.rendezvousServer = rendezvousServer
+        self.stunServers = stunServers
+        self.preferDirect = preferDirect
+        self.holePunchTimeout = holePunchTimeout
+        self.probeCount = probeCount
+        self.localPort = localPort
+    }
+
+    /// Default STUN servers
+    public static let defaultSTUNServers = [
+        "stun.l.google.com:19302",
+        "stun1.l.google.com:19302",
+        "stun2.l.google.com:19302"
+    ]
+
+    /// Timeout as TimeInterval
+    public var timeoutInterval: TimeInterval {
+        Double(holePunchTimeout) / 1000.0
     }
 }
 
