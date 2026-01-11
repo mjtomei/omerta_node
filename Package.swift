@@ -9,6 +9,7 @@ let package = Package(
     products: [
         .executable(name: "omerta", targets: ["OmertaCLI"]),
         .executable(name: "omertad", targets: ["OmertaDaemon"]),
+        .executable(name: "omerta-rendezvous", targets: ["OmertaRendezvous"]),
         .library(name: "OmertaCore", targets: ["OmertaCore"]),
     ],
     dependencies: [
@@ -111,6 +112,32 @@ let package = Package(
             path: "Sources/OmertaCLI"
         ),
 
+        // Rendezvous library (signaling, STUN, relay)
+        .target(
+            name: "OmertaRendezvousLib",
+            dependencies: [
+                "OmertaCore",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOHTTP1", package: "swift-nio"),
+                .product(name: "NIOWebSocket", package: "swift-nio"),
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            path: "Sources/OmertaRendezvous",
+            exclude: ["main.swift"]
+        ),
+
+        // Rendezvous server executable
+        .executableTarget(
+            name: "OmertaRendezvous",
+            dependencies: [
+                "OmertaRendezvousLib",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            path: "Sources/OmertaRendezvousCLI"
+        ),
+
         // Tests
         .testTarget(
             name: "OmertaCoreTests",
@@ -136,6 +163,16 @@ let package = Package(
             name: "OmertaConsumerTests",
             dependencies: ["OmertaConsumer", "OmertaCore"],
             path: "Tests/OmertaConsumerTests"
+        ),
+        .testTarget(
+            name: "OmertaRendezvousTests",
+            dependencies: [
+                "OmertaRendezvousLib",
+                "OmertaCore",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+            ],
+            path: "Tests/OmertaRendezvousTests"
         ),
     ]
 )
