@@ -1,35 +1,32 @@
 // DHTTransport.swift
-// UDP transport for DHT protocol
-//
-// TODO: The current implementation uses blocking recvfrom with a timeout.
-// For production use, this should be refactored to use:
-// - NIO DatagramChannel for proper async/await integration, or
-// - A dedicated thread pool for blocking I/O
-//
-// The current implementation works but integration tests are disabled
-// until the blocking I/O issues are resolved.
+// NIO-based UDP transport for DHT protocol
 
 import Foundation
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#endif
+import NIOCore
+import NIOPosix
 import Logging
 
-/// UDP transport for DHT protocol messages
+/// UDP transport for DHT protocol messages using NIO
 public actor DHTTransport {
     private let port: UInt16
-    private var socket: Int32 = -1
+    private var channel: Channel?
+    private var eventLoopGroup: EventLoopGroup?
     private var isRunning = false
     private let logger: Logger
-    private var receiveTask: Task<Void, Never>?
 
     /// Handler for incoming messages
-    public var messageHandler: ((DHTPacket, DHTNodeInfo) async -> DHTPacket?)?
+    private var messageHandler: ((DHTPacket, DHTNodeInfo) async -> DHTPacket?)?
+
+    /// Set the message handler
+    public func setMessageHandler(_ handler: @escaping (DHTPacket, DHTNodeInfo) async -> DHTPacket?) {
+        self.messageHandler = handler
+    }
 
     /// The actual bound port
     public private(set) var boundPort: UInt16 = 0
+
+    /// Pending responses keyed by transaction ID
+    private var pendingResponses: [String: CheckedContinuation<DHTPacket, Error>] = [:]
 
     public init(port: UInt16 = 4000) {
         self.port = port
@@ -37,163 +34,123 @@ public actor DHTTransport {
     }
 
     /// Start the UDP transport
-    public func start() throws {
+    public func start() async throws {
         guard !isRunning else { return }
 
-        // Create UDP socket
-        #if canImport(Darwin)
-        socket = Darwin.socket(AF_INET, SOCK_DGRAM, 0)
-        #else
-        socket = Glibc.socket(AF_INET, Int32(SOCK_DGRAM.rawValue), 0)
-        #endif
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        self.eventLoopGroup = group
 
-        guard socket >= 0 else {
-            throw DHTTransportError.socketCreationFailed
-        }
+        let handler = DHTChannelHandler(transport: self)
 
-        // Set socket options for reuse
-        var reuse: Int32 = 1
-        setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
-
-        // Set receive timeout so recvfrom doesn't block indefinitely
-        var timeout = timeval(tv_sec: 1, tv_usec: 0) // 1 second timeout
-        setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-
-        // Bind to port
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = port.bigEndian
-        addr.sin_addr.s_addr = INADDR_ANY
-
-        let bindResult = withUnsafePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
-                bind(socket, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+        let bootstrap = DatagramBootstrap(group: group)
+            .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .channelInitializer { channel in
+                channel.pipeline.addHandler(handler)
             }
-        }
 
-        guard bindResult == 0 else {
-            let err = getErrno()
-            closeSocket()
-            throw DHTTransportError.bindFailed(err)
-        }
+        do {
+            let chan = try await bootstrap.bind(host: "0.0.0.0", port: Int(port)).get()
+            self.channel = chan
 
-        // Get actual bound port
-        var boundAddr = sockaddr_in()
-        var addrLen = socklen_t(MemoryLayout<sockaddr_in>.size)
-        withUnsafeMutablePointer(to: &boundAddr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
-                getsockname(socket, sockaddrPtr, &addrLen)
+            // Get actual bound port
+            if let localAddr = chan.localAddress {
+                self.boundPort = UInt16(localAddr.port ?? Int(port))
             }
+
+            isRunning = true
+            logger.info("DHT transport started on port \(boundPort)")
+        } catch {
+            try? await group.shutdownGracefully()
+            self.eventLoopGroup = nil
+            throw DHTTransportError.bindFailed(0)
         }
-        boundPort = UInt16(bigEndian: boundAddr.sin_port)
-
-        isRunning = true
-        logger.info("DHT transport started on port \(boundPort)")
-
-        // Start receive loop
-        startReceiveLoop()
     }
 
     /// Stop the UDP transport
-    public func stop() {
+    public func stop() async {
         guard isRunning else { return }
 
         isRunning = false
-        receiveTask?.cancel()
-        receiveTask = nil
-        closeSocket()
+
+        // Cancel all pending responses
+        for (_, continuation) in pendingResponses {
+            continuation.resume(throwing: DHTTransportError.notRunning)
+        }
+        pendingResponses.removeAll()
+
+        // Close channel
+        if let channel = channel {
+            try? await channel.close()
+        }
+        channel = nil
+
+        // Shutdown event loop
+        if let group = eventLoopGroup {
+            try? await group.shutdownGracefully()
+        }
+        eventLoopGroup = nil
 
         logger.info("DHT transport stopped")
     }
 
     /// Send a packet to a node
-    public func send(_ packet: DHTPacket, to node: DHTNodeInfo) throws {
-        guard isRunning else { throw DHTTransportError.notRunning }
+    public func send(_ packet: DHTPacket, to node: DHTNodeInfo) async throws {
+        guard isRunning, let channel = channel else {
+            throw DHTTransportError.notRunning
+        }
 
         let data = try packet.encode()
 
-        // Parse address
-        guard let addr = parseAddress(node.address, port: node.port) else {
+        guard let remoteAddr = try? SocketAddress(ipAddress: node.address, port: Int(node.port)) else {
             throw DHTTransportError.invalidAddress
         }
 
-        var destAddr = addr
-        let result = withUnsafePointer(to: &destAddr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
-                data.withUnsafeBytes { buffer in
-                    sendto(socket, buffer.baseAddress, buffer.count, 0, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
-                }
-            }
-        }
+        var buffer = channel.allocator.buffer(capacity: data.count)
+        buffer.writeBytes(data)
 
-        guard result >= 0 else {
-            throw DHTTransportError.sendFailed(getErrno())
-        }
+        let envelope = AddressedEnvelope(remoteAddress: remoteAddr, data: buffer)
 
+        try await channel.writeAndFlush(envelope)
         logger.debug("Sent \(data.count) bytes to \(node.fullAddress)")
     }
 
     /// Send a request and wait for response
     public func sendRequest(_ packet: DHTPacket, to node: DHTNodeInfo, timeout: TimeInterval = 5.0) async throws -> DHTPacket {
-        try send(packet, to: node)
+        try await send(packet, to: node)
 
-        // Wait for response with matching transaction ID
-        return try await withTimeout(timeout) {
-            try await self.waitForResponse(transactionId: packet.transactionId)
+        let transactionId = packet.transactionId
+
+        // Start timeout task on a detached task (so it can run concurrently)
+        let timeoutTask = Task.detached { [weak self] in
+            try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            await self?.cancelPendingResponse(transactionId: transactionId)
+        }
+
+        defer {
+            timeoutTask.cancel()
+        }
+
+        // Wait for response
+        return try await waitForResponse(transactionId: transactionId)
+    }
+
+    /// Cancel a pending response (called on timeout)
+    private func cancelPendingResponse(transactionId: String) {
+        if let continuation = pendingResponses.removeValue(forKey: transactionId) {
+            continuation.resume(throwing: DHTTransportError.timeout)
         }
     }
 
-    // MARK: - Private
+    // MARK: - Internal methods called by handler
 
-    private var pendingResponses: [String: CheckedContinuation<DHTPacket, Error>] = [:]
-
-    private func waitForResponse(transactionId: String) async throws -> DHTPacket {
-        try await withCheckedThrowingContinuation { continuation in
-            pendingResponses[transactionId] = continuation
+    /// Called by channel handler when data is received
+    nonisolated func handleReceivedData(_ data: Data, from address: String, port: UInt16) {
+        Task {
+            await self.processReceivedData(data, from: address, port: port)
         }
     }
 
-    private func startReceiveLoop() {
-        let sock = socket // Capture socket before starting task
-        receiveTask = Task.detached { [weak self] in
-            var buffer = [UInt8](repeating: 0, count: 65536)
-
-            while true {
-                guard let self = self else { break }
-                guard await self.isRunning else { break }
-
-                var senderAddr = sockaddr_in()
-                var addrLen = socklen_t(MemoryLayout<sockaddr_in>.size)
-
-                // Blocking receive (with socket timeout set to 1 second)
-                let bytesRead = withUnsafeMutablePointer(to: &senderAddr) { ptr in
-                    ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
-                        recvfrom(sock, &buffer, buffer.count, 0, sockaddrPtr, &addrLen)
-                    }
-                }
-
-                guard bytesRead > 0 else {
-                    // Timeout or error - just continue the loop
-                    continue
-                }
-
-                let data = Data(buffer.prefix(bytesRead))
-                let senderAddress = self.addressToStringSync(senderAddr)
-                let senderPort = UInt16(bigEndian: senderAddr.sin_port)
-
-                await self.handleReceivedData(data, from: senderAddress, port: senderPort)
-            }
-        }
-    }
-
-    private nonisolated func addressToStringSync(_ addr: sockaddr_in) -> String {
-        var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-        var addrCopy = addr.sin_addr
-        inet_ntop(AF_INET, &addrCopy, &buffer, socklen_t(INET_ADDRSTRLEN))
-        return String(cString: buffer)
-    }
-
-    private func handleReceivedData(_ data: Data, from address: String, port: UInt16) async {
+    private func processReceivedData(_ data: Data, from address: String, port: UInt16) async {
         do {
             let packet = try DHTPacket.decode(from: data)
 
@@ -212,11 +169,19 @@ public actor DHTTransport {
 
             if let handler = messageHandler {
                 if let response = await handler(packet, sender) {
-                    try? send(response, to: sender)
+                    try? await send(response, to: sender)
                 }
             }
         } catch {
             logger.warning("Failed to decode DHT packet: \(error)")
+        }
+    }
+
+    // MARK: - Private
+
+    private func waitForResponse(transactionId: String) async throws -> DHTPacket {
+        try await withCheckedThrowingContinuation { continuation in
+            pendingResponses[transactionId] = continuation
         }
     }
 
@@ -230,36 +195,53 @@ public actor DHTTransport {
             return fromId
         }
     }
+}
 
-    private func parseAddress(_ address: String, port: UInt16) -> sockaddr_in? {
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = port.bigEndian
+/// NIO channel handler for DHT UDP packets
+private final class DHTChannelHandler: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = AddressedEnvelope<ByteBuffer>
+    typealias OutboundOut = AddressedEnvelope<ByteBuffer>
 
-        guard inet_pton(AF_INET, address, &addr.sin_addr) == 1 else {
-            return nil
-        }
+    private let transport: DHTTransport
 
-        return addr
+    init(transport: DHTTransport) {
+        self.transport = transport
     }
 
-    private func closeSocket() {
-        if socket >= 0 {
-            #if canImport(Darwin)
-            Darwin.close(socket)
-            #else
-            Glibc.close(socket)
-            #endif
-            socket = -1
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let envelope = unwrapInboundIn(data)
+        var buffer = envelope.data
+
+        guard let bytes = buffer.readBytes(length: buffer.readableBytes) else {
+            return
         }
+
+        let receivedData = Data(bytes)
+
+        // Extract sender address and port from SocketAddress
+        let remoteAddress = envelope.remoteAddress
+        guard let senderPort = remoteAddress.port else {
+            return
+        }
+
+        // Get address string representation
+        let senderAddress: String
+        switch remoteAddress {
+        case .v4(let addr):
+            senderAddress = addr.host
+        case .v6(let addr):
+            senderAddress = addr.host
+        default:
+            return
+        }
+
+        // Process asynchronously
+        transport.handleReceivedData(receivedData, from: senderAddress, port: UInt16(senderPort))
     }
 
-    private func getErrno() -> Int32 {
-        #if canImport(Darwin)
-        return Darwin.errno
-        #else
-        return Glibc.errno
-        #endif
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        // Log error but don't close - UDP is connectionless
+        print("DHT transport error: \(error)")
     }
 }
 

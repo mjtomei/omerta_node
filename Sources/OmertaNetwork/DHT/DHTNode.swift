@@ -14,9 +14,8 @@ public actor DHTNode {
     private var isRunning: Bool
     private let logger: Logger
 
-    // NIO components
-    private var channel: Channel?
-    private let eventLoopGroup: EventLoopGroup
+    // Transport layer
+    private var transport: DHTTransport?
 
     /// Our node's DHT key (20 bytes)
     public var nodeKey: Data {
@@ -28,10 +27,21 @@ public actor DHTNode {
         identity.identity.peerId
     }
 
+    /// The bound port (after starting)
+    public var boundPort: UInt16 {
+        get async {
+            await transport?.boundPort ?? 0
+        }
+    }
+
+    /// Number of nodes in routing table
+    public var routingTableNodeCount: Int {
+        routingTable.nodeCount
+    }
+
     public init(
         identity: IdentityKeypair,
-        config: DHTConfig = .default,
-        eventLoopGroup: EventLoopGroup? = nil
+        config: DHTConfig = .default
     ) {
         self.identity = identity
         self.config = config
@@ -41,14 +51,11 @@ public actor DHTNode {
         self.logger = Logger(label: "io.omerta.dht")
 
         // Create routing table with our node ID
-        let localId = identity.identity.peerId.data(using: .utf8).flatMap { Data(hexString: String(data: $0, encoding: .utf8) ?? "") } ?? Data()
         var extendedId = Data(hexString: identity.identity.peerId) ?? Data()
         while extendedId.count < 20 {
             extendedId.append(0)
         }
         self.routingTable = RoutingTable(localId: extendedId, k: config.k)
-
-        self.eventLoopGroup = eventLoopGroup ?? MultiThreadedEventLoopGroup(numberOfThreads: 1)
     }
 
     /// Start the DHT node
@@ -56,6 +63,17 @@ public actor DHTNode {
         guard !isRunning else { return }
 
         logger.info("Starting DHT node on port \(config.port)")
+
+        // Create and start transport
+        let newTransport = DHTTransport(port: config.port)
+        try await newTransport.start()
+        self.transport = newTransport
+
+        // Set up message handler
+        await newTransport.setMessageHandler { [weak self] packet, sender in
+            guard let self = self else { return nil }
+            return await self.handleMessage(packet, from: sender)
+        }
 
         // Bootstrap from known nodes
         for bootstrapAddress in config.bootstrapNodes {
@@ -82,11 +100,32 @@ public actor DHTNode {
         }
         pendingRequests.removeAll()
 
-        // Close channel
-        try? await channel?.close()
-        channel = nil
+        // Stop transport
+        if let transport = transport {
+            await transport.stop()
+        }
+        transport = nil
 
         logger.info("DHT node stopped")
+    }
+
+    /// Ping a remote node
+    public func ping(_ node: DHTNodeInfo) async -> Bool {
+        guard let transport = transport else { return false }
+
+        let packet = DHTPacket(message: .ping(fromId: peerId))
+
+        do {
+            let response = try await transport.sendRequest(packet, to: node, timeout: config.rpcTimeout)
+            if case .pong = response.message {
+                routingTable.addOrUpdate(node)
+                return true
+            }
+            return false
+        } catch {
+            logger.debug("Ping to \(node.peerId) failed: \(error)")
+            return false
+        }
     }
 
     /// Announce a peer's availability
@@ -339,63 +378,53 @@ public actor DHTNode {
     }
 
     private func sendRequest(to node: DHTNodeInfo, message: DHTMessage) async throws -> DHTMessage {
+        guard let transport = transport else {
+            throw DHTError.notStarted
+        }
+
         let packet = DHTPacket(message: message)
 
-        // For now, simulate the response based on local state
-        // In a real implementation, this would send UDP and wait for response
-        return try await withCheckedThrowingContinuation { continuation in
-            // Store continuation for response matching
-            pendingRequests[packet.transactionId] = continuation
-
-            // Simulate timeout
-            Task {
-                try? await Task.sleep(nanoseconds: UInt64(config.rpcTimeout * 1_000_000_000))
-                if let cont = pendingRequests.removeValue(forKey: packet.transactionId) {
-                    cont.resume(throwing: DHTError.timeout)
-                }
-            }
-
-            // In a real implementation, we'd send the packet via UDP here
-            // For now, handle locally if the node is ourselves
-            if node.peerId == peerId {
-                handleLocalRequest(packet: packet, continuation: continuation)
-            }
+        // Handle local requests directly (avoid loopback UDP)
+        if node.peerId == peerId {
+            return handleLocalRequest(packet: packet)
         }
+
+        // Send via transport
+        let response = try await transport.sendRequest(packet, to: node, timeout: config.rpcTimeout)
+        return response.message
     }
 
-    private func handleLocalRequest(packet: DHTPacket, continuation: CheckedContinuation<DHTMessage, Error>) {
-        pendingRequests.removeValue(forKey: packet.transactionId)
-
+    private func handleLocalRequest(packet: DHTPacket) -> DHTMessage {
         switch packet.message {
         case .findNode(let targetId, _):
             var targetKey = Data(hexString: targetId) ?? Data()
             while targetKey.count < 20 { targetKey.append(0) }
             let nodes = routingTable.findClosest(to: targetKey, count: config.k)
-            continuation.resume(returning: .foundNodes(nodes: nodes, fromId: peerId))
+            return .foundNodes(nodes: nodes, fromId: peerId)
 
         case .findValue(let key, _):
             if let value = storage[key], !value.isExpired {
-                continuation.resume(returning: .foundValue(value: value, fromId: peerId))
+                return .foundValue(value: value, fromId: peerId)
             } else {
                 var targetKey = Data(hexString: key) ?? Data()
                 while targetKey.count < 20 { targetKey.append(0) }
                 let nodes = routingTable.findClosest(to: targetKey, count: config.k)
-                continuation.resume(returning: .valueNotFound(closerNodes: nodes, fromId: peerId))
+                return .valueNotFound(closerNodes: nodes, fromId: peerId)
             }
 
         case .store(let key, let value, _):
             if value.verify() {
                 storage[key] = value
-                continuation.resume(returning: .stored(key: key, fromId: peerId))
+                return .stored(key: key, fromId: peerId)
             } else {
-                continuation.resume(throwing: DHTError.invalidAnnouncement)
+                return .error(message: "Invalid announcement", fromId: peerId)
             }
 
         case .ping:
-            continuation.resume(returning: .pong(fromId: peerId))
+            return .pong(fromId: peerId)
 
         default:
-            continuation.resume(throwing: DHTError.invalidResponse)
+            return .error(message: "Invalid request", fromId: peerId)
         }
     }
 
