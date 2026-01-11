@@ -11,6 +11,7 @@ let package = Package(
         .executable(name: "omertad", targets: ["OmertaDaemon"]),
         .executable(name: "omerta-rendezvous", targets: ["OmertaRendezvous"]),
         .library(name: "OmertaCore", targets: ["OmertaCore"]),
+        .library(name: "OmertaMesh", targets: ["OmertaMesh"]),
     ],
     dependencies: [
         // gRPC and Protocol Buffers
@@ -34,6 +35,19 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
             path: "Sources/OmertaCore"
+        ),
+
+        // Mesh relay network (decentralized P2P overlay)
+        .target(
+            name: "OmertaMesh",
+            dependencies: [
+                "OmertaCore",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Sources/OmertaMesh"
         ),
 
         // VM management (macOS only)
@@ -177,6 +191,16 @@ let package = Package(
                 .product(name: "NIOPosix", package: "swift-nio"),
             ],
             path: "Tests/OmertaRendezvousTests"
+        ),
+        .testTarget(
+            name: "OmertaMeshTests",
+            dependencies: [
+                "OmertaMesh",
+                "OmertaCore",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+            ],
+            path: "Tests/OmertaMeshTests"
         ),
     ]
 )
