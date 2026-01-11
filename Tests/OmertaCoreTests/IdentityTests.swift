@@ -243,4 +243,175 @@ final class IdentityTests: XCTestCase {
         XCTAssertTrue(providers.contains(.system))
         #endif
     }
+
+    #if os(macOS) || os(iOS)
+    // MARK: - Keychain Integration Tests (macOS/iOS only)
+    // Note: These tests require keychain entitlements. They will skip if running
+    // as an unsigned test binary (e.g., swift test without code signing).
+
+    /// Check if keychain access is available (test binary has entitlements)
+    private func skipIfKeychainUnavailable() throws {
+        let provider = KeychainProvider(service: "io.omerta.test.probe")
+        let probeKey = "entitlement-probe"
+        defer { try? provider.delete(key: probeKey) }
+
+        do {
+            try provider.save(key: probeKey, data: Data([0x42]))
+        } catch KeychainError.saveFailed(let status) where status == -25308 {
+            throw XCTSkip("Keychain unavailable: test binary lacks entitlements (errSecInteractionNotAllowed)")
+        } catch KeychainError.saveFailed(let status) where status == -34018 {
+            throw XCTSkip("Keychain unavailable: missing entitlements (errSecMissingEntitlement)")
+        }
+    }
+
+    func testKeychainSaveLoadDelete() throws {
+        try skipIfKeychainUnavailable()
+
+        let provider = KeychainProvider(service: "io.omerta.test.\(UUID().uuidString)")
+        let testKey = "test-key"
+        let testData = "secret-data".data(using: .utf8)!
+
+        // Clean up first (in case of previous failed test)
+        try? provider.delete(key: testKey)
+
+        // Save
+        try provider.save(key: testKey, data: testData)
+
+        // Load
+        let loaded = try provider.load(key: testKey)
+        XCTAssertEqual(loaded, testData)
+
+        // Exists
+        XCTAssertTrue(provider.exists(key: testKey))
+
+        // Delete
+        try provider.delete(key: testKey)
+
+        // Verify deleted
+        XCTAssertFalse(provider.exists(key: testKey))
+        let afterDelete = try provider.load(key: testKey)
+        XCTAssertNil(afterDelete)
+    }
+
+    func testKeychainOverwrite() throws {
+        try skipIfKeychainUnavailable()
+
+        let provider = KeychainProvider(service: "io.omerta.test.\(UUID().uuidString)")
+        let testKey = "overwrite-key"
+        let data1 = "first".data(using: .utf8)!
+        let data2 = "second".data(using: .utf8)!
+
+        defer { try? provider.delete(key: testKey) }
+
+        // Save first value
+        try provider.save(key: testKey, data: data1)
+        XCTAssertEqual(try provider.load(key: testKey), data1)
+
+        // Overwrite with second value
+        try provider.save(key: testKey, data: data2)
+        XCTAssertEqual(try provider.load(key: testKey), data2)
+    }
+
+    func testKeychainAllKeys() throws {
+        try skipIfKeychainUnavailable()
+
+        let service = "io.omerta.test.\(UUID().uuidString)"
+        let provider = KeychainProvider(service: service)
+        let keys = ["key1", "key2", "key3"]
+
+        defer {
+            for key in keys {
+                try? provider.delete(key: key)
+            }
+        }
+
+        // Save multiple keys
+        for key in keys {
+            try provider.save(key: key, data: key.data(using: .utf8)!)
+        }
+
+        // List all keys
+        let allKeys = try provider.allKeys()
+        for key in keys {
+            XCTAssertTrue(allKeys.contains(key), "Missing key: \(key)")
+        }
+    }
+
+    func testKeychainDeleteNonExistent() throws {
+        let provider = KeychainProvider(service: "io.omerta.test.\(UUID().uuidString)")
+
+        // Should not throw when deleting non-existent key
+        XCTAssertNoThrow(try provider.delete(key: "does-not-exist"))
+    }
+
+    func testICloudKeychainProviderBasicOperations() throws {
+        try skipIfKeychainUnavailable()
+
+        let provider = ICloudKeychainProvider(service: "io.omerta.test.icloud.\(UUID().uuidString)")
+        let testKey = "icloud-test-key"
+        let testData = "icloud-data".data(using: .utf8)!
+
+        defer { try? provider.delete(key: testKey) }
+
+        // Save (will use kSecAttrSynchronizable = true)
+        try provider.save(key: testKey, data: testData)
+
+        // Load
+        let loaded = try provider.load(key: testKey)
+        XCTAssertEqual(loaded, testData)
+
+        // Delete
+        try provider.delete(key: testKey)
+
+        // Verify deleted
+        let afterDelete = try provider.load(key: testKey)
+        XCTAssertNil(afterDelete)
+    }
+
+    func testIdentityStoreWithSystemKeychain() async throws {
+        try skipIfKeychainUnavailable()
+
+        let store = IdentityStore(provider: .system)
+        let (keypair, _) = IdentityKeypair.generate()
+
+        defer {
+            Task {
+                try? await store.delete()
+            }
+        }
+
+        // Save identity to system keychain
+        try await store.save(keypair)
+
+        // Load it back
+        let loaded = try await store.load()
+        XCTAssertNotNil(loaded)
+        XCTAssertEqual(loaded?.identity.peerId, keypair.identity.peerId)
+        XCTAssertEqual(loaded?.privateKey, keypair.privateKey)
+    }
+
+    func testIdentityStoreOverwrite() async throws {
+        try skipIfKeychainUnavailable()
+
+        let store = IdentityStore(provider: .system)
+        let (keypair1, _) = IdentityKeypair.generate()
+        let (keypair2, _) = IdentityKeypair.generate()
+
+        defer {
+            Task {
+                try? await store.delete()
+            }
+        }
+
+        // Save first identity
+        try await store.save(keypair1)
+        let loaded1 = try await store.load()
+        XCTAssertEqual(loaded1?.identity.peerId, keypair1.identity.peerId)
+
+        // Save second identity (overwrites)
+        try await store.save(keypair2)
+        let loaded2 = try await store.load()
+        XCTAssertEqual(loaded2?.identity.peerId, keypair2.identity.peerId)
+    }
+    #endif
 }
