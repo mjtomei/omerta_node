@@ -48,15 +48,25 @@ final class Phase1Tests: XCTestCase {
         let exported = original.privateKeyBase64
         let restored = try IdentityKeypair(privateKeyBase64: exported)
 
-        // Should have same peer ID
-        XCTAssertEqual(original.peerId, restored.peerId)
+        // Debug: check private key sizes
+        print("Original private key size: \(original.privateKeyData.count)")
+        print("Exported base64 length: \(exported.count)")
+        print("Restored private key size: \(restored.privateKeyData.count)")
+        print("Original peerId: \(original.peerId)")
+        print("Restored peerId: \(restored.peerId)")
+
+        // Should have same peer ID (derived from public key)
+        XCTAssertEqual(original.peerId, restored.peerId, "Peer IDs should match")
+
+        // Private key data should round-trip
+        XCTAssertEqual(original.privateKeyData, restored.privateKeyData, "Private key data should match")
 
         // Should produce same signatures
         let message = "Test message".data(using: .utf8)!
         let sig1 = try original.sign(message)
         let sig2 = try restored.sign(message)
 
-        XCTAssertEqual(sig1.base64, sig2.base64)
+        XCTAssertEqual(sig1.base64, sig2.base64, "Signatures should match")
     }
 
     // MARK: - Envelope Tests
