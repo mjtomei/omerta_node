@@ -36,6 +36,11 @@ public enum NATType: String, Codable, Sendable, Equatable {
         }
     }
 
+    /// Alias for isHolePunchable
+    public var holePunchable: Bool {
+        isHolePunchable
+    }
+
     /// Whether this node can act as a relay for others
     public var canRelay: Bool {
         switch self {
@@ -52,15 +57,34 @@ public struct NATDetectionResult: Sendable {
     /// The detected NAT type
     public let type: NATType
 
-    /// Our public endpoint as seen by STUN server
+    /// Our public endpoint as seen by STUN server (IP:port)
     public let publicEndpoint: String?
+
+    /// Public IP address
+    public let publicAddress: String?
+
+    /// Public port
+    public let publicPort: UInt16?
 
     /// Local port used for detection
     public let localPort: UInt16
 
-    public init(type: NATType, publicEndpoint: String?, localPort: UInt16) {
+    /// Round-trip time to STUN server
+    public let rtt: TimeInterval
+
+    public init(
+        type: NATType,
+        publicEndpoint: String? = nil,
+        publicAddress: String? = nil,
+        publicPort: UInt16? = nil,
+        localPort: UInt16 = 0,
+        rtt: TimeInterval = 0
+    ) {
         self.type = type
         self.publicEndpoint = publicEndpoint
+        self.publicAddress = publicAddress
+        self.publicPort = publicPort
         self.localPort = localPort
+        self.rtt = rtt
     }
 }
