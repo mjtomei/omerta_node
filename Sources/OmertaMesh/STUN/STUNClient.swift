@@ -108,10 +108,13 @@ public actor STUNClient {
             }
 
             for try await result in group {
+                // Always cancel remaining tasks when first result arrives
+                group.cancelAll()
                 if let result = result {
-                    group.cancelAll()
                     return result
                 }
+                // Timeout fired (nil result) - break to throw timeout
+                break
             }
 
             throw STUNError.timeout
@@ -216,6 +219,7 @@ private final class STUNResponseHandler: ChannelInboundHandler, @unchecked Senda
 
     private var responseData: Data?
     private var continuation: CheckedContinuation<Data?, Never>?
+    private var isCancelled = false
     private let lock = NSLock()
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -244,9 +248,34 @@ private final class STUNResponseHandler: ChannelInboundHandler, @unchecked Senda
             return data
         }
 
-        return await withCheckedContinuation { cont in
-            continuation = cont
+        // Check if already cancelled before we start waiting
+        if Task.isCancelled {
             lock.unlock()
+            return nil
+        }
+
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { cont in
+                // Check if cancelled while we were setting up
+                if self.isCancelled {
+                    self.lock.unlock()
+                    cont.resume(returning: nil)
+                } else {
+                    self.continuation = cont
+                    self.lock.unlock()
+                }
+            }
+        } onCancel: {
+            // Mark as cancelled and resume continuation if set
+            self.lock.lock()
+            self.isCancelled = true
+            if let cont = self.continuation {
+                self.continuation = nil
+                self.lock.unlock()
+                cont.resume(returning: nil)
+            } else {
+                self.lock.unlock()
+            }
         }
     }
 }
