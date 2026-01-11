@@ -2755,7 +2755,7 @@ See `vm-network-architecture.md` for detailed implementation of VM-side isolatio
 | 5c | Signaling server | Unit | Phase 5b | All | Done |
 | 5d | NAT traversal client | Unit | Phase 5c | All | Done |
 | 5e | WireGuard integration | Integration | Phase 5d | All | Done |
-| 5f | P2P CLI commands | Integration | Phase 5e | All | |
+| 5f | P2P CLI commands | Integration | Phase 5e | All | Done |
 | 6 | Consumer VM image | Unit, Integration | Phase 5f | All | |
 | 7 | Port forwarding | Unit, Integration | Phase 6 | All | |
 | 8 | Unified node | Unit, Integration | Phase 7 | All | |
