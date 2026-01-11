@@ -2750,8 +2750,13 @@ See `vm-network-architecture.md` for detailed implementation of VM-side isolatio
 | 3 | Consumer WireGuard server | Unit, Integration | Phase 2 | All (needs sudo) | Done |
 | 4 | E2E CLI flow | E2E | Phases 1-3 | All | Done |
 | 4.5 | Standalone VM tests | Unit, Integration | Phase 2 | All | Done |
-| 5 | P2P networking foundation | Unit, Integration | Phase 4 | All | |
-| 6 | Consumer VM image | Unit, Integration | Phase 5 | All | |
+| 5a | Peer identity | Unit | Phase 4 | All | Done |
+| 5b | DHT peer discovery | Unit, Integration | Phase 5a | All | Done |
+| 5c | Signaling server | Unit | Phase 5b | All | Done |
+| 5d | NAT traversal client | Unit | Phase 5c | All | |
+| 5e | WireGuard integration | Integration | Phase 5d | All | |
+| 5f | P2P CLI commands | Integration | Phase 5e | All | |
+| 6 | Consumer VM image | Unit, Integration | Phase 5f | All | |
 | 7 | Port forwarding | Unit, Integration | Phase 6 | All | |
 | 8 | Unified node | Unit, Integration | Phase 7 | All | |
 | 9 | Menu bar app | UI | Phase 8 | **macOS only** | |
