@@ -25,6 +25,9 @@ public actor MeshNode {
     /// Known peer connections
     private var peers: [PeerId: PeerConnection] = [:]
 
+    /// Peer endpoints for broadcasting
+    private var peerEndpoints: [PeerId: String] = [:]
+
     /// Message IDs we've seen (for deduplication)
     private var seenMessageIds: Set<String> = []
     private let maxSeenMessages = 10000
@@ -41,6 +44,9 @@ public actor MeshNode {
     /// Logger
     private let logger: Logger
 
+    /// Freshness manager for tracking recent contacts and handling stale info
+    public let freshnessManager: FreshnessManager
+
     /// The port we're listening on
     public var port: Int? {
         get async {
@@ -56,9 +62,11 @@ public actor MeshNode {
         self.eventLoopGroup = eventLoopGroup ?? MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.socket = UDPSocket(eventLoopGroup: self.eventLoopGroup)
         self.logger = Logger(label: "io.omerta.mesh.node.\(identity.peerId.prefix(8))")
+        self.freshnessManager = FreshnessManager()
 
         try await socket.bind(port: port)
         await setupReceiveHandler()
+        await setupFreshnessManager()
     }
 
     /// Create a mesh node with an existing identity
@@ -67,9 +75,64 @@ public actor MeshNode {
         self.eventLoopGroup = eventLoopGroup ?? MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.socket = UDPSocket(eventLoopGroup: self.eventLoopGroup)
         self.logger = Logger(label: "io.omerta.mesh.node.\(identity.peerId.prefix(8))")
+        self.freshnessManager = FreshnessManager()
 
         try await socket.bind(port: port)
         await setupReceiveHandler()
+        await setupFreshnessManager()
+    }
+
+    /// Set up the freshness manager callbacks
+    private func setupFreshnessManager() async {
+        await freshnessManager.setCallbacks(
+            sendMessage: { [weak self] (message: MeshMessage, toPeerId: PeerId?) in
+                guard let self = self else { return }
+                if let toPeerId = toPeerId,
+                   let endpoint = await self.getEndpoint(for: toPeerId) {
+                    await self.send(message, to: endpoint)
+                }
+            },
+            broadcastMessage: { [weak self] (message: MeshMessage, maxHops: Int) in
+                guard let self = self else { return }
+                await self.broadcast(message, maxHops: maxHops)
+            },
+            invalidateCache: { [weak self] (peerId: PeerId, path: ReachabilityPath) in
+                // Cache invalidation can be handled by higher layers
+                // For now, just log it
+                guard let self = self else { return }
+                self.logger.debug("Cache invalidation requested for \(peerId)")
+            }
+        )
+    }
+
+    /// Get endpoint for a peer
+    private func getEndpoint(for peerId: PeerId) -> String? {
+        peerEndpoints[peerId]
+    }
+
+    /// Broadcast a message to all known peers with hop count tracking
+    public func broadcast(_ message: MeshMessage, maxHops: Int) async {
+        for (peerId, endpoint) in peerEndpoints {
+            guard peerId != self.peerId else { continue }
+
+            do {
+                var envelope = MeshEnvelope(
+                    fromPeerId: self.peerId,
+                    toPeerId: nil,
+                    hopCount: 0,
+                    payload: message
+                )
+
+                let dataToSign = try envelope.dataToSign()
+                let sig = try identity.sign(dataToSign)
+                envelope.signature = sig.base64
+
+                let data = try JSONEncoder().encode(envelope)
+                try await socket.send(data, to: endpoint)
+            } catch {
+                logger.debug("Failed to broadcast to \(peerId): \(error)")
+            }
+        }
     }
 
     /// Set up the receive handler for incoming datagrams
@@ -86,6 +149,10 @@ public actor MeshNode {
     public func start() async throws {
         guard !isRunning else { return }
         isRunning = true
+
+        // Start freshness manager
+        await freshnessManager.start()
+
         let boundPort = await socket.port ?? 0
         logger.info("Mesh node started on port \(boundPort)")
     }
@@ -94,6 +161,9 @@ public actor MeshNode {
     public func stop() async {
         guard isRunning else { return }
         isRunning = false
+
+        // Stop freshness manager
+        await freshnessManager.stop()
 
         // Cancel all pending responses
         for (_, pending) in pendingResponses {
@@ -146,9 +216,10 @@ public actor MeshNode {
             logger.debug("Message signature verification skipped (peer key unknown)")
         }
 
-        // Update peer info
+        // Update peer info and track endpoint
         let endpointString = formatEndpoint(address)
         await updatePeerEndpoint(peerId: envelope.fromPeerId, endpoint: endpointString)
+        peerEndpoints[envelope.fromPeerId] = endpointString
 
         // Check if this is a response to a pending request
         if case .pong = envelope.payload {
@@ -177,17 +248,17 @@ public actor MeshNode {
                 await send(response, to: endpointString)
             }
         } else {
-            await handleDefaultMessage(envelope.payload, from: envelope.fromPeerId, endpoint: endpointString)
+            await handleDefaultMessage(envelope.payload, from: envelope.fromPeerId, endpoint: endpointString, hopCount: envelope.hopCount)
         }
     }
 
     /// Default message handling for basic protocol
-    private func handleDefaultMessage(_ message: MeshMessage, from peerId: PeerId, endpoint: String) async {
+    private func handleDefaultMessage(_ message: MeshMessage, from peerId: PeerId, endpoint: String, hopCount: Int = 0) async {
         switch message {
         case .ping(let recentPeers):
             // Respond with pong including our recent peers
-            let myRecentPeers = Array(peers.keys.prefix(10))
-            await send(.pong(recentPeers: myRecentPeers), to: endpoint)
+            let myRecentPeers = await freshnessManager.recentPeerIds
+            await send(.pong(recentPeers: Array(myRecentPeers.prefix(10))), to: endpoint)
 
             // Learn about new peers from the ping
             for peer in recentPeers {
@@ -196,8 +267,60 @@ public actor MeshNode {
                 }
             }
 
+            // Record this as a recent contact
+            await freshnessManager.recordContact(
+                peerId: peerId,
+                reachability: .direct(endpoint: endpoint),
+                latencyMs: 0,
+                connectionType: .inboundDirect
+            )
+
+        case .whoHasRecent, .iHaveRecent, .pathFailed:
+            // Handle freshness messages
+            let (response, shouldForward) = await freshnessManager.handleMessage(
+                message,
+                from: peerId,
+                hopCount: hopCount
+            )
+
+            // Send response if any
+            if let response = response {
+                await send(response, to: endpoint)
+            }
+
+            // Forward if needed
+            if shouldForward {
+                await forwardMessage(message, from: peerId, hopCount: hopCount + 1)
+            }
+
         default:
             break
+        }
+    }
+
+    /// Forward a message to other peers (for gossip propagation)
+    private func forwardMessage(_ message: MeshMessage, from originalSender: PeerId, hopCount: Int) async {
+        for (peerId, endpoint) in peerEndpoints {
+            // Don't forward back to sender or to ourselves
+            guard peerId != originalSender && peerId != self.peerId else { continue }
+
+            do {
+                var envelope = MeshEnvelope(
+                    fromPeerId: self.peerId,
+                    toPeerId: nil,
+                    hopCount: hopCount,
+                    payload: message
+                )
+
+                let dataToSign = try envelope.dataToSign()
+                let sig = try identity.sign(dataToSign)
+                envelope.signature = sig.base64
+
+                let data = try JSONEncoder().encode(envelope)
+                try await socket.send(data, to: endpoint)
+            } catch {
+                logger.debug("Failed to forward to \(peerId): \(error)")
+            }
         }
     }
 
@@ -278,6 +401,42 @@ public actor MeshNode {
     /// Get known peer IDs
     public var knownPeerIds: [PeerId] {
         Array(peers.keys)
+    }
+
+    /// Get all tracked peer endpoints
+    public var trackedEndpoints: [PeerId: String] {
+        peerEndpoints
+    }
+
+    // MARK: - Freshness Operations
+
+    /// Query the network for fresh information about a peer
+    public func findFreshPeerInfo(_ peerId: PeerId) async -> FreshnessQueryResult {
+        await freshnessManager.queryFreshInfo(for: peerId)
+    }
+
+    /// Report a connection failure for a peer
+    public func reportConnectionFailure(
+        to peerId: PeerId,
+        via path: ReachabilityPath
+    ) async {
+        await freshnessManager.reportConnectionFailure(peerId: peerId, path: path)
+    }
+
+    /// Check if a path is known to have failed
+    public func isPathFailed(_ peerId: PeerId, path: ReachabilityPath) async -> Bool {
+        await freshnessManager.isPathFailed(peerId: peerId, path: path)
+    }
+
+    /// Get recent contacts
+    public var recentContacts: [PeerId: RecentContact] {
+        get async {
+            var result: [PeerId: RecentContact] = [:]
+            for contact in await freshnessManager.recentContacts.allContacts {
+                result[contact.peerId] = contact
+            }
+            return result
+        }
     }
 
     // MARK: - Message Deduplication
