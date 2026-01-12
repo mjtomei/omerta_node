@@ -47,6 +47,9 @@ public actor MeshNode {
     /// Freshness manager for tracking recent contacts and handling stale info
     public let freshnessManager: FreshnessManager
 
+    /// Hole punch manager for NAT traversal
+    public let holePunchManager: HolePunchManager
+
     /// The port we're listening on
     public var port: Int? {
         get async {
@@ -57,29 +60,65 @@ public actor MeshNode {
     // MARK: - Initialization
 
     /// Create a new mesh node with a random identity
-    public init(port: Int = 0, eventLoopGroup: EventLoopGroup? = nil) async throws {
+    public init(port: Int = 0, eventLoopGroup: EventLoopGroup? = nil, canCoordinateHolePunch: Bool = false) async throws {
         self.identity = IdentityKeypair()
         self.eventLoopGroup = eventLoopGroup ?? MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.socket = UDPSocket(eventLoopGroup: self.eventLoopGroup)
         self.logger = Logger(label: "io.omerta.mesh.node.\(identity.peerId.prefix(8))")
         self.freshnessManager = FreshnessManager()
+        self.holePunchManager = HolePunchManager(
+            peerId: identity.peerId,
+            config: HolePunchManager.Config(canCoordinate: canCoordinateHolePunch)
+        )
 
         try await socket.bind(port: port)
         await setupReceiveHandler()
         await setupFreshnessManager()
+        await setupHolePunchManager()
     }
 
     /// Create a mesh node with an existing identity
-    public init(identity: IdentityKeypair, port: Int = 0, eventLoopGroup: EventLoopGroup? = nil) async throws {
+    public init(identity: IdentityKeypair, port: Int = 0, eventLoopGroup: EventLoopGroup? = nil, canCoordinateHolePunch: Bool = false) async throws {
         self.identity = identity
         self.eventLoopGroup = eventLoopGroup ?? MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.socket = UDPSocket(eventLoopGroup: self.eventLoopGroup)
         self.logger = Logger(label: "io.omerta.mesh.node.\(identity.peerId.prefix(8))")
         self.freshnessManager = FreshnessManager()
+        self.holePunchManager = HolePunchManager(
+            peerId: identity.peerId,
+            config: HolePunchManager.Config(canCoordinate: canCoordinateHolePunch)
+        )
 
         try await socket.bind(port: port)
         await setupReceiveHandler()
         await setupFreshnessManager()
+        await setupHolePunchManager()
+    }
+
+    /// Set up the hole punch manager callbacks
+    private func setupHolePunchManager() async {
+        await holePunchManager.setCallbacks(
+            sendMessage: { [weak self] (message: MeshMessage, toPeerId: PeerId) in
+                guard let self = self else { return }
+                if let endpoint = await self.getEndpoint(for: toPeerId) {
+                    await self.send(message, to: endpoint)
+                }
+            },
+            getPeerEndpoint: { [weak self] (peerId: PeerId) in
+                guard let self = self else { return nil }
+                return await self.getEndpoint(for: peerId)
+            },
+            getPeerNATType: { [weak self] (peerId: PeerId) in
+                // For now, return unknown - could be enhanced with peer NAT tracking
+                return .unknown
+            },
+            getCoordinatorPeerId: { [weak self] in
+                // Return first known public peer as coordinator
+                // In production, this would use a smarter selection
+                guard let self = self else { return nil }
+                return await self.peerEndpoints.keys.first
+            }
+        )
     }
 
     /// Set up the freshness manager callbacks
@@ -146,14 +185,17 @@ public actor MeshNode {
     // MARK: - Lifecycle
 
     /// Start the node
-    public func start() async throws {
+    public func start(natType: NATType = .unknown) async throws {
         guard !isRunning else { return }
         isRunning = true
 
         // Start freshness manager
         await freshnessManager.start()
 
+        // Start hole punch manager
         let boundPort = await socket.port ?? 0
+        await holePunchManager.start(natType: natType, localPort: UInt16(boundPort))
+
         logger.info("Mesh node started on port \(boundPort)")
     }
 
@@ -164,6 +206,9 @@ public actor MeshNode {
 
         // Stop freshness manager
         await freshnessManager.stop()
+
+        // Stop hole punch manager
+        await holePunchManager.stop()
 
         // Cancel all pending responses
         for (_, pending) in pendingResponses {
@@ -291,6 +336,12 @@ public actor MeshNode {
             // Forward if needed
             if shouldForward {
                 await forwardMessage(message, from: peerId, hopCount: hopCount + 1)
+            }
+
+        case .holePunchRequest, .holePunchInvite, .holePunchExecute, .holePunchResult:
+            // Handle hole punch messages
+            if let response = await holePunchManager.handleMessage(message, from: peerId) {
+                await send(response, to: endpoint)
             }
 
         default:
@@ -437,6 +488,18 @@ public actor MeshNode {
             }
             return result
         }
+    }
+
+    // MARK: - Hole Punch Operations
+
+    /// Establish a direct connection to a peer via hole punching
+    public func establishDirectConnection(to targetPeerId: PeerId) async -> HolePunchResult {
+        await holePunchManager.establishDirectConnection(to: targetPeerId)
+    }
+
+    /// Update our known NAT type
+    public func updateNATType(_ natType: NATType) async {
+        await holePunchManager.updateNATType(natType)
     }
 
     // MARK: - Message Deduplication
