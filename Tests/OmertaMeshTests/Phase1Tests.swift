@@ -107,7 +107,7 @@ final class Phase1Tests: XCTestCase {
             toPeerId: "recipient",
             hopCount: 0,
             timestamp: timestamp,
-            payload: .ping(recentPeers: []),
+            payload: .ping(recentPeers: [:] as [String: String]),
             signature: ""
         )
 
@@ -151,7 +151,7 @@ final class Phase1Tests: XCTestCase {
         let original = try MeshEnvelope.signed(
             from: keypair,
             to: "recipient",
-            payload: .ping(recentPeers: ["peer1", "peer2"])
+            payload: .ping(recentPeers: ["peer1": "endpoint1", "peer2": "endpoint2"])
         )
 
         // Encode and decode
@@ -230,7 +230,7 @@ final class Phase1Tests: XCTestCase {
 
         // A sends ping to B
         let response = try await nodeA.sendAndReceive(
-            .ping(recentPeers: []),
+            .ping(recentPeers: [:] as [String: String]),
             to: "127.0.0.1:\(portB)",
             timeout: 5.0
         )
@@ -263,7 +263,7 @@ final class Phase1Tests: XCTestCase {
         await nodeB.onMessage { message, _ in
             receivedCount += 1
             if case .ping = message {
-                return .pong(recentPeers: [])
+                return .pong(recentPeers: [:] as [String: String])
             }
             return nil
         }
@@ -276,7 +276,7 @@ final class Phase1Tests: XCTestCase {
             messageId: "test-dedup-id",
             from: keypair,
             to: nil,
-            payload: .ping(recentPeers: [])
+            payload: .ping(recentPeers: [:] as [String: String])
         )
         let data = try JSONEncoder().encode(envelope)
 
@@ -321,7 +321,7 @@ final class Phase1Tests: XCTestCase {
         var envelope = MeshEnvelope(
             fromPeerId: nodeAPeerId,
             toPeerId: nodeBPeerId,
-            payload: .ping(recentPeers: [])
+            payload: .ping(recentPeers: [:] as [String: String])
         )
         envelope.signature = "invalid-signature-base64"
 
@@ -347,7 +347,7 @@ final class Phase1Tests: XCTestCase {
                 for _ in 0..<5 {
                     group.addTask {
                         try await nodeA.sendAndReceive(
-                            .ping(recentPeers: []),
+                            .ping(recentPeers: [:] as [String: String]),
                             to: "127.0.0.1:\(portB)",
                             timeout: 5.0
                         )
@@ -397,7 +397,7 @@ final class Phase1Tests: XCTestCase {
         // Try to send to non-existent node
         do {
             _ = try await nodeA.sendAndReceive(
-                .ping(recentPeers: []),
+                .ping(recentPeers: [:] as [String: String]),
                 to: "127.0.0.1:59999",  // Unlikely to be listening
                 timeout: 0.5
             )

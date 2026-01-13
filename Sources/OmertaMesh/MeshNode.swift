@@ -8,13 +8,107 @@ import Logging
 
 /// A node in the mesh network
 public actor MeshNode {
-    /// This node's identity keypair
-    public let identity: IdentityKeypair
+    // MARK: - Configuration
 
-    /// This node's peer ID (derived from public key)
-    public var peerId: PeerId {
-        identity.peerId
+    /// Configuration for MeshNode
+    public struct Config: Sendable {
+        public let port: UInt16
+        public let targetRelays: Int
+        public let maxRelays: Int
+        public let canRelay: Bool
+        public let canCoordinateHolePunch: Bool
+        public let keepaliveInterval: TimeInterval
+        public let connectionTimeout: TimeInterval
+        public let maxCachedPeers: Int
+        public let peerCacheTTL: TimeInterval
+        public let cacheCleanupInterval: TimeInterval
+        public let recentContactMaxAge: TimeInterval
+        public let freshnessQueryInterval: TimeInterval
+        public let holePunchTimeout: TimeInterval
+        public let holePunchProbeCount: Int
+        public let holePunchProbeInterval: TimeInterval
+
+        public init(
+            port: UInt16 = 0,
+            targetRelays: Int = 3,
+            maxRelays: Int = 5,
+            canRelay: Bool = false,
+            canCoordinateHolePunch: Bool = false,
+            keepaliveInterval: TimeInterval = 15,
+            connectionTimeout: TimeInterval = 10,
+            maxCachedPeers: Int = 500,
+            peerCacheTTL: TimeInterval = 3600,
+            cacheCleanupInterval: TimeInterval = 60,
+            recentContactMaxAge: TimeInterval = 300,
+            freshnessQueryInterval: TimeInterval = 30,
+            holePunchTimeout: TimeInterval = 10,
+            holePunchProbeCount: Int = 5,
+            holePunchProbeInterval: TimeInterval = 0.2
+        ) {
+            self.port = port
+            self.targetRelays = targetRelays
+            self.maxRelays = maxRelays
+            self.canRelay = canRelay
+            self.canCoordinateHolePunch = canCoordinateHolePunch
+            self.keepaliveInterval = keepaliveInterval
+            self.connectionTimeout = connectionTimeout
+            self.maxCachedPeers = maxCachedPeers
+            self.peerCacheTTL = peerCacheTTL
+            self.cacheCleanupInterval = cacheCleanupInterval
+            self.recentContactMaxAge = recentContactMaxAge
+            self.freshnessQueryInterval = freshnessQueryInterval
+            self.holePunchTimeout = holePunchTimeout
+            self.holePunchProbeCount = holePunchProbeCount
+            self.holePunchProbeInterval = holePunchProbeInterval
+        }
+
+        public static let `default` = Config()
     }
+
+    /// Cached peer information
+    public struct CachedPeerInfo: Sendable {
+        public let peerId: PeerId
+        public let endpoint: Endpoint
+        public let natType: NATType
+        public let lastSeen: Date
+
+        public init(peerId: PeerId, endpoint: Endpoint, natType: NATType = .unknown, lastSeen: Date = Date()) {
+            self.peerId = peerId
+            self.endpoint = endpoint
+            self.natType = natType
+            self.lastSeen = lastSeen
+        }
+    }
+
+    // MARK: - Properties
+
+    /// This node's identity keypair
+    private let _identity: IdentityKeypair
+
+    /// This node's peer ID (can be CLI-specified or derived from identity)
+    private let _peerId: PeerId
+
+    /// This node's identity keypair
+    public var identity: IdentityKeypair {
+        _identity
+    }
+
+    /// This node's peer ID
+    public var peerId: PeerId {
+        _peerId
+    }
+
+    /// Node configuration
+    public let config: Config
+
+    /// Cached peer info
+    private var peerCache: [PeerId: CachedPeerInfo] = [:]
+
+    /// Connected relay peer IDs
+    private var connectedRelays: Set<PeerId> = []
+
+    /// Application message handler
+    private var applicationMessageHandler: ((MeshMessage, PeerId) async -> Void)?
 
     /// The UDP socket for network communication
     private let socket: UDPSocket
@@ -50,6 +144,12 @@ public actor MeshNode {
     /// Hole punch manager for NAT traversal
     public let holePunchManager: HolePunchManager
 
+    /// Connection keepalive manager for maintaining NAT mappings
+    public let connectionKeepalive: ConnectionKeepalive
+
+    /// Background task for cache cleanup
+    private var cacheCleanupTask: Task<Void, Never>?
+
     /// The port we're listening on
     public var port: Int? {
         get async {
@@ -59,40 +159,93 @@ public actor MeshNode {
 
     // MARK: - Initialization
 
-    /// Create a new mesh node with a random identity
-    public init(port: Int = 0, eventLoopGroup: EventLoopGroup? = nil, canCoordinateHolePunch: Bool = false) async throws {
-        self.identity = IdentityKeypair()
-        self.eventLoopGroup = eventLoopGroup ?? MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    /// Create a new mesh node with a peer ID and config (for MeshNetwork use)
+    /// Note: An identity keypair is created, but the peerId can be different from the keypair's ID
+    public init(peerId: PeerId, config: Config = .default) {
+        self._identity = IdentityKeypair()
+        self._peerId = peerId
+        self.config = config
+        self.eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.socket = UDPSocket(eventLoopGroup: self.eventLoopGroup)
-        self.logger = Logger(label: "io.omerta.mesh.node.\(identity.peerId.prefix(8))")
+        self.logger = Logger(label: "io.omerta.mesh.node.\(peerId.prefix(8))")
         self.freshnessManager = FreshnessManager()
         self.holePunchManager = HolePunchManager(
-            peerId: identity.peerId,
-            config: HolePunchManager.Config(canCoordinate: canCoordinateHolePunch)
+            peerId: peerId,
+            config: HolePunchManager.Config(
+                holePunchConfig: HolePunchConfig(
+                    probeCount: config.holePunchProbeCount,
+                    probeInterval: config.holePunchProbeInterval,
+                    timeout: config.holePunchTimeout
+                ),
+                canCoordinate: config.canCoordinateHolePunch
+            )
+        )
+        self.connectionKeepalive = ConnectionKeepalive(
+            config: ConnectionKeepalive.Config(interval: config.keepaliveInterval)
+        )
+    }
+
+    /// Create a new mesh node with a random identity
+    public init(port: Int = 0, eventLoopGroup: EventLoopGroup? = nil, canCoordinateHolePunch: Bool = false) async throws {
+        let ident = IdentityKeypair()
+        self._identity = ident
+        self._peerId = ident.peerId
+        self.config = Config(port: UInt16(port), canCoordinateHolePunch: canCoordinateHolePunch)
+        self.eventLoopGroup = eventLoopGroup ?? MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        self.socket = UDPSocket(eventLoopGroup: self.eventLoopGroup)
+        self.logger = Logger(label: "io.omerta.mesh.node.\(ident.peerId.prefix(8))")
+        self.freshnessManager = FreshnessManager()
+        self.holePunchManager = HolePunchManager(
+            peerId: ident.peerId,
+            config: HolePunchManager.Config(
+                holePunchConfig: HolePunchConfig(
+                    probeCount: config.holePunchProbeCount,
+                    probeInterval: config.holePunchProbeInterval,
+                    timeout: config.holePunchTimeout
+                ),
+                canCoordinate: canCoordinateHolePunch
+            )
+        )
+        self.connectionKeepalive = ConnectionKeepalive(
+            config: ConnectionKeepalive.Config(interval: config.keepaliveInterval)
         )
 
         try await socket.bind(port: port)
         await setupReceiveHandler()
         await setupFreshnessManager()
         await setupHolePunchManager()
+        await setupConnectionKeepalive()
     }
 
     /// Create a mesh node with an existing identity
     public init(identity: IdentityKeypair, port: Int = 0, eventLoopGroup: EventLoopGroup? = nil, canCoordinateHolePunch: Bool = false) async throws {
-        self.identity = identity
+        self._identity = identity
+        self._peerId = identity.peerId
+        self.config = Config(port: UInt16(port), canCoordinateHolePunch: canCoordinateHolePunch)
         self.eventLoopGroup = eventLoopGroup ?? MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.socket = UDPSocket(eventLoopGroup: self.eventLoopGroup)
         self.logger = Logger(label: "io.omerta.mesh.node.\(identity.peerId.prefix(8))")
         self.freshnessManager = FreshnessManager()
         self.holePunchManager = HolePunchManager(
             peerId: identity.peerId,
-            config: HolePunchManager.Config(canCoordinate: canCoordinateHolePunch)
+            config: HolePunchManager.Config(
+                holePunchConfig: HolePunchConfig(
+                    probeCount: config.holePunchProbeCount,
+                    probeInterval: config.holePunchProbeInterval,
+                    timeout: config.holePunchTimeout
+                ),
+                canCoordinate: canCoordinateHolePunch
+            )
+        )
+        self.connectionKeepalive = ConnectionKeepalive(
+            config: ConnectionKeepalive.Config(interval: config.keepaliveInterval)
         )
 
         try await socket.bind(port: port)
         await setupReceiveHandler()
         await setupFreshnessManager()
         await setupHolePunchManager()
+        await setupConnectionKeepalive()
     }
 
     /// Set up the hole punch manager callbacks
@@ -104,15 +257,15 @@ public actor MeshNode {
                     await self.send(message, to: endpoint)
                 }
             },
-            getPeerEndpoint: { [weak self] (peerId: PeerId) in
+            getPeerEndpoint: { [weak self] (peerId: PeerId) -> Endpoint? in
                 guard let self = self else { return nil }
                 return await self.getEndpoint(for: peerId)
             },
-            getPeerNATType: { [weak self] (peerId: PeerId) in
+            getPeerNATType: { (_: PeerId) -> NATType? in
                 // For now, return unknown - could be enhanced with peer NAT tracking
-                return .unknown
+                return NATType.unknown
             },
-            getCoordinatorPeerId: { [weak self] in
+            getCoordinatorPeerId: { [weak self] () -> PeerId? in
                 // Return first known public peer as coordinator
                 // In production, this would use a smarter selection
                 guard let self = self else { return nil }
@@ -141,6 +294,37 @@ public actor MeshNode {
                 guard let self = self else { return }
                 self.logger.debug("Cache invalidation requested for \(peerId)")
             }
+        )
+    }
+
+    /// Set up the connection keepalive callbacks
+    private func setupConnectionKeepalive() async {
+        await connectionKeepalive.setPingSender { [weak self] (peerId: PeerId, endpoint: String) -> Bool in
+            guard let self = self else { return false }
+            return await self.sendPing(to: peerId, timeout: 5.0)
+        }
+
+        await connectionKeepalive.setFailureHandler { [weak self] (peerId: PeerId, endpoint: String) in
+            guard let self = self else { return }
+            self.logger.warning("Connection to \(peerId) failed keepalive check")
+            // Remove from direct connections - could trigger reconnection or relay fallback
+            await self.handleKeepaliveFailure(peerId: peerId, endpoint: endpoint)
+        }
+    }
+
+    /// Handle a keepalive failure for a peer
+    private func handleKeepaliveFailure(peerId: PeerId, endpoint: String) async {
+        // Remove from peer endpoints if still pointing to the failed endpoint
+        if peerEndpoints[peerId] == endpoint {
+            logger.info("Removing stale endpoint for \(peerId) due to keepalive failure")
+            // Don't remove the endpoint entirely - just mark as potentially stale
+            // Higher layers can decide whether to try relay or re-punch
+        }
+
+        // Notify freshness manager about the failure
+        let _ = await freshnessManager.pathFailureReporter.reportFailure(
+            peerId: peerId,
+            path: .direct(endpoint: endpoint)
         )
     }
 
@@ -187,6 +371,23 @@ public actor MeshNode {
     /// Start the node
     public func start(natType: NATType = .unknown) async throws {
         guard !isRunning else { return }
+
+        // Bind socket if not already bound
+        let currentPort = await socket.port
+        logger.debug("MeshNode.start() - current socket port: \(currentPort?.description ?? "nil"), config.port: \(config.port)")
+
+        if currentPort == nil {
+            logger.debug("MeshNode.start() - binding socket to port \(config.port)")
+            try await socket.bind(port: Int(config.port))
+            logger.debug("MeshNode.start() - socket bound successfully")
+            await setupReceiveHandler()
+            await setupFreshnessManager()
+            await setupHolePunchManager()
+            await setupConnectionKeepalive()
+        } else {
+            logger.debug("MeshNode.start() - socket already bound to port \(currentPort!)")
+        }
+
         isRunning = true
 
         // Start freshness manager
@@ -194,7 +395,14 @@ public actor MeshNode {
 
         // Start hole punch manager
         let boundPort = await socket.port ?? 0
+        logger.debug("MeshNode.start() - boundPort after start: \(boundPort)")
         await holePunchManager.start(natType: natType, localPort: UInt16(boundPort))
+
+        // Start connection keepalive
+        await connectionKeepalive.start()
+
+        // Start cache cleanup
+        startCacheCleanup()
 
         logger.info("Mesh node started on port \(boundPort)")
     }
@@ -209,6 +417,13 @@ public actor MeshNode {
 
         // Stop hole punch manager
         await holePunchManager.stop()
+
+        // Stop connection keepalive
+        await connectionKeepalive.stop()
+
+        // Stop cache cleanup
+        cacheCleanupTask?.cancel()
+        cacheCleanupTask = nil
 
         // Cancel all pending responses
         for (_, pending) in pendingResponses {
@@ -263,8 +478,7 @@ public actor MeshNode {
 
         // Update peer info and track endpoint
         let endpointString = formatEndpoint(address)
-        await updatePeerEndpoint(peerId: envelope.fromPeerId, endpoint: endpointString)
-        peerEndpoints[envelope.fromPeerId] = endpointString
+        await updatePeerEndpointFromMessage(peerId: envelope.fromPeerId, endpoint: endpointString)
 
         // Check if this is a response to a pending request
         if case .pong = envelope.payload {
@@ -301,14 +515,50 @@ public actor MeshNode {
     private func handleDefaultMessage(_ message: MeshMessage, from peerId: PeerId, endpoint: String, hopCount: Int = 0) async {
         switch message {
         case .ping(let recentPeers):
-            // Respond with pong including our recent peers
-            let myRecentPeers = await freshnessManager.recentPeerIds
-            await send(.pong(recentPeers: Array(myRecentPeers.prefix(10))), to: endpoint)
+            // Record this contact first so we're included in the response
+            await freshnessManager.recordContact(
+                peerId: peerId,
+                reachability: .direct(endpoint: endpoint),
+                latencyMs: 0,
+                connectionType: .inboundDirect
+            )
+
+            // Also update our peer endpoint cache
+            peerEndpoints[peerId] = endpoint
+            peerCache[peerId] = CachedPeerInfo(peerId: peerId, endpoint: endpoint)
+
+            // Respond with pong including our recent peers with endpoints
+            var myRecentPeers = await freshnessManager.recentPeersWithEndpoints
+            // Also include peers from our cache that may not be in freshness yet
+            for (id, ep) in peerEndpoints where id != self.peerId {
+                if myRecentPeers[id] == nil {
+                    myRecentPeers[id] = ep
+                }
+            }
+            // Limit to 10 peers
+            var limitedPeers: [String: String] = [:]
+            for (id, ep) in myRecentPeers {
+                limitedPeers[id] = ep
+                if limitedPeers.count >= 10 { break }
+            }
+            await send(.pong(recentPeers: limitedPeers), to: endpoint)
 
             // Learn about new peers from the ping
-            for peer in recentPeers {
-                if !peers.keys.contains(peer) && peer != self.peerId {
-                    logger.debug("Learned about peer \(peer) from \(peerId)")
+            for (peerIdFromPing, peerEndpoint) in recentPeers {
+                if peerIdFromPing != self.peerId && peerEndpoints[peerIdFromPing] == nil {
+                    logger.info("Learned about peer \(peerIdFromPing) at \(peerEndpoint) from \(peerId)")
+                    peerEndpoints[peerIdFromPing] = peerEndpoint
+                    peerCache[peerIdFromPing] = CachedPeerInfo(peerId: peerIdFromPing, endpoint: peerEndpoint)
+                }
+            }
+
+        case .pong(let recentPeers):
+            // Learn about new peers from the pong
+            for (peerIdFromPong, peerEndpoint) in recentPeers {
+                if peerIdFromPong != self.peerId && peerEndpoints[peerIdFromPong] == nil {
+                    logger.info("Learned about peer \(peerIdFromPong) at \(peerEndpoint) from pong")
+                    peerEndpoints[peerIdFromPong] = peerEndpoint
+                    peerCache[peerIdFromPong] = CachedPeerInfo(peerId: peerIdFromPong, endpoint: peerEndpoint)
                 }
             }
 
@@ -317,8 +567,13 @@ public actor MeshNode {
                 peerId: peerId,
                 reachability: .direct(endpoint: endpoint),
                 latencyMs: 0,
-                connectionType: .inboundDirect
+                connectionType: .direct
             )
+
+            // Update keepalive monitoring - pong means connection is healthy
+            if await connectionKeepalive.isMonitoring(peerId: peerId) {
+                await connectionKeepalive.recordSuccessfulCommunication(peerId: peerId)
+            }
 
         case .whoHasRecent, .iHaveRecent, .pathFailed:
             // Handle freshness messages
@@ -342,6 +597,12 @@ public actor MeshNode {
             // Handle hole punch messages
             if let response = await holePunchManager.handleMessage(message, from: peerId) {
                 await send(response, to: endpoint)
+            }
+
+        case .data(let payload):
+            // Pass application data to the handler
+            if let handler = applicationMessageHandler {
+                await handler(.data(payload), peerId)
             }
 
         default:
@@ -380,11 +641,17 @@ public actor MeshNode {
     /// Send a message to an endpoint
     public func send(_ message: MeshMessage, to endpoint: String) async {
         do {
-            let envelope = try MeshEnvelope.signed(
-                from: identity,
-                to: nil,
+            // Create envelope with CLI-specified peerId (not cryptographic ID)
+            var envelope = MeshEnvelope(
+                fromPeerId: peerId,  // Use self.peerId, not identity.peerId
+                toPeerId: nil,
                 payload: message
             )
+
+            // Sign with our identity
+            let dataToSign = try envelope.dataToSign()
+            let sig = try identity.sign(dataToSign)
+            envelope.signature = sig.base64
 
             let data = try JSONEncoder().encode(envelope)
             try await socket.send(data, to: endpoint)
@@ -434,13 +701,16 @@ public actor MeshNode {
     // MARK: - Peer Management
 
     /// Update a peer's endpoint
-    private func updatePeerEndpoint(peerId: PeerId, endpoint: String) async {
+    private func updatePeerEndpointFromMessage(peerId: PeerId, endpoint: String) async {
+        // Update PeerConnection if we have one
         if let peer = peers[peerId] {
             await peer.setActiveEndpoint(endpoint)
             await peer.updateLastSeen()
         }
-        // For unknown peers, we don't have their public key yet
-        // Full implementation would add them after key exchange
+
+        // Always update the endpoint cache so getCachedPeer works
+        peerEndpoints[peerId] = endpoint
+        peerCache[peerId] = CachedPeerInfo(peerId: peerId, endpoint: endpoint)
     }
 
     /// Add a peer with known public key
@@ -457,6 +727,57 @@ public actor MeshNode {
     /// Get all tracked peer endpoints
     public var trackedEndpoints: [PeerId: String] {
         peerEndpoints
+    }
+
+    // MARK: - MeshNetwork API Methods
+
+    /// Get cached peer info
+    public func getCachedPeer(_ peerId: PeerId) async -> CachedPeerInfo? {
+        peerCache[peerId]
+    }
+
+    /// Get list of cached peer IDs
+    public func getCachedPeerIds() async -> [PeerId] {
+        Array(peerCache.keys) + Array(peerEndpoints.keys)
+    }
+
+    /// Get connected relay peer IDs
+    public func getConnectedRelays() async -> [PeerId] {
+        Array(connectedRelays)
+    }
+
+    /// Update a peer's endpoint (public API for MeshNetwork)
+    public func updatePeerEndpoint(_ peerId: PeerId, endpoint: Endpoint) async {
+        peerEndpoints[peerId] = endpoint
+        peerCache[peerId] = CachedPeerInfo(peerId: peerId, endpoint: endpoint)
+    }
+
+    /// Request peer list from known peers
+    public func requestPeers() async {
+        // Build our peer list to share
+        var myPeers: [String: String] = [:]
+        for (id, ep) in peerEndpoints where id != self.peerId {
+            myPeers[id] = ep
+            if myPeers.count >= 10 { break }
+        }
+
+        for (peerId, endpoint) in peerEndpoints {
+            guard peerId != self.peerId else { continue }
+            await send(.ping(recentPeers: myPeers), to: endpoint)
+        }
+    }
+
+    /// Send a message to a peer by ID
+    public func sendToPeer(_ message: MeshMessage, peerId: PeerId) async throws {
+        guard let endpoint = peerEndpoints[peerId] else {
+            throw MeshNodeError.peerNotFound
+        }
+        await send(message, to: endpoint)
+    }
+
+    /// Set the application message handler
+    public func setMessageHandler(_ handler: @escaping (MeshMessage, PeerId) async -> Void) async {
+        self.applicationMessageHandler = handler
     }
 
     // MARK: - Freshness Operations
@@ -500,6 +821,138 @@ public actor MeshNode {
     /// Update our known NAT type
     public func updateNATType(_ natType: NATType) async {
         await holePunchManager.updateNATType(natType)
+    }
+
+    /// Send a ping to a peer and wait for pong response
+    /// Returns true if pong received, false if timeout or error
+    public func sendPing(to targetPeerId: PeerId, timeout: TimeInterval = 3.0) async -> Bool {
+        // Get the endpoint for this peer
+        guard let endpoint = peerEndpoints[targetPeerId] else {
+            logger.debug("sendPing: No endpoint for peer \(targetPeerId)")
+            return false
+        }
+
+        // Send ping and wait for pong
+        let recentPeers = await freshnessManager.recentPeersWithEndpoints
+        var limitedPeers: [String: String] = [:]
+        for (id, ep) in recentPeers.prefix(5) {
+            limitedPeers[id] = ep
+        }
+        let ping = MeshMessage.ping(recentPeers: limitedPeers)
+
+        let startTime = Date()
+        do {
+            let response = try await sendAndReceive(ping, to: endpoint, timeout: timeout)
+            if case .pong = response {
+                let latencyMs = Int(Date().timeIntervalSince(startTime) * 1000)
+                logger.debug("sendPing: Got pong from \(targetPeerId) in \(latencyMs)ms")
+                // Record this as a recent contact
+                await freshnessManager.recordContact(
+                    peerId: targetPeerId,
+                    reachability: .direct(endpoint: endpoint),
+                    latencyMs: latencyMs,
+                    connectionType: .direct
+                )
+                // Add to keepalive monitoring if not already monitored
+                if await !connectionKeepalive.isMonitoring(peerId: targetPeerId) {
+                    await connectionKeepalive.addConnection(peerId: targetPeerId, endpoint: endpoint)
+                } else {
+                    // Update successful communication
+                    await connectionKeepalive.recordSuccessfulCommunication(peerId: targetPeerId)
+                }
+                return true
+            }
+            return false
+        } catch {
+            logger.debug("sendPing: Failed to ping \(targetPeerId): \(error)")
+            return false
+        }
+    }
+
+    // MARK: - Keepalive Management
+
+    /// Add a direct connection to keepalive monitoring
+    public func addToKeepalive(peerId: PeerId, endpoint: String) async {
+        await connectionKeepalive.addConnection(peerId: peerId, endpoint: endpoint)
+    }
+
+    /// Remove a connection from keepalive monitoring
+    public func removeFromKeepalive(peerId: PeerId) async {
+        await connectionKeepalive.removeConnection(peerId: peerId)
+    }
+
+    /// Check if a peer is being monitored for keepalive
+    public func isMonitoringKeepalive(peerId: PeerId) async -> Bool {
+        await connectionKeepalive.isMonitoring(peerId: peerId)
+    }
+
+    /// Get keepalive statistics
+    public func keepaliveStatistics() async -> ConnectionKeepalive.Statistics {
+        await connectionKeepalive.statistics
+    }
+
+    /// Get all connections being monitored for keepalive
+    public func monitoredConnections() async -> [ConnectionKeepalive.ConnectionState] {
+        await connectionKeepalive.monitoredConnections
+    }
+
+    // MARK: - Cache Cleanup
+
+    /// Start the periodic cache cleanup task
+    private func startCacheCleanup() {
+        guard cacheCleanupTask == nil else { return }
+
+        cacheCleanupTask = Task {
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(config.cacheCleanupInterval * 1_000_000_000))
+                    cleanupExpiredPeers()
+                } catch {
+                    // Task cancelled
+                    break
+                }
+            }
+        }
+
+        logger.debug("Cache cleanup started with interval \(config.cacheCleanupInterval)s, TTL \(config.peerCacheTTL)s")
+    }
+
+    /// Remove peers that haven't been seen within the TTL
+    private func cleanupExpiredPeers() {
+        let now = Date()
+        let ttl = config.peerCacheTTL
+        var expiredPeers: [PeerId] = []
+
+        for (peerId, info) in peerCache {
+            let age = now.timeIntervalSince(info.lastSeen)
+            if age > ttl {
+                expiredPeers.append(peerId)
+            }
+        }
+
+        // Remove expired peers from cache and endpoints
+        for peerId in expiredPeers {
+            peerCache.removeValue(forKey: peerId)
+            peerEndpoints.removeValue(forKey: peerId)
+        }
+
+        if !expiredPeers.isEmpty {
+            logger.debug("Cleaned up \(expiredPeers.count) expired peers from cache")
+        }
+
+        // Also enforce maxCachedPeers limit
+        if peerCache.count > config.maxCachedPeers {
+            // Sort by lastSeen and remove oldest
+            let sortedPeers = peerCache.sorted { $0.value.lastSeen < $1.value.lastSeen }
+            let toRemove = sortedPeers.prefix(peerCache.count - config.maxCachedPeers)
+            for (peerId, _) in toRemove {
+                peerCache.removeValue(forKey: peerId)
+                peerEndpoints.removeValue(forKey: peerId)
+            }
+            if toRemove.count > 0 {
+                logger.debug("Evicted \(toRemove.count) oldest peers to enforce max cache size")
+            }
+        }
     }
 
     // MARK: - Message Deduplication

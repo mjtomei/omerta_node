@@ -52,7 +52,10 @@ public actor TestNode {
     public private(set) var relayConnections: [RelayConnection] = []
 
     /// Whether the node is running
-    private var isRunning = false
+    private var _isRunning = false
+
+    /// Public getter for running state
+    public var isRunning: Bool { _isRunning }
 
     /// Pending responses for request/response pattern
     private var pendingResponses: [String: CheckedContinuation<MeshMessage, Error>] = [:]
@@ -101,12 +104,12 @@ public actor TestNode {
 
     /// Start the node
     public func start() async throws {
-        isRunning = true
+        _isRunning = true
     }
 
     /// Stop the node
     public func stop() async {
-        isRunning = false
+        _isRunning = false
         // Cancel all pending responses
         for (_, continuation) in pendingResponses {
             continuation.resume(throwing: TestNodeError.stopped)
@@ -181,8 +184,14 @@ public actor TestNode {
     private func handleDefaultMessage(_ message: MeshMessage, from senderId: String) async {
         switch message {
         case .ping(_):
-            // Respond with pong
-            await send(.pong(recentPeers: Array(recentContacts.keys)), to: senderId)
+            // Respond with pong including recent peers with endpoints
+            var peerEndpoints: [String: String] = [:]
+            for (peerId, contact) in recentContacts {
+                if case .direct(let endpoint) = contact.reachability {
+                    peerEndpoints[peerId] = endpoint
+                }
+            }
+            await send(.pong(recentPeers: peerEndpoints), to: senderId)
 
         case .findPeer(let peerId):
             // Check cache and respond
