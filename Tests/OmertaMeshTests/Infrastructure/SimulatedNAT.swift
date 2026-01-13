@@ -14,14 +14,76 @@ public actor SimulatedNAT {
     /// Port allocation strategy for symmetric NAT
     public let portAllocation: PortAllocationStrategy
 
+    /// Configuration for NAT behavior
+    public let config: NATConfig
+
     /// Active mappings from internal to external endpoints
     private var mappings: [String: NATMapping] = [:]
 
     /// Next external port to allocate
     private var nextExternalPort: UInt16 = 10000
 
-    /// Mapping timeout in seconds
-    private let mappingTimeout: TimeInterval = 120
+    /// Mapping timeout in seconds (from config)
+    private var mappingTimeout: TimeInterval { config.mappingTimeout }
+
+    /// Whether the NAT is currently functioning
+    private var isEnabled: Bool = true
+
+    /// Statistics for testing
+    private var stats = NATStats()
+
+    /// Configuration for NAT simulation
+    public struct NATConfig: Sendable {
+        /// Mapping timeout in seconds
+        public let mappingTimeout: TimeInterval
+
+        /// Whether hairpin NAT is supported (internal -> external -> internal)
+        public let supportsHairpin: Bool
+
+        /// Port range for external port allocation
+        public let portRange: ClosedRange<UInt16>
+
+        /// Whether to simulate port prediction (for symmetric NAT)
+        public let predictablePortDelta: UInt16?
+
+        /// Maximum number of mappings (0 = unlimited)
+        public let maxMappings: Int
+
+        public init(
+            mappingTimeout: TimeInterval = 120,
+            supportsHairpin: Bool = false,
+            portRange: ClosedRange<UInt16> = 10000...60000,
+            predictablePortDelta: UInt16? = nil,
+            maxMappings: Int = 0
+        ) {
+            self.mappingTimeout = mappingTimeout
+            self.supportsHairpin = supportsHairpin
+            self.portRange = portRange
+            self.predictablePortDelta = predictablePortDelta
+            self.maxMappings = maxMappings
+        }
+
+        public static let `default` = NATConfig()
+
+        /// Config for aggressive NAT (short timeouts)
+        public static let aggressive = NATConfig(mappingTimeout: 30)
+
+        /// Config for carrier-grade NAT
+        public static let carrierGrade = NATConfig(
+            mappingTimeout: 60,
+            maxMappings: 100
+        )
+    }
+
+    /// Statistics about NAT operations
+    public struct NATStats: Sendable {
+        public var packetsTranslated: Int = 0
+        public var packetsDropped: Int = 0
+        public var mappingsCreated: Int = 0
+        public var mappingsExpired: Int = 0
+        public var inboundAllowed: Int = 0
+        public var inboundBlocked: Int = 0
+    }
 
     /// Port allocation strategies for symmetric NAT
     public enum PortAllocationStrategy: Sendable {
@@ -51,11 +113,14 @@ public actor SimulatedNAT {
     public init(
         type: NATType,
         publicIP: String = "10.0.0.1",
-        portAllocation: PortAllocationStrategy = .sequential
+        portAllocation: PortAllocationStrategy = .sequential,
+        config: NATConfig = .default
     ) {
         self.type = type
         self.publicIP = publicIP
         self.portAllocation = portAllocation
+        self.config = config
+        self.nextExternalPort = config.portRange.lowerBound
     }
 
     // MARK: - Outbound Translation
@@ -66,9 +131,26 @@ public actor SimulatedNAT {
         from internalEndpoint: String,
         to destination: String
     ) -> String? {
+        // Check if NAT is enabled
+        guard isEnabled else {
+            stats.packetsDropped += 1
+            return nil
+        }
+
         // Public NAT doesn't translate
         if type == .public {
+            stats.packetsTranslated += 1
             return internalEndpoint
+        }
+
+        // Check max mappings limit
+        if config.maxMappings > 0 && mappings.count >= config.maxMappings {
+            // At capacity, check if any expired
+            cleanupExpired()
+            if mappings.count >= config.maxMappings {
+                stats.packetsDropped += 1
+                return nil
+            }
         }
 
         // Get or create mapping
@@ -100,6 +182,7 @@ public actor SimulatedNAT {
         let key = mappingKey(internalEndpoint, destination: destination)
         mappings[key] = updatedMapping
 
+        stats.packetsTranslated += 1
         return mapping.externalEndpoint
     }
 
@@ -112,9 +195,16 @@ public actor SimulatedNAT {
             return existing
         }
 
+        // If there was an expired mapping, count it
+        if mappings[key] != nil {
+            stats.mappingsExpired += 1
+        }
+
         // Create new mapping
         let externalPort = allocatePort(for: internalEndpoint, destination: destination)
         let externalEndpoint = "\(publicIP):\(externalPort)"
+
+        stats.mappingsCreated += 1
 
         let mapping = NATMapping(
             internalEndpoint: internalEndpoint,
@@ -187,13 +277,21 @@ public actor SimulatedNAT {
         from sourceEndpoint: String,
         to externalEndpoint: String
     ) -> String? {
+        // Check if NAT is enabled
+        guard isEnabled else {
+            stats.inboundBlocked += 1
+            return nil
+        }
+
         // Public NAT allows everything
         if type == .public {
+            stats.inboundAllowed += 1
             return externalEndpoint // No translation needed
         }
 
         // Find mapping for this external endpoint
         guard let mapping = findMappingByExternal(externalEndpoint) else {
+            stats.inboundBlocked += 1
             return nil // No mapping, packet dropped
         }
 
@@ -201,24 +299,30 @@ public actor SimulatedNAT {
         switch type {
         case .fullCone:
             // Anyone can send to mapped port
+            stats.inboundAllowed += 1
             return mapping.internalEndpoint
 
         case .restrictedCone:
             // Source IP must be in allowed list
             let sourceIP = sourceEndpoint.split(separator: ":").first.map(String.init) ?? sourceEndpoint
             if mapping.allowedDestinations.contains(sourceIP) {
+                stats.inboundAllowed += 1
                 return mapping.internalEndpoint
             }
+            stats.inboundBlocked += 1
             return nil
 
         case .portRestrictedCone, .symmetric:
             // Source IP:port must be in allowed list
             if mapping.allowedDestinationPorts.contains(sourceEndpoint) {
+                stats.inboundAllowed += 1
                 return mapping.internalEndpoint
             }
+            stats.inboundBlocked += 1
             return nil
 
         default:
+            stats.inboundBlocked += 1
             return nil
         }
     }
@@ -252,11 +356,112 @@ public actor SimulatedNAT {
 
     /// Expire all mappings (simulates NAT timeout)
     public func expireAllMappings() {
+        let expiredCount = mappings.count
         mappings.removeAll()
+        stats.mappingsExpired += expiredCount
     }
 
     /// Clean up expired mappings
     public func cleanupExpired() {
+        let before = mappings.count
         mappings = mappings.filter { !$0.value.isExpired }
+        let after = mappings.count
+        stats.mappingsExpired += (before - after)
+    }
+
+    // MARK: - Control Methods (for fault injection)
+
+    /// Enable or disable the NAT
+    public func setEnabled(_ enabled: Bool) {
+        isEnabled = enabled
+    }
+
+    /// Check if NAT is enabled
+    public func getEnabled() -> Bool {
+        isEnabled
+    }
+
+    /// Expire a specific mapping by internal endpoint
+    public func expireMapping(for internalEndpoint: String) {
+        for (key, mapping) in mappings {
+            if mapping.internalEndpoint == internalEndpoint {
+                mappings.removeValue(forKey: key)
+                stats.mappingsExpired += 1
+            }
+        }
+    }
+
+    /// Get NAT statistics
+    public func getStats() -> NATStats {
+        stats
+    }
+
+    /// Reset statistics
+    public func resetStats() {
+        stats = NATStats()
+    }
+
+    /// Get mapping count
+    public func getMappingCount() -> Int {
+        mappings.count
+    }
+
+    /// Get active mapping count (non-expired)
+    public func getActiveMappingCount() -> Int {
+        mappings.values.filter { !$0.isExpired }.count
+    }
+
+    // MARK: - Hairpin NAT
+
+    /// Translate a hairpin packet (internal -> external -> internal on same NAT)
+    /// This is for when a host behind the NAT tries to connect to another host
+    /// behind the same NAT using the external address
+    public func translateHairpin(
+        from internalEndpoint: String,
+        to externalEndpoint: String
+    ) -> String? {
+        guard config.supportsHairpin else {
+            stats.packetsDropped += 1
+            return nil
+        }
+
+        // Find the mapping for the target external endpoint
+        guard let targetMapping = findMappingByExternal(externalEndpoint) else {
+            stats.packetsDropped += 1
+            return nil
+        }
+
+        // Return the internal endpoint of the target
+        stats.packetsTranslated += 1
+        return targetMapping.internalEndpoint
+    }
+
+    // MARK: - Port Prediction (for symmetric NAT testing)
+
+    /// Predict the next external port (for hole punch testing with symmetric NAT)
+    public func predictNextPort(for internalEndpoint: String, currentDestination: String) -> UInt16? {
+        guard type == .symmetric else { return nil }
+
+        // Get current mapping
+        let key = mappingKey(internalEndpoint, destination: currentDestination)
+        guard let currentMapping = mappings[key],
+              let currentPort = currentMapping.externalEndpoint.split(separator: ":").last.flatMap({ UInt16($0) }) else {
+            return nil
+        }
+
+        // If predictable delta is configured, use it
+        if let delta = config.predictablePortDelta {
+            return currentPort + delta
+        }
+
+        // Otherwise, based on allocation strategy
+        switch portAllocation {
+        case .sequential:
+            return nextExternalPort
+        case .random:
+            return nil // Can't predict random
+        case .preserving:
+            return nil // Depends on internal port
+        }
     }
 }

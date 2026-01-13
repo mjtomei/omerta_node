@@ -10,6 +10,7 @@ let package = Package(
         .executable(name: "omerta", targets: ["OmertaCLI"]),
         .executable(name: "omertad", targets: ["OmertaDaemon"]),
         .executable(name: "omerta-rendezvous", targets: ["OmertaRendezvous"]),
+        .executable(name: "omerta-mesh", targets: ["OmertaMeshCLI"]),
         .library(name: "OmertaCore", targets: ["OmertaCore"]),
         .library(name: "OmertaMesh", targets: ["OmertaMesh"]),
     ],
@@ -154,6 +155,19 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/OmertaRendezvousCLI"
+        ),
+
+        // Mesh node CLI for E2E testing
+        .executableTarget(
+            name: "OmertaMeshCLI",
+            dependencies: [
+                "OmertaMesh",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+            ],
+            path: "Sources/OmertaMeshCLI"
         ),
 
         // Tests
