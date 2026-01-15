@@ -29,14 +29,11 @@ struct Start: AsyncParsableCommand {
         abstract: "Start the provider daemon"
     )
 
-    @Option(name: .long, help: "Network key (hex encoded 32 bytes). Uses local key from config if not specified.")
-    var networkKey: String?
+    @Option(name: .long, help: "Network ID (from 'omerta network create' or 'omerta network list')")
+    var network: String?
 
     @Option(name: .long, help: "Mesh port (default: 9999)")
     var port: Int = 9999
-
-    @Option(name: .long, help: "Bootstrap peers for mesh network (comma-separated, format: peerId@host:port)")
-    var bootstrapPeers: String?
 
     @Flag(name: .long, help: "Dry run mode - simulate VM creation without actual VMs")
     var dryRun: Bool = false
@@ -51,34 +48,72 @@ struct Start: AsyncParsableCommand {
         }
         print("")
 
-        // Determine network key - use provided or load from config
-        let keyData: Data
-        if let providedKey = networkKey {
-            guard let data = Data(hexString: providedKey), data.count == 32 else {
-                print("Error: Network key must be a 64-character hex string (32 bytes)")
-                throw ExitCode.failure
-            }
-            keyData = data
-        } else {
-            // Load from config
-            let configManager = ConfigManager()
-            do {
-                let config = try await configManager.load()
-                guard let localKeyData = config.localKeyData() else {
-                    print("Error: No network key specified and no local key in config.")
-                    print("Run 'omerta init' to generate a local key, or specify --network-key")
-                    throw ExitCode.failure
+        // Load network from store
+        guard let networkId = network else {
+            print("Error: --network <id> is required")
+            print("")
+            print("To create a network:")
+            print("  omerta network create --name \"My Network\" --endpoint \"<your-ip>:9999\"")
+            print("")
+            print("To list existing networks:")
+            print("  omerta network list")
+            throw ExitCode.failure
+        }
+
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+
+        guard let storedNetwork = await networkStore.network(id: networkId) else {
+            print("Error: Network '\(networkId)' not found")
+            print("")
+            print("Available networks:")
+            let networks = await networkStore.allNetworks()
+            if networks.isEmpty {
+                print("  (none)")
+                print("")
+                print("Create a network with:")
+                print("  omerta network create --name \"My Network\" --endpoint \"<your-ip>:9999\"")
+            } else {
+                for n in networks {
+                    print("  \(n.id) - \(n.name)")
                 }
-                keyData = localKeyData
-                print("Using local encryption key from config")
-            } catch ConfigError.notInitialized {
-                print("Error: Omerta not initialized and no --network-key specified.")
-                print("Run 'omerta init' first, or specify --network-key")
-                throw ExitCode.failure
             }
+            throw ExitCode.failure
+        }
+
+        let keyData = storedNetwork.key.networkKey
+        let bootstrapPeers = storedNetwork.key.bootstrapPeers
+
+        print("Network: \(storedNetwork.name) (\(networkId))")
+
+        // Load identity for this network
+        let identity: OmertaMesh.IdentityKeypair
+        let identityStorePath = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? URL(fileURLWithPath: "/tmp")
+        let identitiesPath = identityStorePath
+            .appendingPathComponent("OmertaMesh")
+            .appendingPathComponent("identities.json")
+
+        if FileManager.default.fileExists(atPath: identitiesPath.path),
+           let data = try? Data(contentsOf: identitiesPath),
+           let identities = try? JSONDecoder().decode([String: [String: String]].self, from: data),
+           let storedIdentity = identities[networkId],
+           let privateKeyBase64 = storedIdentity["privateKeyBase64"] {
+            identity = try OmertaMesh.IdentityKeypair(privateKeyBase64: privateKeyBase64)
+            print("Loaded identity for network: \(identity.peerId)")
+        } else {
+            print("Error: No identity found for network '\(networkId)'")
+            print("The network may have been created on a different machine.")
+            print("")
+            print("To create a new network on this machine:")
+            print("  omerta network create --name \"My Network\" --endpoint \"<your-ip>:9999\"")
+            throw ExitCode.failure
         }
 
         // Check dependencies
+        print("")
         print("Checking system dependencies...")
         let checker = DependencyChecker()
         do {
@@ -94,29 +129,18 @@ struct Start: AsyncParsableCommand {
         print("")
 
         // Run the mesh daemon
-        try await runMeshDaemon(keyData: keyData)
+        try await runMeshDaemon(identity: identity, keyData: keyData, bootstrapPeers: bootstrapPeers)
     }
 
-    private func runMeshDaemon(keyData: Data) async throws {
-        // Parse bootstrap peers
-        let parsedBootstrapPeers: [String]
-        if let bootstrapPeersStr = bootstrapPeers {
-            parsedBootstrapPeers = bootstrapPeersStr.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-        } else {
-            parsedBootstrapPeers = []
-        }
-
-        // Build mesh config with encryption key
-        var meshConfig = MeshConfig(
+    private func runMeshDaemon(identity: OmertaMesh.IdentityKeypair, keyData: Data, bootstrapPeers: [String]) async throws {
+        // Build mesh config with encryption key and bootstrap peers from network
+        let meshConfig = MeshConfig(
             encryptionKey: keyData,
             port: port,
             canRelay: true,
             canCoordinateHolePunch: true,
-            bootstrapPeers: parsedBootstrapPeers
+            bootstrapPeers: bootstrapPeers
         )
-
-        // Generate cryptographic identity (peer ID is derived from public key)
-        let identity = OmertaMesh.IdentityKeypair()
 
         // Create mesh daemon configuration
         let daemonConfig = MeshProviderDaemon.Configuration(
@@ -144,12 +168,13 @@ struct Start: AsyncParsableCommand {
             if let publicEndpoint = status.publicEndpoint {
                 print("Public Endpoint: \(publicEndpoint)")
             }
-            if !parsedBootstrapPeers.isEmpty {
-                print("Bootstrap Peers: \(parsedBootstrapPeers.joined(separator: ", "))")
+            if !bootstrapPeers.isEmpty {
+                print("Bootstrap Peers: \(bootstrapPeers.joined(separator: ", "))")
             }
             print("")
             print("Ready to accept VM requests via mesh network.")
-            print("Consumers behind NAT can connect using: --peer \(identity.peerId)")
+            print("Consumers can request VMs using:")
+            print("  omerta vm request --network <network-id> --peer \(identity.peerId)")
             print("")
             if let timeout = timeout {
                 print("Auto-shutdown in \(timeout) seconds")

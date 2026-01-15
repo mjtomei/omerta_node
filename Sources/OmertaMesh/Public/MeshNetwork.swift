@@ -483,7 +483,7 @@ public actor MeshNetwork {
 
         logger.info("Joined network: \(network.name)", metadata: ["networkId": "\(network.id)"])
 
-        // Add bootstrap peers from the network key
+        // Add bootstrap peers from the network key and announce to them
         for peer in key.bootstrapPeers {
             let parts = peer.split(separator: "@", maxSplits: 1)
             if parts.count == 2 {
@@ -491,10 +491,16 @@ public actor MeshNetwork {
                 let endpoint = String(parts[1])
                 await meshNode?.updatePeerEndpoint(bootstrapPeerId, endpoint: endpoint)
                 await eventPublisher.publish(.peerDiscovered(peerId: bootstrapPeerId, endpoint: endpoint, viaBootstrap: true))
+
+                // Send announcement to introduce ourselves
+                await meshNode?.announceTo(endpoint: endpoint)
             }
         }
 
-        // Request peers from bootstrap nodes
+        // Brief delay to allow announcements to be processed
+        try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+
+        // Request peers from bootstrap nodes (now accepted since we're announced)
         await meshNode?.requestPeers()
 
         await eventPublisher.publish(.networkJoined(network: network))
@@ -658,7 +664,15 @@ public actor MeshNetwork {
                     viaBootstrap: true
                 ))
 
-                // Request peer list from bootstrap
+                // CRITICAL: Send announcement FIRST to introduce ourselves
+                // This allows the bootstrap peer to register our public key
+                // so they can verify our subsequent messages
+                await meshNode?.announceTo(endpoint: endpoint)
+
+                // Brief delay to allow announcement to be processed
+                try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+
+                // Now request peer list (ping will be accepted since we're registered)
                 await meshNode?.requestPeers()
             }
         }

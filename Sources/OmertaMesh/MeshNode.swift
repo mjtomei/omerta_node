@@ -749,6 +749,42 @@ public actor MeshNode {
         }
     }
 
+    /// Send a self-announcement to a specific endpoint
+    /// This is used during bootstrap to introduce ourselves before sending pings
+    /// The announcement is self-authenticating (contains our public key)
+    public func announceTo(endpoint: Endpoint) async {
+        // Determine our reachability
+        var reachability: [ReachabilityPath] = []
+        if let boundPort = await socket.port {
+            // We don't know our public IP, but we can be reached on our bound port
+            // The receiver will use the source address of the UDP packet
+            reachability.append(.direct(endpoint: "0.0.0.0:\(boundPort)"))
+        }
+
+        // Create signed announcement
+        do {
+            let announcement = try Gossip.createAnnouncement(
+                identity: identity,
+                reachability: reachability,
+                capabilities: config.canRelay ? ["relay"] : []
+            )
+
+            // Send as peerInfo message (self-authenticating)
+            await send(.peerInfo(announcement), to: endpoint)
+            logger.debug("Sent announcement to \(endpoint)")
+        } catch {
+            logger.error("Failed to create announcement: \(error)")
+        }
+    }
+
+    /// Announce to all known peers (bootstrap introduction)
+    public func announceToAllPeers() async {
+        for (peerId, endpoint) in peerEndpoints {
+            guard peerId != self.peerId else { continue }
+            await announceTo(endpoint: endpoint)
+        }
+    }
+
     /// Send a message to a peer by ID
     public func sendToPeer(_ message: MeshMessage, peerId: PeerId) async throws {
         guard let endpoint = peerEndpoints[peerId] else {

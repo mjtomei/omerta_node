@@ -494,11 +494,54 @@ struct NetworkCreate: AsyncParsableCommand {
     mutating func run() async throws {
         print("Creating new network: \(name)")
 
-        // Generate a new network key
+        // Generate identity for this network
+        let identityStore = IdentityStore.defaultStore()
+        try await identityStore.load()
+
+        // We need a temporary network ID to store identity - use a placeholder first
+        // then update after we know the real network ID
+        let tempIdentity = IdentityKeypair()
+        let peerId = tempIdentity.peerId
+
+        // Generate a new network key with peerId@endpoint as bootstrap
+        let bootstrapPeer = "\(peerId)@\(endpoint)"
         let key = NetworkKey.generate(
             networkName: name,
-            bootstrapPeers: [endpoint]
+            bootstrapPeers: [bootstrapPeer]
         )
+
+        let networkId = key.deriveNetworkId()
+
+        // Save identity for this network
+        // Store the identity we generated (not a new one from getOrCreate)
+        let identityStorePath = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? URL(fileURLWithPath: "/tmp")
+        let identitiesPath = identityStorePath
+            .appendingPathComponent("OmertaMesh")
+            .appendingPathComponent("identities.json")
+
+        // Read existing identities, add ours, save
+        var identities: [String: [String: String]] = [:]
+        if FileManager.default.fileExists(atPath: identitiesPath.path),
+           let data = try? Data(contentsOf: identitiesPath),
+           let existing = try? JSONDecoder().decode([String: [String: String]].self, from: data) {
+            identities = existing
+        }
+        identities[networkId] = [
+            "privateKeyBase64": tempIdentity.privateKeyBase64,
+            "createdAt": ISO8601DateFormatter().string(from: Date())
+        ]
+
+        try FileManager.default.createDirectory(
+            at: identitiesPath.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let identityData = try encoder.encode(identities)
+        try identityData.write(to: identitiesPath)
 
         // Join the network we just created
         let networkStore = NetworkStore.defaultStore()
@@ -508,9 +551,11 @@ struct NetworkCreate: AsyncParsableCommand {
         print("\nNetwork created successfully!")
         print("")
         print("Network: \(name)")
-        print("Network ID: \(key.deriveNetworkId())")
+        print("Network ID: \(networkId)")
+        print("Your Peer ID: \(peerId)")
+        print("Bootstrap: \(bootstrapPeer)")
         print("")
-        print("Share this key with others to invite them:")
+        print("Share this invite link with others:")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
         do {
@@ -522,8 +567,11 @@ struct NetworkCreate: AsyncParsableCommand {
 
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print("")
-        print("To join this network:")
-        print("  omerta network join --key <key-above>")
+        print("To start the provider daemon:")
+        print("  omertad start --network \(networkId) --port \(endpoint.split(separator: ":").last ?? "9999")")
+        print("")
+        print("Others can join with:")
+        print("  omerta network join --key '<invite-link>'")
     }
 }
 
@@ -1060,7 +1108,7 @@ struct Status: AsyncParsableCommand {
         print("  status    - Show this status information")
         print("")
         print("Quick start:")
-        print("  omerta vm request --provider <ip:port> --network-key <key>")
+        print("  omerta vm request --network <network-id> --peer <provider-peer-id>")
         print("")
         print("For help on a specific command:")
         print("  omerta <command> --help")
@@ -1091,20 +1139,11 @@ struct VMRequest: AsyncParsableCommand {
         abstract: "Request a VM from a provider"
     )
 
-    @Option(name: .long, help: "Provider peer ID - for mesh-based connection (NAT traversal)")
-    var peer: String?
-
-    @Option(name: .long, help: "Bootstrap peer for mesh discovery (format: peerId@host:port)")
-    var bootstrap: String?
-
-    @Option(name: .long, help: "Provider endpoint (ip:port) - for direct connection")
-    var provider: String?
-
-    @Option(name: .long, help: "Network ID - for network-based discovery")
+    @Option(name: .long, help: "Network ID (from 'omerta network join' or 'omerta network list')")
     var network: String?
 
-    @Option(name: .long, help: "Network key (hex encoded, 64 chars). Uses local key from config if not specified.")
-    var networkKey: String?
+    @Option(name: .long, help: "Provider peer ID to request VM from")
+    var peer: String?
 
     @Option(name: .long, help: "Number of CPU cores")
     var cpu: UInt32?
@@ -1152,35 +1191,62 @@ struct VMRequest: AsyncParsableCommand {
         }
 
         // Validate inputs
-        guard provider != nil || network != nil || peer != nil else {
-            print("Error: Must specify either --provider, --network, or --peer")
+        guard let networkId = network else {
+            print("Error: --network <id> is required")
+            print("")
+            print("To join a network:")
+            print("  omerta network join --key '<invite-link>'")
+            print("")
+            print("To list networks:")
+            print("  omerta network list")
             throw ExitCode.failure
         }
 
-        // Load config to get local key if not specified
+        guard let providerPeerId = peer else {
+            print("Error: --peer <provider-peer-id> is required")
+            print("")
+            print("The provider will display their peer ID when they start omertad.")
+            throw ExitCode.failure
+        }
+
+        // Load network from store
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+
+        guard let storedNetwork = await networkStore.network(id: networkId) else {
+            print("Error: Network '\(networkId)' not found")
+            print("")
+            print("Available networks:")
+            let networks = await networkStore.allNetworks()
+            if networks.isEmpty {
+                print("  (none)")
+                print("")
+                print("Join a network with:")
+                print("  omerta network join --key '<invite-link>'")
+            } else {
+                for n in networks {
+                    print("  \(n.id) - \(n.name)")
+                }
+            }
+            throw ExitCode.failure
+        }
+
+        let keyData = storedNetwork.key.networkKey
+        let bootstrapPeers = storedNetwork.key.bootstrapPeers
+
+        print("Network: \(storedNetwork.name) (\(networkId))")
+        print("Provider: \(providerPeerId)")
+        if !bootstrapPeers.isEmpty {
+            print("Bootstrap: \(bootstrapPeers.joined(separator: ", "))")
+        }
+
+        // Load config for SSH key
         let configManager = ConfigManager()
         let config: OmertaConfig
         do {
             config = try await configManager.load()
         } catch ConfigError.notInitialized {
             print("Error: Omerta not initialized. Run 'omerta init' first.")
-            throw ExitCode.failure
-        }
-
-        // Determine network key - use provided key or fall back to local key
-        let keyData: Data
-        if let providedKey = networkKey {
-            guard let data = Data(hexString: providedKey), data.count == 32 else {
-                print("Error: Network key must be a 64-character hex string (32 bytes)")
-                throw ExitCode.failure
-            }
-            keyData = data
-        } else if let localKeyData = config.localKeyData() {
-            keyData = localKeyData
-            print("Using local encryption key from config")
-        } else {
-            print("Error: No network key specified and no local key in config.")
-            print("Run 'omerta init' to generate a local key, or specify --network-key")
             throw ExitCode.failure
         }
 
@@ -1213,91 +1279,24 @@ struct VMRequest: AsyncParsableCommand {
             imageId: nil
         )
 
+        print("")
         print("Requesting VM...")
 
-        if let providerPeerId = peer {
-            // Mesh mode - connect via peer ID with NAT traversal
-            try await requestVMViaMesh(
-                providerPeerId: providerPeerId,
-                bootstrapPeer: bootstrap,
-                config: config,
-                networkKey: keyData,
-                requirements: requirements,
-                dryRun: dryRun,
-                wait: wait,
-                waitTimeout: waitTimeout
-            )
-        } else if var providerEndpoint = provider {
-            // Add default port if not specified
-            if !providerEndpoint.contains(":") {
-                providerEndpoint = "\(providerEndpoint):51820"
-            }
-            // Direct provider mode
-            try await requestVMDirect(
-                providerEndpoint: providerEndpoint,
-                networkKey: keyData,
-                requirements: requirements,
-                dryRun: dryRun,
-                wait: wait,
-                waitTimeout: waitTimeout
-            )
-        } else if let networkId = network {
-            // Network discovery mode
-            try await requestVMFromNetwork(
-                networkId: networkId,
-                networkKey: keyData,
-                requirements: requirements,
-                retry: retry,
-                maxRetries: maxRetries,
-                dryRun: dryRun,
-                wait: wait,
-                waitTimeout: waitTimeout
-            )
-        }
-    }
-
-    private func requestVMDirect(
-        providerEndpoint: String,
-        networkKey: Data,
-        requirements: ResourceRequirements,
-        dryRun: Bool,
-        wait: Bool,
-        waitTimeout: Int
-    ) async throws {
-        // Direct IP connections are deprecated - use mesh mode
-        print("Error: Direct IP connections are deprecated.")
-        print("")
-        print("Please use mesh mode instead:")
-        print("  omerta connect --peer <provider-peer-id> --bootstrap <bootstrap-peer>")
-        print("")
-        print("The mesh network handles NAT traversal automatically.")
-        throw ExitCode.failure
-    }
-
-    private func requestVMFromNetwork(
-        networkId: String,
-        networkKey: Data,
-        requirements: ResourceRequirements,
-        retry: Bool,
-        maxRetries: Int,
-        dryRun: Bool,
-        wait: Bool,
-        waitTimeout: Int
-    ) async throws {
-        // LAN-based peer discovery has been replaced by mesh networking
-        print("Error: Network-based peer discovery is deprecated.")
-        print("")
-        print("Please use mesh mode instead:")
-        print("  omerta mesh connect --peer <provider-peer-id> --bootstrap <bootstrap-peer>")
-        print("")
-        print("Or connect directly to a known provider:")
-        print("  omerta connect --provider <ip:port>")
-        throw ExitCode.failure
+        try await requestVMViaMesh(
+            providerPeerId: providerPeerId,
+            bootstrapPeers: bootstrapPeers,
+            config: config,
+            networkKey: keyData,
+            requirements: requirements,
+            dryRun: dryRun,
+            wait: wait,
+            waitTimeout: waitTimeout
+        )
     }
 
     private func requestVMViaMesh(
         providerPeerId: String,
-        bootstrapPeer: String?,
+        bootstrapPeers: [String],
         config: OmertaConfig,
         networkKey: Data,
         requirements: ResourceRequirements,
@@ -1305,7 +1304,6 @@ struct VMRequest: AsyncParsableCommand {
         wait: Bool,
         waitTimeout: Int
     ) async throws {
-        print("Connecting to provider via mesh: \(providerPeerId)")
         if dryRun {
             print("[DRY RUN] Skipping VPN setup")
         }
@@ -1318,12 +1316,7 @@ struct VMRequest: AsyncParsableCommand {
 
         print("Using SSH key: \(config.ssh.expandedPrivateKeyPath())")
 
-        // Build mesh config with encryption key
-        let bootstrapPeers = bootstrapPeer.map { [$0] } ?? []
-        if let bootstrap = bootstrapPeer {
-            print("Using bootstrap peer: \(bootstrap)")
-        }
-
+        // Build mesh config with encryption key and bootstrap peers from network
         let meshConfig = MeshConfig(
             encryptionKey: networkKey,
             bootstrapPeers: bootstrapPeers
