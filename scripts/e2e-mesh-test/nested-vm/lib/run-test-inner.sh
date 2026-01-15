@@ -493,7 +493,7 @@ run_test() {
     # Start mesh
     echo -e "${CYAN}Step 5: Starting mesh network...${NC}"
 
-    # Bootstrap address - just host:port, mesh handles peer discovery automatically
+    # Bootstrap address - peers discover each other through the relay
     local bootstrap_addr="${RELAY_IP}:9000"
     echo "  Bootstrap: $bootstrap_addr"
 
@@ -524,6 +524,8 @@ run_test() {
             > mesh.log 2>&1 < /dev/null &)"
         sleep 2
     fi
+
+    echo "  Both peers bootstrapped to relay - they should discover each other automatically"
 
     echo ""
 
