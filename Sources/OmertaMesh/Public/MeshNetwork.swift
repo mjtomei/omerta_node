@@ -650,12 +650,16 @@ public actor MeshNetwork {
             return
         }
 
+        logger.info("Connecting to \(config.bootstrapPeers.count) bootstrap peer(s): \(config.bootstrapPeers)")
+
         for peer in config.bootstrapPeers {
             // Parse peer as "peerId@endpoint" or just "endpoint"
             let parts = peer.split(separator: "@", maxSplits: 1)
             if parts.count == 2 {
                 let bootstrapPeerId = String(parts[0])
                 let endpoint = String(parts[1])
+
+                logger.info("Bootstrap: connecting to \(bootstrapPeerId) at \(endpoint)")
 
                 await meshNode?.updatePeerEndpoint(bootstrapPeerId, endpoint: endpoint)
                 await eventPublisher.publish(.peerDiscovered(
@@ -667,13 +671,17 @@ public actor MeshNetwork {
                 // CRITICAL: Send announcement FIRST to introduce ourselves
                 // This allows the bootstrap peer to register our public key
                 // so they can verify our subsequent messages
+                logger.info("Bootstrap: sending announcement to \(endpoint)")
                 await meshNode?.announceTo(endpoint: endpoint)
 
                 // Brief delay to allow announcement to be processed
                 try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
 
                 // Now request peer list (ping will be accepted since we're registered)
+                logger.info("Bootstrap: requesting peers from \(endpoint)")
                 await meshNode?.requestPeers()
+            } else {
+                logger.warning("Bootstrap: invalid peer format '\(peer)' - expected peerId@endpoint")
             }
         }
     }

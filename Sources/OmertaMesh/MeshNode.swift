@@ -380,9 +380,11 @@ public actor MeshNode {
 
     /// Handle incoming UDP data
     private func handleIncomingData(_ data: Data, from address: NIOCore.SocketAddress) async {
+        logger.info("Received \(data.count) bytes from \(address)")
+
         // Decrypt the data first
         guard let decryptedData = try? MessageEncryption.decrypt(data, key: config.encryptionKey) else {
-            logger.debug("Failed to decrypt message from \(address)")
+            logger.warning("Failed to decrypt message from \(address) (\(data.count) bytes)")
             return
         }
 
@@ -771,7 +773,7 @@ public actor MeshNode {
 
             // Send as peerInfo message (self-authenticating)
             await send(.peerInfo(announcement), to: endpoint)
-            logger.debug("Sent announcement to \(endpoint)")
+            logger.info("Sent announcement to \(endpoint) (peerId=\(identity.peerId))")
         } catch {
             logger.error("Failed to create announcement: \(error)")
         }
