@@ -227,6 +227,9 @@ start_vm() {
         fi
     fi
 
+    # Log console to file to avoid mixing with test output
+    local console_log="$VM_DIR/console.log"
+
     $QEMU_CMD \
         -name nested-vm-outer \
         $MACHINE_OPTS \
@@ -240,10 +243,11 @@ start_vm() {
         -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 \
         -device virtio-net-pci,netdev=net0 \
         -nographic \
-        -serial mon:stdio &
+        -serial file:"$console_log" &
 
     VM_PID=$!
     echo $VM_PID > "$VM_DIR/vm.pid"
+    echo "Console log: $console_log"
 
     echo -n "Waiting for VM to boot"
     for i in {1..90}; do
