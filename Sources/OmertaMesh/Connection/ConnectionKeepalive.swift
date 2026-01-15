@@ -188,6 +188,10 @@ public actor ConnectionKeepalive {
         // Copy connections to avoid mutation during iteration
         let currentConnections = connections
 
+        if !currentConnections.isEmpty {
+            logger.info("Sending keepalive pings to \(currentConnections.count) peer(s)")
+        }
+
         for (peerId, state) in currentConnections {
             // Send ping and check response
             let success = await sender(peerId, state.endpoint)
@@ -198,7 +202,10 @@ public actor ConnectionKeepalive {
                     updatedState.lastSuccessfulPing = Date()
                     updatedState.missedPings = 0
                     connections[peerId] = updatedState
-                    logger.debug("Keepalive OK for \(peerId)")
+                    logger.info("Keepalive OK", metadata: [
+                        "peer": "\(peerId.prefix(8))...",
+                        "endpoint": "\(state.endpoint)"
+                    ])
                 }
             } else {
                 // Increment missed count
@@ -206,7 +213,10 @@ public actor ConnectionKeepalive {
                     updatedState.missedPings += 1
                     connections[peerId] = updatedState
 
-                    logger.debug("Keepalive missed for \(peerId) (\(updatedState.missedPings)/\(config.missedThreshold))")
+                    logger.warning("Keepalive missed", metadata: [
+                        "peer": "\(peerId.prefix(8))...",
+                        "missed": "\(updatedState.missedPings)/\(config.missedThreshold)"
+                    ])
 
                     // Check if connection should be marked as failed
                     if updatedState.missedPings >= config.missedThreshold {
