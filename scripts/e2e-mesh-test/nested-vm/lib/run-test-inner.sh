@@ -503,7 +503,7 @@ run_test() {
         inet_ssh "$RELAY_IP" "cd /home/ubuntu/mesh-test && \
             LD_LIBRARY_PATH=./lib nohup ./omerta-mesh \
             --peer-id $relay_id --port 9000 --relay \
-            > mesh.log 2>&1 </dev/null &"
+            > mesh.log 2>&1 </dev/null & disown"
         sleep 3
     else
         bootstrap_addr="$NAT_GW1_INET_IP:9000"
@@ -515,18 +515,18 @@ run_test() {
         run_mesh_serial "peer2" "$peer2_id" "9000" "$bootstrap_addr"
     else
         echo "  Starting peer1..."
-        # Use </dev/null to fully detach from SSH session
+        # Use nohup + disown to fully detach process from SSH session
         lan_ssh "$NAT_GW1_INET_IP" "$PEER1_IP" "cd /home/ubuntu/mesh-test && \
             LD_LIBRARY_PATH=./lib nohup ./omerta-mesh \
             --peer-id $peer1_id --port 9000 --bootstrap $bootstrap_addr \
-            > mesh.log 2>&1 </dev/null &"
+            > mesh.log 2>&1 </dev/null & disown"
         sleep 2
 
         echo "  Starting peer2..."
         lan_ssh "$NAT_GW2_INET_IP" "$PEER2_IP" "cd /home/ubuntu/mesh-test && \
             LD_LIBRARY_PATH=./lib nohup ./omerta-mesh \
             --peer-id $peer2_id --port 9000 --bootstrap $bootstrap_addr \
-            > mesh.log 2>&1 </dev/null &"
+            > mesh.log 2>&1 </dev/null & disown"
     fi
 
     echo ""
