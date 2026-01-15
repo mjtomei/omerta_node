@@ -179,8 +179,8 @@ public actor MeshConsumerClient {
         logger.info("VPN tunnel created", metadata: ["vmId": "\(vmId)"])
 
         do {
-            // 3. Determine consumer endpoint
-            let consumerEndpoint = try await determineConsumerEndpoint()
+            // 3. Use consumer endpoint from VPN config (includes correct port)
+            let consumerEndpoint = vpnConfig.consumerEndpoint
 
             // 4. Send VM request over mesh
             let request = MeshVMRequest(
