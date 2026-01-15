@@ -5,7 +5,30 @@ import NIOCore
 import NIOPosix
 @testable import OmertaMesh
 
+/// Thread-safe counter for async tests
+private actor MessageCounter {
+    private var count = 0
+
+    func increment() {
+        count += 1
+    }
+
+    var value: Int {
+        count
+    }
+}
+
 final class Phase1Tests: XCTestCase {
+
+    // MARK: - Test Helpers
+
+    /// Create a test MeshNode with default test configuration
+    private func makeTestNode(port: UInt16 = 0) async throws -> MeshNode {
+        let identity = IdentityKeypair()
+        let testKey = Data(repeating: 0x42, count: 32)
+        let config = MeshNode.Config(encryptionKey: testKey, port: port)
+        return MeshNode(identity: identity, config: config)
+    }
 
     // MARK: - Identity Tests
 
@@ -17,8 +40,14 @@ final class Phase1Tests: XCTestCase {
         XCTAssertFalse(keypair.publicKeyData.isEmpty)
         XCTAssertFalse(keypair.privateKeyData.isEmpty)
 
-        // Check peer ID is derived from public key
-        XCTAssertEqual(keypair.peerId, keypair.publicKeyBase64)
+        // Check peer ID is derived from public key using SHA256
+        // Format: 16 lowercase hex characters (first 8 bytes of SHA256)
+        XCTAssertEqual(keypair.peerId.count, 16)
+        XCTAssertTrue(keypair.peerId.allSatisfy { $0.isHexDigit })
+
+        // Verify peer ID derivation is consistent
+        let derivedPeerId = IdentityKeypair.derivePeerId(from: keypair.publicKeyData)
+        XCTAssertEqual(keypair.peerId, derivedPeerId)
     }
 
     /// Test signing and verification
@@ -213,8 +242,8 @@ final class Phase1Tests: XCTestCase {
 
     /// Test two nodes exchanging ping/pong
     func testTwoNodePingPong() async throws {
-        let nodeA = try await MeshNode(port: 0)
-        let nodeB = try await MeshNode(port: 0)
+        let nodeA = try await makeTestNode()
+        let nodeB = try await makeTestNode()
 
         defer {
             Task {
@@ -225,6 +254,12 @@ final class Phase1Tests: XCTestCase {
 
         try await nodeA.start()
         try await nodeB.start()
+
+        // Register each other's public keys (simulates prior introduction via PeerAnnouncement)
+        let idA = await nodeA.identity
+        let idB = await nodeB.identity
+        await nodeB.registerPeerPublicKey(idA.peerId, publicKey: idA.publicKeyBase64)
+        await nodeA.registerPeerPublicKey(idB.peerId, publicKey: idB.publicKeyBase64)
 
         let portB = await nodeB.port!
 
@@ -245,8 +280,8 @@ final class Phase1Tests: XCTestCase {
 
     /// Test message deduplication
     func testMessageDeduplication() async throws {
-        let nodeA = try await MeshNode(port: 0)
-        let nodeB = try await MeshNode(port: 0)
+        let nodeA = try await makeTestNode()
+        let nodeB = try await makeTestNode()
 
         defer {
             Task {
@@ -258,10 +293,10 @@ final class Phase1Tests: XCTestCase {
         try await nodeA.start()
         try await nodeB.start()
 
-        // Track received messages on B
-        var receivedCount = 0
+        // Track received messages on B using actor for thread-safe counting
+        let counter = MessageCounter()
         await nodeB.onMessage { message, _ in
-            receivedCount += 1
+            await counter.increment()
             if case .ping = message {
                 return .pong(recentPeers: [:] as [String: String])
             }
@@ -270,15 +305,22 @@ final class Phase1Tests: XCTestCase {
 
         let portB = await nodeB.port!
 
-        // Create a signed envelope with a fixed message ID
+        // Create a keypair and register it with node B
         let keypair = IdentityKeypair()
+        await nodeB.registerPeerPublicKey(keypair.peerId, publicKey: keypair.publicKeyBase64)
+
+        // Create a signed envelope with a fixed message ID
         let envelope = try MeshEnvelope.signed(
             messageId: "test-dedup-id",
             from: keypair,
             to: nil,
             payload: .ping(recentPeers: [:] as [String: String])
         )
-        let data = try JSONEncoder().encode(envelope)
+        let jsonData = try JSONEncoder().encode(envelope)
+
+        // Encrypt the message using the same key as the test nodes
+        let testKey = Data(repeating: 0x42, count: 32)
+        let encryptedData = try MessageEncryption.encrypt(jsonData, key: testKey)
 
         // Send same message twice
         try await Task.sleep(nanoseconds: 100_000_000) // Wait for handler setup
@@ -288,19 +330,20 @@ final class Phase1Tests: XCTestCase {
         try await socket.bind(port: 0)
         defer { Task { await socket.close() } }
 
-        try await socket.send(data, to: "127.0.0.1:\(portB)")
+        try await socket.send(encryptedData, to: "127.0.0.1:\(portB)")
         try await Task.sleep(nanoseconds: 100_000_000)
-        try await socket.send(data, to: "127.0.0.1:\(portB)")
+        try await socket.send(encryptedData, to: "127.0.0.1:\(portB)")
         try await Task.sleep(nanoseconds: 200_000_000)
 
         // Should only receive once due to deduplication
-        XCTAssertEqual(receivedCount, 1, "Message should be deduplicated")
+        let count = await counter.value
+        XCTAssertEqual(count, 1, "Message should be deduplicated")
     }
 
     /// Test invalid signature rejection (when peer is known)
     func testInvalidSignatureRejection() async throws {
-        let nodeA = try await MeshNode(port: 0)
-        let nodeB = try await MeshNode(port: 0)
+        let nodeA = try await makeTestNode()
+        let nodeB = try await makeTestNode()
 
         defer {
             Task {
@@ -332,11 +375,17 @@ final class Phase1Tests: XCTestCase {
 
     /// Test concurrent messages
     func testConcurrentMessages() async throws {
-        let nodeA = try await MeshNode(port: 0)
-        let nodeB = try await MeshNode(port: 0)
+        let nodeA = try await makeTestNode()
+        let nodeB = try await makeTestNode()
 
         try await nodeA.start()
         try await nodeB.start()
+
+        // Register each other's public keys
+        let idA = await nodeA.identity
+        let idB = await nodeB.identity
+        await nodeB.registerPeerPublicKey(idA.peerId, publicKey: idA.publicKeyBase64)
+        await nodeA.registerPeerPublicKey(idB.peerId, publicKey: idB.publicKeyBase64)
 
         let portB = await nodeB.port!
 
@@ -384,7 +433,7 @@ final class Phase1Tests: XCTestCase {
 
     /// Test timeout behavior
     func testTimeout() async throws {
-        let nodeA = try await MeshNode(port: 0)
+        let nodeA = try await makeTestNode()
 
         defer {
             Task {

@@ -4,6 +4,18 @@ import Foundation
 
 /// Configuration for a mesh network node
 public struct MeshConfig: Sendable {
+    // MARK: - Security Settings
+
+    /// 256-bit symmetric key for message encryption (ChaCha20-Poly1305)
+    /// All mesh messages are encrypted with this key
+    public let encryptionKey: Data
+
+    // MARK: - Storage Settings
+
+    /// Directory for persistent storage (peers, networks)
+    /// Defaults to Application Support/OmertaMesh/
+    public var storageDirectory: URL?
+
     // MARK: - Network Settings
 
     /// Port to bind to (0 for automatic)
@@ -76,6 +88,8 @@ public struct MeshConfig: Sendable {
     // MARK: - Initialization
 
     public init(
+        encryptionKey: Data,
+        storageDirectory: URL? = nil,
         port: Int = 0,
         canRelay: Bool = false,
         canCoordinateHolePunch: Bool = false,
@@ -96,6 +110,8 @@ public struct MeshConfig: Sendable {
         recentContactMaxAge: TimeInterval = 300,
         freshnessQueryInterval: TimeInterval = 30
     ) {
+        self.encryptionKey = encryptionKey
+        self.storageDirectory = storageDirectory
         self.port = port
         self.canRelay = canRelay
         self.canCoordinateHolePunch = canCoordinateHolePunch
@@ -117,6 +133,37 @@ public struct MeshConfig: Sendable {
         self.freshnessQueryInterval = freshnessQueryInterval
     }
 
+    /// Create a config from a NetworkKey
+    public init(
+        networkKey: NetworkKey,
+        storageDirectory: URL? = nil,
+        port: Int = 0,
+        canRelay: Bool = false,
+        canCoordinateHolePunch: Bool = false
+    ) {
+        self.encryptionKey = networkKey.networkKey
+        self.storageDirectory = storageDirectory
+        self.port = port
+        self.canRelay = canRelay
+        self.canCoordinateHolePunch = canCoordinateHolePunch
+        self.targetRelayCount = 3
+        self.maxRelayCount = 5
+        self.maxRelaySessions = 50
+        self.keepaliveInterval = 15
+        self.connectionTimeout = 10
+        self.natDetectionTimeout = 5
+        self.cacheCleanupInterval = 60
+        self.stunServers = Self.defaultSTUNServers
+        self.bootstrapPeers = networkKey.bootstrapPeers
+        self.maxCachedPeers = 500
+        self.peerCacheTTL = 3600
+        self.holePunchProbeCount = 5
+        self.holePunchProbeInterval = 0.2
+        self.holePunchTimeout = 10
+        self.recentContactMaxAge = 300
+        self.freshnessQueryInterval = 30
+    }
+
     // MARK: - Default Values
 
     /// Default STUN servers (public STUN servers for NAT detection)
@@ -125,43 +172,33 @@ public struct MeshConfig: Sendable {
         "stun1.l.google.com:19302"
     ]
 
-    /// Default configuration
-    public static let `default` = MeshConfig()
-
     // MARK: - Preset Configurations
 
     /// Configuration for a public relay node
-    public static var relayNode: MeshConfig {
+    public static func relayNode(encryptionKey: Data, bootstrapPeers: [String] = []) -> MeshConfig {
         MeshConfig(
+            encryptionKey: encryptionKey,
             canRelay: true,
             canCoordinateHolePunch: true,
             targetRelayCount: 0,  // Relay nodes don't need relays themselves
             maxRelayCount: 0,
             maxRelaySessions: 100,
-            keepaliveInterval: 10
-        )
-    }
-
-    /// Configuration for a mobile/battery-constrained device
-    public static var mobile: MeshConfig {
-        MeshConfig(
-            targetRelayCount: 2,
-            maxRelayCount: 3,
-            keepaliveInterval: 30,  // Less frequent keepalives
-            maxCachedPeers: 100,    // Smaller cache
-            peerCacheTTL: 1800      // 30 min TTL
+            keepaliveInterval: 10,
+            bootstrapPeers: bootstrapPeers
         )
     }
 
     /// Configuration for a server/always-on device
-    public static var server: MeshConfig {
+    public static func server(encryptionKey: Data, bootstrapPeers: [String] = []) -> MeshConfig {
         MeshConfig(
+            encryptionKey: encryptionKey,
             canRelay: true,
             canCoordinateHolePunch: true,
             targetRelayCount: 5,
             maxRelayCount: 10,
             maxRelaySessions: 200,
             keepaliveInterval: 10,
+            bootstrapPeers: bootstrapPeers,
             maxCachedPeers: 1000,
             peerCacheTTL: 7200  // 2 hour TTL
         )
@@ -171,6 +208,9 @@ public struct MeshConfig: Sendable {
 
     /// Validate the configuration
     public func validate() throws {
+        if encryptionKey.count != 32 {
+            throw MeshError.invalidConfiguration(reason: "Encryption key must be 32 bytes (256 bits)")
+        }
         if port < 0 || port > 65535 {
             throw MeshError.invalidConfiguration(reason: "Port must be 0-65535")
         }
@@ -196,83 +236,162 @@ public struct MeshConfig: Sendable {
 
 extension MeshConfig {
     /// Create a builder for customizing configuration
-    public static func builder() -> MeshConfigBuilder {
-        MeshConfigBuilder()
+    public static func builder(encryptionKey: Data) -> MeshConfigBuilder {
+        MeshConfigBuilder(encryptionKey: encryptionKey)
+    }
+
+    /// Create a builder from a NetworkKey
+    public static func builder(networkKey: NetworkKey) -> MeshConfigBuilder {
+        MeshConfigBuilder(encryptionKey: networkKey.networkKey)
+            .bootstrapPeers(networkKey.bootstrapPeers)
     }
 }
 
 /// Builder for MeshConfig
 public class MeshConfigBuilder {
-    private var config = MeshConfig()
+    private var encryptionKey: Data
+    private var storageDirectory: URL?
+    private var port: Int = 0
+    private var canRelay: Bool = false
+    private var canCoordinateHolePunch: Bool = false
+    private var targetRelayCount: Int = 3
+    private var maxRelayCount: Int = 5
+    private var maxRelaySessions: Int = 50
+    private var keepaliveInterval: TimeInterval = 15
+    private var connectionTimeout: TimeInterval = 10
+    private var natDetectionTimeout: TimeInterval = 5
+    private var cacheCleanupInterval: TimeInterval = 60
+    private var stunServers: [String] = MeshConfig.defaultSTUNServers
+    private var bootstrapPeers: [String] = []
+    private var maxCachedPeers: Int = 500
+    private var peerCacheTTL: TimeInterval = 3600
+    private var holePunchProbeCount: Int = 5
+    private var holePunchProbeInterval: TimeInterval = 0.2
+    private var holePunchTimeout: TimeInterval = 10
+    private var recentContactMaxAge: TimeInterval = 300
+    private var freshnessQueryInterval: TimeInterval = 30
 
-    public init() {}
+    public init(encryptionKey: Data) {
+        self.encryptionKey = encryptionKey
+    }
+
+    @discardableResult
+    public func storageDirectory(_ dir: URL?) -> Self {
+        storageDirectory = dir
+        return self
+    }
 
     @discardableResult
     public func port(_ port: Int) -> Self {
-        config.port = port
+        self.port = port
         return self
     }
 
     @discardableResult
     public func canRelay(_ canRelay: Bool) -> Self {
-        config.canRelay = canRelay
+        self.canRelay = canRelay
         return self
     }
 
     @discardableResult
     public func canCoordinateHolePunch(_ can: Bool) -> Self {
-        config.canCoordinateHolePunch = can
+        self.canCoordinateHolePunch = can
         return self
     }
 
     @discardableResult
     public func targetRelayCount(_ count: Int) -> Self {
-        config.targetRelayCount = count
+        self.targetRelayCount = count
         return self
     }
 
     @discardableResult
     public func maxRelayCount(_ count: Int) -> Self {
-        config.maxRelayCount = count
+        self.maxRelayCount = count
         return self
     }
 
     @discardableResult
     public func keepaliveInterval(_ interval: TimeInterval) -> Self {
-        config.keepaliveInterval = interval
+        self.keepaliveInterval = interval
         return self
     }
 
     @discardableResult
     public func connectionTimeout(_ timeout: TimeInterval) -> Self {
-        config.connectionTimeout = timeout
+        self.connectionTimeout = timeout
         return self
     }
 
     @discardableResult
     public func stunServers(_ servers: [String]) -> Self {
-        config.stunServers = servers
+        self.stunServers = servers
         return self
     }
 
     @discardableResult
     public func bootstrapPeers(_ peers: [String]) -> Self {
-        config.bootstrapPeers = peers
+        self.bootstrapPeers = peers
         return self
     }
 
     @discardableResult
     public func addBootstrapPeer(_ peer: String) -> Self {
-        config.bootstrapPeers.append(peer)
+        self.bootstrapPeers.append(peer)
         return self
     }
 
     public func build() throws -> MeshConfig {
+        let config = MeshConfig(
+            encryptionKey: encryptionKey,
+            storageDirectory: storageDirectory,
+            port: port,
+            canRelay: canRelay,
+            canCoordinateHolePunch: canCoordinateHolePunch,
+            targetRelayCount: targetRelayCount,
+            maxRelayCount: maxRelayCount,
+            maxRelaySessions: maxRelaySessions,
+            keepaliveInterval: keepaliveInterval,
+            connectionTimeout: connectionTimeout,
+            natDetectionTimeout: natDetectionTimeout,
+            cacheCleanupInterval: cacheCleanupInterval,
+            stunServers: stunServers,
+            bootstrapPeers: bootstrapPeers,
+            maxCachedPeers: maxCachedPeers,
+            peerCacheTTL: peerCacheTTL,
+            holePunchProbeCount: holePunchProbeCount,
+            holePunchProbeInterval: holePunchProbeInterval,
+            holePunchTimeout: holePunchTimeout,
+            recentContactMaxAge: recentContactMaxAge,
+            freshnessQueryInterval: freshnessQueryInterval
+        )
         try config.validate()
         return config
     }
 
     public func buildUnchecked() -> MeshConfig {
-        config
+        MeshConfig(
+            encryptionKey: encryptionKey,
+            storageDirectory: storageDirectory,
+            port: port,
+            canRelay: canRelay,
+            canCoordinateHolePunch: canCoordinateHolePunch,
+            targetRelayCount: targetRelayCount,
+            maxRelayCount: maxRelayCount,
+            maxRelaySessions: maxRelaySessions,
+            keepaliveInterval: keepaliveInterval,
+            connectionTimeout: connectionTimeout,
+            natDetectionTimeout: natDetectionTimeout,
+            cacheCleanupInterval: cacheCleanupInterval,
+            stunServers: stunServers,
+            bootstrapPeers: bootstrapPeers,
+            maxCachedPeers: maxCachedPeers,
+            peerCacheTTL: peerCacheTTL,
+            holePunchProbeCount: holePunchProbeCount,
+            holePunchProbeInterval: holePunchProbeInterval,
+            holePunchTimeout: holePunchTimeout,
+            recentContactMaxAge: recentContactMaxAge,
+            freshnessQueryInterval: freshnessQueryInterval
+        )
     }
 }

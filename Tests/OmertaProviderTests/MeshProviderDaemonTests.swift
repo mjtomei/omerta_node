@@ -5,34 +5,42 @@ import XCTest
 
 final class MeshProviderDaemonTests: XCTestCase {
 
+    /// Helper to create a test mesh config with encryption key
+    private func makeTestMeshConfig(port: Int = 0) -> MeshConfig {
+        let testKey = Data(repeating: 0x42, count: 32)
+        return MeshConfig(
+            encryptionKey: testKey,
+            port: port
+        )
+    }
+
     // MARK: - Configuration Tests
 
     func testConfigurationDefaultValues() {
+        let identity = IdentityKeypair()
+        let meshConfig = makeTestMeshConfig()
+
         let config = MeshProviderDaemon.Configuration(
-            peerId: "test-provider"
+            identity: identity,
+            meshConfig: meshConfig
         )
 
-        XCTAssertEqual(config.peerId, "test-provider")
-        XCTAssertNil(config.networkKey)
-        XCTAssertTrue(config.enableActivityLogging)
+        XCTAssertEqual(config.identity.peerId, identity.peerId)
         XCTAssertFalse(config.dryRun)
     }
 
     func testConfigurationWithAllOptions() {
-        let networkKey = Data(repeating: 0x42, count: 32)
-        let meshConfig = MeshConfig.server
+        let identity = IdentityKeypair()
+        let meshConfig = makeTestMeshConfig(port: 9000)
 
         let config = MeshProviderDaemon.Configuration(
-            peerId: "custom-provider",
+            identity: identity,
             meshConfig: meshConfig,
-            networkKey: networkKey,
-            enableActivityLogging: false,
             dryRun: true
         )
 
-        XCTAssertEqual(config.peerId, "custom-provider")
-        XCTAssertEqual(config.networkKey, networkKey)
-        XCTAssertFalse(config.enableActivityLogging)
+        XCTAssertEqual(config.identity.peerId, identity.peerId)
+        XCTAssertEqual(config.meshConfig.port, 9000)
         XCTAssertTrue(config.dryRun)
     }
 
@@ -55,66 +63,73 @@ final class MeshProviderDaemonTests: XCTestCase {
         config.localKey = OmertaConfig.generateLocalKey()
         config.mesh = MeshConfigOptions(
             enabled: true,
-            peerId: "my-provider",
             port: 9000,
             canRelay: true
         )
 
         let daemonConfig = try MeshProviderDaemon.Configuration.from(config: config)
 
-        XCTAssertEqual(daemonConfig.peerId, "my-provider")
+        // Peer ID is now derived from identity, so just verify it's a valid hex string
+        XCTAssertEqual(daemonConfig.identity.peerId.count, 16)
+        XCTAssertTrue(daemonConfig.identity.peerId.allSatisfy { $0.isHexDigit })
         XCTAssertEqual(daemonConfig.meshConfig.port, 9000)
-        XCTAssertNotNil(daemonConfig.networkKey)
     }
 
-    func testConfigurationGeneratesPeerIdIfNotSet() throws {
+    func testConfigurationPeerIdIsDerivedFromIdentity() throws {
         var config = OmertaConfig()
         config.localKey = OmertaConfig.generateLocalKey()
         config.mesh = MeshConfigOptions(enabled: true)
-        // peerId is nil
 
         let daemonConfig = try MeshProviderDaemon.Configuration.from(config: config)
 
-        XCTAssertTrue(daemonConfig.peerId.hasPrefix("provider-"))
+        // Peer ID should be 16 hex chars derived from public key
+        XCTAssertEqual(daemonConfig.identity.peerId.count, 16)
+        XCTAssertTrue(daemonConfig.identity.peerId.allSatisfy { $0.isHexDigit })
     }
 
     // MARK: - Initialization Tests
 
-    func testDaemonInitialization() {
+    func testDaemonInitialization() async {
+        let identity = IdentityKeypair()
+        let meshConfig = makeTestMeshConfig()
+
         let config = MeshProviderDaemon.Configuration(
-            peerId: "init-test",
+            identity: identity,
+            meshConfig: meshConfig,
             dryRun: true
         )
 
         let daemon = MeshProviderDaemon(config: config)
 
-        // Verify daemon was created (check mesh peer ID)
-        Task {
-            let status = await daemon.getStatus()
-            XCTAssertEqual(status.peerId, "init-test")
-            XCTAssertFalse(status.isRunning)
-        }
+        let status = await daemon.getStatus()
+        XCTAssertEqual(status.peerId, identity.peerId)
+        XCTAssertFalse(status.isRunning)
     }
 
     func testDaemonInitializationFromOmertaConfig() async throws {
         var config = OmertaConfig()
         config.localKey = OmertaConfig.generateLocalKey()
         config.mesh = MeshConfigOptions(
-            enabled: true,
-            peerId: "omerta-config-test"
+            enabled: true
         )
 
         let daemon = try MeshProviderDaemon(config: config)
 
         let status = await daemon.getStatus()
-        XCTAssertEqual(status.peerId, "omerta-config-test")
+        // Peer ID is derived from identity, verify format
+        XCTAssertEqual(status.peerId.count, 16)
+        XCTAssertTrue(status.peerId.allSatisfy { $0.isHexDigit })
     }
 
     // MARK: - Lifecycle Tests
 
     func testDaemonStartStop() async throws {
+        let identity = IdentityKeypair()
+        let meshConfig = makeTestMeshConfig()
+
         let config = MeshProviderDaemon.Configuration(
-            peerId: "lifecycle-test",
+            identity: identity,
+            meshConfig: meshConfig,
             dryRun: true
         )
 
@@ -141,8 +156,12 @@ final class MeshProviderDaemonTests: XCTestCase {
     }
 
     func testDaemonDoubleStartIsNoOp() async throws {
+        let identity = IdentityKeypair()
+        let meshConfig = makeTestMeshConfig()
+
         let config = MeshProviderDaemon.Configuration(
-            peerId: "double-start-test",
+            identity: identity,
+            meshConfig: meshConfig,
             dryRun: true
         )
 
@@ -158,8 +177,12 @@ final class MeshProviderDaemonTests: XCTestCase {
     }
 
     func testDaemonDoubleStopIsNoOp() async throws {
+        let identity = IdentityKeypair()
+        let meshConfig = makeTestMeshConfig()
+
         let config = MeshProviderDaemon.Configuration(
-            peerId: "double-stop-test",
+            identity: identity,
+            meshConfig: meshConfig,
             dryRun: true
         )
 
@@ -176,8 +199,12 @@ final class MeshProviderDaemonTests: XCTestCase {
     // MARK: - Status Tests
 
     func testDaemonStatusAfterStart() async throws {
+        let identity = IdentityKeypair()
+        let meshConfig = makeTestMeshConfig()
+
         let config = MeshProviderDaemon.Configuration(
-            peerId: "status-test",
+            identity: identity,
+            meshConfig: meshConfig,
             dryRun: true
         )
 
@@ -187,7 +214,7 @@ final class MeshProviderDaemonTests: XCTestCase {
         let status = await daemon.getStatus()
 
         XCTAssertTrue(status.isRunning)
-        XCTAssertEqual(status.peerId, "status-test")
+        XCTAssertEqual(status.peerId, identity.peerId)
         XCTAssertEqual(status.activeVMs, 0)
         XCTAssertEqual(status.totalVMRequests, 0)
         XCTAssertEqual(status.totalVMsCreated, 0)
@@ -199,8 +226,12 @@ final class MeshProviderDaemonTests: XCTestCase {
     }
 
     func testListActiveVMsEmpty() async throws {
+        let identity = IdentityKeypair()
+        let meshConfig = makeTestMeshConfig()
+
         let config = MeshProviderDaemon.Configuration(
-            peerId: "list-vms-test",
+            identity: identity,
+            meshConfig: meshConfig,
             dryRun: true
         )
 
@@ -219,6 +250,10 @@ final class MeshProviderDaemonTests: XCTestCase {
         XCTAssertEqual(
             MeshProviderError.meshNotEnabled.description,
             "Mesh networking is not enabled in config"
+        )
+        XCTAssertEqual(
+            MeshProviderError.noNetworkKey.description,
+            "No network key configured (required for encryption)"
         )
         XCTAssertEqual(
             MeshProviderError.notStarted.description,
@@ -243,7 +278,7 @@ final class MeshProviderDaemonTests: XCTestCase {
         let status = MeshDaemonStatus(
             isRunning: true,
             startedAt: fiveMinutesAgo,
-            peerId: "test",
+            peerId: "abcdef0123456789",
             natType: .fullCone,
             publicEndpoint: "1.2.3.4:9000",
             peerCount: 5,
@@ -262,7 +297,7 @@ final class MeshProviderDaemonTests: XCTestCase {
         let status = MeshDaemonStatus(
             isRunning: false,
             startedAt: nil,
-            peerId: "test",
+            peerId: "abcdef0123456789",
             natType: .unknown,
             publicEndpoint: nil,
             peerCount: 0,

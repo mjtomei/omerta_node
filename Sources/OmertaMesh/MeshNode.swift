@@ -12,6 +12,8 @@ public actor MeshNode {
 
     /// Configuration for MeshNode
     public struct Config: Sendable {
+        /// 256-bit symmetric key for message encryption (required)
+        public let encryptionKey: Data
         public let port: UInt16
         public let targetRelays: Int
         public let maxRelays: Int
@@ -29,6 +31,7 @@ public actor MeshNode {
         public let holePunchProbeInterval: TimeInterval
 
         public init(
+            encryptionKey: Data,
             port: UInt16 = 0,
             targetRelays: Int = 3,
             maxRelays: Int = 5,
@@ -45,6 +48,7 @@ public actor MeshNode {
             holePunchProbeCount: Int = 5,
             holePunchProbeInterval: TimeInterval = 0.2
         ) {
+            self.encryptionKey = encryptionKey
             self.port = port
             self.targetRelays = targetRelays
             self.maxRelays = maxRelays
@@ -61,8 +65,6 @@ public actor MeshNode {
             self.holePunchProbeCount = holePunchProbeCount
             self.holePunchProbeInterval = holePunchProbeInterval
         }
-
-        public static let `default` = Config()
     }
 
     /// Cached peer information
@@ -83,19 +85,11 @@ public actor MeshNode {
     // MARK: - Properties
 
     /// This node's identity keypair
-    private let _identity: IdentityKeypair
+    public let identity: IdentityKeypair
 
-    /// This node's peer ID (can be CLI-specified or derived from identity)
-    private let _peerId: PeerId
-
-    /// This node's identity keypair
-    public var identity: IdentityKeypair {
-        _identity
-    }
-
-    /// This node's peer ID
+    /// This node's peer ID (derived from identity public key)
     public var peerId: PeerId {
-        _peerId
+        identity.peerId
     }
 
     /// Node configuration
@@ -121,6 +115,9 @@ public actor MeshNode {
 
     /// Peer endpoints for broadcasting
     private var peerEndpoints: [PeerId: String] = [:]
+
+    /// Known peer public keys (peer ID → base64 public key) for signature verification
+    private var peerPublicKeys: [PeerId: String] = [:]
 
     /// Message IDs we've seen (for deduplication)
     private var seenMessageIds: Set<String> = []
@@ -159,18 +156,19 @@ public actor MeshNode {
 
     // MARK: - Initialization
 
-    /// Create a new mesh node with a peer ID and config (for MeshNetwork use)
-    /// Note: An identity keypair is created, but the peerId can be different from the keypair's ID
-    public init(peerId: PeerId, config: Config = .default) {
-        self._identity = IdentityKeypair()
-        self._peerId = peerId
+    /// Create a new mesh node with a cryptographic identity and config
+    /// - Parameters:
+    ///   - identity: The cryptographic identity (peer ID is derived from this)
+    ///   - config: Node configuration (must include encryption key)
+    public init(identity: IdentityKeypair, config: Config) {
+        self.identity = identity
         self.config = config
         self.eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.socket = UDPSocket(eventLoopGroup: self.eventLoopGroup)
-        self.logger = Logger(label: "io.omerta.mesh.node.\(peerId.prefix(8))")
+        self.logger = Logger(label: "io.omerta.mesh.node.\(identity.peerId.prefix(8))")
         self.freshnessManager = FreshnessManager()
         self.holePunchManager = HolePunchManager(
-            peerId: peerId,
+            peerId: identity.peerId,
             config: HolePunchManager.Config(
                 holePunchConfig: HolePunchConfig(
                     probeCount: config.holePunchProbeCount,
@@ -183,69 +181,6 @@ public actor MeshNode {
         self.connectionKeepalive = ConnectionKeepalive(
             config: ConnectionKeepalive.Config(interval: config.keepaliveInterval)
         )
-    }
-
-    /// Create a new mesh node with a random identity
-    public init(port: Int = 0, eventLoopGroup: EventLoopGroup? = nil, canCoordinateHolePunch: Bool = false) async throws {
-        let ident = IdentityKeypair()
-        self._identity = ident
-        self._peerId = ident.peerId
-        self.config = Config(port: UInt16(port), canCoordinateHolePunch: canCoordinateHolePunch)
-        self.eventLoopGroup = eventLoopGroup ?? MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        self.socket = UDPSocket(eventLoopGroup: self.eventLoopGroup)
-        self.logger = Logger(label: "io.omerta.mesh.node.\(ident.peerId.prefix(8))")
-        self.freshnessManager = FreshnessManager()
-        self.holePunchManager = HolePunchManager(
-            peerId: ident.peerId,
-            config: HolePunchManager.Config(
-                holePunchConfig: HolePunchConfig(
-                    probeCount: config.holePunchProbeCount,
-                    probeInterval: config.holePunchProbeInterval,
-                    timeout: config.holePunchTimeout
-                ),
-                canCoordinate: canCoordinateHolePunch
-            )
-        )
-        self.connectionKeepalive = ConnectionKeepalive(
-            config: ConnectionKeepalive.Config(interval: config.keepaliveInterval)
-        )
-
-        try await socket.bind(port: port)
-        await setupReceiveHandler()
-        await setupFreshnessManager()
-        await setupHolePunchManager()
-        await setupConnectionKeepalive()
-    }
-
-    /// Create a mesh node with an existing identity
-    public init(identity: IdentityKeypair, port: Int = 0, eventLoopGroup: EventLoopGroup? = nil, canCoordinateHolePunch: Bool = false) async throws {
-        self._identity = identity
-        self._peerId = identity.peerId
-        self.config = Config(port: UInt16(port), canCoordinateHolePunch: canCoordinateHolePunch)
-        self.eventLoopGroup = eventLoopGroup ?? MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        self.socket = UDPSocket(eventLoopGroup: self.eventLoopGroup)
-        self.logger = Logger(label: "io.omerta.mesh.node.\(identity.peerId.prefix(8))")
-        self.freshnessManager = FreshnessManager()
-        self.holePunchManager = HolePunchManager(
-            peerId: identity.peerId,
-            config: HolePunchManager.Config(
-                holePunchConfig: HolePunchConfig(
-                    probeCount: config.holePunchProbeCount,
-                    probeInterval: config.holePunchProbeInterval,
-                    timeout: config.holePunchTimeout
-                ),
-                canCoordinate: canCoordinateHolePunch
-            )
-        )
-        self.connectionKeepalive = ConnectionKeepalive(
-            config: ConnectionKeepalive.Config(interval: config.keepaliveInterval)
-        )
-
-        try await socket.bind(port: port)
-        await setupReceiveHandler()
-        await setupFreshnessManager()
-        await setupHolePunchManager()
-        await setupConnectionKeepalive()
     }
 
     /// Set up the hole punch manager callbacks
@@ -445,8 +380,14 @@ public actor MeshNode {
 
     /// Handle incoming UDP data
     private func handleIncomingData(_ data: Data, from address: NIOCore.SocketAddress) async {
+        // Decrypt the data first
+        guard let decryptedData = try? MessageEncryption.decrypt(data, key: config.encryptionKey) else {
+            logger.debug("Failed to decrypt message from \(address)")
+            return
+        }
+
         // Decode the envelope
-        guard let envelope = try? JSONDecoder().decode(MeshEnvelope.self, from: data) else {
+        guard let envelope = try? JSONDecoder().decode(MeshEnvelope.self, from: decryptedData) else {
             logger.debug("Failed to decode message from \(address)")
             return
         }
@@ -458,22 +399,27 @@ public actor MeshNode {
         }
         markMessageSeen(envelope.messageId)
 
-        // Get or lookup the sender's public key
-        let senderPublicKey: String
-        if let peer = peers[envelope.fromPeerId] {
+        // Get the sender's public key from registry or connected peers
+        let senderPublicKey: String?
+        if let registeredKey = peerPublicKeys[envelope.fromPeerId] {
+            senderPublicKey = registeredKey
+        } else if let peer = peers[envelope.fromPeerId] {
             senderPublicKey = await peer.publicKey.rawRepresentation.base64EncodedString()
         } else {
-            // For ping messages, the sender includes their public key in the peerId
-            // (since peerId is derived from public key, we can derive the key)
-            // In a full implementation, we'd need to get the key from the message or a lookup
-            senderPublicKey = envelope.fromPeerId
+            senderPublicKey = nil
         }
 
-        // Verify signature
-        if !envelope.verifySignature(publicKeyBase64: senderPublicKey) {
-            // For now, allow unsigned messages for testing
-            // In production, we'd reject: logger.warning("Invalid signature from \(envelope.fromPeerId)")
-            logger.debug("Message signature verification skipped (peer key unknown)")
+        // Handle unknown sender (only PeerAnnouncements are self-authenticating)
+        guard let senderKey = senderPublicKey else {
+            await handleUnknownSender(envelope, from: address)
+            return
+        }
+
+        // Verify signature - REQUIRED for all messages from known peers
+        guard envelope.verifySignature(publicKeyBase64: senderKey) else {
+            logger.warning("Rejecting message with invalid signature",
+                          metadata: ["from": "\(envelope.fromPeerId.prefix(8))..."])
+            return
         }
 
         // Update peer info and track endpoint
@@ -509,6 +455,40 @@ public actor MeshNode {
         } else {
             await handleDefaultMessage(envelope.payload, from: envelope.fromPeerId, endpoint: endpointString, hopCount: envelope.hopCount)
         }
+    }
+
+    /// Handle messages from unknown senders (not in peer registry)
+    /// Only PeerAnnouncement messages are self-authenticating and can be accepted
+    private func handleUnknownSender(_ envelope: MeshEnvelope, from address: NIOCore.SocketAddress) async {
+        // Only PeerAnnouncement messages are self-authenticating
+        guard case .peerInfo(let announcement) = envelope.payload else {
+            logger.debug("Rejecting non-announcement from unknown peer",
+                        metadata: ["from": "\(envelope.fromPeerId.prefix(8))..."])
+            return
+        }
+
+        // Verify the announcement signature using its embedded public key
+        guard envelope.verifySignature(publicKeyBase64: announcement.publicKey) else {
+            logger.warning("Rejecting announcement with invalid signature",
+                          metadata: ["from": "\(envelope.fromPeerId.prefix(8))..."])
+            return
+        }
+
+        // Verify peer ID is correctly derived from public key
+        guard IdentityKeypair.verifyPeerIdDerivation(peerId: announcement.peerId, publicKeyBase64: announcement.publicKey) else {
+            logger.warning("Rejecting announcement with mismatched peer ID",
+                          metadata: ["claimed": "\(announcement.peerId.prefix(8))..."])
+            return
+        }
+
+        // Now we can trust this peer - register their public key
+        peerPublicKeys[announcement.peerId] = announcement.publicKey
+        logger.info("Registered new peer from announcement",
+                    metadata: ["peerId": "\(announcement.peerId.prefix(8))..."])
+
+        // Process the announcement as a regular message
+        let endpointString = formatEndpoint(address)
+        await handleDefaultMessage(envelope.payload, from: envelope.fromPeerId, endpoint: endpointString, hopCount: envelope.hopCount)
     }
 
     /// Default message handling for basic protocol
@@ -653,8 +633,10 @@ public actor MeshNode {
             let sig = try identity.sign(dataToSign)
             envelope.signature = sig.base64
 
-            let data = try JSONEncoder().encode(envelope)
-            try await socket.send(data, to: endpoint)
+            // Encode to JSON then encrypt
+            let jsonData = try JSONEncoder().encode(envelope)
+            let encryptedData = try MessageEncryption.encrypt(jsonData, key: config.encryptionKey)
+            try await socket.send(encryptedData, to: endpoint)
 
             logger.debug("Sent \(type(of: message)) to \(endpoint)")
         } catch {
@@ -975,15 +957,51 @@ public actor MeshNode {
         seenMessageIds.contains(messageId)
     }
 
+    /// Register a peer's public key (for testing and bootstrap)
+    /// Once registered, messages from this peer must be signed with this key
+    public func registerPeerPublicKey(_ peerId: PeerId, publicKey: String) {
+        // Verify the peer ID matches the public key derivation
+        guard IdentityKeypair.verifyPeerIdDerivation(peerId: peerId, publicKeyBase64: publicKey) else {
+            logger.warning("Refused to register peer with mismatched ID",
+                          metadata: ["peerId": "\(peerId.prefix(8))..."])
+            return
+        }
+        peerPublicKeys[peerId] = publicKey
+    }
+
+    /// Get the registered public key for a peer (for testing)
+    public func getPublicKey(for peerId: PeerId) -> String? {
+        peerPublicKeys[peerId]
+    }
+
     /// Receive an envelope directly (for testing)
+    /// Requires sender to be registered in peerPublicKeys or peers
     public func receiveEnvelope(_ envelope: MeshEnvelope) async -> Bool {
-        // Verify signature if we know the sender
-        if let peer = peers[envelope.fromPeerId] {
-            let publicKeyBase64 = await peer.publicKey.rawRepresentation.base64EncodedString()
-            if !envelope.verifySignature(publicKeyBase64: publicKeyBase64) {
-                logger.warning("Rejected message with invalid signature from \(envelope.fromPeerId)")
+        // Get sender's public key from registry or connected peers
+        let senderPublicKey: String?
+        if let registeredKey = peerPublicKeys[envelope.fromPeerId] {
+            senderPublicKey = registeredKey
+        } else if let peer = peers[envelope.fromPeerId] {
+            senderPublicKey = await peer.publicKey.rawRepresentation.base64EncodedString()
+        } else {
+            // For PeerAnnouncements, use embedded key (self-authenticating)
+            if case .peerInfo(let announcement) = envelope.payload {
+                // Verify peer ID derivation first
+                guard IdentityKeypair.verifyPeerIdDerivation(peerId: announcement.peerId, publicKeyBase64: announcement.publicKey) else {
+                    logger.warning("Rejected announcement with mismatched peer ID")
+                    return false
+                }
+                senderPublicKey = announcement.publicKey
+            } else {
+                logger.warning("Rejected message from unknown peer: \(envelope.fromPeerId.prefix(8))...")
                 return false
             }
+        }
+
+        // Verify signature - REQUIRED for all messages
+        guard let key = senderPublicKey, envelope.verifySignature(publicKeyBase64: key) else {
+            logger.warning("Rejected message with invalid signature from \(envelope.fromPeerId.prefix(8))...")
+            return false
         }
 
         // Check for duplicates
@@ -991,6 +1009,11 @@ public actor MeshNode {
             return false
         }
         markMessageSeen(envelope.messageId)
+
+        // If this was a valid announcement, register the peer
+        if case .peerInfo(let announcement) = envelope.payload {
+            peerPublicKeys[announcement.peerId] = announcement.publicKey
+        }
 
         return true
     }

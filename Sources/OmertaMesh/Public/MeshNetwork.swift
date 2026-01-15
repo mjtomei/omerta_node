@@ -10,8 +10,13 @@ import NIOPosix
 public actor MeshNetwork {
     // MARK: - Properties
 
-    /// Our peer ID (public key)
-    public let peerId: PeerId
+    /// Our cryptographic identity
+    public let identity: IdentityKeypair
+
+    /// Our peer ID (derived from identity public key)
+    public var peerId: PeerId {
+        identity.peerId
+    }
 
     /// Configuration
     public let config: MeshConfig
@@ -24,6 +29,9 @@ public actor MeshNetwork {
 
     /// Connection tracker
     private let connectionTracker: DirectConnectionTracker
+
+    /// Network store for persistence
+    private let networkStore: NetworkStore
 
     /// Internal mesh node
     private var meshNode: MeshNode?
@@ -44,16 +52,32 @@ public actor MeshNetwork {
     /// Pending message handler (set before start)
     private var pendingMessageHandler: ((PeerId, Data) async -> Void)?
 
+    /// Retry configuration for network operations
+    public var retryConfig: RetryConfig = .network
+
     // MARK: - Initialization
 
-    /// Create a new mesh network
+    /// Create a new mesh network with a cryptographic identity
     /// - Parameters:
-    ///   - peerId: Our peer ID (usually a public key)
-    ///   - config: Network configuration
-    public init(peerId: PeerId, config: MeshConfig = .default) {
-        self.peerId = peerId
+    ///   - identity: Our cryptographic identity (keypair)
+    ///   - config: Network configuration (must include encryption key)
+    ///   - networkStore: Store for network memberships (defaults to standard location)
+    public init(identity: IdentityKeypair, config: MeshConfig, networkStore: NetworkStore? = nil) {
+        self.identity = identity
         self.config = config
         self.connectionTracker = DirectConnectionTracker(staleThreshold: config.recentContactMaxAge)
+        self.networkStore = networkStore ?? NetworkStore.defaultStore()
+        self.logger = Logger(label: "io.omerta.mesh.network")
+    }
+
+    /// Create a new mesh network with auto-generated identity
+    /// - Parameter config: Network configuration (must include encryption key)
+    /// - Parameter networkStore: Store for network memberships (defaults to standard location)
+    public init(config: MeshConfig, networkStore: NetworkStore? = nil) {
+        self.identity = IdentityKeypair()
+        self.config = config
+        self.connectionTracker = DirectConnectionTracker(staleThreshold: config.recentContactMaxAge)
+        self.networkStore = networkStore ?? NetworkStore.defaultStore()
         self.logger = Logger(label: "io.omerta.mesh.network")
     }
 
@@ -83,6 +107,7 @@ public actor MeshNetwork {
 
             // Create internal mesh node
             let nodeConfig = MeshNode.Config(
+                encryptionKey: config.encryptionKey,
                 port: UInt16(config.port),
                 targetRelays: config.targetRelayCount,
                 maxRelays: config.maxRelayCount,
@@ -100,7 +125,7 @@ public actor MeshNetwork {
                 holePunchProbeInterval: config.holePunchProbeInterval
             )
 
-            let node = MeshNode(peerId: peerId, config: nodeConfig)
+            let node = MeshNode(identity: identity, config: nodeConfig)
             self.meshNode = node
 
             // Start the node
@@ -432,6 +457,163 @@ public actor MeshNetwork {
         )
     }
 
+    // MARK: - Network Management
+
+    /// Join a network using an invite link
+    /// - Parameters:
+    ///   - inviteLink: The invite link (omerta://join/...)
+    ///   - name: Optional custom name for the network
+    /// - Returns: The joined network
+    public func joinNetwork(inviteLink: String, name: String? = nil) async throws -> Network {
+        let networkKey = try NetworkKey.decode(from: inviteLink)
+        return try await joinNetwork(key: networkKey, name: name)
+    }
+
+    /// Join a network using a NetworkKey
+    /// - Parameters:
+    ///   - key: The network key
+    ///   - name: Optional custom name for the network
+    /// - Returns: The joined network
+    public func joinNetwork(key: NetworkKey, name: String? = nil) async throws -> Network {
+        // Load existing networks first
+        try await networkStore.load()
+
+        // Join the network
+        let network = try await networkStore.join(key, name: name)
+
+        logger.info("Joined network: \(network.name)", metadata: ["networkId": "\(network.id)"])
+
+        // Add bootstrap peers from the network key
+        for peer in key.bootstrapPeers {
+            let parts = peer.split(separator: "@", maxSplits: 1)
+            if parts.count == 2 {
+                let bootstrapPeerId = String(parts[0])
+                let endpoint = String(parts[1])
+                await meshNode?.updatePeerEndpoint(bootstrapPeerId, endpoint: endpoint)
+                await eventPublisher.publish(.peerDiscovered(peerId: bootstrapPeerId, endpoint: endpoint, viaBootstrap: true))
+            }
+        }
+
+        // Request peers from bootstrap nodes
+        await meshNode?.requestPeers()
+
+        await eventPublisher.publish(.networkJoined(network: network))
+
+        return network
+    }
+
+    /// Leave a network
+    /// - Parameter networkId: The network ID to leave
+    public func leaveNetwork(id networkId: String) async throws {
+        try await networkStore.load()
+        try await networkStore.leave(networkId)
+
+        logger.info("Left network", metadata: ["networkId": "\(networkId)"])
+        await eventPublisher.publish(.networkLeft(networkId: networkId))
+    }
+
+    /// Get all joined networks
+    public func networks() async -> [Network] {
+        try? await networkStore.load()
+        return await networkStore.allNetworks()
+    }
+
+    /// Get a specific network by ID
+    public func network(id: String) async -> Network? {
+        try? await networkStore.load()
+        return await networkStore.network(id: id)
+    }
+
+    /// Create a new network
+    /// - Parameters:
+    ///   - name: Name for the network
+    ///   - bootstrapEndpoint: Optional endpoint for this node as bootstrap
+    /// - Returns: The network key for sharing with others
+    public func createNetwork(name: String, bootstrapEndpoint: String? = nil) async throws -> NetworkKey {
+        var bootstrapPeers: [String] = []
+
+        // Add ourselves as a bootstrap peer if endpoint provided
+        if let endpoint = bootstrapEndpoint {
+            bootstrapPeers.append("\(peerId)@\(endpoint)")
+        } else if let publicEp = publicEndpoint {
+            bootstrapPeers.append("\(peerId)@\(publicEp)")
+        }
+
+        // Generate network key
+        let key = NetworkKey.generate(networkName: name, bootstrapPeers: bootstrapPeers)
+
+        // Auto-join the network we created
+        _ = try await joinNetwork(key: key, name: name)
+
+        logger.info("Created network: \(name)", metadata: ["networkId": "\(key.deriveNetworkId())"])
+
+        return key
+    }
+
+    // MARK: - Retry-Enabled Operations
+
+    /// Connect to a peer with automatic retry
+    /// - Parameters:
+    ///   - peerId: The peer's ID
+    ///   - retryConfig: Optional custom retry configuration
+    /// - Returns: The established connection
+    public func connectWithRetry(to targetPeerId: PeerId, retryConfig: RetryConfig? = nil) async throws -> DirectConnection {
+        try await withRetry(
+            config: retryConfig ?? self.retryConfig,
+            operation: "connect to \(targetPeerId.prefix(8))...",
+            shouldRetry: { error in
+                guard let meshError = error as? MeshError else { return false }
+                return meshError.shouldRetry
+            }
+        ) {
+            try await self.connect(to: targetPeerId)
+        }
+    }
+
+    /// Send data to a peer with automatic retry
+    /// - Parameters:
+    ///   - data: Data to send
+    ///   - peerId: Target peer ID
+    ///   - retryConfig: Optional custom retry configuration
+    public func sendWithRetry(_ data: Data, to targetPeerId: PeerId, retryConfig: RetryConfig? = nil) async throws {
+        try await withRetry(
+            config: retryConfig ?? self.retryConfig,
+            operation: "send to \(targetPeerId.prefix(8))...",
+            shouldRetry: { error in
+                guard let meshError = error as? MeshError else { return false }
+                return meshError.shouldRetry
+            }
+        ) {
+            try await self.send(data, to: targetPeerId)
+        }
+    }
+
+    /// Attempt hole punch with automatic retry
+    /// - Parameters:
+    ///   - peerId: Target peer ID
+    ///   - retryConfig: Optional custom retry configuration
+    /// - Returns: The established direct connection
+    public func holePunchWithRetry(to targetPeerId: PeerId, retryConfig: RetryConfig? = nil) async throws -> DirectConnection {
+        try await withRetry(
+            config: retryConfig ?? .persistent,  // Hole punching benefits from more attempts
+            operation: "hole punch to \(targetPeerId.prefix(8))...",
+            shouldRetry: { error in
+                guard let meshError = error as? MeshError else { return false }
+                // Retry hole punch failures except for impossible cases
+                switch meshError {
+                case .holePunchFailed:
+                    return true
+                case .holePunchImpossible:
+                    return false  // Both symmetric NAT, no point retrying
+                default:
+                    return meshError.shouldRetry
+                }
+            }
+        ) {
+            try await self.holePunch(to: targetPeerId)
+        }
+    }
+
     // MARK: - Private Methods
 
     private func detectNAT() async throws {
@@ -533,28 +715,32 @@ public struct MeshStatistics: Sendable {
 // MARK: - Convenience Extensions
 
 extension MeshNetwork {
-    /// Create a mesh network with a randomly generated peer ID
-    public static func create(config: MeshConfig = .default) -> MeshNetwork {
-        let peerId = UUID().uuidString
-        return MeshNetwork(peerId: peerId, config: config)
+    /// Create a mesh network with a randomly generated identity
+    public static func create(config: MeshConfig) -> MeshNetwork {
+        MeshNetwork(config: config)
     }
 
     /// Create a mesh network for a relay node
-    public static func createRelay(peerId: PeerId, port: Int = 0) -> MeshNetwork {
-        var config = MeshConfig.relayNode
+    public static func createRelay(
+        identity: IdentityKeypair,
+        encryptionKey: Data,
+        bootstrapPeers: [String] = [],
+        port: Int = 0
+    ) -> MeshNetwork {
+        var config = MeshConfig.relayNode(encryptionKey: encryptionKey, bootstrapPeers: bootstrapPeers)
         config.port = port
-        return MeshNetwork(peerId: peerId, config: config)
-    }
-
-    /// Create a mesh network for a mobile device
-    public static func createMobile(peerId: PeerId) -> MeshNetwork {
-        MeshNetwork(peerId: peerId, config: .mobile)
+        return MeshNetwork(identity: identity, config: config)
     }
 
     /// Create a mesh network for a server
-    public static func createServer(peerId: PeerId, port: Int = 0) -> MeshNetwork {
-        var config = MeshConfig.server
+    public static func createServer(
+        identity: IdentityKeypair,
+        encryptionKey: Data,
+        bootstrapPeers: [String] = [],
+        port: Int = 0
+    ) -> MeshNetwork {
+        var config = MeshConfig.server(encryptionKey: encryptionKey, bootstrapPeers: bootstrapPeers)
         config.port = port
-        return MeshNetwork(peerId: peerId, config: config)
+        return MeshNetwork(identity: identity, config: config)
     }
 }

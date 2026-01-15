@@ -494,13 +494,16 @@ struct NetworkCreate: AsyncParsableCommand {
     mutating func run() async throws {
         print("Creating new network: \(name)")
 
-        let networkManager = NetworkManager()
-        try await networkManager.loadNetworks()
-
-        let key = await networkManager.createNetwork(
-            name: name,
-            bootstrapEndpoint: endpoint
+        // Generate a new network key
+        let key = NetworkKey.generate(
+            networkName: name,
+            bootstrapPeers: [endpoint]
         )
+
+        // Join the network we just created
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+        _ = try await networkStore.join(key, name: name)
 
         print("\nNetwork created successfully!")
         print("")
@@ -542,18 +545,15 @@ struct NetworkJoin: AsyncParsableCommand {
         do {
             let networkKey = try NetworkKey.decode(from: key)
 
-            let networkManager = NetworkManager()
-            try await networkManager.loadNetworks()
+            let networkStore = NetworkStore.defaultStore()
+            try await networkStore.load()
 
-            let networkId = try await networkManager.joinNetwork(
-                key: networkKey,
-                name: name
-            )
+            let network = try await networkStore.join(networkKey, name: name)
 
             print("\nSuccessfully joined network!")
             print("")
-            print("Network: \(name ?? networkKey.networkName)")
-            print("Network ID: \(networkId)")
+            print("Network: \(network.name)")
+            print("Network ID: \(network.id)")
             print("Bootstrap peers: \(networkKey.bootstrapPeers.joined(separator: ", "))")
             print("")
             print("To see all networks:")
@@ -576,10 +576,10 @@ struct NetworkList: AsyncParsableCommand {
     var detailed: Bool = false
 
     mutating func run() async throws {
-        let networkManager = NetworkManager()
-        try await networkManager.loadNetworks()
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
 
-        let networks = await networkManager.getNetworks()
+        let networks = await networkStore.allNetworks()
 
         if networks.isEmpty {
             print("No networks joined yet.")
@@ -597,8 +597,7 @@ struct NetworkList: AsyncParsableCommand {
         print("")
 
         for network in networks.sorted(by: { $0.joinedAt > $1.joinedAt }) {
-            let isEnabled = await networkManager.isNetworkEnabled(network.id)
-            let status = isEnabled ? "[Active]" : "[Paused]"
+            let status = network.isActive ? "[Active]" : "[Paused]"
 
             print("\(status) \(network.name)")
             print("   ID: \(network.id.prefix(16))...")
@@ -635,10 +634,10 @@ struct NetworkLeave: AsyncParsableCommand {
     var force: Bool = false
 
     mutating func run() async throws {
-        let networkManager = NetworkManager()
-        try await networkManager.loadNetworks()
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
 
-        guard let network = await networkManager.getNetwork(id: id) else {
+        guard let network = await networkStore.network(id: id) else {
             print("Network not found: \(id)")
             throw ExitCode.failure
         }
@@ -656,7 +655,7 @@ struct NetworkLeave: AsyncParsableCommand {
         }
 
         do {
-            try await networkManager.leaveNetwork(networkId: id)
+            try await networkStore.leave(id)
             print("\nLeft network: \(network.name)")
         } catch {
             print("Failed to leave network: \(error)")
@@ -675,22 +674,20 @@ struct NetworkShow: AsyncParsableCommand {
     var id: String
 
     mutating func run() async throws {
-        let networkManager = NetworkManager()
-        try await networkManager.loadNetworks()
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
 
-        guard let network = await networkManager.getNetwork(id: id) else {
+        guard let network = await networkStore.network(id: id) else {
             print("Network not found: \(id)")
             throw ExitCode.failure
         }
-
-        let isEnabled = await networkManager.isNetworkEnabled(id)
 
         print("Network Details")
         print("===============")
         print("")
         print("Name: \(network.name)")
         print("ID: \(network.id)")
-        print("Status: \(isEnabled ? "Active" : "Paused")")
+        print("Status: \(network.isActive ? "Active" : "Paused")")
         print("Joined: \(network.joinedAt)")
         print("")
         print("Bootstrap Peers:")
@@ -1267,51 +1264,14 @@ struct VMRequest: AsyncParsableCommand {
         wait: Bool,
         waitTimeout: Int
     ) async throws {
-        print("Connecting to provider: \(providerEndpoint)")
-        if dryRun {
-            print("[DRY RUN] Skipping VPN setup")
-        }
-
-        // Load SSH config
-        let configManager = ConfigManager()
-        let config: OmertaConfig
-        do {
-            config = try await configManager.load()
-        } catch ConfigError.notInitialized {
-            print("")
-            print("Error: Omerta not initialized. Run 'omerta init' first.")
-            throw ExitCode.failure
-        }
-
-        guard let sshPublicKey = config.ssh.publicKey else {
-            print("")
-            print("Error: SSH public key not found in config. Run 'omerta init' to regenerate.")
-            throw ExitCode.failure
-        }
-
-        print("Using SSH key: \(config.ssh.expandedPrivateKeyPath())")
+        // Direct IP connections are deprecated - use mesh mode
+        print("Error: Direct IP connections are deprecated.")
         print("")
-
-        // Use DirectProviderClient for direct connections
-        let client = DirectProviderClient(networkKey: networkKey, dryRun: dryRun)
-
-        // Request VM directly from provider
-        let connection = try await client.requestVM(
-            fromProvider: providerEndpoint,
-            sshPublicKey: sshPublicKey,
-            sshKeyPath: config.ssh.privateKeyPath,
-            sshUser: config.ssh.defaultUser
-        )
-
-        // Wait for WireGuard connection if requested
-        // Note: DirectProviderClient doesn't have waitForConnection, so we skip this for now
-        if wait && !dryRun {
-            print("")
-            print("Note: Connection waiting not available in direct mode.")
-            print("Check connection status with: sudo wg show \(connection.vpnInterface)")
-        }
-
-        printVMConnection(connection)
+        print("Please use mesh mode instead:")
+        print("  omerta connect --peer <provider-peer-id> --bootstrap <bootstrap-peer>")
+        print("")
+        print("The mesh network handles NAT traversal automatically.")
+        throw ExitCode.failure
     }
 
     private func requestVMFromNetwork(
@@ -1358,19 +1318,21 @@ struct VMRequest: AsyncParsableCommand {
 
         print("Using SSH key: \(config.ssh.expandedPrivateKeyPath())")
 
-        // Build mesh config
-        var meshConfig = MeshConfig()
-
-        // Add bootstrap peer if specified
+        // Build mesh config with encryption key
+        let bootstrapPeers = bootstrapPeer.map { [$0] } ?? []
         if let bootstrap = bootstrapPeer {
-            meshConfig.bootstrapPeers = [bootstrap]
             print("Using bootstrap peer: \(bootstrap)")
         }
 
-        // Create mesh consumer client
-        let peerId = "consumer-\(UUID().uuidString.prefix(8))"
+        let meshConfig = MeshConfig(
+            encryptionKey: networkKey,
+            bootstrapPeers: bootstrapPeers
+        )
+
+        // Create mesh consumer client with auto-generated identity
+        let identity = IdentityKeypair()
         let client = MeshConsumerClient(
-            peerId: peerId,
+            identity: identity,
             meshConfig: meshConfig,
             networkKey: networkKey,
             dryRun: dryRun
@@ -1526,124 +1488,27 @@ struct VMList: AsyncParsableCommand {
 struct VMStatus: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "status",
-        abstract: "Query VM status from provider"
+        abstract: "Query VM status from provider (deprecated)"
     )
 
     @Option(name: .long, help: "Provider endpoint (ip:port)")
     var provider: String
 
-    @Option(name: .long, help: "Network key (hex encoded). Uses local key from config if not specified.")
+    @Option(name: .long, help: "Network key (hex encoded)")
     var networkKey: String?
 
     @Option(name: .long, help: "Specific VM ID to query (default: all)")
     var vmId: String?
 
     mutating func run() async throws {
-        // Load config to get local key if not specified
-        let configManager = ConfigManager()
-        let config: OmertaConfig
-        do {
-            config = try await configManager.load()
-        } catch ConfigError.notInitialized {
-            print("Error: Omerta not initialized. Run 'omerta init' first.")
-            throw ExitCode.failure
-        }
-
-        // Determine network key
-        let keyData: Data
-        if let providedKey = networkKey {
-            guard let data = Data(hexString: providedKey), data.count == 32 else {
-                print("Error: Network key must be a 64-character hex string (32 bytes)")
-                throw ExitCode.failure
-            }
-            keyData = data
-        } else if let localKeyData = config.localKeyData() {
-            keyData = localKeyData
-        } else {
-            print("Error: No network key specified and no local key in config.")
-            throw ExitCode.failure
-        }
-
-        // Parse VM ID if provided
-        var queryVmId: UUID? = nil
-        if let vmIdStr = vmId {
-            // Handle both full UUID and short prefix
-            if vmIdStr.count == 36 {
-                queryVmId = UUID(uuidString: vmIdStr)
-            } else {
-                // Try to find matching VM from local tracking
-                let tracker = VMTracker()
-                let vms = try await tracker.loadPersistedVMs()
-                let matchingVM = vms.first { vm in
-                    vm.vmId.uuidString.lowercased().hasPrefix(vmIdStr.lowercased())
-                }
-                queryVmId = matchingVM?.vmId
-            }
-
-            if queryVmId == nil {
-                print("Error: Invalid VM ID: \(vmIdStr)")
-                throw ExitCode.failure
-            }
-        }
-
-        print("Querying VM status from \(provider)...")
+        // Direct status queries are deprecated - use local VM tracking
+        print("Error: Direct provider status queries are deprecated.")
         print("")
-
-        let client = UDPControlClient(networkId: "direct", networkKey: keyData)
-
-        do {
-            let response = try await client.queryVMStatus(
-                providerEndpoint: provider,
-                vmId: queryVmId
-            )
-
-            if response.vms.isEmpty {
-                print("No VMs found on provider")
-                return
-            }
-
-            print("Provider VMs")
-            print("============")
-            print("")
-
-            for vm in response.vms {
-                let statusIcon = vm.status == OmertaConsumer.VMStatus.running ? "●" : "○"
-                print("\(statusIcon) [\(vm.vmId.uuidString.prefix(8))...] \(vm.vmIP)")
-                print("   Status: \(vm.status.rawValue.uppercased())")
-                print("   Uptime: \(formatUptime(vm.uptimeSeconds))")
-                print("   Created: \(formatDate(vm.createdAt))")
-
-                if let console = vm.consoleOutput, !console.isEmpty {
-                    print("   Console:")
-                    for line in console.split(separator: "\n").suffix(3) {
-                        print("     \(line)")
-                    }
-                }
-                print("")
-            }
-
-            print("Total: \(response.vms.count) VMs")
-
-        } catch {
-            print("Error querying status: \(error)")
-            throw ExitCode.failure
-        }
-    }
-
-    private func formatUptime(_ seconds: Int) -> String {
-        if seconds < 60 {
-            return "\(seconds)s"
-        } else if seconds < 3600 {
-            return "\(seconds / 60)m \(seconds % 60)s"
-        } else {
-            let hours = seconds / 3600
-            let minutes = (seconds % 3600) / 60
-            return "\(hours)h \(minutes)m"
-        }
-    }
-
-    private func formatDate(_ date: Date) -> String {
-        formatRelativeDate(date)
+        print("To list your active VMs:")
+        print("  omerta vm list")
+        print("")
+        print("The mesh network tracks VM state automatically.")
+        throw ExitCode.failure
     }
 }
 
@@ -1657,41 +1522,13 @@ struct VMRelease: AsyncParsableCommand {
     @Argument(help: "VM ID to release (or prefix)")
     var vmId: String
 
-    @Option(name: .long, help: "Network key (hex encoded). Uses local key from config if not specified.")
-    var networkKey: String?
-
     @Flag(name: [.customShort("y"), .long], help: "Skip confirmation prompt")
     var yes: Bool = false
 
-    @Flag(name: .long, help: "Force local cleanup even if provider communication fails (use with caution)")
+    @Flag(name: .long, help: "Force local cleanup even if provider communication fails")
     var forceLocal: Bool = false
 
     mutating func run() async throws {
-        // Load config to get local key if not specified
-        let configManager = ConfigManager()
-        let config: OmertaConfig
-        do {
-            config = try await configManager.load()
-        } catch ConfigError.notInitialized {
-            print("Error: Omerta not initialized. Run 'omerta init' first.")
-            throw ExitCode.failure
-        }
-
-        // Determine network key
-        let keyData: Data
-        if let providedKey = networkKey {
-            guard let data = Data(hexString: providedKey), data.count == 32 else {
-                print("Error: Network key must be a 64-character hex string (32 bytes)")
-                throw ExitCode.failure
-            }
-            keyData = data
-        } else if let localKeyData = config.localKeyData() {
-            keyData = localKeyData
-        } else {
-            print("Error: No network key specified and no local key in config.")
-            throw ExitCode.failure
-        }
-
         // Find VM by ID or prefix
         let tracker = VMTracker()
         let vms = try await tracker.loadPersistedVMs()
@@ -1731,36 +1568,32 @@ struct VMRelease: AsyncParsableCommand {
 
         print("Releasing VM...")
 
-        // Release VM directly using UDP client and VPN cleanup
         do {
-            // 1. Tell provider to release VM
-            let udpClient = UDPControlClient(networkId: vm.networkId, networkKey: keyData)
-            do {
-                try await udpClient.releaseVM(providerEndpoint: vm.provider.endpoint, vmId: vm.vmId)
-                print("Provider acknowledged VM release")
-            } catch {
-                if forceLocal {
-                    print("Warning: Provider unreachable, proceeding with local cleanup")
-                } else {
-                    throw error
-                }
-            }
-
-            // 2. Tear down VPN tunnel
+            // 1. Tear down VPN tunnel
             let ephemeralVPN = EphemeralVPN()
             try await ephemeralVPN.destroyVPN(for: vm.vmId)
 
-            // 3. Remove from tracker
+            // 2. Remove from tracker
             try await tracker.removeVM(vm.vmId)
+
             print("")
             print("VM released successfully")
+            print("")
+            print("Note: The provider will automatically reclaim resources when the mesh")
+            print("connection drops. If you're running as a provider, the VM has been stopped.")
         } catch {
             print("")
             print("Error: Failed to release VM: \(error)")
-            print("")
-            print("The provider may be unreachable or using a different network key.")
-            print("If you're sure the VM is no longer running, use --force-local to clean up local resources.")
-            throw ExitCode.failure
+            if !forceLocal {
+                print("")
+                print("Use --force-local to force cleanup of local resources.")
+                throw ExitCode.failure
+            }
+
+            // Force local cleanup
+            print("Forcing local cleanup...")
+            try? await tracker.removeVM(vm.vmId)
+            print("Local cleanup complete")
         }
     }
 }
@@ -2630,15 +2463,15 @@ struct VMCleanup: AsyncParsableCommand {
     }
 }
 
-// MARK: - VM Test Command
+// MARK: - VM Test Command (Deprecated)
 struct VMTest: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "test",
-        abstract: "Test end-to-end VM request and SSH access"
+        abstract: "Test end-to-end VM request and SSH access (deprecated - use mesh)"
     )
 
     @Option(name: .long, help: "Provider address (ip:port)")
-    var provider: String
+    var provider: String = "127.0.0.1:51820"
 
     @Option(name: .long, help: "Timeout in seconds for VM boot (default: 120)")
     var timeout: Int = 120
@@ -2653,197 +2486,17 @@ struct VMTest: AsyncParsableCommand {
     var verbose: Bool = false
 
     mutating func run() async throws {
-        print("=== Omerta VM End-to-End Test ===")
+        // Direct IP tests are deprecated
+        print("Error: Direct IP VM tests are deprecated.")
         print("")
-
-        // Load config
-        let configManager = ConfigManager()
-        let config: OmertaConfig
-        do {
-            config = try await configManager.load()
-        } catch ConfigError.notInitialized {
-            print("Error: Omerta not initialized. Run 'omerta init' first.")
-            throw ExitCode.failure
-        }
-
-        guard let sshPublicKey = config.ssh.publicKey else {
-            print("Error: SSH public key not found. Run 'omerta init' to regenerate.")
-            throw ExitCode.failure
-        }
-
-        let sshKeyPath = config.ssh.expandedPrivateKeyPath()
-        let sshUser = config.ssh.defaultUser
-
-        // Get network key from config
-        guard let networkKeyData = config.localKeyData() else {
-            print("Error: No network key in config. Run 'omerta init' to generate one.")
-            throw ExitCode.failure
-        }
-
-        print("1. Configuration")
-        print("   SSH Key: \(sshKeyPath)")
-        print("   SSH User: \(sshUser)")
-        print("   Provider: \(provider)")
-        print("   Timeout: \(timeout)s")
-        print("   Test Command: '\(command)'")
+        print("The UDP control protocol has been replaced by mesh networking.")
+        print("To test VM connectivity, use the mesh-based connect command:")
         print("")
-
-        // Step 2: Request VM
-        print("2. Requesting VM...")
-        let client = DirectProviderClient(networkKey: networkKeyData)
-        let connection: VMConnection
-
-        do {
-            connection = try await client.requestVM(
-                fromProvider: provider,
-                sshPublicKey: sshPublicKey,
-                sshKeyPath: sshKeyPath,
-                sshUser: sshUser,
-                timeout: 60.0
-            )
-
-            print("   ✓ VM requested successfully")
-            print("   VM ID: \(connection.vmId)")
-            print("   VM IP: \(connection.vmIP)")
-            print("   VPN Interface: \(connection.vpnInterface)")
-            print("")
-        } catch {
-            print("   ✗ Failed to request VM: \(error)")
-            throw ExitCode.failure
-        }
-
-        // Step 3: Wait for VM to boot
-        print("3. Waiting for VM to boot...")
-        let startTime = Date()
-        var sshReady = false
-        var lastError: String = ""
-
-        while Date().timeIntervalSince(startTime) < Double(timeout) {
-            let elapsed = Int(Date().timeIntervalSince(startTime))
-            print("   Checking SSH (\(elapsed)s / \(timeout)s)...", terminator: "")
-
-            // Try SSH connection test
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = [
-                "-i", sshKeyPath,
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "-o", "ConnectTimeout=5",
-                "-o", "BatchMode=yes",
-                "\(sshUser)@\(connection.vmIP)",
-                "true"
-            ]
-            let errorPipe = Pipe()
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = errorPipe
-
-            do {
-                try process.run()
-                process.waitUntilExit()
-
-                if process.terminationStatus == 0 {
-                    print(" connected!")
-                    sshReady = true
-                    break
-                } else {
-                    let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                    lastError = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown"
-                    if verbose {
-                        print(" not ready (\(lastError))")
-                    } else {
-                        print(" not ready")
-                    }
-                }
-            } catch {
-                print(" error: \(error)")
-            }
-
-            // Wait before retrying
-            try await Task.sleep(for: .seconds(5))
-        }
-
-        if !sshReady {
-            print("")
-            print("   ✗ SSH connection timed out after \(timeout)s")
-            print("   Last error: \(lastError)")
-            if !keep {
-                print("")
-                print("   Releasing VM...")
-                try? await client.releaseVM(vmId: connection.vmId)
-            }
-            throw ExitCode.failure
-        }
-        print("   ✓ VM is ready")
+        print("  omerta connect --peer <provider-peer-id> --bootstrap <bootstrap>")
         print("")
-
-        // Step 4: Run test command via SSH
-        print("4. Running test command via SSH...")
-        print("   Command: \(command)")
-
-        let sshProcess = Process()
-        sshProcess.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        sshProcess.arguments = [
-            "-i", sshKeyPath,
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "\(sshUser)@\(connection.vmIP)",
-            command
-        ]
-        let outputPipe = Pipe()
-        let sshErrorPipe = Pipe()
-        sshProcess.standardOutput = outputPipe
-        sshProcess.standardError = sshErrorPipe
-
-        do {
-            try sshProcess.run()
-            sshProcess.waitUntilExit()
-
-            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: outputData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-            if sshProcess.terminationStatus == 0 {
-                print("   ✓ Command executed successfully")
-                print("   Output: \(output)")
-            } else {
-                let errorData = sshErrorPipe.fileHandleForReading.readDataToEndOfFile()
-                let errorOutput = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                print("   ✗ Command failed (exit code: \(sshProcess.terminationStatus))")
-                print("   Output: \(output)")
-                print("   Error: \(errorOutput)")
-                if !keep {
-                    try? await client.releaseVM(vmId: connection.vmId)
-                }
-                throw ExitCode.failure
-            }
-        } catch let error as ExitCode {
-            throw error
-        } catch {
-            print("   ✗ SSH execution failed: \(error)")
-            if !keep {
-                try? await client.releaseVM(vmId: connection.vmId)
-            }
-            throw ExitCode.failure
-        }
-        print("")
-
-        // Step 5: Cleanup
-        if keep {
-            print("5. Keeping VM (--keep specified)")
-            print("   VM ID: \(connection.vmId)")
-            print("   SSH Command: \(connection.sshCommand)")
-        } else {
-            print("5. Releasing VM...")
-            do {
-                try await client.releaseVM(vmId: connection.vmId)
-                print("   ✓ VM released")
-            } catch {
-                print("   ⚠ Failed to release VM: \(error)")
-            }
-        }
-
-        print("")
-        print("=== Test completed successfully ===")
+        print("To run the daemon in test mode:")
+        print("  sudo omertad start --dry-run")
+        throw ExitCode.failure
     }
 }
 
@@ -2860,695 +2513,40 @@ enum VMTestMode: String, ExpressibleByArgument, CaseIterable {
 struct VMBootTest: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "boot-test",
-        abstract: "Test VM boot and connectivity without full consumer setup"
+        abstract: "Test VM boot and connectivity (deprecated - use mesh mode)"
     )
 
     @Option(name: .long, help: "Provider address (ip:port)")
     var provider: String = "127.0.0.1:51820"
 
-    @Option(name: .long, help: "Test mode: tap-ping (Linux), direct-ssh (Linux), console-boot (macOS), reverse-ssh (macOS with SSH server)")
-    var mode: VMTestMode = {
-        #if os(macOS)
-        return .consoleBoot  // Default for macOS (NAT blocks inbound SSH)
-        #else
-        return .directSSH    // Default for Linux (TAP allows direct SSH)
-        #endif
-    }()
+    @Option(name: .long, help: "Test mode")
+    var mode: VMTestMode = .directSSH
 
-    @Option(name: .long, help: "Timeout in seconds for VM boot (default: 180)")
+    @Option(name: .long, help: "Timeout in seconds")
     var timeout: Int = 180
 
-    @Flag(name: .long, help: "Keep the VM after test (don't release)")
+    @Flag(name: .long, help: "Keep the VM after test")
     var keep: Bool = false
 
     @Flag(name: .long, help: "Verbose output")
     var verbose: Bool = false
 
     mutating func run() async throws {
-        print("=== Omerta VM Boot Test (Standalone) ===")
+        // Direct UDP boot tests are deprecated - use mesh mode
+        print("Error: Direct VM boot tests are deprecated.")
         print("")
-        print("Test Mode: \(mode.rawValue)")
-        print("Provider: \(provider)")
-        print("Timeout: \(timeout)s")
-        print("Keep VM: \(keep)")
-        print("Verbose: \(verbose)")
+        print("The UDP control protocol has been replaced by mesh networking.")
+        print("To test VM connectivity, use the mesh-based test command:")
         print("")
-
-        // Check sudo access (only needed on Linux for TAP networking)
-        #if os(Linux)
-        guard checkSudoAccess() else {
-            print("Error: This command requires sudo privileges on Linux (for TAP networking).")
-            print("Run with: sudo omerta vm boot-test ...")
-            throw ExitCode.failure
-        }
-        if verbose { print("[DEBUG] Sudo access confirmed") }
-        #else
-        if verbose { print("[DEBUG] macOS - no sudo required (Virtualization.framework runs in user space)") }
-        #endif
-
-        // Load config
-        let configManager = ConfigManager()
-        let config: OmertaConfig
-        do {
-            config = try await configManager.load()
-            if verbose { print("[DEBUG] Config loaded from: ~/.omerta/config.json") }
-        } catch ConfigError.notInitialized {
-            print("Error: Omerta not initialized. Run 'omerta init' first.")
-            throw ExitCode.failure
-        }
-
-        guard let sshPublicKey = config.ssh.publicKey else {
-            print("Error: SSH public key not found. Run 'omerta init' to regenerate.")
-            throw ExitCode.failure
-        }
-
-        let sshKeyPath = config.ssh.expandedPrivateKeyPath()
-        let sshUser = config.ssh.defaultUser
-
-        if verbose {
-            print("[DEBUG] SSH config:")
-            print("        User: \(sshUser)")
-            print("        Private key: \(sshKeyPath)")
-            print("        Public key: \(sshPublicKey.prefix(50))...")
-            print("        Key exists: \(FileManager.default.fileExists(atPath: sshKeyPath))")
-        }
-
-        // Parse provider address
-        let parts = provider.split(separator: ":")
-        guard parts.count == 2,
-              let port = UInt16(parts[1]) else {
-            print("Error: Invalid provider address format. Use ip:port (e.g., 127.0.0.1:51820)")
-            throw ExitCode.failure
-        }
-        let providerHost = String(parts[0])
-        let providerPort = port
-
-        print("1. Connecting to provider at \(providerHost):\(providerPort)...")
-
-        // Get network key
-        guard let networkKeyData = config.localKeyData() else {
-            print("Error: No network key in config.")
-            throw ExitCode.failure
-        }
-        if verbose { print("[DEBUG] Network key loaded (\(networkKeyData.count) bytes)") }
-
-        // Create test-specific VM request
-        let vmId = UUID()
-
-        // For standalone tests, we use simplified cloud-init without WireGuard firewall
-        // This allows direct SSH over TAP for debugging
-        print("2. Requesting test VM (mode: \(mode.rawValue))...")
-
-        // TAP network IPs (fixed for standalone tests)
-        let tapGateway = "192.168.100.1"
-        let tapVMIP = "192.168.100.2"
-
-        if verbose {
-            print("[DEBUG] TAP network config:")
-            print("        Gateway (host): \(tapGateway)")
-            print("        VM IP: \(tapVMIP)")
-        }
-
-        // Create UDP client to send request (use "direct" network for local testing)
-        let client = UDPControlClient(networkId: "direct", networkKey: networkKeyData)
-
-        // Use test endpoint to trigger test mode cloud-init (no WireGuard firewall)
-        let testEndpoint = "test://\(mode.rawValue)"
-
-        if verbose {
-            print("[DEBUG] Test endpoint: \(testEndpoint)")
-            print("[DEBUG] This will trigger test mode cloud-init (no WireGuard)")
-        }
-
-        // Create a minimal VPN config for the request (won't be used for WireGuard in direct-ssh mode)
-        let dummyVPNConfig = VPNConfiguration(
-            consumerPublicKey: "test-mode-no-wireguard",
-            consumerEndpoint: testEndpoint,
-            consumerVPNIP: "10.99.0.1",
-            vmVPNIP: "10.99.0.2",
-            vpnSubnet: "10.99.0.0/24",
-            presharedKey: nil
-        )
-
-        // Set up reverse SSH tunnel if in reverse-ssh mode
-        var tunnelConfig: ReverseTunnelConfig? = nil
-        var tunnelCleanup: (() -> Void)? = nil
-
-        if mode == .reverseSSH {
-            #if os(macOS)
-            print("   Setting up reverse SSH tunnel...")
-
-            // Check if SSH server is running on the host
-            let sshCheckResult = checkSSHServerRunning()
-            guard sshCheckResult else {
-                print("   ✗ SSH server not running on this Mac.")
-                print("   Enable Remote Login in System Settings > General > Sharing")
-                throw ExitCode.failure
-            }
-            if verbose { print("[DEBUG] SSH server is running on host") }
-
-            // Generate a temporary SSH keypair for the tunnel
-            let tunnelKeyPath = FileManager.default.temporaryDirectory.appendingPathComponent("omerta-tunnel-key-\(vmId.uuidString.prefix(8))")
-            let tunnelPubKeyPath = URL(fileURLWithPath: tunnelKeyPath.path + ".pub")
-
-            let genKeyProcess = Process()
-            genKeyProcess.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
-            genKeyProcess.arguments = ["-t", "ed25519", "-f", tunnelKeyPath.path, "-N", "", "-q"]
-            try genKeyProcess.run()
-            genKeyProcess.waitUntilExit()
-
-            guard genKeyProcess.terminationStatus == 0 else {
-                print("   ✗ Failed to generate tunnel keypair")
-                throw ExitCode.failure
-            }
-
-            // Read the keys
-            let tunnelPrivateKey = try String(contentsOf: tunnelKeyPath, encoding: .utf8)
-            let tunnelPublicKey = try String(contentsOf: tunnelPubKeyPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
-
-            if verbose {
-                print("[DEBUG] Generated tunnel keypair:")
-                print("        Private key: \(tunnelKeyPath.path)")
-                print("        Public key: \(tunnelPublicKey.prefix(50))...")
-            }
-
-            // Add public key to authorized_keys with a marker comment
-            let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
-            let authorizedKeysPath = "\(homeDir)/.ssh/authorized_keys"
-            let markerComment = "omerta-tunnel-\(vmId.uuidString.prefix(8))"
-            let keyEntry = "\(tunnelPublicKey) \(markerComment)\n"
-
-            // Ensure .ssh directory exists
-            let sshDir = "\(homeDir)/.ssh"
-            try? FileManager.default.createDirectory(atPath: sshDir, withIntermediateDirectories: true)
-
-            // Append to authorized_keys
-            if let fileHandle = FileHandle(forWritingAtPath: authorizedKeysPath) {
-                fileHandle.seekToEndOfFile()
-                fileHandle.write(keyEntry.data(using: .utf8)!)
-                fileHandle.closeFile()
-            } else {
-                try keyEntry.write(toFile: authorizedKeysPath, atomically: true, encoding: .utf8)
-            }
-
-            if verbose { print("[DEBUG] Added tunnel key to authorized_keys") }
-
-            // Get current username
-            let currentUser = ProcessInfo.processInfo.environment["USER"] ?? "unknown"
-            let tunnelPort: UInt16 = 2222
-
-            // Create the tunnel config
-            tunnelConfig = ReverseTunnelConfig(
-                hostIP: "192.168.64.1",  // macOS Virtualization.framework NAT gateway
-                hostUser: currentUser,
-                hostPort: 22,
-                tunnelPort: tunnelPort,
-                privateKey: tunnelPrivateKey
-            )
-
-            if verbose {
-                print("[DEBUG] Reverse tunnel config:")
-                print("        Host IP: 192.168.64.1")
-                print("        Host user: \(currentUser)")
-                print("        Tunnel port: \(tunnelPort)")
-            }
-
-            // Set up cleanup to remove key and temp files
-            tunnelCleanup = {
-                // Remove from authorized_keys
-                if let content = try? String(contentsOfFile: authorizedKeysPath, encoding: .utf8) {
-                    let filtered = content.components(separatedBy: "\n")
-                        .filter { !$0.contains(markerComment) }
-                        .joined(separator: "\n")
-                    try? filtered.write(toFile: authorizedKeysPath, atomically: true, encoding: .utf8)
-                }
-                // Remove temp key files
-                try? FileManager.default.removeItem(at: tunnelKeyPath)
-                try? FileManager.default.removeItem(at: tunnelPubKeyPath)
-            }
-
-            print("   ✓ Reverse tunnel configured (port \(tunnelPort))")
-            #else
-            print("   ✗ reverse-ssh mode is only supported on macOS")
-            throw ExitCode.failure
-            #endif
-        }
-
-        // Send request to provider
-        let providerEndpointStr = "\(providerHost):\(providerPort)"
-        if verbose {
-            print("[DEBUG] Sending VM request to provider...")
-            print("[DEBUG] VM ID: \(vmId)")
-        }
-        let response: VMCreatedResponse
-        do {
-            response = try await client.requestVM(
-                providerEndpoint: providerEndpointStr,
-                vmId: vmId,
-                requirements: ResourceRequirements(),
-                vpnConfig: dummyVPNConfig,
-                consumerEndpoint: testEndpoint,
-                sshPublicKey: sshPublicKey,
-                sshUser: sshUser,
-                reverseTunnelConfig: tunnelConfig
-            )
-            print("   ✓ VM requested successfully")
-            print("   VM ID: \(vmId)")
-            if verbose {
-                print("[DEBUG] Response:")
-                print("        VM IP: \(response.vmIP)")
-                print("        SSH Port: \(response.sshPort)")
-                print("        Provider Public Key: \(response.providerPublicKey.prefix(30))...")
-                if let error = response.error {
-                    print("        Error: \(error)")
-                }
-            }
-        } catch {
-            print("   ✗ Failed to request VM: \(error)")
-            if verbose {
-                print("[DEBUG] Full error: \(String(describing: error))")
-            }
-            throw ExitCode.failure
-        }
-
-        // Determine which IP to test based on platform and mode
-        let testIP: String
-        let testPort: UInt16 = 22
-
-        #if os(Linux)
-        // Linux uses TAP networking - VM is directly reachable at TAP IP
-        testIP = tapVMIP
-        print("   Test IP: \(testIP) (TAP network)")
-        #else
-        // macOS uses NAT networking - VM IP returned by provider
-        testIP = response.vmIP
-        print("   Test IP: \(testIP) (NAT network)")
-        print("   Note: macOS NAT may not allow inbound SSH. Check console log at:")
-        print("         ~/.omerta/vm-disks/\(vmId.uuidString)-console.log")
-        #endif
-
+        print("  omerta test mesh-vm --provider <provider-peer-id> --bootstrap <bootstrap>")
         print("")
-        print("3. Waiting for VM to boot...")
-
-        // Check TAP interface status before waiting
-        if verbose {
-            print("[DEBUG] Checking network interfaces...")
-            checkNetworkInterfaces()
-        }
-
-        // Wait for connectivity based on mode
-        let startTime = Date()
-        var connected = false
-        var lastError = ""
-        var iterationCount = 0
-
-        while Date().timeIntervalSince(startTime) < Double(timeout) {
-            let elapsed = Int(Date().timeIntervalSince(startTime))
-            iterationCount += 1
-
-            // Periodically show network status in verbose mode
-            if verbose && iterationCount % 6 == 1 {  // Every 30 seconds
-                print("[DEBUG] Network interface check at \(elapsed)s:")
-                checkNetworkInterfaces()
-            }
-
-            switch mode {
-            case .tapPing:
-                // Test with ping
-                let pingResult = testPing(ip: testIP)
-                if pingResult.success {
-                    connected = true
-                    print("   ✓ Ping successful after \(elapsed)s")
-                } else {
-                    lastError = pingResult.error
-                    if verbose {
-                        print("   Ping (\(elapsed)s / \(timeout)s)... \(lastError)")
-                    } else {
-                        print("   Ping (\(elapsed)s / \(timeout)s)... not ready")
-                    }
-                }
-
-            case .directSSH:
-                // Test with SSH
-                let sshResult = testSSH(ip: testIP, port: testPort, user: sshUser, keyPath: sshKeyPath)
-                if sshResult.success {
-                    connected = true
-                    print("   ✓ SSH successful after \(elapsed)s")
-                } else {
-                    lastError = sshResult.error
-                    if verbose {
-                        print("   SSH (\(elapsed)s / \(timeout)s)... \(lastError)")
-                    } else {
-                        print("   SSH (\(elapsed)s / \(timeout)s)... not ready")
-                    }
-                }
-
-            case .consoleBoot:
-                // Test by checking console log for successful boot indicators
-                let consoleLogPath = "\(FileManager.default.homeDirectoryForCurrentUser.path)/.omerta/vm-disks/\(vmId.uuidString)-console.log"
-                if let consoleContent = try? String(contentsOfFile: consoleLogPath, encoding: .utf8) {
-                    // Check for cloud-init completion markers
-                    let hasLogin = consoleContent.contains("login:")
-                    let hasOmertaHost = consoleContent.contains("omerta-vm-") || consoleContent.contains("omerta-")
-                    let hasCloudInitDone = consoleContent.contains("cloud-init") || hasOmertaHost
-
-                    if hasLogin && hasCloudInitDone {
-                        connected = true
-                        print("   ✓ VM booted successfully after \(elapsed)s")
-                        print("   ✓ Cloud-init completed (hostname set)")
-                        if verbose {
-                            // Show last few lines of console
-                            let lines = consoleContent.components(separatedBy: "\n").suffix(5)
-                            print("   Console output:")
-                            for line in lines where !line.isEmpty {
-                                print("     \(line)")
-                            }
-                        }
-                    } else {
-                        lastError = "Waiting for boot (login: \(hasLogin), cloud-init: \(hasCloudInitDone))"
-                        if verbose {
-                            print("   Boot (\(elapsed)s / \(timeout)s)... \(lastError)")
-                        } else {
-                            print("   Boot (\(elapsed)s / \(timeout)s)... waiting")
-                        }
-                    }
-                } else {
-                    lastError = "Console log not found yet"
-                    if verbose {
-                        print("   Boot (\(elapsed)s / \(timeout)s)... \(lastError)")
-                    } else {
-                        print("   Boot (\(elapsed)s / \(timeout)s)... starting")
-                    }
-                }
-
-            case .reverseSSH:
-                // Test SSH via reverse tunnel - check if tunnel port is listening
-                let tunnelPort = tunnelConfig?.tunnelPort ?? 2222
-                let sshResult = testSSH(ip: "127.0.0.1", port: tunnelPort, user: sshUser, keyPath: sshKeyPath)
-                if sshResult.success {
-                    connected = true
-                    print("   ✓ SSH via reverse tunnel successful after \(elapsed)s")
-                } else {
-                    lastError = sshResult.error
-                    if verbose {
-                        print("   Tunnel (\(elapsed)s / \(timeout)s)... \(lastError)")
-                    } else {
-                        print("   Tunnel (\(elapsed)s / \(timeout)s)... waiting")
-                    }
-                }
-            }
-
-            if connected {
-                break
-            }
-
-            try await Task.sleep(for: .seconds(5))
-        }
-
-        if !connected {
-            print("")
-            print("   ✗ VM boot test failed: timeout after \(timeout)s")
-            print("   Last error: \(lastError)")
-
-            // Show diagnostic info on failure
-            print("")
-            print("   Diagnostic info:")
-            checkNetworkInterfaces()
-            checkQEMUProcesses()
-
-            if !keep {
-                print("")
-                print("4. Cleaning up...")
-                try? await client.releaseVM(providerEndpoint: providerEndpointStr, vmId: vmId)
-                print("   VM released")
-            } else {
-                print("")
-                print("   VM kept for debugging (--keep). Check:")
-                print("   - QEMU logs: ~/.omerta/vm-disks/*.log")
-                print("   - TAP interface: ip addr show")
-            }
-
-            throw ExitCode.failure
-        }
-
-        print("")
-
-        // Step 4: Run test command via SSH (skip for console-boot mode since NAT blocks inbound connections)
-        if mode != .consoleBoot {
-            print("4. Running test command...")
-
-            // Determine SSH target based on mode
-            let sshTarget: String
-            let sshPortArg: [String]
-            if mode == .reverseSSH, let tunnel = tunnelConfig {
-                sshTarget = "\(sshUser)@127.0.0.1"
-                sshPortArg = ["-p", "\(tunnel.tunnelPort)"]
-            } else {
-                sshTarget = "\(sshUser)@\(testIP)"
-                sshPortArg = []
-            }
-
-            // Run a simple test command via SSH
-            let testCommand = "echo 'VM boot test successful' && uname -a && ip addr show"
-            let sshProcess = Process()
-            sshProcess.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            sshProcess.arguments = [
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "-o", "ConnectTimeout=10",
-                "-i", sshKeyPath
-            ] + sshPortArg + [
-                sshTarget,
-                testCommand
-            ]
-
-            let outputPipe = Pipe()
-            let errorPipe = Pipe()
-            sshProcess.standardOutput = outputPipe
-            sshProcess.standardError = errorPipe
-
-            do {
-                try sshProcess.run()
-                sshProcess.waitUntilExit()
-
-                let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-
-                if sshProcess.terminationStatus == 0 {
-                    print("   ✓ Test command executed successfully")
-                    print("")
-                    print("   Output:")
-                    for line in output.split(separator: "\n") {
-                        print("   | \(line)")
-                    }
-                } else {
-                    let errorOutput = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                    print("   ✗ Test command failed: \(errorOutput)")
-                }
-            } catch {
-                print("   ✗ Failed to run test command: \(error)")
-            }
-
-            print("")
-        }
-
-        // Cleanup (step 4 for console-boot, step 5 otherwise)
-        let cleanupStep = mode == .consoleBoot ? 4 : 5
-        if keep {
-            print("\(cleanupStep). Keeping VM (--keep specified)")
-            print("   VM ID: \(vmId)")
-            if mode == .reverseSSH, let tunnel = tunnelConfig {
-                print("   SSH: ssh -p \(tunnel.tunnelPort) -i \(sshKeyPath) \(sshUser)@127.0.0.1")
-            } else {
-                print("   SSH: ssh -i \(sshKeyPath) \(sshUser)@\(testIP)")
-            }
-        } else {
-            print("\(cleanupStep). Releasing VM...")
-            do {
-                try await client.releaseVM(providerEndpoint: providerEndpointStr, vmId: vmId)
-                print("   ✓ VM released")
-            } catch {
-                print("   ⚠ Failed to release VM: \(error)")
-            }
-        }
-
-        // Cleanup reverse tunnel resources
-        tunnelCleanup?()
-
-        print("")
-        print("=== Boot test completed successfully ===")
+        print("Or run a full VM request:")
+        print("  omerta connect --peer <provider-peer-id> --bootstrap <bootstrap>")
+        throw ExitCode.failure
     }
 }
 
-/// Test ping connectivity
-private func testPing(ip: String) -> (success: Bool, error: String) {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/bin/ping")
-    process.arguments = ["-c", "1", "-W", "2", ip]
-    process.standardOutput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
-
-    do {
-        try process.run()
-        process.waitUntilExit()
-        if process.terminationStatus == 0 {
-            return (true, "")
-        } else {
-            return (false, "ping failed")
-        }
-    } catch {
-        return (false, error.localizedDescription)
-    }
-}
-
-/// Test SSH connectivity
-private func testSSH(ip: String, port: UInt16, user: String, keyPath: String) -> (success: Bool, error: String) {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-    process.arguments = [
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "ConnectTimeout=5",
-        "-o", "BatchMode=yes",
-        "-p", "\(port)",
-        "-i", keyPath,
-        "\(user)@\(ip)",
-        "echo ok"
-    ]
-
-    let errorPipe = Pipe()
-    process.standardOutput = FileHandle.nullDevice
-    process.standardError = errorPipe
-
-    do {
-        try process.run()
-        process.waitUntilExit()
-
-        if process.terminationStatus == 0 {
-            return (true, "")
-        } else {
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorStr = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "SSH failed"
-            // Extract just the error message, not the full output
-            let shortError = errorStr.split(separator: "\n").first.map(String.init) ?? errorStr
-            return (false, shortError)
-        }
-    } catch {
-        return (false, error.localizedDescription)
-    }
-}
-
-/// Check if SSH server is running on this Mac
-private func checkSSHServerRunning() -> Bool {
-    // Check if SSH port (22) is listening by trying to connect
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/nc")
-    process.arguments = ["-z", "localhost", "22"]
-    process.standardOutput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
-
-    do {
-        try process.run()
-        process.waitUntilExit()
-        return process.terminationStatus == 0
-    } catch {
-        return false
-    }
-}
-
-/// Check network interfaces for debugging
-private func checkNetworkInterfaces() {
-    // Show TAP interfaces
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/sbin/ip")
-    process.arguments = ["addr", "show"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = FileHandle.nullDevice
-
-    do {
-        try process.run()
-        process.waitUntilExit()
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
-
-        // Filter to show only TAP interfaces and relevant info
-        var relevantLines: [String] = []
-        var inTapBlock = false
-
-        for line in output.split(separator: "\n") {
-            let lineStr = String(line)
-            if lineStr.contains("tap-") || lineStr.contains("192.168.100") {
-                relevantLines.append("   \(lineStr)")
-                inTapBlock = true
-            } else if inTapBlock && (lineStr.hasPrefix("    ") || lineStr.hasPrefix("\t")) {
-                relevantLines.append("   \(lineStr)")
-            } else {
-                inTapBlock = false
-            }
-        }
-
-        if relevantLines.isEmpty {
-            print("   No TAP interfaces found")
-        } else {
-            for line in relevantLines {
-                print(line)
-            }
-        }
-    } catch {
-        print("   Failed to check interfaces: \(error)")
-    }
-}
-
-/// Check QEMU processes for debugging
-private func checkQEMUProcesses() {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-    process.arguments = ["-la", "qemu"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = FileHandle.nullDevice
-
-    do {
-        try process.run()
-        process.waitUntilExit()
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        if output.isEmpty {
-            print("   No QEMU processes found")
-        } else {
-            print("   QEMU processes:")
-            for line in output.split(separator: "\n").prefix(5) {  // Limit to 5 lines
-                print("   \(line)")
-            }
-        }
-    } catch {
-        print("   No QEMU processes found")
-    }
-
-    // Also check for VM disk files
-    let homeDir: String
-    if let sudoUser = ProcessInfo.processInfo.environment["SUDO_USER"] {
-        homeDir = "/home/\(sudoUser)"
-    } else {
-        homeDir = ProcessInfo.processInfo.environment["HOME"] ?? "/tmp"
-    }
-    let vmDiskDir = "\(homeDir)/.omerta/vm-disks"
-
-    if let files = try? FileManager.default.contentsOfDirectory(atPath: vmDiskDir) {
-        let logFiles = files.filter { $0.hasSuffix(".log") || $0.hasSuffix(".qcow2") || $0.hasSuffix(".iso") }
-        if !logFiles.isEmpty {
-            print("   VM disk files in \(vmDiskDir):")
-            for file in logFiles.prefix(10) {
-                print("   - \(file)")
-            }
-        }
-    }
-}
+// MARK: - Utility Functions
 
 /// Check if we have sudo access without prompting for password
 private func checkSudoAccess() -> Bool {
@@ -3792,12 +2790,14 @@ struct MeshStatus: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        let peerId = meshOptions.peerId ?? "cli-\(UUID().uuidString.prefix(8))"
-        var meshConfig = MeshConfig()
-        meshConfig.bootstrapPeers = meshOptions.bootstrapPeers
-        meshConfig.stunServers = meshOptions.stunServers
+        let identity = IdentityKeypair()
+        let meshConfig = MeshConfig(
+            encryptionKey: keyData,
+            stunServers: meshOptions.stunServers,
+            bootstrapPeers: meshOptions.bootstrapPeers
+        )
 
-        let mesh = MeshNetwork(peerId: peerId, config: meshConfig)
+        let mesh = MeshNetwork(identity: identity, config: meshConfig)
 
         print("Starting mesh network...")
         try await mesh.start()
@@ -3816,7 +2816,7 @@ struct MeshStatus: AsyncParsableCommand {
         print("")
         print("Mesh Network Status")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        print("Peer ID:           \(peerId)")
+        print("Peer ID:           \(identity.peerId)")
         print("NAT Type:          \(natType.rawValue)")
         print("Public Endpoint:   \(publicEndpoint ?? "none")")
         print("Known Peers:       \(stats.peerCount)")
@@ -3858,12 +2858,19 @@ struct MeshPeers: AsyncParsableCommand {
             meshOptions.bootstrapPeers = [bootstrap]
         }
 
-        let peerId = meshOptions.peerId ?? "cli-\(UUID().uuidString.prefix(8))"
-        var meshConfig = MeshConfig()
-        meshConfig.bootstrapPeers = meshOptions.bootstrapPeers
-        meshConfig.stunServers = meshOptions.stunServers
+        guard let keyData = config.localKeyData() else {
+            print("Error: No local key in config. Run 'omerta init' first.")
+            throw ExitCode.failure
+        }
 
-        let mesh = MeshNetwork(peerId: peerId, config: meshConfig)
+        let identity = IdentityKeypair()
+        let meshConfig = MeshConfig(
+            encryptionKey: keyData,
+            stunServers: meshOptions.stunServers,
+            bootstrapPeers: meshOptions.bootstrapPeers
+        )
+
+        let mesh = MeshNetwork(identity: identity, config: meshConfig)
 
         print("Starting mesh network...")
         try await mesh.start()
@@ -3927,13 +2934,20 @@ struct MeshConnect: AsyncParsableCommand {
             meshOptions.bootstrapPeers = [bootstrap]
         }
 
-        let localPeerId = meshOptions.peerId ?? "cli-\(UUID().uuidString.prefix(8))"
-        var meshConfig = MeshConfig()
-        meshConfig.bootstrapPeers = meshOptions.bootstrapPeers
-        meshConfig.stunServers = meshOptions.stunServers
-        meshConfig.connectionTimeout = Double(timeout)
+        guard let keyData = config.localKeyData() else {
+            print("Error: No local key in config. Run 'omerta init' first.")
+            throw ExitCode.failure
+        }
 
-        let mesh = MeshNetwork(peerId: localPeerId, config: meshConfig)
+        let localIdentity = IdentityKeypair()
+        let meshConfig = MeshConfig(
+            encryptionKey: keyData,
+            connectionTimeout: Double(timeout),
+            stunServers: meshOptions.stunServers,
+            bootstrapPeers: meshOptions.bootstrapPeers
+        )
+
+        let mesh = MeshNetwork(identity: localIdentity, config: meshConfig)
 
         print("Starting mesh network...")
         try await mesh.start()

@@ -78,6 +78,14 @@ public enum MeshEvent: Sendable {
     /// Direct connection lost, falling back to relay
     case directConnectionLost(peerId: PeerId, fallbackRelay: PeerId?)
 
+    // MARK: - Network Membership Events
+
+    /// Joined a network
+    case networkJoined(network: Network)
+
+    /// Left a network
+    case networkLeft(networkId: String)
+
     // MARK: - Error Events
 
     /// A recoverable error occurred
@@ -255,6 +263,18 @@ extension MeshEventStream {
         }
     }
 
+    /// Filter to only network membership events
+    public func networkEvents() -> AsyncFilterSequence<MeshEventStream> {
+        filter { event in
+            switch event {
+            case .networkJoined, .networkLeft:
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
     /// Filter events for a specific peer
     public func events(forPeer peerId: PeerId) -> AsyncFilterSequence<MeshEventStream> {
         filter { event in
@@ -328,6 +348,10 @@ extension MeshEvent: CustomStringConvertible {
             return "Direct connection established to \(peerId) at \(endpoint)"
         case .directConnectionLost(let peerId, let fallback):
             return "Direct connection lost to \(peerId), fallback: \(fallback ?? "none")"
+        case .networkJoined(let network):
+            return "Joined network: \(network.name) (\(network.id))"
+        case .networkLeft(let networkId):
+            return "Left network: \(networkId)"
         case .error(let error):
             return "Error: \(error)"
         case .warning(let message):

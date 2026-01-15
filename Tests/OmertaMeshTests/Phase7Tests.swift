@@ -5,10 +5,15 @@ import XCTest
 
 final class Phase7Tests: XCTestCase {
 
+    /// Test encryption key used throughout tests
+    private var testKey: Data {
+        Data(repeating: 0x42, count: 32)
+    }
+
     // MARK: - MeshConfig Tests
 
     func testDefaultConfig() throws {
-        let config = MeshConfig.default
+        let config = MeshConfig(encryptionKey: testKey)
 
         XCTAssertEqual(config.port, 0)
         XCTAssertFalse(config.canRelay)
@@ -21,7 +26,7 @@ final class Phase7Tests: XCTestCase {
     }
 
     func testRelayNodeConfig() throws {
-        let config = MeshConfig.relayNode
+        let config = MeshConfig.relayNode(encryptionKey: testKey)
 
         XCTAssertTrue(config.canRelay)
         XCTAssertTrue(config.canCoordinateHolePunch)
@@ -30,18 +35,8 @@ final class Phase7Tests: XCTestCase {
         XCTAssertEqual(config.maxRelaySessions, 100)
     }
 
-    func testMobileConfig() throws {
-        let config = MeshConfig.mobile
-
-        XCTAssertFalse(config.canRelay)
-        XCTAssertEqual(config.targetRelayCount, 2)
-        XCTAssertEqual(config.maxRelayCount, 3)
-        XCTAssertEqual(config.keepaliveInterval, 30)
-        XCTAssertEqual(config.maxCachedPeers, 100)
-    }
-
     func testServerConfig() throws {
-        let config = MeshConfig.server
+        let config = MeshConfig.server(encryptionKey: testKey)
 
         XCTAssertTrue(config.canRelay)
         XCTAssertTrue(config.canCoordinateHolePunch)
@@ -52,7 +47,7 @@ final class Phase7Tests: XCTestCase {
 
     func testConfigValidation() throws {
         // Valid config should pass
-        var config = MeshConfig.default
+        var config = MeshConfig(encryptionKey: testKey)
         XCTAssertNoThrow(try config.validate())
 
         // Invalid port
@@ -73,7 +68,7 @@ final class Phase7Tests: XCTestCase {
     }
 
     func testConfigBuilder() throws {
-        let config = try MeshConfig.builder()
+        let config = try MeshConfig.builder(encryptionKey: testKey)
             .port(8080)
             .canRelay(true)
             .keepaliveInterval(30)
@@ -400,6 +395,7 @@ final class Phase7Tests: XCTestCase {
 
     func testMeshNodeConfig() {
         let config = MeshNode.Config(
+            encryptionKey: testKey,
             port: 8080,
             targetRelays: 5,
             maxRelays: 10,
@@ -415,7 +411,7 @@ final class Phase7Tests: XCTestCase {
     }
 
     func testMeshNodeConfigDefaults() {
-        let config = MeshNode.Config.default
+        let config = MeshNode.Config(encryptionKey: testKey)
 
         XCTAssertEqual(config.port, 0)
         XCTAssertEqual(config.targetRelays, 3)
@@ -483,35 +479,42 @@ final class Phase7Tests: XCTestCase {
 
     // MARK: - MeshNetwork Creation Tests
 
+    /// Test key for all tests
+    private var testEncryptionKey: Data {
+        Data(repeating: 0x42, count: 32)
+    }
+
     func testMeshNetworkCreation() async {
-        let network = MeshNetwork(peerId: "test-peer")
+        let identity = IdentityKeypair()
+        let config = MeshConfig(encryptionKey: testEncryptionKey)
+        let network = MeshNetwork(identity: identity, config: config)
         let state = await network.state
         XCTAssertEqual(state, .stopped)
+        // Verify peer ID is 16 hex chars (SHA256-based)
+        let peerId = await network.peerId
+        XCTAssertEqual(peerId.count, 16)
+        XCTAssertTrue(peerId.allSatisfy { $0.isHexDigit })
     }
 
     func testMeshNetworkCreateConvenience() async {
-        let network = MeshNetwork.create()
+        let config = MeshConfig(encryptionKey: testEncryptionKey)
+        let network = MeshNetwork.create(config: config)
         let state = await network.state
         XCTAssertEqual(state, .stopped)
     }
 
     func testMeshNetworkCreateRelay() async {
-        let network = MeshNetwork.createRelay(peerId: "relay-node", port: 8080)
+        let identity = IdentityKeypair()
+        let network = MeshNetwork.createRelay(identity: identity, encryptionKey: testEncryptionKey, port: 8080)
         let config = await network.config
         XCTAssertTrue(config.canRelay)
         XCTAssertTrue(config.canCoordinateHolePunch)
         XCTAssertEqual(config.port, 8080)
     }
 
-    func testMeshNetworkCreateMobile() async {
-        let network = MeshNetwork.createMobile(peerId: "mobile-node")
-        let config = await network.config
-        XCTAssertFalse(config.canRelay)
-        XCTAssertEqual(config.keepaliveInterval, 30)
-    }
-
     func testMeshNetworkCreateServer() async {
-        let network = MeshNetwork.createServer(peerId: "server-node", port: 9000)
+        let identity = IdentityKeypair()
+        let network = MeshNetwork.createServer(identity: identity, encryptionKey: testEncryptionKey, port: 9000)
         let config = await network.config
         XCTAssertTrue(config.canRelay)
         XCTAssertTrue(config.canCoordinateHolePunch)

@@ -1,6 +1,5 @@
 import XCTest
 @testable import OmertaProvider
-@testable import OmertaNetwork
 @testable import OmertaCore
 import Foundation
 

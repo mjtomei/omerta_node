@@ -10,8 +10,8 @@ import OmertaMesh
 struct OmertaDaemon: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "omertad",
-        abstract: "Omerta provider daemon - provides VM resources to network peers",
-        version: "0.5.0 (Phase 5: Consumer Client)",
+        abstract: "Omerta provider daemon - provides VM resources to network peers via mesh network",
+        version: "0.6.0 (Mesh-only)",
         subcommands: [
             Start.self,
             Stop.self,
@@ -29,35 +29,17 @@ struct Start: AsyncParsableCommand {
         abstract: "Start the provider daemon"
     )
 
-    @Option(name: .long, help: "Control port to listen on")
-    var port: UInt16 = 51820
-
-    @Option(name: .long, help: "Network key (hex encoded). Uses local key from config if not specified.")
+    @Option(name: .long, help: "Network key (hex encoded 32 bytes). Uses local key from config if not specified.")
     var networkKey: String?
 
-    @Option(name: .long, help: "Owner peer ID (gets highest priority)")
-    var ownerPeer: String?
-
-    @Option(name: .long, help: "Trusted network IDs (comma-separated)")
-    var trustedNetworks: String?
-
-    @Flag(name: .long, inversion: .prefixedNo, help: "Enable activity logging")
-    var activityLog: Bool = true
-
-    @Flag(name: .long, help: "Dry run mode - simulate VM creation without actual VMs")
-    var dryRun: Bool = false
-
-    @Flag(name: .long, help: "Use mesh network for NAT traversal (allows consumers behind NAT to connect)")
-    var mesh: Bool = false
-
-    @Option(name: .long, help: "Mesh peer ID (uses config or generates if not specified)")
-    var meshPeerId: String?
-
     @Option(name: .long, help: "Mesh port (default: 9999)")
-    var meshPort: Int = 9999
+    var port: Int = 9999
 
     @Option(name: .long, help: "Bootstrap peers for mesh network (comma-separated, format: peerId@host:port)")
     var bootstrapPeers: String?
+
+    @Flag(name: .long, help: "Dry run mode - simulate VM creation without actual VMs")
+    var dryRun: Bool = false
 
     @Option(name: .long, help: "Auto-shutdown after N seconds (for testing)")
     var timeout: Int?
@@ -96,28 +78,6 @@ struct Start: AsyncParsableCommand {
             }
         }
 
-        // Parse trusted networks
-        let networks = trustedNetworks?.components(separatedBy: ",") ?? []
-
-        // Create network keys dictionary
-        // Use "direct" as default networkId for direct peer connections
-        var networkKeysDict: [String: Data] = ["direct": keyData]
-
-        // Also add any trusted networks with the same key (for now)
-        for networkId in networks {
-            networkKeysDict[networkId] = keyData
-        }
-
-        // Create configuration with network keys
-        let config = ProviderDaemon.Configuration(
-            controlPort: port,
-            networkKeys: networkKeysDict,
-            ownerPeerId: ownerPeer,
-            trustedNetworks: networks + ["direct"],  // Trust direct network by default
-            enableActivityLogging: activityLog,
-            dryRun: dryRun
-        )
-
         // Check dependencies
         print("Checking system dependencies...")
         let checker = DependencyChecker()
@@ -133,79 +93,35 @@ struct Start: AsyncParsableCommand {
         }
         print("")
 
-        // Branch based on mesh mode
-        if mesh {
-            try await runMeshDaemon(keyData: keyData)
-        } else {
-            try await runUDPDaemon(config: config, networks: networks)
-        }
-    }
-
-    private func runUDPDaemon(config: ProviderDaemon.Configuration, networks: [String]) async throws {
-        // Create and start daemon
-        let daemon = ProviderDaemon(config: config)
-
-        do {
-            try await daemon.start()
-
-            print("")
-            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            print("  Omerta Provider Daemon Running (UDP Mode)")
-            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            print("")
-            print("Control Port: \(port)")
-            if let owner = ownerPeer {
-                print("Owner peer: \(owner)")
-            }
-            if !networks.isEmpty {
-                print("Trusted networks: \(networks.joined(separator: ", "))")
-            }
-            print("")
-            print("Ready to accept VM requests from network peers.")
-            print("VMs will be accessible via SSH over WireGuard tunnel.")
-            print("")
-            if let timeout = timeout {
-                print("Auto-shutdown in \(timeout) seconds")
-            } else {
-                print("Press Ctrl+C to stop")
-            }
-            print("")
-
-            // Keep running until interrupted or timeout
-            let duration = timeout ?? (60 * 60 * 24 * 365)  // timeout or 1 year
-            try await Task.sleep(for: .seconds(duration))
-
-            if timeout != nil {
-                print("Timeout reached, shutting down...")
-                try await daemon.stop()
-            }
-
-        } catch {
-            print("Failed to start daemon: \(error)")
-            throw ExitCode.failure
-        }
+        // Run the mesh daemon
+        try await runMeshDaemon(keyData: keyData)
     }
 
     private func runMeshDaemon(keyData: Data) async throws {
-        // Build mesh config
-        var meshConfig = MeshConfig()
-        meshConfig.port = meshPort
-        meshConfig.canRelay = true
-        meshConfig.canCoordinateHolePunch = true
-
+        // Parse bootstrap peers
+        let parsedBootstrapPeers: [String]
         if let bootstrapPeersStr = bootstrapPeers {
-            meshConfig.bootstrapPeers = bootstrapPeersStr.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            parsedBootstrapPeers = bootstrapPeersStr.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        } else {
+            parsedBootstrapPeers = []
         }
 
-        // Determine peer ID
-        let peerId = meshPeerId ?? "provider-\(UUID().uuidString.prefix(8))"
+        // Build mesh config with encryption key
+        var meshConfig = MeshConfig(
+            encryptionKey: keyData,
+            port: port,
+            canRelay: true,
+            canCoordinateHolePunch: true,
+            bootstrapPeers: parsedBootstrapPeers
+        )
+
+        // Generate cryptographic identity (peer ID is derived from public key)
+        let identity = OmertaMesh.IdentityKeypair()
 
         // Create mesh daemon configuration
         let daemonConfig = MeshProviderDaemon.Configuration(
-            peerId: peerId,
+            identity: identity,
             meshConfig: meshConfig,
-            networkKey: keyData,
-            enableActivityLogging: activityLog,
             dryRun: dryRun
         )
 
@@ -219,21 +135,21 @@ struct Start: AsyncParsableCommand {
 
             print("")
             print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            print("  Omerta Provider Daemon Running (Mesh Mode)")
+            print("  Omerta Provider Daemon Running")
             print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             print("")
-            print("Peer ID: \(peerId)")
-            print("Mesh Port: \(meshPort)")
+            print("Peer ID: \(identity.peerId)")
+            print("Mesh Port: \(port)")
             print("NAT Type: \(status.natType.rawValue)")
             if let publicEndpoint = status.publicEndpoint {
                 print("Public Endpoint: \(publicEndpoint)")
             }
-            if !meshConfig.bootstrapPeers.isEmpty {
-                print("Bootstrap Peers: \(meshConfig.bootstrapPeers.joined(separator: ", "))")
+            if !parsedBootstrapPeers.isEmpty {
+                print("Bootstrap Peers: \(parsedBootstrapPeers.joined(separator: ", "))")
             }
             print("")
             print("Ready to accept VM requests via mesh network.")
-            print("Consumers behind NAT can connect using: --peer \(peerId)")
+            print("Consumers behind NAT can connect using: --peer \(identity.peerId)")
             print("")
             if let timeout = timeout {
                 print("Auto-shutdown in \(timeout) seconds")
@@ -252,7 +168,7 @@ struct Start: AsyncParsableCommand {
             }
 
         } catch {
-            print("Failed to start mesh daemon: \(error)")
+            print("Failed to start daemon: \(error)")
             throw ExitCode.failure
         }
     }
@@ -291,7 +207,7 @@ struct Status: AsyncParsableCommand {
 
     mutating func run() async throws {
         print("Omerta Provider Daemon")
-        print("Version: 0.5.0 (Phase 5: Consumer Client)")
+        print("Version: 0.6.0 (Mesh-only)")
         print("")
 
         // In a real implementation, this would connect to running daemon
@@ -300,11 +216,12 @@ struct Status: AsyncParsableCommand {
         print("To start the daemon:")
         print("  sudo omertad start")
         print("")
-        print("Provider daemon:")
-        print("  - Accepts VM requests from network peers")
+        print("Provider daemon (mesh network):")
+        print("  - Accepts VM requests via mesh network")
+        print("  - Handles NAT traversal with hole punching")
         print("  - Creates isolated VMs accessible via SSH")
         print("  - Routes all VM traffic through WireGuard tunnel")
-        print("  - Monitors VPN health and kills VMs on tunnel failure")
+        print("  - Messages encrypted with network key (ChaCha20-Poly1305)")
         print("")
         print("Available commands:")
         print("  start   - Start the provider daemon")

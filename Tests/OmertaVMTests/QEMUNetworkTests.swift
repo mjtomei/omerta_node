@@ -3,7 +3,6 @@
 
 import XCTest
 @testable import OmertaVM
-@testable import OmertaNetwork
 @testable import OmertaCore
 
 #if os(Linux)

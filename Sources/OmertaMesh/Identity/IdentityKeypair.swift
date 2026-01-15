@@ -11,9 +11,24 @@ public struct IdentityKeypair: Sendable {
     /// The public verification key
     public let publicKey: Curve25519.Signing.PublicKey
 
-    /// The peer ID derived from the public key (base64 encoded)
+    /// The peer ID derived from the public key (SHA256 first 8 bytes, hex encoded)
+    /// Format: 16 lowercase hex characters (compatible with OmertaCore)
     public var peerId: PeerId {
-        publicKey.rawRepresentation.base64EncodedString()
+        Self.derivePeerId(from: publicKey.rawRepresentation)
+    }
+
+    /// Derive peer ID from public key data
+    /// Returns 16 lowercase hex characters (first 8 bytes of SHA256)
+    public static func derivePeerId(from publicKeyData: Data) -> PeerId {
+        let hash = SHA256.hash(data: publicKeyData)
+        return hash.prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Verify that a peer ID was correctly derived from a public key
+    public static func verifyPeerIdDerivation(peerId: PeerId, publicKeyBase64: String) -> Bool {
+        guard let keyData = Data(base64Encoded: publicKeyBase64) else { return false }
+        let expected = derivePeerId(from: keyData)
+        return peerId == expected
     }
 
     /// Create a new random keypair
@@ -149,8 +164,8 @@ extension Curve25519.Signing.PublicKey {
         try? self.init(rawRepresentation: data)
     }
 
-    /// Peer ID derived from this public key
+    /// Peer ID derived from this public key (SHA256 first 8 bytes, hex encoded)
     public var peerId: PeerId {
-        rawRepresentation.base64EncodedString()
+        IdentityKeypair.derivePeerId(from: rawRepresentation)
     }
 }

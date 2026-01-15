@@ -8,6 +8,70 @@ import Logging
 import NIOCore
 import NIOPosix
 
+// MARK: - Identity Persistence
+
+/// Stored identity format
+struct StoredIdentity: Codable {
+    let privateKey: String  // Base64-encoded private key
+    let createdAt: Date
+}
+
+/// Get the identity storage directory
+func getIdentityDirectory() -> URL {
+    let homeDir = FileManager.default.homeDirectoryForCurrentUser
+    return homeDir.appendingPathComponent(".omerta-mesh")
+}
+
+/// Get the identity file path
+func getIdentityFilePath() -> URL {
+    getIdentityDirectory().appendingPathComponent("identity.json")
+}
+
+/// Load existing identity or generate a new one
+func loadOrGenerateIdentity() throws -> IdentityKeypair {
+    let identityFile = getIdentityFilePath()
+
+    // Try to load existing identity
+    if FileManager.default.fileExists(atPath: identityFile.path) {
+        let data = try Data(contentsOf: identityFile)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let stored = try decoder.decode(StoredIdentity.self, from: data)
+        return try IdentityKeypair(privateKeyBase64: stored.privateKey)
+    }
+
+    // Generate new identity
+    let identity = IdentityKeypair()
+
+    // Save it
+    try saveIdentity(identity)
+
+    return identity
+}
+
+/// Save identity to file
+func saveIdentity(_ identity: IdentityKeypair) throws {
+    let identityDir = getIdentityDirectory()
+
+    // Create directory if needed
+    try FileManager.default.createDirectory(at: identityDir, withIntermediateDirectories: true)
+
+    // Save identity
+    let stored = StoredIdentity(
+        privateKey: identity.privateKeyBase64,
+        createdAt: Date()
+    )
+
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    encoder.outputFormatting = .prettyPrinted
+    let data = try encoder.encode(stored)
+
+    try data.write(to: getIdentityFilePath())
+}
+
+// MARK: - CLI Command
+
 @main
 struct MeshCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -16,14 +80,18 @@ struct MeshCLI: AsyncParsableCommand {
         discussion: """
             Runs a mesh node that can connect to other peers via NAT traversal
             and hole punching. Uses the OmertaMesh library.
+
+            Identity is automatically generated on first run and stored in
+            ~/.omerta-mesh/identity.json. The peer ID is derived from the
+            cryptographic identity (SHA256 of public key).
             """
     )
 
-    @Option(name: .long, help: "Unique peer ID for this node")
-    var peerId: String?
-
     @Option(name: .shortAndLong, help: "Local port to bind (0 = auto)")
     var port: Int = 0
+
+    @Option(name: .shortAndLong, help: "Network key (hex-encoded 32 bytes) for encryption")
+    var key: String?
 
     @Option(name: .long, help: "Bootstrap peer in format peer_id@host:port")
     var bootstrap: [String] = []
@@ -57,13 +125,21 @@ struct MeshCLI: AsyncParsableCommand {
 
         let logger = Logger(label: "io.omerta.mesh.cli")
 
-        // Generate peer ID if not provided
-        let myPeerId = peerId ?? "mesh-\(UUID().uuidString.prefix(8))"
+        // Load or generate cryptographic identity
+        let identity: IdentityKeypair
+        do {
+            identity = try loadOrGenerateIdentity()
+        } catch {
+            logger.error("Failed to load/generate identity: \(error)")
+            throw error
+        }
+        let myPeerId = identity.peerId
 
         print("==============================================")
         print("OmertaMesh Node")
         print("==============================================")
         print("Peer ID: \(myPeerId)")
+        print("Identity: ~/.omerta-mesh/identity.json")
         print("Port: \(port == 0 ? "auto" : String(port))")
         print("Relay mode: \(relay)")
         if !bootstrap.isEmpty {
@@ -74,15 +150,41 @@ struct MeshCLI: AsyncParsableCommand {
         }
         print("")
 
+        // Parse or generate encryption key
+        let encryptionKey: Data
+        if let keyHex = key {
+            guard keyHex.count == 64 else {
+                print("Error: Network key must be 64 hex characters (32 bytes)")
+                throw ExitCode.failure
+            }
+            var keyData = Data()
+            var index = keyHex.startIndex
+            while index < keyHex.endIndex {
+                let nextIndex = keyHex.index(index, offsetBy: 2)
+                guard let byte = UInt8(keyHex[index..<nextIndex], radix: 16) else {
+                    print("Error: Invalid hex in network key")
+                    throw ExitCode.failure
+                }
+                keyData.append(byte)
+                index = nextIndex
+            }
+            encryptionKey = keyData
+        } else {
+            // Generate a test key (use same default for testing)
+            print("Warning: No --key provided, using test key (not secure for production)")
+            encryptionKey = Data(repeating: 0x42, count: 32)  // Test key: all 0x42 bytes
+        }
+
         // Create mesh config
-        var config = relay ? MeshConfig.relayNode : MeshConfig.default
+        var config = relay
+            ? MeshConfig.relayNode(encryptionKey: encryptionKey, bootstrapPeers: bootstrap)
+            : MeshConfig(encryptionKey: encryptionKey, bootstrapPeers: bootstrap)
         config.port = port
-        config.bootstrapPeers = bootstrap
         config.canRelay = relay
         config.canCoordinateHolePunch = relay
 
-        // Create mesh network
-        let mesh = MeshNetwork(peerId: myPeerId, config: config)
+        // Create mesh network with cryptographic identity
+        let mesh = MeshNetwork(identity: identity, config: config)
 
         // Track received messages
         var receivedMessages: [(from: PeerId, data: Data, isDirect: Bool)] = []

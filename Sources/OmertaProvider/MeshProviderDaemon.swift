@@ -12,32 +12,22 @@ public actor MeshProviderDaemon {
     // MARK: - Configuration
 
     public struct Configuration: Sendable {
-        /// Mesh peer ID for this provider
-        public let peerId: String
+        /// Cryptographic identity for this provider (peer ID derived from public key)
+        public let identity: OmertaMesh.IdentityKeypair
 
-        /// Mesh network configuration
+        /// Mesh network configuration (includes encryption key)
         public let meshConfig: MeshConfig
-
-        /// Network key for control message encryption (optional, for extra layer)
-        public let networkKey: Data?
-
-        /// Whether to enable activity logging
-        public let enableActivityLogging: Bool
 
         /// Dry run mode (don't actually create VMs)
         public let dryRun: Bool
 
         public init(
-            peerId: String,
-            meshConfig: MeshConfig = .default,
-            networkKey: Data? = nil,
-            enableActivityLogging: Bool = true,
+            identity: OmertaMesh.IdentityKeypair,
+            meshConfig: MeshConfig,
             dryRun: Bool = false
         ) {
-            self.peerId = peerId
+            self.identity = identity
             self.meshConfig = meshConfig
-            self.networkKey = networkKey
-            self.enableActivityLogging = enableActivityLogging
             self.dryRun = dryRun
         }
 
@@ -47,23 +37,28 @@ public actor MeshProviderDaemon {
                 throw MeshProviderError.meshNotEnabled
             }
 
-            // Build MeshConfig from options
-            var meshConfig = MeshConfig()
-            meshConfig.port = meshOptions.port
-            meshConfig.bootstrapPeers = meshOptions.bootstrapPeers
-            meshConfig.stunServers = meshOptions.stunServers
-            meshConfig.canRelay = meshOptions.canRelay
-            meshConfig.canCoordinateHolePunch = meshOptions.canCoordinateHolePunch
-            meshConfig.keepaliveInterval = meshOptions.keepaliveInterval
-            meshConfig.connectionTimeout = meshOptions.connectionTimeout
+            guard let keyData = config.localKeyData() else {
+                throw MeshProviderError.noNetworkKey
+            }
 
-            let peerId = meshOptions.peerId ?? "provider-\(UUID().uuidString.prefix(8))"
+            // Build MeshConfig from options with encryption key
+            let meshConfig = MeshConfig(
+                encryptionKey: keyData,
+                port: meshOptions.port,
+                canRelay: meshOptions.canRelay,
+                canCoordinateHolePunch: meshOptions.canCoordinateHolePunch,
+                keepaliveInterval: meshOptions.keepaliveInterval,
+                connectionTimeout: meshOptions.connectionTimeout,
+                stunServers: meshOptions.stunServers,
+                bootstrapPeers: meshOptions.bootstrapPeers
+            )
+
+            // Generate identity (peer ID is derived from public key)
+            let identity = OmertaMesh.IdentityKeypair()
 
             return Configuration(
-                peerId: peerId,
+                identity: identity,
                 meshConfig: meshConfig,
-                networkKey: config.localKeyData(),
-                enableActivityLogging: true,
                 dryRun: false
             )
         }
@@ -79,9 +74,6 @@ public actor MeshProviderDaemon {
 
     /// VM manager
     private let vmManager: SimpleVMManager
-
-    /// Activity logger
-    private let activityLogger: VMActivityLogger?
 
     /// Whether the daemon is running
     private var isRunning: Bool = false
@@ -116,18 +108,12 @@ public actor MeshProviderDaemon {
         meshConfig.canRelay = true
         meshConfig.canCoordinateHolePunch = true
 
-        self.mesh = MeshNetwork(peerId: config.peerId, config: meshConfig)
+        self.mesh = MeshNetwork(identity: config.identity, config: meshConfig)
         self.vmManager = SimpleVMManager(dryRun: config.dryRun)
 
         var logger = Logger(label: "io.omerta.provider.mesh")
         logger.logLevel = .info
         self.logger = logger
-
-        if config.enableActivityLogging {
-            self.activityLogger = VMActivityLogger(logger: logger)
-        } else {
-            self.activityLogger = nil
-        }
 
         if config.dryRun {
             logger.info("MeshProviderDaemon initialized in DRY RUN mode")
@@ -149,7 +135,7 @@ public actor MeshProviderDaemon {
         }
 
         logger.info("Starting mesh provider daemon", metadata: [
-            "peerId": "\(config.peerId)"
+            "peerId": "\(config.identity.peerId)"
         ])
 
         // Set up message handler before starting
@@ -168,7 +154,7 @@ public actor MeshProviderDaemon {
         let publicEndpoint = await mesh.currentPublicEndpoint
 
         logger.info("Mesh provider daemon started", metadata: [
-            "peerId": "\(config.peerId)",
+            "peerId": "\(config.identity.peerId)",
             "natType": "\(natType.rawValue)",
             "publicEndpoint": "\(publicEndpoint ?? "none")"
         ])
@@ -238,12 +224,6 @@ public actor MeshProviderDaemon {
             "from": "\(consumerPeerId.prefix(16))..."
         ])
 
-        await activityLogger?.logVMRequested(
-            vmId: request.vmId,
-            requesterId: consumerPeerId,
-            networkId: "mesh"
-        )
-
         do {
             // Get connection info to determine consumer endpoint
             let connection = await mesh.connection(to: consumerPeerId)
@@ -279,13 +259,6 @@ public actor MeshProviderDaemon {
                 "vmId": "\(request.vmId)",
                 "vmIP": "\(vmResult.vmIP)"
             ])
-
-            await activityLogger?.logVMCreated(
-                vmId: request.vmId,
-                requesterId: consumerPeerId,
-                networkId: "mesh",
-                vmIP: vmResult.vmIP
-            )
 
             // Send success response
             let response = MeshVMResponse(
@@ -360,12 +333,6 @@ public actor MeshProviderDaemon {
 
             logger.info("VM released successfully", metadata: ["vmId": "\(request.vmId)"])
 
-            await activityLogger?.logVMReleased(
-                vmId: request.vmId,
-                requesterId: consumerPeerId,
-                networkId: "mesh"
-            )
-
             let response = MeshVMReleaseResponse(
                 type: "vm_released",
                 vmId: request.vmId,
@@ -403,7 +370,7 @@ public actor MeshProviderDaemon {
         return MeshDaemonStatus(
             isRunning: isRunning,
             startedAt: startedAt,
-            peerId: config.peerId,
+            peerId: config.identity.peerId,
             natType: stats.natType,
             publicEndpoint: stats.publicEndpoint,
             peerCount: stats.peerCount,
@@ -508,6 +475,7 @@ struct MeshVMReleaseResponse: Codable {
 /// Errors specific to mesh provider daemon
 public enum MeshProviderError: Error, CustomStringConvertible {
     case meshNotEnabled
+    case noNetworkKey
     case notStarted
     case vmCreationFailed(String)
     case vmNotFound(UUID)
@@ -516,6 +484,8 @@ public enum MeshProviderError: Error, CustomStringConvertible {
         switch self {
         case .meshNotEnabled:
             return "Mesh networking is not enabled in config"
+        case .noNetworkKey:
+            return "No network key configured (required for encryption)"
         case .notStarted:
             return "Mesh provider daemon not started"
         case .vmCreationFailed(let reason):

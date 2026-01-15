@@ -1,37 +1,25 @@
+// NetworkKey.swift - Shareable network invite key
+
 import Foundation
+import Crypto
 
 #if canImport(Security)
 import Security
 #endif
 
-/// Represents a network membership
-public struct Network: Identifiable, Sendable {
-    public let id: String  // Derived from network key hash
-    public let name: String
-    public let key: NetworkKey
-    public let joinedAt: Date
-    public let isActive: Bool
-
-    public init(
-        id: String,
-        name: String,
-        key: NetworkKey,
-        joinedAt: Date = Date(),
-        isActive: Bool = true
-    ) {
-        self.id = id
-        self.name = name
-        self.key = key
-        self.joinedAt = joinedAt
-        self.isActive = isActive
-    }
-}
-
 /// Network key structure (encoded as JSON, then base64)
-public struct NetworkKey: Sendable, Codable {
-    public let networkKey: Data  // 256-bit symmetric key
+/// Contains the symmetric encryption key, network name, and bootstrap peers
+public struct NetworkKey: Sendable, Codable, Equatable {
+    /// 256-bit symmetric key for message encryption
+    public let networkKey: Data
+
+    /// Human-readable network name
     public let networkName: String
-    public let bootstrapPeers: [String]  // Array of "host:port" strings
+
+    /// Bootstrap peers for initial discovery (array of "host:port" strings)
+    public let bootstrapPeers: [String]
+
+    /// When this key was created
     public let createdAt: Date
 
     public init(
@@ -45,6 +33,8 @@ public struct NetworkKey: Sendable, Codable {
         self.bootstrapPeers = bootstrapPeers
         self.createdAt = createdAt
     }
+
+    // MARK: - Encoding/Decoding
 
     /// Encode network key as base64 string with omerta:// prefix
     public func encode() throws -> String {
@@ -68,13 +58,19 @@ public struct NetworkKey: Sendable, Codable {
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(NetworkKey.self, from: jsonData)
+        do {
+            return try decoder.decode(NetworkKey.self, from: jsonData)
+        } catch {
+            throw NetworkKeyError.decodingFailed
+        }
     }
+
+    // MARK: - Generation
 
     /// Generate a new random network key
     public static func generate(
         networkName: String,
-        bootstrapEndpoint: String
+        bootstrapPeers: [String] = []
     ) -> NetworkKey {
         var keyData = Data(count: 32)  // 256 bits
         #if canImport(Security)
@@ -90,51 +86,36 @@ public struct NetworkKey: Sendable, Codable {
         return NetworkKey(
             networkKey: keyData,
             networkName: networkName,
-            bootstrapPeers: [bootstrapEndpoint]
+            bootstrapPeers: bootstrapPeers
         )
     }
 
-    /// Derive network ID from key (SHA256 hash)
+    // MARK: - Derived Values
+
+    /// Derive network ID from key (SHA256 hash, first 8 bytes hex-encoded)
+    /// Format matches peer ID format: 16 lowercase hex characters
     public func deriveNetworkId() -> String {
-        // Simple SHA256 hash for now, will use Crypto framework properly later
-        let hash = networkKey.withUnsafeBytes { bytes in
-            var result = [UInt8](repeating: 0, count: 32)
-            // Placeholder - will use CryptoKit properly
-            for (i, byte) in bytes.enumerated() {
-                result[i % 32] ^= byte
-            }
-            return Data(result)
-        }
-        return hash.base64EncodedString()
+        let hash = SHA256.hash(data: networkKey)
+        return hash.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 }
 
+// MARK: - Errors
+
 /// Network key errors
-public enum NetworkKeyError: Error {
+public enum NetworkKeyError: Error, LocalizedError {
     case invalidFormat
     case invalidBase64
     case decodingFailed
-}
 
-/// Network statistics
-public struct NetworkStats: Sendable {
-    public let networkId: String
-    public let peerCount: Int
-    public let jobsSubmitted: UInt64
-    public let jobsCompleted: UInt64
-    public let averageLatencyMs: Double
-
-    public init(
-        networkId: String,
-        peerCount: Int,
-        jobsSubmitted: UInt64,
-        jobsCompleted: UInt64,
-        averageLatencyMs: Double
-    ) {
-        self.networkId = networkId
-        self.peerCount = peerCount
-        self.jobsSubmitted = jobsSubmitted
-        self.jobsCompleted = jobsCompleted
-        self.averageLatencyMs = averageLatencyMs
+    public var errorDescription: String? {
+        switch self {
+        case .invalidFormat:
+            return "Invalid network key format (expected omerta://join/...)"
+        case .invalidBase64:
+            return "Invalid base64 encoding in network key"
+        case .decodingFailed:
+            return "Failed to decode network key data"
+        }
     }
 }

@@ -11,7 +11,7 @@ final class MeshConsumerClientTests: XCTestCase {
         let config = MeshConfigOptions()
 
         XCTAssertFalse(config.enabled)
-        XCTAssertNil(config.peerId)
+        XCTAssertNil(config.peerId)  // peerId is deprecated but still in config
         XCTAssertEqual(config.port, 0)
         XCTAssertTrue(config.bootstrapPeers.isEmpty)
         XCTAssertFalse(config.canRelay)
@@ -40,7 +40,7 @@ final class MeshConsumerClientTests: XCTestCase {
     func testMeshConfigOptionsCodable() throws {
         let original = MeshConfigOptions(
             enabled: true,
-            peerId: "test-peer-123",
+            peerId: "test-peer-123",  // Deprecated but still Codable
             port: 9000,
             bootstrapPeers: ["relay@192.168.1.1:9000"],
             stunServers: ["stun.test:3478"],
@@ -120,22 +120,23 @@ final class MeshConsumerClientTests: XCTestCase {
 
     func testMeshConsumerClientInitializesWithValidConfig() async throws {
         var config = OmertaConfig()
-        config.mesh = MeshConfigOptions(enabled: true, peerId: "test-consumer")
+        config.mesh = MeshConfigOptions(enabled: true)
         config.localKey = OmertaConfig.generateLocalKey()
 
         let client = try MeshConsumerClient(config: config, dryRun: true)
 
-        // Verify mesh network was created with correct peer ID
+        // Verify mesh network was created
         let stats = await client.statistics()
         XCTAssertEqual(stats.natType, .unknown) // Not started yet
     }
 
     func testMeshConsumerClientExplicitInit() async {
-        let meshConfig = MeshConfig()
+        let identity = OmertaMesh.IdentityKeypair()
         let networkKey = Data(repeating: 0x42, count: 32)
+        let meshConfig = MeshConfig(encryptionKey: networkKey)
 
         let client = MeshConsumerClient(
-            peerId: "explicit-test",
+            identity: identity,
             meshConfig: meshConfig,
             networkKey: networkKey,
             dryRun: true
@@ -145,11 +146,30 @@ final class MeshConsumerClientTests: XCTestCase {
         XCTAssertEqual(stats.peerCount, 0)
     }
 
+    func testMeshConsumerClientPeerIdIsDerivedFromIdentity() async {
+        let identity = OmertaMesh.IdentityKeypair()
+        let networkKey = Data(repeating: 0x42, count: 32)
+        let meshConfig = MeshConfig(encryptionKey: networkKey)
+
+        let client = MeshConsumerClient(
+            identity: identity,
+            meshConfig: meshConfig,
+            networkKey: networkKey,
+            dryRun: true
+        )
+
+        // Verify peer ID format: 16 lowercase hex chars
+        let peerId = await client.mesh.peerId
+        XCTAssertEqual(peerId.count, 16)
+        XCTAssertTrue(peerId.allSatisfy { $0.isHexDigit })
+        XCTAssertEqual(peerId, identity.peerId)
+    }
+
     // MARK: - MeshConsumerClient Lifecycle Tests
 
     func testMeshConsumerClientStartStop() async throws {
         var config = OmertaConfig()
-        config.mesh = MeshConfigOptions(enabled: true, peerId: "lifecycle-test")
+        config.mesh = MeshConfigOptions(enabled: true)
         config.localKey = OmertaConfig.generateLocalKey()
 
         let client = try MeshConsumerClient(config: config, dryRun: true)
@@ -168,7 +188,7 @@ final class MeshConsumerClientTests: XCTestCase {
 
     func testMeshConsumerClientDoubleStartIsNoOp() async throws {
         var config = OmertaConfig()
-        config.mesh = MeshConfigOptions(enabled: true, peerId: "double-start-test")
+        config.mesh = MeshConfigOptions(enabled: true)
         config.localKey = OmertaConfig.generateLocalKey()
 
         let client = try MeshConsumerClient(config: config, dryRun: true)
@@ -181,7 +201,7 @@ final class MeshConsumerClientTests: XCTestCase {
 
     func testMeshConsumerClientRequestVMRequiresStart() async throws {
         var config = OmertaConfig()
-        config.mesh = MeshConfigOptions(enabled: true, peerId: "not-started-test")
+        config.mesh = MeshConfigOptions(enabled: true)
         config.localKey = OmertaConfig.generateLocalKey()
 
         let client = try MeshConsumerClient(config: config, dryRun: true)

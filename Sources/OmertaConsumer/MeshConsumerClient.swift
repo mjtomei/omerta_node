@@ -50,20 +50,22 @@ public actor MeshConsumerClient {
             throw MeshConsumerError.noNetworkKey
         }
 
-        // Create MeshConfig from MeshConfigOptions
-        var meshConfig = MeshConfig()
-        meshConfig.port = meshOptions.port
-        meshConfig.bootstrapPeers = meshOptions.bootstrapPeers
-        meshConfig.stunServers = meshOptions.stunServers
-        meshConfig.canRelay = meshOptions.canRelay
-        meshConfig.canCoordinateHolePunch = meshOptions.canCoordinateHolePunch
-        meshConfig.keepaliveInterval = meshOptions.keepaliveInterval
-        meshConfig.connectionTimeout = meshOptions.connectionTimeout
+        // Create MeshConfig from MeshConfigOptions with encryption key
+        var meshConfig = MeshConfig(
+            encryptionKey: keyData,
+            port: meshOptions.port,
+            canRelay: meshOptions.canRelay,
+            canCoordinateHolePunch: meshOptions.canCoordinateHolePunch,
+            keepaliveInterval: meshOptions.keepaliveInterval,
+            connectionTimeout: meshOptions.connectionTimeout,
+            stunServers: meshOptions.stunServers,
+            bootstrapPeers: meshOptions.bootstrapPeers
+        )
 
-        // Generate peer ID if not set
-        let peerId = meshOptions.peerId ?? "consumer-\(UUID().uuidString.prefix(8))"
+        // Generate identity (peer ID is derived from public key)
+        let identity = OmertaMesh.IdentityKeypair()
 
-        self.mesh = MeshNetwork(peerId: peerId, config: meshConfig)
+        self.mesh = MeshNetwork(identity: identity, config: meshConfig)
         self.ephemeralVPN = EphemeralVPN(dryRun: dryRun)
         self.vmTracker = VMTracker(persistencePath: persistencePath)
         self.networkKey = keyData
@@ -76,19 +78,19 @@ public actor MeshConsumerClient {
 
     /// Create a mesh consumer client with explicit mesh config
     /// - Parameters:
-    ///   - peerId: Our peer ID
+    ///   - identity: Our cryptographic identity (peer ID derived from public key)
     ///   - meshConfig: Mesh network configuration
     ///   - networkKey: Network key for encryption
     ///   - persistencePath: Path to persist active VM info
     ///   - dryRun: If true, don't actually create VPN tunnels
     public init(
-        peerId: String,
+        identity: OmertaMesh.IdentityKeypair,
         meshConfig: MeshConfig,
         networkKey: Data,
         persistencePath: String = "~/.omerta/vms/active.json",
         dryRun: Bool = false
     ) {
-        self.mesh = MeshNetwork(peerId: peerId, config: meshConfig)
+        self.mesh = MeshNetwork(identity: identity, config: meshConfig)
         self.ephemeralVPN = EphemeralVPN(dryRun: dryRun)
         self.vmTracker = VMTracker(persistencePath: persistencePath)
         self.networkKey = networkKey
