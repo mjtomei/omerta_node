@@ -699,6 +699,166 @@ ls Sources/OmertaRendezvous  # Should not exist
 
 ---
 
+### Phase M7: Complete OmertaNetwork Removal
+
+**Goal:** Migrate remaining Discovery code from OmertaNetwork to OmertaMesh equivalents and delete the OmertaNetwork module entirely.
+
+**Background:**
+After Phase M5 extracted VPN code to OmertaVPN, OmertaNetwork still contains Discovery code:
+- `NetworkManager.swift` - Network interface discovery
+- `PeerRegistry.swift` - Tracking discovered peers
+- `PeerDiscovery.swift` - Broadcasting/listening for peers on LAN
+
+This functionality is now superseded by OmertaMesh:
+- Network interface discovery → Not needed (mesh handles endpoint detection via STUN)
+- Peer registry → Replaced by `MeshNetwork.knownPeers()` and gossip-based discovery
+- Peer discovery → Replaced by mesh bootstrap and gossip protocol
+
+**Current Usage (to be migrated):**
+
+| File | Current Usage | Migration |
+|------|--------------|-----------|
+| `Sources/OmertaCLI/main.swift` | `NetworkManager()` for interface listing | Use system APIs directly or remove |
+| `Sources/OmertaCLI/main.swift` | `PeerRegistry()` for peer tracking | Use `MeshNetwork.knownPeers()` |
+| `Sources/OmertaCLI/main.swift` | `PeerDiscovery()` for LAN discovery | Use mesh bootstrap + gossip |
+| `Sources/OmertaConsumer/PeerSelector.swift` | `PeerRegistry` for peer selection | Use `MeshNetwork` peer list |
+| `Sources/OmertaConsumer/ConsumerClient.swift` | `PeerRegistry` parameter | Remove or use mesh peers |
+
+**Files to Delete:**
+
+| File | Lines | Reason |
+|------|-------|--------|
+| `Sources/OmertaNetwork/Discovery/NetworkManager.swift` | ~300 | Superseded by STUN-based detection |
+| `Sources/OmertaNetwork/Discovery/PeerRegistry.swift` | ~300 | Superseded by mesh peer tracking |
+| `Sources/OmertaNetwork/Discovery/PeerDiscovery.swift` | ~300 | Superseded by mesh gossip |
+| `Tests/OmertaNetworkTests/NetworkManagerTests.swift` | ~100 | Testing deleted code |
+| `Tests/OmertaNetworkTests/PeerRegistryTests.swift` | ~100 | Testing deleted code |
+| `Tests/OmertaNetworkTests/PeerDiscoveryTests.swift` | ~100 | Testing deleted code |
+| `Tests/OmertaNetworkTests/E2EConnectivityTests.swift` | ~200 | Move to OmertaProviderTests or delete |
+
+**Implementation Steps:**
+
+1. **Update CLI commands to use mesh:**
+   ```swift
+   // Before (OmertaNetwork)
+   let networkManager = NetworkManager()
+   let interfaces = networkManager.listInterfaces()
+
+   // After (direct system call or remove)
+   // Interface listing not needed for mesh mode
+   ```
+
+2. **Update PeerSelector to use mesh peers:**
+   ```swift
+   // Before
+   public init(peerRegistry: PeerRegistry)
+
+   // After
+   public init(meshNetwork: MeshNetwork)
+
+   public func selectBestProvider() async -> String? {
+       let peers = await meshNetwork.knownPeers()
+       // Selection logic using mesh peer info
+   }
+   ```
+
+3. **Update ConsumerClient to remove PeerRegistry dependency:**
+   ```swift
+   // Before
+   public init(peerRegistry: PeerRegistry, ...)
+
+   // After (mesh mode)
+   // PeerRegistry not needed - use MeshConsumerClient instead
+   ```
+
+4. **Migrate or delete E2EConnectivityTests:**
+   - Move VM connectivity tests to OmertaProviderTests
+   - Delete tests that depend on deprecated Discovery code
+
+5. **Remove OmertaNetwork from Package.swift:**
+   ```swift
+   // Remove these lines:
+   - .target(name: "OmertaNetwork", ...),
+   - .testTarget(name: "OmertaNetworkTests", ...),
+
+   // Remove OmertaNetwork from dependencies of other targets
+   ```
+
+6. **Delete OmertaNetwork directory:**
+   ```bash
+   rm -rf Sources/OmertaNetwork/
+   rm -rf Tests/OmertaNetworkTests/
+   ```
+
+**Package.swift Changes:**
+
+```swift
+// Remove OmertaNetwork target entirely
+- .target(
+-     name: "OmertaNetwork",
+-     dependencies: [
+-         "OmertaCore",
+-         .product(name: "Logging", package: "swift-log"),
+-     ],
+-     path: "Sources/OmertaNetwork"
+- ),
+
+// Remove from OmertaProvider dependencies
+.target(
+    name: "OmertaProvider",
+    dependencies: [
+        "OmertaCore",
+        "OmertaVM",
+-       "OmertaNetwork",
+        "OmertaVPN",
+        "OmertaConsumer",
+        "OmertaMesh",
+        // ...
+    ]
+),
+
+// Remove from OmertaConsumer dependencies
+.target(
+    name: "OmertaConsumer",
+    dependencies: [
+        "OmertaCore",
+-       "OmertaNetwork",
+        "OmertaVPN",
+        "OmertaMesh",
+        // ...
+    ]
+),
+
+// Remove test target
+- .testTarget(
+-     name: "OmertaNetworkTests",
+-     dependencies: [...],
+-     path: "Tests/OmertaNetworkTests"
+- ),
+```
+
+**Success Criteria:**
+- [ ] All CLI commands work without OmertaNetwork imports
+- [ ] PeerSelector uses MeshNetwork instead of PeerRegistry
+- [ ] ConsumerClient works without PeerRegistry parameter
+- [ ] `Sources/OmertaNetwork/` directory deleted
+- [ ] `Tests/OmertaNetworkTests/` directory deleted
+- [ ] OmertaNetwork removed from Package.swift
+- [ ] `swift build` succeeds
+- [ ] All tests pass
+
+**Verification:**
+```bash
+swift build
+swift test
+ls Sources/OmertaNetwork  # Should not exist
+grep -r "import OmertaNetwork" Sources/  # Should find nothing
+```
+
+**Deliverable:** OmertaNetwork module completely removed, all functionality migrated to OmertaMesh.
+
+---
+
 ## Test Updates
 
 ### Unit Tests to Update
@@ -1130,13 +1290,14 @@ To test actual NAT traversal (not simulated), use a router:
 | M4 | CLI integration | M2, M3 | Medium |
 | M5 | OmertaVPN extraction | M4 | Medium |
 | M6 | OmertaSTUN extraction | M4 | Small |
-| T1 | Unit tests | M2, M3, M5, M6 | Small |
+| M7 | Complete OmertaNetwork removal | M5, M6 | Medium |
+| T1 | Unit tests | M2, M3, M5, M6, M7 | Small |
 | T2 | Integration tests | M4, T1 | Medium |
 | E1 | E2E: Same LAN | M4 | Small |
 | E2 | E2E: NAT simulation | E1 | Medium |
 | E3 | E2E: Nested VMs | E2 | Large |
 
-**Critical Path:** M1 → M2 → M3 → M4 → M5 → M6 → E1 → E2
+**Critical Path:** M1 → M2 → M3 → M4 → M5 → M6 → M7 → E1 → E2
 
 ---
 
@@ -1288,6 +1449,35 @@ ls Sources/OmertaRendezvous  # Should not exist
 
 ---
 
+### Phase M7: Complete OmertaNetwork Removal
+
+**Success Criteria:**
+- [ ] All CLI commands work without OmertaNetwork imports
+- [ ] PeerSelector migrated to use MeshNetwork
+- [ ] ConsumerClient updated to remove PeerRegistry dependency
+- [ ] `Sources/OmertaNetwork/` directory deleted
+- [ ] `Tests/OmertaNetworkTests/` directory deleted
+- [ ] OmertaNetwork removed from Package.swift
+- [ ] No `import OmertaNetwork` statements remain in Sources/
+- [ ] All tests pass
+
+**Unit Tests:**
+
+| Test | File | Description |
+|------|------|-------------|
+| `testPeerSelectorWithMesh` | `OmertaConsumerTests/PeerSelectorTests.swift` | PeerSelector works with MeshNetwork |
+| `testConsumerClientWithoutRegistry` | `OmertaConsumerTests/ConsumerClientTests.swift` | ConsumerClient initializes without PeerRegistry |
+
+**Verification:**
+```bash
+swift build
+swift test
+ls Sources/OmertaNetwork  # Should not exist
+grep -r "import OmertaNetwork" Sources/  # Should find nothing
+```
+
+---
+
 ### Phase T1: Unit Tests
 
 **Success Criteria:**
@@ -1295,6 +1485,7 @@ ls Sources/OmertaRendezvous  # Should not exist
 - [ ] All M3 unit tests pass
 - [ ] All M5 unit tests pass
 - [ ] All M6 unit tests pass
+- [ ] All M7 unit tests pass
 - [ ] Existing OmertaConsumer tests still pass
 - [ ] Existing OmertaProvider tests still pass
 
@@ -1309,7 +1500,8 @@ ls Sources/OmertaRendezvous  # Should not exist
 | `Tests/OmertaVPNTests/WireGuardTests.swift` | New | 2+ tests |
 | `Tests/OmertaVPNTests/VMNetworkConfigTests.swift` | New | 2+ tests |
 | `Tests/OmertaSTUNTests/STUNServerTests.swift` | New | 2+ tests |
-| `Tests/OmertaConsumerTests/ConsumerClientTests.swift` | Existing | Must still pass |
+| `Tests/OmertaConsumerTests/PeerSelectorTests.swift` | Updated | +1 test for mesh mode |
+| `Tests/OmertaConsumerTests/ConsumerClientTests.swift` | Updated | +1 test, must still pass |
 | `Tests/OmertaProviderTests/ProviderDaemonTests.swift` | Existing | Must still pass |
 
 **Verification:**
@@ -1460,14 +1652,15 @@ sudo ./scripts/e2e-mesh-test/nested-vm/run-mesh-vm-nested.sh
 | M4 | - | 5 | - |
 | M5 | 5 | - | - |
 | M6 | 2 | - | - |
-| T1 | 16+ (all unit) | - | - |
+| M7 | 2 | - | - |
+| T1 | 18+ (all unit) | - | - |
 | T2 | - | 5+ | - |
 | E1 | - | - | 1 script |
 | E2 | - | - | 3 scripts |
 | E3 | - | - | 2 scripts |
 
 **Total New Tests:**
-- Unit tests: ~16
+- Unit tests: ~18
 - Integration tests: ~10
 - E2E scripts: ~6
 
@@ -1507,8 +1700,9 @@ Integration is complete when all phase criteria are met:
 - [ ] M2: MeshConsumerClient implemented
 - [ ] M3: MeshProviderDaemon implemented
 - [ ] M4: CLI commands working
-- [ ] M5: OmertaVPN extracted, OmertaNetwork removed
+- [ ] M5: OmertaVPN extracted
 - [ ] M6: OmertaSTUN extracted, OmertaRendezvous removed
+- [ ] M7: OmertaNetwork fully removed, Discovery code migrated to mesh
 
 **Unit Tests (T1):**
 - [ ] `swift test --filter MeshConsumerClient` passes (5 tests)
