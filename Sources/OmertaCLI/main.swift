@@ -5,6 +5,7 @@ import OmertaVM
 import OmertaNetwork
 import OmertaConsumer
 import OmertaProvider
+import OmertaMesh
 import Logging
 import Crypto
 #if canImport(NetworkExtension)
@@ -59,6 +60,7 @@ struct OmertaCLI: AsyncParsableCommand {
             Network.self,
             VPN.self,
             VM.self,
+            Mesh.self,
             NAT.self,
             Status.self,
             CheckDeps.self,
@@ -1092,6 +1094,12 @@ struct VMRequest: AsyncParsableCommand {
         abstract: "Request a VM from a provider"
     )
 
+    @Option(name: .long, help: "Provider peer ID - for mesh-based connection (NAT traversal)")
+    var peer: String?
+
+    @Option(name: .long, help: "Bootstrap peer for mesh discovery (format: peerId@host:port)")
+    var bootstrap: String?
+
     @Option(name: .long, help: "Provider endpoint (ip:port) - for direct connection")
     var provider: String?
 
@@ -1147,8 +1155,8 @@ struct VMRequest: AsyncParsableCommand {
         }
 
         // Validate inputs
-        guard provider != nil || network != nil else {
-            print("Error: Must specify either --provider or --network")
+        guard provider != nil || network != nil || peer != nil else {
+            print("Error: Must specify either --provider, --network, or --peer")
             throw ExitCode.failure
         }
 
@@ -1210,7 +1218,19 @@ struct VMRequest: AsyncParsableCommand {
 
         print("Requesting VM...")
 
-        if var providerEndpoint = provider {
+        if let providerPeerId = peer {
+            // Mesh mode - connect via peer ID with NAT traversal
+            try await requestVMViaMesh(
+                providerPeerId: providerPeerId,
+                bootstrapPeer: bootstrap,
+                config: config,
+                networkKey: keyData,
+                requirements: requirements,
+                dryRun: dryRun,
+                wait: wait,
+                waitTimeout: waitTimeout
+            )
+        } else if var providerEndpoint = provider {
             // Add default port if not specified
             if !providerEndpoint.contains(":") {
                 providerEndpoint = "\(providerEndpoint):51820"
@@ -1437,6 +1457,115 @@ struct VMRequest: AsyncParsableCommand {
         }
 
         printVMConnection(connection)
+    }
+
+    private func requestVMViaMesh(
+        providerPeerId: String,
+        bootstrapPeer: String?,
+        config: OmertaConfig,
+        networkKey: Data,
+        requirements: ResourceRequirements,
+        dryRun: Bool,
+        wait: Bool,
+        waitTimeout: Int
+    ) async throws {
+        print("Connecting to provider via mesh: \(providerPeerId)")
+        if dryRun {
+            print("[DRY RUN] Skipping VPN setup")
+        }
+
+        guard let sshPublicKey = config.ssh.publicKey else {
+            print("")
+            print("Error: SSH public key not found in config. Run 'omerta init' to regenerate.")
+            throw ExitCode.failure
+        }
+
+        print("Using SSH key: \(config.ssh.expandedPrivateKeyPath())")
+
+        // Build mesh config
+        var meshConfig = MeshConfig()
+
+        // Add bootstrap peer if specified
+        if let bootstrap = bootstrapPeer {
+            meshConfig.bootstrapPeers = [bootstrap]
+            print("Using bootstrap peer: \(bootstrap)")
+        }
+
+        // Create mesh consumer client
+        let peerId = "consumer-\(UUID().uuidString.prefix(8))"
+        let client = MeshConsumerClient(
+            peerId: peerId,
+            meshConfig: meshConfig,
+            networkKey: networkKey,
+            dryRun: dryRun
+        )
+
+        print("")
+        print("Starting mesh network...")
+        try await client.start()
+
+        let stats = await client.statistics()
+        print("NAT type: \(stats.natType.rawValue)")
+        if let publicEndpoint = stats.publicEndpoint {
+            print("Public endpoint: \(publicEndpoint)")
+        }
+        print("")
+
+        print("Connecting to provider \(providerPeerId)...")
+
+        let connection = try await client.requestVM(
+            fromProvider: providerPeerId,
+            requirements: requirements,
+            sshPublicKey: sshPublicKey,
+            sshKeyPath: config.ssh.privateKeyPath,
+            sshUser: config.ssh.defaultUser
+        )
+
+        // Wait for WireGuard connection if requested
+        // Note: MeshConsumerClient doesn't have waitForConnection, so we just wait briefly
+        if wait && !dryRun {
+            print("")
+            print("Waiting for VM to establish WireGuard connection...")
+            // Simple ping-based wait
+            var connected = false
+            for _ in 0..<waitTimeout {
+                try await Task.sleep(for: .seconds(1))
+                // Check if we can reach the VM (simple connectivity test)
+                // For now, just wait a few seconds for the VM to boot
+                if await pingHost(connection.vmIP) {
+                    connected = true
+                    break
+                }
+            }
+            if !connected {
+                print("Warning: Could not verify VM connectivity within \(waitTimeout)s")
+                print("The VM may still be booting. You can check connection status with:")
+                print("  sudo wg show \(connection.vpnInterface)")
+            } else {
+                print("WireGuard connection established!")
+            }
+        }
+
+        // Don't stop the mesh client - it needs to stay running for the VPN
+        // The mesh client state is managed by the tracked VM
+
+        printVMConnection(connection)
+    }
+
+    /// Simple ping check (non-blocking, quick timeout)
+    private func pingHost(_ host: String) async -> Bool {
+        // Use nc (netcat) for a quick check - try SSH port
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/nc")
+        process.arguments = ["-z", "-w", "1", host, "22"]
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
     }
 
     private func printVMConnection(_ connection: VMConnection) {
@@ -3722,6 +3851,227 @@ struct Kill: AsyncParsableCommand {
     }
 }
 
+// MARK: - Mesh Commands
+
+struct Mesh: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "mesh",
+        abstract: "Mesh network operations",
+        subcommands: [
+            MeshStatus.self,
+            MeshPeers.self,
+            MeshConnect.self
+        ]
+    )
+}
+
+struct MeshStatus: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "status",
+        abstract: "Show mesh network status"
+    )
+
+    @Option(name: .long, help: "Bootstrap peer (format: peerId@host:port)")
+    var bootstrap: String?
+
+    @Option(name: .long, help: "Discovery timeout in seconds")
+    var timeout: Int = 10
+
+    mutating func run() async throws {
+        // Load config
+        let configManager = ConfigManager()
+        let config: OmertaConfig
+        do {
+            config = try await configManager.load()
+        } catch ConfigError.notInitialized {
+            print("Error: Omerta not initialized. Run 'omerta init' first.")
+            throw ExitCode.failure
+        }
+
+        // Build mesh config
+        var meshOptions = config.mesh ?? MeshConfigOptions.consumer
+        meshOptions.enabled = true
+        if let bootstrap = bootstrap {
+            meshOptions.bootstrapPeers = [bootstrap]
+        }
+
+        // Create mesh consumer client
+        var configWithMesh = config
+        configWithMesh.mesh = meshOptions
+
+        guard let keyData = config.localKeyData() else {
+            print("Error: No local key in config. Run 'omerta init' first.")
+            throw ExitCode.failure
+        }
+
+        let peerId = meshOptions.peerId ?? "cli-\(UUID().uuidString.prefix(8))"
+        var meshConfig = MeshConfig()
+        meshConfig.bootstrapPeers = meshOptions.bootstrapPeers
+        meshConfig.stunServers = meshOptions.stunServers
+
+        let mesh = MeshNetwork(peerId: peerId, config: meshConfig)
+
+        print("Starting mesh network...")
+        try await mesh.start()
+
+        // Wait for discovery
+        if timeout > 0 {
+            print("Discovering peers for \(timeout) seconds...")
+            try await Task.sleep(for: .seconds(timeout))
+        }
+
+        // Get statistics
+        let stats = await mesh.statistics()
+        let natType = await mesh.currentNATType
+        let publicEndpoint = await mesh.currentPublicEndpoint
+
+        print("")
+        print("Mesh Network Status")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("Peer ID:           \(peerId)")
+        print("NAT Type:          \(natType.rawValue)")
+        print("Public Endpoint:   \(publicEndpoint ?? "none")")
+        print("Known Peers:       \(stats.peerCount)")
+        print("Direct Connections: \(stats.directConnectionCount)")
+        print("Relay Connections:  \(stats.relayCount)")
+        print("")
+
+        await mesh.stop()
+    }
+}
+
+struct MeshPeers: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "peers",
+        abstract: "List discovered mesh peers"
+    )
+
+    @Option(name: .long, help: "Bootstrap peer (format: peerId@host:port)")
+    var bootstrap: String?
+
+    @Option(name: .long, help: "Discovery timeout in seconds")
+    var timeout: Int = 5
+
+    mutating func run() async throws {
+        // Load config
+        let configManager = ConfigManager()
+        let config: OmertaConfig
+        do {
+            config = try await configManager.load()
+        } catch ConfigError.notInitialized {
+            print("Error: Omerta not initialized. Run 'omerta init' first.")
+            throw ExitCode.failure
+        }
+
+        // Build mesh config
+        var meshOptions = config.mesh ?? MeshConfigOptions.consumer
+        meshOptions.enabled = true
+        if let bootstrap = bootstrap {
+            meshOptions.bootstrapPeers = [bootstrap]
+        }
+
+        let peerId = meshOptions.peerId ?? "cli-\(UUID().uuidString.prefix(8))"
+        var meshConfig = MeshConfig()
+        meshConfig.bootstrapPeers = meshOptions.bootstrapPeers
+        meshConfig.stunServers = meshOptions.stunServers
+
+        let mesh = MeshNetwork(peerId: peerId, config: meshConfig)
+
+        print("Starting mesh network...")
+        try await mesh.start()
+
+        // Wait for discovery
+        print("Discovering peers...")
+        try await Task.sleep(for: .seconds(timeout))
+
+        // List peers
+        let peers = await mesh.knownPeers()
+
+        print("")
+        if peers.isEmpty {
+            print("No peers discovered")
+        } else {
+            print("Discovered Peers (\(peers.count)):")
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            for peer in peers {
+                let connection = await mesh.connection(to: peer)
+                let status = connection != nil ? "connected" : "discovered"
+                let method = connection?.method.rawValue ?? "-"
+                print("  \(peer.prefix(20))...  [\(status)] via \(method)")
+            }
+        }
+        print("")
+
+        await mesh.stop()
+    }
+}
+
+struct MeshConnect: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "connect",
+        abstract: "Connect to a mesh peer"
+    )
+
+    @Argument(help: "Peer ID to connect to")
+    var peerId: String
+
+    @Option(name: .long, help: "Bootstrap peer (format: peerId@host:port)")
+    var bootstrap: String?
+
+    @Option(name: .long, help: "Connection timeout in seconds")
+    var timeout: Int = 30
+
+    mutating func run() async throws {
+        // Load config
+        let configManager = ConfigManager()
+        let config: OmertaConfig
+        do {
+            config = try await configManager.load()
+        } catch ConfigError.notInitialized {
+            print("Error: Omerta not initialized. Run 'omerta init' first.")
+            throw ExitCode.failure
+        }
+
+        // Build mesh config
+        var meshOptions = config.mesh ?? MeshConfigOptions.consumer
+        meshOptions.enabled = true
+        if let bootstrap = bootstrap {
+            meshOptions.bootstrapPeers = [bootstrap]
+        }
+
+        let localPeerId = meshOptions.peerId ?? "cli-\(UUID().uuidString.prefix(8))"
+        var meshConfig = MeshConfig()
+        meshConfig.bootstrapPeers = meshOptions.bootstrapPeers
+        meshConfig.stunServers = meshOptions.stunServers
+        meshConfig.connectionTimeout = Double(timeout)
+
+        let mesh = MeshNetwork(peerId: localPeerId, config: meshConfig)
+
+        print("Starting mesh network...")
+        try await mesh.start()
+
+        print("Connecting to \(peerId)...")
+        do {
+            let connection = try await mesh.connect(to: peerId)
+            print("")
+            print("Connected!")
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            print("Peer ID:    \(peerId)")
+            print("Endpoint:   \(connection.endpoint)")
+            print("Direct:     \(connection.isDirect)")
+            print("Method:     \(connection.method.rawValue)")
+            if let rtt = connection.rttMs {
+                print("RTT:        \(String(format: "%.1f", rtt)) ms")
+            }
+            print("")
+        } catch {
+            print("Failed to connect: \(error)")
+        }
+
+        await mesh.stop()
+    }
+}
+
 // MARK: - NAT Commands
 
 struct NAT: AsyncParsableCommand {
@@ -3779,7 +4129,7 @@ struct NATDetect: AsyncParsableCommand {
         print("Discovering endpoint...")
 
         do {
-            let stunClient = STUNClient()
+            let stunClient = OmertaNetwork.STUNClient()
             let servers = [server] + natConfig.stunServers.filter { $0 != server }.prefix(2)
 
             let (natType, result) = try await stunClient.detectNATType(
@@ -3789,7 +4139,7 @@ struct NATDetect: AsyncParsableCommand {
 
             print("")
             print("Results:")
-            print("  NAT Type: \(natType.description)")
+            print("  NAT Type: \(natType.rawValue)")
             print("  Public Endpoint: \(result.publicAddress):\(result.publicPort)")
 
             if verbose {
@@ -3896,7 +4246,7 @@ struct NATPunch: AsyncParsableCommand {
             let endpoint = try await session.start()
 
             print("Our endpoint: \(endpoint.endpoint)")
-            print("Our NAT type: \(endpoint.natType.description)")
+            print("Our NAT type: \(endpoint.natType.rawValue)")
             print("")
             print("Attempting hole punch to peer \(peer)...")
 
@@ -4034,7 +4384,7 @@ struct NATStatus: AsyncParsableCommand {
         print("  Detecting NAT type...")
 
         do {
-            let stunClient = STUNClient()
+            let stunClient = OmertaNetwork.STUNClient()
             let servers = natConfig?.stunServers ?? OmertaCore.NATConfig.defaultSTUNServers
 
             let (natType, result) = try await stunClient.detectNATType(
@@ -4042,7 +4392,7 @@ struct NATStatus: AsyncParsableCommand {
                 timeout: natConfig?.timeoutInterval ?? 5.0
             )
 
-            print("  NAT Type: \(natType.description)")
+            print("  NAT Type: \(natType.rawValue)")
             print("  Public Endpoint: \(result.publicAddress):\(result.publicPort)")
 
             if verbose {
@@ -4182,8 +4532,8 @@ struct NATConfig: AsyncParsableCommand {
 
 // MARK: - NATType Description Extension
 
-extension NATType {
-    var description: String {
+extension OmertaNetwork.NATType {
+    var descriptionText: String {
         switch self {
         case .fullCone:
             return "Full Cone"
