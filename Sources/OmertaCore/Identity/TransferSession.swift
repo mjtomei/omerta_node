@@ -74,10 +74,10 @@ public struct EncryptedTransfer: Codable, Sendable {
 
 /// Device transfer coordinator
 public actor DeviceTransfer {
-    private let controlPlane: ControlPlaneClient
+    private let identityCloud: IdentityCloudClient
 
-    public init(controlPlane: ControlPlaneClient) {
-        self.controlPlane = controlPlane
+    public init(identityCloud: IdentityCloudClient) {
+        self.identityCloud = identityCloud
     }
 
     /// Request transfer on NEW device
@@ -89,17 +89,17 @@ public actor DeviceTransfer {
         let ephemeral = Curve25519.KeyAgreement.PrivateKey()
 
         // Create transfer session on control plane
-        let transfer = try await controlPlane.createTransferSession(
+        let transfer = try await identityCloud.createTransferSession(
             publicKey: ephemeral.publicKey.rawRepresentation,
             session: session
         )
 
         return (
             code: transfer.code,
-            waitForIdentity: { [controlPlane] in
+            waitForIdentity: { [identityCloud] in
                 // Poll for encrypted identity
                 while Date() < transfer.expiresAt {
-                    if let encrypted = try await controlPlane.getTransferResult(sessionId: transfer.id) {
+                    if let encrypted = try await identityCloud.getTransferResult(sessionId: transfer.id) {
                         // Decrypt with ephemeral private key
                         let senderPublicKey = try Curve25519.KeyAgreement.PublicKey(
                             rawRepresentation: encrypted.senderPublicKey
@@ -138,7 +138,7 @@ public actor DeviceTransfer {
         session: AuthSession
     ) async throws {
         // Look up transfer session by code
-        let transfer = try await controlPlane.getTransferSession(code: code)
+        let transfer = try await identityCloud.getTransferSession(code: code)
 
         guard !transfer.isExpired else {
             throw IdentityError.transferExpired
@@ -172,7 +172,7 @@ public actor DeviceTransfer {
             nonce: Data(sealedBox.nonce)
         )
 
-        try await controlPlane.completeTransfer(
+        try await identityCloud.completeTransfer(
             sessionId: transfer.id,
             encryptedIdentity: encrypted
         )
@@ -180,7 +180,7 @@ public actor DeviceTransfer {
 
     /// Deny a transfer request
     public func denyTransfer(code: String, session: AuthSession) async throws {
-        let transfer = try await controlPlane.getTransferSession(code: code)
-        try await controlPlane.denyTransfer(sessionId: transfer.id)
+        let transfer = try await identityCloud.getTransferSession(code: code)
+        try await identityCloud.denyTransfer(sessionId: transfer.id)
     }
 }

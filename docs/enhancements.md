@@ -327,6 +327,26 @@ For ML workloads:
 - Linux: VFIO GPU passthrough
 - Cloud: NVIDIA vGPU
 
+## Cloud Identity Sync
+
+Cloud-based identity backup and cross-device sync via SSO authentication.
+
+**Status:** Stubbed (not yet integrated)
+
+**Existing code:**
+- `Sources/OmertaCore/Identity/IdentityCloudClient.swift` - API client for cloud identity operations
+- `Sources/OmertaCore/Identity/TransferSession.swift` - Device-to-device transfer models
+
+**Features (designed but not wired up):**
+- SSO authentication (Apple, Google, GitHub)
+- Encrypted identity backup to cloud
+- Cross-device identity sync
+- Device transfer via short codes (e.g., "ABCD-1234")
+
+**Design details:** See [CLI Architecture - Identity Management](cli-architecture.md#identity-management) for full design including encryption model and transfer flows.
+
+**Why deferred:** Requires backend infrastructure (`api.omerta.io`). Current priority is P2P mesh networking. Identity can be managed locally via BIP-39 recovery phrases in the meantime.
+
 ## Implementation Priority
 
 | Enhancement | Priority | Complexity | Impact |
@@ -336,6 +356,7 @@ For ML workloads:
 | eBPF filtering (Linux) | Medium | Medium | High |
 | iOS provider app | Medium | High | High |
 | Android provider app | Medium | High | High |
+| Cloud identity sync | Medium | Medium | Medium |
 | Windows provider | Low | High | Medium |
 | NEFilterPacketProvider | Low | Medium | Medium |
 | GPU passthrough | Low | High | Medium |

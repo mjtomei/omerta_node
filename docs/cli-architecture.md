@@ -1036,7 +1036,7 @@ omerta vm request --provider f1e2d3c4... --direct 192.168.1.50
 | `Sources/OmertaCore/Identity/BIP39.swift` | Mnemonic phrase support |
 | `Sources/OmertaCore/Identity/KeychainProvider.swift` | Keychain/password manager integration |
 | `Sources/OmertaCore/Identity/TransferSession.swift` | Device-to-device transfer |
-| `Sources/OmertaCore/Identity/ControlPlaneClient.swift` | Cloud backup/sync |
+| `Sources/OmertaCore/Identity/IdentityCloudClient.swift` | Cloud backup/sync |
 | `Tests/OmertaCoreTests/IdentityTests.swift` | Identity unit tests |
 
 ---
@@ -1241,7 +1241,7 @@ public actor IdentityStore {
 
 ---
 
-**SSO + Control Plane Integration:**
+**SSO + Identity Cloud Integration:**
 
 ```swift
 public enum SSOProvider: String, Codable {
@@ -1250,7 +1250,7 @@ public enum SSOProvider: String, Codable {
     case github
 }
 
-public actor ControlPlaneClient {
+public actor IdentityCloudClient {
     let baseURL: URL
 
     /// Authenticate with SSO provider
@@ -1312,8 +1312,8 @@ public actor DeviceTransfer {
         // Generate ephemeral keypair for this transfer
         let ephemeral = Curve25519.KeyAgreement.PrivateKey()
 
-        // Create transfer session on control plane
-        let transfer = try await controlPlane.createTransferSession(
+        // Create transfer session on identity cloud
+        let transfer = try await identityCloud.createTransferSession(
             publicKey: ephemeral.publicKey.rawRepresentation,
             session: session
         )
@@ -1323,7 +1323,7 @@ public actor DeviceTransfer {
             waitForIdentity: {
                 // Poll for encrypted identity
                 while Date() < transfer.expiresAt {
-                    if let encrypted = try? await controlPlane.getTransferResult(transfer.id) {
+                    if let encrypted = try? await identityCloud.getTransferResult(transfer.id) {
                         // Decrypt with ephemeral private key
                         let shared = try ephemeral.sharedSecretFromKeyAgreement(
                             with: Curve25519.KeyAgreement.PublicKey(rawRepresentation: encrypted.senderPublicKey)
@@ -1345,7 +1345,7 @@ public actor DeviceTransfer {
         session: AuthSession
     ) async throws {
         // Look up transfer session by code
-        let transfer = try await controlPlane.getTransferSession(code: code)
+        let transfer = try await identityCloud.getTransferSession(code: code)
 
         // Encrypt identity to new device's public key
         let ephemeral = Curve25519.KeyAgreement.PrivateKey()
@@ -1356,7 +1356,7 @@ public actor DeviceTransfer {
         let encrypted = try encrypt(identity, with: key)
 
         // Upload encrypted identity
-        try await controlPlane.completeTransfer(
+        try await identityCloud.completeTransfer(
             sessionId: transfer.id,
             encryptedIdentity: EncryptedTransfer(
                 senderPublicKey: ephemeral.publicKey.rawRepresentation,
@@ -1422,7 +1422,7 @@ public actor DeviceTransfer {
    Behind the scenes:
    1. Identity generated with BIP-39 entropy
    2. Stored in iCloud Keychain (auto-syncs)
-   3. Encrypted backup uploaded to control plane
+   3. Encrypted backup uploaded to identity cloud
    4. Recovery phrase available in Settings
 ```
 
@@ -1718,7 +1718,7 @@ public actor IdentityReminders {
       "lastSeen": "2024-01-15T14:30:00Z"
     }
   },
-  "controlPlane": "https://api.omerta.io"
+  "identityCloud": "https://api.omerta.io"
 }
 ```
 
@@ -1734,15 +1734,15 @@ Note: Private key is stored in Keychain, NOT in config file.
 | 1Password/Bitwarden | ✅ Cross-platform | ✅ CLI | ❌ Need phrase | Nothing |
 | Recovery Phrase | ❌ Manual | ✅ Is export | ✅ Yes | Nothing |
 | Transfer Code | ❌ One-time | N/A | N/A | Encrypted blob |
-| Control Plane Backup | ✅ Cross-platform | ✅ CLI | ❌ Need device | Encrypted blob |
+| Identity Cloud Backup | ✅ Cross-platform | ✅ CLI | ❌ Need device | Encrypted blob |
 
-**What Control Plane Can See:**
+**What Identity Cloud Can See:**
 - SSO account identity (email)
 - That an identity exists
 - Encrypted blobs (cannot decrypt)
 - Transfer session metadata
 
-**What Control Plane Cannot See:**
+**What Identity Cloud Cannot See:**
 - Private key
 - Recovery phrase
 - Peer ID
@@ -1777,7 +1777,7 @@ Note: Private key is stored in Keychain, NOT in config file.
 | `testGoogleSignInFlow` | Full Google Sign-In → identity creation |
 | `testCrossDeviceTransfer` | Transfer identity between two devices |
 | `testRecoveryFromPhrase` | Lose device, recover with 12 words |
-| `testControlPlaneBackup` | Backup and restore via control plane |
+| `testIdentityCloudBackup` | Backup and restore via identity cloud |
 | `testPasswordManagerSync` | Sync via 1Password across platforms |
 
 ---

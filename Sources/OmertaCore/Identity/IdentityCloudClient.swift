@@ -29,8 +29,8 @@ public struct AuthSession: Codable, Sendable {
     }
 }
 
-/// Control plane client for cloud backup/sync and device transfer
-public actor ControlPlaneClient {
+/// Cloud client for identity backup/sync and device transfer
+public actor IdentityCloudClient {
     private let baseURL: URL
     private let urlSession: URLSession
 
@@ -235,11 +235,11 @@ public actor ControlPlaneClient {
 
     private func validateResponse(_ response: URLResponse) throws {
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw ControlPlaneError.invalidResponse
+            throw IdentityCloudError.invalidResponse
         }
 
         guard (200...299).contains(httpResponse.statusCode) else {
-            throw ControlPlaneError.httpError(httpResponse.statusCode)
+            throw IdentityCloudError.httpError(httpResponse.statusCode)
         }
     }
 }
@@ -260,18 +260,18 @@ private struct CreateTransferRequest: Codable {
 
 // MARK: - Errors
 
-public enum ControlPlaneError: Error, Sendable {
+public enum IdentityCloudError: Error, Sendable {
     case invalidResponse
     case httpError(Int)
     case authenticationFailed
     case networkError(String)
 }
 
-extension ControlPlaneError: LocalizedError {
+extension IdentityCloudError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .invalidResponse:
-            return "Invalid response from control plane"
+            return "Invalid response from identity cloud"
         case .httpError(let code):
             return "HTTP error: \(code)"
         case .authenticationFailed:
