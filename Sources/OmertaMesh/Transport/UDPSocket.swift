@@ -154,11 +154,14 @@ private final class UDPInboundHandler: ChannelInboundHandler, @unchecked Sendabl
         var buffer = envelope.data
 
         guard let bytes = buffer.readBytes(length: buffer.readableBytes) else {
+            print("[UDP] channelRead: Failed to read bytes from buffer")
             return
         }
 
         let data = Data(bytes)
         let address = envelope.remoteAddress
+
+        print("[UDP] channelRead: Received \(data.count) bytes from \(address)")
 
         // Handle on a Task to allow async processing
         Task {
