@@ -1561,6 +1561,45 @@ struct VMRelease: AsyncParsableCommand {
 
         print("Releasing VM...")
 
+        // Load network for mesh communication
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+
+        var providerNotified = false
+
+        // Try to notify provider via mesh
+        if let network = await networkStore.network(id: vm.networkId) {
+            do {
+                let keyData = network.key.networkKey
+                let localIdentity = IdentityKeypair()
+                let meshConfig = MeshConfig(
+                    encryptionKey: keyData,
+                    bootstrapPeers: network.key.bootstrapPeers
+                )
+
+                let mesh = MeshNetwork(identity: localIdentity, config: meshConfig)
+                try await mesh.start()
+
+                // Send release request to provider
+                print("Notifying provider...")
+                let releaseRequest = ["type": "vm_release", "vmId": vm.vmId.uuidString]
+                if let requestData = try? JSONEncoder().encode(releaseRequest) {
+                    try await mesh.send(requestData, to: vm.provider.peerId)
+                    // Wait briefly for acknowledgment
+                    try await Task.sleep(nanoseconds: 500_000_000)
+                    providerNotified = true
+                    print("Provider notified")
+                }
+
+                await mesh.stop()
+            } catch {
+                print("Warning: Could not notify provider: \(error)")
+            }
+        } else {
+            print("Warning: Network '\(vm.networkId)' not found, skipping provider notification")
+        }
+
+        // Local cleanup
         do {
             // 1. Tear down VPN tunnel
             let ephemeralVPN = EphemeralVPN()
@@ -1571,12 +1610,14 @@ struct VMRelease: AsyncParsableCommand {
 
             print("")
             print("VM released successfully")
-            print("")
-            print("Note: The provider will automatically reclaim resources when the mesh")
-            print("connection drops. If you're running as a provider, the VM has been stopped.")
+            if providerNotified {
+                print("Provider has been notified to stop the VM.")
+            } else {
+                print("Note: Provider was not notified. VM may still be running on provider.")
+            }
         } catch {
             print("")
-            print("Error: Failed to release VM: \(error)")
+            print("Error: Failed to release VM locally: \(error)")
             if !forceLocal {
                 print("")
                 print("Use --force-local to force cleanup of local resources.")

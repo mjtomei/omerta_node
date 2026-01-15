@@ -69,25 +69,119 @@ public actor EphemeralVPN: VPNProvider {
     ///   - backend: Which VPN backend to use (.wgQuick or .dryRun)
     public init(basePort: UInt16 = 51900, backend: VPNBackend = .wgQuick) {
         self.basePort = basePort
-        self.nextPort = basePort
         self.backend = backend
 
-        logger.info("EphemeralVPN initialized", metadata: [
-            "base_port": "\(basePort)",
-            "dry_run": "\(backend == .dryRun)"
-        ])
+        // Scan for existing WireGuard interfaces and skip their ports
+        let usedPorts = Self.scanUsedWireGuardPorts()
+        var startPort = basePort
+        while usedPorts.contains(startPort) {
+            startPort += 1
+        }
+        self.nextPort = startPort
+
+        let initLogger = Logger(label: "com.omerta.ephemeral-vpn")
+        if !usedPorts.isEmpty {
+            initLogger.info("EphemeralVPN initialized (skipping \(usedPorts.count) used port(s))", metadata: [
+                "base_port": "\(basePort)",
+                "next_port": "\(startPort)",
+                "used_ports": "\(usedPorts.sorted())",
+                "dry_run": "\(backend == .dryRun)"
+            ])
+        } else {
+            initLogger.info("EphemeralVPN initialized", metadata: [
+                "base_port": "\(basePort)",
+                "dry_run": "\(backend == .dryRun)"
+            ])
+        }
     }
 
     /// Initialize with dryRun parameter (convenience)
     public init(basePort: UInt16 = 51900, dryRun: Bool) {
         self.basePort = basePort
-        self.nextPort = basePort
         self.backend = dryRun ? .dryRun : .wgQuick
 
-        logger.info("EphemeralVPN initialized", metadata: [
-            "base_port": "\(basePort)",
-            "dry_run": "\(dryRun)"
-        ])
+        // Scan for existing WireGuard interfaces and skip their ports
+        let usedPorts = Self.scanUsedWireGuardPorts()
+        var startPort = basePort
+        while usedPorts.contains(startPort) {
+            startPort += 1
+        }
+        self.nextPort = startPort
+
+        let initLogger = Logger(label: "com.omerta.ephemeral-vpn")
+        if !usedPorts.isEmpty {
+            initLogger.info("EphemeralVPN initialized (skipping \(usedPorts.count) used port(s))", metadata: [
+                "base_port": "\(basePort)",
+                "next_port": "\(startPort)",
+                "used_ports": "\(usedPorts.sorted())",
+                "dry_run": "\(dryRun)"
+            ])
+        } else {
+            initLogger.info("EphemeralVPN initialized", metadata: [
+                "base_port": "\(basePort)",
+                "dry_run": "\(dryRun)"
+            ])
+        }
+    }
+
+    /// Scan existing WireGuard interfaces and return their listening ports
+    private static func scanUsedWireGuardPorts() -> Set<UInt16> {
+        var usedPorts = Set<UInt16>()
+
+        // Run `wg show interfaces` to get list of active interfaces
+        let listProcess = Process()
+        listProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        listProcess.arguments = [WireGuardPaths.wg, "show", "interfaces"]
+
+        let listPipe = Pipe()
+        listProcess.standardOutput = listPipe
+        listProcess.standardError = FileHandle.nullDevice
+
+        do {
+            try listProcess.run()
+            listProcess.waitUntilExit()
+        } catch {
+            return usedPorts
+        }
+
+        guard listProcess.terminationStatus == 0 else {
+            return usedPorts
+        }
+
+        let data = listPipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        let interfaces = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+
+        // For each interface, get its listening port
+        for iface in interfaces {
+            let showProcess = Process()
+            showProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            showProcess.arguments = [WireGuardPaths.wg, "show", iface, "listen-port"]
+
+            let showPipe = Pipe()
+            showProcess.standardOutput = showPipe
+            showProcess.standardError = FileHandle.nullDevice
+
+            do {
+                try showProcess.run()
+                showProcess.waitUntilExit()
+
+                if showProcess.terminationStatus == 0 {
+                    let portData = showPipe.fileHandleForReading.readDataToEndOfFile()
+                    let portStr = String(data: portData, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if let port = UInt16(portStr) {
+                        usedPorts.insert(port)
+                    }
+                }
+            } catch {
+                continue
+            }
+        }
+
+        return usedPorts
     }
 
     /// Check if the VPN backend is available
