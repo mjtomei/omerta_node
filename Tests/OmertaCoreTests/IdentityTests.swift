@@ -77,15 +77,22 @@ final class IdentityTests: XCTestCase {
         // Valid mnemonic should pass
         XCTAssertTrue(BIP39.isValid(mnemonic))
 
-        // Invalid mnemonic should fail
+        // Invalid word (not in wordlist) should fail
         var invalidMnemonic = mnemonic
         invalidMnemonic[0] = "notaword"
         XCTAssertFalse(BIP39.isValid(invalidMnemonic))
 
-        // Wrong checksum should fail
-        var wrongChecksum = mnemonic
-        wrongChecksum[11] = mnemonic[0]  // Replace last word
-        XCTAssertFalse(BIP39.isValid(wrongChecksum))
+        // Wrong checksum should fail - use a known invalid mnemonic
+        // This is a valid mnemonic with the last word changed to create invalid checksum
+        let knownValid = ["abandon", "abandon", "abandon", "abandon", "abandon",
+                          "abandon", "abandon", "abandon", "abandon", "abandon",
+                          "abandon", "about"]
+        XCTAssertTrue(BIP39.isValid(knownValid))
+
+        // Change last word to something that breaks the checksum
+        var knownInvalid = knownValid
+        knownInvalid[11] = "abandon"  // "about" -> "abandon" breaks checksum
+        XCTAssertFalse(BIP39.isValid(knownInvalid))
     }
 
     func testBIP39EntropyRoundtrip() throws {
