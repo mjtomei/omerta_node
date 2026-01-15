@@ -33,7 +33,7 @@ public actor STUNServer {
 
     public init(port: UInt16 = 3478) {
         self.port = port
-        self.logger = Logger(label: "io.omerta.rendezvous.stun")
+        self.logger = Logger(label: "io.omerta.stun")
     }
 
     /// Start the STUN server
@@ -99,7 +99,7 @@ public actor STUNServer {
         }
 
         // SOFTWARE attribute
-        let software = encodeSoftwareAttribute("Omerta Rendezvous 1.0")
+        let software = encodeSoftwareAttribute("Omerta STUN 1.0")
         response.append(software)
 
         // Update message length (excluding 20-byte header)

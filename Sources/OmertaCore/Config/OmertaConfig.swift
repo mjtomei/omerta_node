@@ -223,9 +223,6 @@ public struct MeshConfigOptions: Codable, Sendable {
 
 /// Configuration for NAT traversal
 public struct NATConfig: Codable, Sendable {
-    /// Rendezvous server URL (WebSocket)
-    public var rendezvousServer: String?
-
     /// STUN servers for NAT type detection
     public var stunServers: [String]
 
@@ -242,14 +239,12 @@ public struct NATConfig: Codable, Sendable {
     public var localPort: UInt16
 
     public init(
-        rendezvousServer: String? = nil,
         stunServers: [String] = NATConfig.defaultSTUNServers,
         preferDirect: Bool = true,
         holePunchTimeout: Int = 5000,
         probeCount: Int = 5,
         localPort: UInt16 = 0
     ) {
-        self.rendezvousServer = rendezvousServer
         self.stunServers = stunServers
         self.preferDirect = preferDirect
         self.holePunchTimeout = holePunchTimeout

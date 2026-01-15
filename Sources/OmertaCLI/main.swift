@@ -4195,11 +4195,6 @@ struct NATStatus: AsyncParsableCommand {
         // Configuration
         print("Configuration:")
         if let natConfig = natConfig {
-            if let rendezvous = natConfig.rendezvousServer {
-                print("  Rendezvous Server: \(rendezvous)")
-            } else {
-                print("  Rendezvous Server: (not configured)")
-            }
             print("  STUN Servers: \(natConfig.stunServers.joined(separator: ", "))")
             print("  Prefer Direct: \(natConfig.preferDirect)")
             print("  Hole Punch Timeout: \(natConfig.holePunchTimeout)ms")
@@ -4256,9 +4251,6 @@ struct NATConfig: AsyncParsableCommand {
         abstract: "Configure NAT traversal settings"
     )
 
-    @Option(name: .long, help: "Set rendezvous server URL")
-    var rendezvous: String?
-
     @Option(name: .long, help: "Add STUN server")
     var addStun: String?
 
@@ -4284,7 +4276,7 @@ struct NATConfig: AsyncParsableCommand {
         let configManager = OmertaCore.ConfigManager()
 
         // Show current config
-        if show || (rendezvous == nil && addStun == nil && removeStun == nil &&
+        if show || (addStun == nil && removeStun == nil &&
                     timeout == nil && probeCount == nil && localPort == nil && !reset) {
             let config = try? await configManager.load()
             let natConfig = config?.nat ?? OmertaCore.NATConfig()
@@ -4292,7 +4284,6 @@ struct NATConfig: AsyncParsableCommand {
             print("NAT Configuration")
             print("=================")
             print("")
-            print("Rendezvous Server: \(natConfig.rendezvousServer ?? "(not set)")")
             print("STUN Servers:")
             for server in natConfig.stunServers {
                 print("  - \(server)")
@@ -4316,11 +4307,6 @@ struct NATConfig: AsyncParsableCommand {
         // Update configuration
         try await configManager.update { config in
             var natConfig = config.nat ?? OmertaCore.NATConfig()
-
-            if let url = rendezvous {
-                natConfig.rendezvousServer = url
-                print("Set rendezvous server: \(url)")
-            }
 
             if let server = addStun {
                 if !natConfig.stunServers.contains(server) {

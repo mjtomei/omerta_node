@@ -9,11 +9,12 @@ let package = Package(
     products: [
         .executable(name: "omerta", targets: ["OmertaCLI"]),
         .executable(name: "omertad", targets: ["OmertaDaemon"]),
-        .executable(name: "omerta-rendezvous", targets: ["OmertaRendezvous"]),
+        .executable(name: "omerta-stun", targets: ["OmertaSTUNCLI"]),
         .executable(name: "omerta-mesh", targets: ["OmertaMeshCLI"]),
         .library(name: "OmertaCore", targets: ["OmertaCore"]),
         .library(name: "OmertaMesh", targets: ["OmertaMesh"]),
         .library(name: "OmertaVPN", targets: ["OmertaVPN"]),
+        .library(name: "OmertaSTUN", targets: ["OmertaSTUN"]),
     ],
     dependencies: [
         // Networking
@@ -136,30 +137,26 @@ let package = Package(
             path: "Sources/OmertaCLI"
         ),
 
-        // Rendezvous library (signaling, STUN, relay)
+        // STUN server library (NAT endpoint discovery)
         .target(
-            name: "OmertaRendezvousLib",
+            name: "OmertaSTUN",
             dependencies: [
-                "OmertaCore",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
-                .product(name: "NIOHTTP1", package: "swift-nio"),
-                .product(name: "NIOWebSocket", package: "swift-nio"),
                 .product(name: "Logging", package: "swift-log"),
             ],
-            path: "Sources/OmertaRendezvous",
-            exclude: ["main.swift"]
+            path: "Sources/OmertaSTUN"
         ),
 
-        // Rendezvous server executable
+        // STUN server executable
         .executableTarget(
-            name: "OmertaRendezvous",
+            name: "OmertaSTUNCLI",
             dependencies: [
-                "OmertaRendezvousLib",
+                "OmertaSTUN",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
             ],
-            path: "Sources/OmertaRendezvousCLI"
+            path: "Sources/OmertaSTUNCLI"
         ),
 
         // Mesh node CLI for E2E testing
@@ -216,14 +213,11 @@ let package = Package(
             path: "Tests/OmertaConsumerTests"
         ),
         .testTarget(
-            name: "OmertaRendezvousTests",
+            name: "OmertaSTUNTests",
             dependencies: [
-                "OmertaRendezvousLib",
-                "OmertaCore",
-                .product(name: "NIOCore", package: "swift-nio"),
-                .product(name: "NIOPosix", package: "swift-nio"),
+                "OmertaSTUN",
             ],
-            path: "Tests/OmertaRendezvousTests"
+            path: "Tests/OmertaSTUNTests"
         ),
         .testTarget(
             name: "OmertaMeshTests",

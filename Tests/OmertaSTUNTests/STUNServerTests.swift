@@ -2,7 +2,7 @@
 // Tests for STUN server implementation
 
 import XCTest
-@testable import OmertaRendezvousLib
+@testable import OmertaSTUN
 
 final class STUNServerTests: XCTestCase {
 
