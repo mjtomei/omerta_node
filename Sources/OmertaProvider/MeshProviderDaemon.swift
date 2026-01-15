@@ -2,7 +2,6 @@ import Foundation
 import Logging
 import OmertaCore
 import OmertaVM
-import OmertaNetwork
 import OmertaVPN
 import OmertaMesh
 

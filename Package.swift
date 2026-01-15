@@ -70,23 +70,12 @@ let package = Package(
             path: "Sources/OmertaVM"
         ),
 
-        // Network layer (discovery, peer registry)
-        .target(
-            name: "OmertaNetwork",
-            dependencies: [
-                "OmertaCore",
-                .product(name: "Logging", package: "swift-log"),
-            ],
-            path: "Sources/OmertaNetwork"
-        ),
-
         // Provider library
         .target(
             name: "OmertaProvider",
             dependencies: [
                 "OmertaCore",
                 "OmertaVM",
-                "OmertaNetwork",
                 "OmertaVPN",
                 "OmertaConsumer",
                 "OmertaMesh",
@@ -113,7 +102,6 @@ let package = Package(
             name: "OmertaConsumer",
             dependencies: [
                 "OmertaCore",
-                "OmertaNetwork",
                 "OmertaVPN",
                 "OmertaMesh",
                 .product(name: "NIOCore", package: "swift-nio"),
@@ -191,16 +179,6 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
             path: "Tests/OmertaVPNTests"
-        ),
-        .testTarget(
-            name: "OmertaNetworkTests",
-            dependencies: [
-                "OmertaNetwork",
-                "OmertaProvider",  // E2EConnectivityTests needs this
-                "OmertaVM",
-                "OmertaCore",
-            ],
-            path: "Tests/OmertaNetworkTests"
         ),
         .testTarget(
             name: "OmertaProviderTests",

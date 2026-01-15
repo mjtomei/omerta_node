@@ -1,7 +1,6 @@
 import Foundation
 import Logging
 import OmertaCore
-import OmertaNetwork
 import OmertaVPN
 import OmertaVM
 import Crypto

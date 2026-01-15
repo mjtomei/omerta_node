@@ -5,7 +5,6 @@ import Crypto
 import Logging
 import OmertaCore
 import OmertaConsumer
-import OmertaNetwork
 import OmertaVPN
 import OmertaVM
 

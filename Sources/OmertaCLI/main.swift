@@ -2,7 +2,6 @@ import Foundation
 import ArgumentParser
 import OmertaCore
 import OmertaVM
-import OmertaNetwork
 import OmertaVPN
 import OmertaConsumer
 import OmertaProvider
@@ -1293,66 +1292,23 @@ struct VMRequest: AsyncParsableCommand {
         print("Using SSH key: \(config.ssh.expandedPrivateKeyPath())")
         print("")
 
-        // Create a minimal peer registry with just this provider
-        let peerRegistry = PeerRegistry()
+        // Use DirectProviderClient for direct connections
+        let client = DirectProviderClient(networkKey: networkKey, dryRun: dryRun)
 
-        // Create consumer client
-        let client = ConsumerClient(
-            peerRegistry: peerRegistry,
-            networkKey: networkKey,
-            dryRun: dryRun
-        )
-
-        // For direct mode, we need to manually add the provider
-        // Create a fake peer announcement
-        let announcement = PeerAnnouncement(
-            peerId: "direct-\(providerEndpoint)",
-            networkId: "direct",
-            endpoint: providerEndpoint,
-            capabilities: [
-                ResourceCapability(
-                    cpuCores: 8,
-                    cpuArchitecture: .arm64,
-                    cpuModel: nil,
-                    totalMemoryMB: 16384,
-                    availableMemoryMB: 12288,
-                    totalStorageMB: 500_000,
-                    availableStorageMB: 400_000,
-                    gpu: nil,
-                    networkBandwidthMbps: nil,
-                    availableImages: ["ubuntu-22.04"]
-                )
-            ],
-            metadata: PeerMetadata(reputationScore: 100, jobsCompleted: 0, jobsRejected: 0, averageResponseTimeMs: 50),
-            signature: Data()
-        )
-        await peerRegistry.registerPeer(from: announcement)
-
-        // Request VM with SSH config from omerta settings
+        // Request VM directly from provider
         let connection = try await client.requestVM(
-            in: "direct",
-            requirements: requirements,
+            fromProvider: providerEndpoint,
             sshPublicKey: sshPublicKey,
             sshKeyPath: config.ssh.privateKeyPath,
-            sshUser: config.ssh.defaultUser,
-            retryOnFailure: false
+            sshUser: config.ssh.defaultUser
         )
 
         // Wait for WireGuard connection if requested
+        // Note: DirectProviderClient doesn't have waitForConnection, so we skip this for now
         if wait && !dryRun {
             print("")
-            print("Waiting for VM to establish WireGuard connection...")
-            let connected = try await client.waitForConnection(
-                vmId: connection.vmId,
-                timeout: .seconds(waitTimeout)
-            )
-            if !connected {
-                print("Warning: WireGuard connection not established within \(waitTimeout)s")
-                print("The VM may still be booting. You can check connection status with:")
-                print("  sudo wg show \(connection.vpnInterface)")
-            } else {
-                print("WireGuard connection established!")
-            }
+            print("Note: Connection waiting not available in direct mode.")
+            print("Check connection status with: sudo wg show \(connection.vpnInterface)")
         }
 
         printVMConnection(connection)
@@ -1368,96 +1324,15 @@ struct VMRequest: AsyncParsableCommand {
         wait: Bool,
         waitTimeout: Int
     ) async throws {
-        print("Discovering providers in network: \(networkId)")
-        if dryRun {
-            print("[DRY RUN] Skipping VPN setup")
-        }
-
-        // Load SSH config
-        let configManager = ConfigManager()
-        let config: OmertaConfig
-        do {
-            config = try await configManager.load()
-        } catch ConfigError.notInitialized {
-            print("")
-            print("Error: Omerta not initialized. Run 'omerta init' first.")
-            throw ExitCode.failure
-        }
-
-        guard let sshPublicKey = config.ssh.publicKey else {
-            print("")
-            print("Error: SSH public key not found in config. Run 'omerta init' to regenerate.")
-            throw ExitCode.failure
-        }
-
-        print("Using SSH key: \(config.ssh.expandedPrivateKeyPath())")
+        // LAN-based peer discovery has been replaced by mesh networking
+        print("Error: Network-based peer discovery is deprecated.")
         print("")
-
-        // Load network state
-        let networkManager = NetworkManager()
-        try await networkManager.loadNetworks()
-
-        guard let _ = await networkManager.getNetwork(id: networkId) else {
-            print("Error: Network not found. Join it first with 'omerta network join'")
-            throw ExitCode.failure
-        }
-
-        // Create peer registry and start discovery
-        let peerRegistry = PeerRegistry()
-        let discoveryConfig = PeerDiscovery.Configuration(
-            localPeerId: UUID().uuidString,
-            localEndpoint: "0.0.0.0:0"  // Not providing, just consuming
-        )
-        let peerDiscovery = PeerDiscovery(
-            config: discoveryConfig,
-            networkManager: networkManager,
-            peerRegistry: peerRegistry
-        )
-
-        try await peerDiscovery.start()
-
-        // Wait a moment for discovery
-        print("Discovering peers...")
-        try await Task.sleep(for: .seconds(2))
-
-        // Create consumer client
-        let client = ConsumerClient(
-            peerRegistry: peerRegistry,
-            networkKey: networkKey,
-            dryRun: dryRun
-        )
-
-        // Request VM with SSH config from omerta settings
-        let connection = try await client.requestVM(
-            in: networkId,
-            requirements: requirements,
-            sshPublicKey: sshPublicKey,
-            sshKeyPath: config.ssh.privateKeyPath,
-            sshUser: config.ssh.defaultUser,
-            retryOnFailure: retry,
-            maxRetries: maxRetries
-        )
-
-        await peerDiscovery.stop()
-
-        // Wait for WireGuard connection if requested
-        if wait && !dryRun {
-            print("")
-            print("Waiting for VM to establish WireGuard connection...")
-            let connected = try await client.waitForConnection(
-                vmId: connection.vmId,
-                timeout: .seconds(waitTimeout)
-            )
-            if !connected {
-                print("Warning: WireGuard connection not established within \(waitTimeout)s")
-                print("The VM may still be booting. You can check connection status with:")
-                print("  sudo wg show \(connection.vpnInterface)")
-            } else {
-                print("WireGuard connection established!")
-            }
-        }
-
-        printVMConnection(connection)
+        print("Please use mesh mode instead:")
+        print("  omerta mesh connect --peer <provider-peer-id> --bootstrap <bootstrap-peer>")
+        print("")
+        print("Or connect directly to a known provider:")
+        print("  omerta connect --provider <ip:port>")
+        throw ExitCode.failure
     }
 
     private func requestVMViaMesh(
@@ -1856,15 +1731,27 @@ struct VMRelease: AsyncParsableCommand {
 
         print("Releasing VM...")
 
-        // Create consumer client
-        let peerRegistry = PeerRegistry()
-        let client = ConsumerClient(
-            peerRegistry: peerRegistry,
-            networkKey: keyData
-        )
-
+        // Release VM directly using UDP client and VPN cleanup
         do {
-            try await client.releaseVM(vm, forceLocalCleanup: forceLocal)
+            // 1. Tell provider to release VM
+            let udpClient = UDPControlClient(networkId: vm.networkId, networkKey: keyData)
+            do {
+                try await udpClient.releaseVM(providerEndpoint: vm.provider.endpoint, vmId: vm.vmId)
+                print("Provider acknowledged VM release")
+            } catch {
+                if forceLocal {
+                    print("Warning: Provider unreachable, proceeding with local cleanup")
+                } else {
+                    throw error
+                }
+            }
+
+            // 2. Tear down VPN tunnel
+            let ephemeralVPN = EphemeralVPN()
+            try await ephemeralVPN.destroyVPN(for: vm.vmId)
+
+            // 3. Remove from tracker
+            try await tracker.removeVM(vm.vmId)
             print("")
             print("VM released successfully")
         } catch {

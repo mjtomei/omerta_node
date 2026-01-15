@@ -1,6 +1,5 @@
 import Foundation
 import Logging
-import OmertaCore
 
 /// Manages multiple network memberships and network-scoped operations
 public actor NetworkManager {

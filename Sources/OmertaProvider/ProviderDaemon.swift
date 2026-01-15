@@ -2,7 +2,6 @@ import Foundation
 import Logging
 import OmertaCore
 import OmertaVM
-import OmertaNetwork
 
 /// The main provider daemon that manages VM lifecycle
 /// Handles incoming VM requests via UDP control protocol
