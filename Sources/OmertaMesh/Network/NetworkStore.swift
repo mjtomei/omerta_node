@@ -17,7 +17,7 @@ public actor NetworkStore {
     // MARK: - Network Management
 
     /// Join a network using a NetworkKey
-    public func join(_ key: NetworkKey, name: String? = nil) throws -> Network {
+    public func join(_ key: NetworkKey, name: String? = nil) async throws -> Network {
         let networkId = key.deriveNetworkId()
 
         // Check if already joined
@@ -32,16 +32,14 @@ public actor NetworkStore {
 
         logger.info("Joined network: \(network.name) (\(networkId))")
 
-        // Save to disk
-        Task {
-            try? await save()
-        }
+        // Save to disk immediately (don't fire-and-forget)
+        try await save()
 
         return network
     }
 
     /// Leave a network
-    public func leave(_ networkId: String) throws {
+    public func leave(_ networkId: String) async throws {
         guard networks.removeValue(forKey: networkId) != nil else {
             throw NetworkStoreError.notFound
         }
@@ -49,9 +47,7 @@ public actor NetworkStore {
         logger.info("Left network: \(networkId)")
 
         // Save to disk
-        Task {
-            try? await save()
-        }
+        try await save()
     }
 
     /// Get all joined networks
@@ -70,7 +66,7 @@ public actor NetworkStore {
     }
 
     /// Set network active/inactive
-    public func setActive(_ networkId: String, active: Bool) throws {
+    public func setActive(_ networkId: String, active: Bool) async throws {
         guard var network = networks[networkId] else {
             throw NetworkStoreError.notFound
         }
@@ -80,9 +76,7 @@ public actor NetworkStore {
 
         logger.info("Network \(networkId) \(active ? "activated" : "deactivated")")
 
-        Task {
-            try? await save()
-        }
+        try await save()
     }
 
     /// Check if a network exists
@@ -105,6 +99,13 @@ public actor NetworkStore {
         }
 
         let data = try Data(contentsOf: storePath)
+
+        // Handle empty file
+        guard !data.isEmpty else {
+            logger.debug("Network store file is empty")
+            return
+        }
+
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let stored = try decoder.decode([String: Network].self, from: data)
