@@ -535,6 +535,11 @@ public actor MeshNode {
             }
 
         case .pong(let recentPeers):
+            // Cache the pong sender's endpoint - CRITICAL for connect() to work
+            peerEndpoints[peerId] = endpoint
+            peerCache[peerId] = CachedPeerInfo(peerId: peerId, endpoint: endpoint)
+            logger.info("Cached pong sender: \(peerId.prefix(8))... at \(endpoint)")
+
             // Learn about new peers from the pong
             for (peerIdFromPong, peerEndpoint) in recentPeers {
                 if peerIdFromPong != self.peerId && peerEndpoints[peerIdFromPong] == nil {
