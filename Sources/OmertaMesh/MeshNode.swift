@@ -82,6 +82,22 @@ public actor MeshNode {
         }
     }
 
+    /// Result of a ping with gossip details
+    public struct PingResult: Sendable {
+        /// Peer ID we pinged
+        public let peerId: PeerId
+        /// Endpoint we pinged
+        public let endpoint: String
+        /// Round-trip latency in milliseconds
+        public let latencyMs: Int
+        /// Peers we shared (peerId -> endpoint)
+        public let sentPeers: [String: String]
+        /// Peers they shared (peerId -> endpoint)
+        public let receivedPeers: [String: String]
+        /// Peers that were new to us
+        public let newPeers: [String: String]
+    }
+
     // MARK: - Properties
 
     /// This node's identity keypair
@@ -797,26 +813,42 @@ public actor MeshNode {
     /// Send a ping to a peer and wait for pong response
     /// Returns true if pong received, false if timeout or error
     public func sendPing(to targetPeerId: PeerId, timeout: TimeInterval = 3.0) async -> Bool {
+        let result = await sendPingWithDetails(to: targetPeerId, timeout: timeout)
+        return result != nil
+    }
+
+    /// Send a ping to a peer and return detailed results including gossip info
+    /// Returns nil if timeout or error
+    public func sendPingWithDetails(to targetPeerId: PeerId, timeout: TimeInterval = 3.0) async -> PingResult? {
         // Get the endpoint for this peer
         guard let endpoint = peerEndpoints[targetPeerId] else {
             logger.debug("sendPing: No endpoint for peer \(targetPeerId)")
-            return false
+            return nil
         }
 
-        // Send ping and wait for pong
+        // Build our recentPeers to send
         let recentPeers = await freshnessManager.recentPeersWithEndpoints
-        var limitedPeers: [String: String] = [:]
+        var sentPeers: [String: String] = [:]
         for (id, ep) in recentPeers.prefix(5) {
-            limitedPeers[id] = ep
+            sentPeers[id] = ep
         }
-        let ping = MeshMessage.ping(recentPeers: limitedPeers)
+        let ping = MeshMessage.ping(recentPeers: sentPeers)
 
         let startTime = Date()
         do {
             let response = try await sendAndReceive(ping, to: endpoint, timeout: timeout)
-            if case .pong = response {
+            if case .pong(let receivedPeers) = response {
                 let latencyMs = Int(Date().timeIntervalSince(startTime) * 1000)
                 logger.debug("sendPing: Got pong from \(targetPeerId) in \(latencyMs)ms")
+
+                // Find new peers (ones we didn't know about)
+                var newPeers: [String: String] = [:]
+                for (peerId, peerEndpoint) in receivedPeers {
+                    if peerEndpoints[peerId] == nil && peerId != identity.peerId {
+                        newPeers[peerId] = peerEndpoint
+                    }
+                }
+
                 // Record this as a recent contact
                 await freshnessManager.recordContact(
                     peerId: targetPeerId,
@@ -824,19 +856,27 @@ public actor MeshNode {
                     latencyMs: latencyMs,
                     connectionType: .direct
                 )
+
                 // Add to keepalive monitoring if not already monitored
                 if await !connectionKeepalive.isMonitoring(peerId: targetPeerId) {
                     await connectionKeepalive.addConnection(peerId: targetPeerId, endpoint: endpoint)
                 } else {
-                    // Update successful communication
                     await connectionKeepalive.recordSuccessfulCommunication(peerId: targetPeerId)
                 }
-                return true
+
+                return PingResult(
+                    peerId: targetPeerId,
+                    endpoint: endpoint,
+                    latencyMs: latencyMs,
+                    sentPeers: sentPeers,
+                    receivedPeers: receivedPeers,
+                    newPeers: newPeers
+                )
             }
-            return false
+            return nil
         } catch {
             logger.debug("sendPing: Failed to ping \(targetPeerId): \(error)")
-            return false
+            return nil
         }
     }
 

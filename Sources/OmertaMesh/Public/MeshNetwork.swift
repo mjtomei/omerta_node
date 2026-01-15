@@ -305,6 +305,18 @@ public actor MeshNetwork {
         }
     }
 
+    /// Ping a peer and get detailed gossip results
+    /// - Parameters:
+    ///   - targetPeerId: The peer to ping
+    ///   - timeout: Timeout in seconds
+    /// - Returns: PingResult with latency and gossip info, or nil if failed
+    public func ping(_ targetPeerId: PeerId, timeout: TimeInterval = 3.0) async -> MeshNode.PingResult? {
+        guard state == .running, let node = meshNode else {
+            return nil
+        }
+        return await node.sendPingWithDetails(to: targetPeerId, timeout: timeout)
+    }
+
     /// Receive a message handler
     public func setMessageHandler(_ handler: @escaping (PeerId, Data) async -> Void) async {
         // Store handler for later if node doesn't exist yet
@@ -668,17 +680,9 @@ public actor MeshNetwork {
                     viaBootstrap: true
                 ))
 
-                // CRITICAL: Send announcement FIRST to introduce ourselves
-                // This allows the bootstrap peer to register our public key
-                // so they can verify our subsequent messages
-                logger.info("Bootstrap: sending announcement to \(endpoint)")
-                await meshNode?.announceTo(endpoint: endpoint)
-
-                // Brief delay to allow announcement to be processed
-                try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
-
-                // Now request peer list (ping will be accepted since we're registered)
-                logger.info("Bootstrap: requesting peers from \(endpoint)")
+                // Send ping to bootstrap peer (public key is embedded in message)
+                // This establishes the connection and gets peer list via recentPeers
+                logger.info("Bootstrap: sending ping to \(endpoint)")
                 await meshNode?.requestPeers()
             } else {
                 logger.warning("Bootstrap: invalid peer format '\(peer)' - expected peerId@endpoint")

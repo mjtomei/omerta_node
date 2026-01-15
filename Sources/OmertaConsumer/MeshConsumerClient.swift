@@ -241,6 +241,15 @@ public actor MeshConsumerClient {
             // 7. Track VM
             try await vmTracker.trackVM(vmConnection)
 
+            // 8. Send ping to establish keepalive and gossip
+            if let pingResult = await mesh.ping(providerPeerId) {
+                logger.info("Post-request ping successful", metadata: [
+                    "latencyMs": "\(pingResult.latencyMs)",
+                    "receivedPeers": "\(pingResult.receivedPeers.count)",
+                    "newPeers": "\(pingResult.newPeers.count)"
+                ])
+            }
+
             logger.info("VM request completed", metadata: [
                 "vmId": "\(vmId)",
                 "sshCommand": "\(vmConnection.sshCommand)"
