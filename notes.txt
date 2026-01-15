@@ -11,6 +11,7 @@ While there are still legitimate security concerns like VM escapes and malicious
 - support for checkpoint and restart of VMs
 
 TODOs
+- automatically cleanup during startup, change name of cleanup command
 - quality of life improvements
   - measure and limit VM energy consumption, use lower power CPU states where useful
   - automatically disable sleep while plugged in

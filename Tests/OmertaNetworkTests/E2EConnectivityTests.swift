@@ -3,6 +3,7 @@
 
 import XCTest
 @testable import OmertaNetwork
+@testable import OmertaVPN
 @testable import OmertaVM
 @testable import OmertaProvider
 @testable import OmertaCore

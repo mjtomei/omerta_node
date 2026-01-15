@@ -2,6 +2,7 @@ import Foundation
 import Logging
 import OmertaCore
 import OmertaNetwork
+import OmertaVPN
 
 /// Monitors VPN tunnel health and terminates VMs when consumer connection dies
 /// Uses WireGuard handshake timestamps to detect dead tunnels

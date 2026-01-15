@@ -1,0 +1,2267 @@
+# Trust Score Mathematics (Revised)
+
+Trust is computed from on-chain facts, not asserted. Assertions are violation reports. Trust grows indefinitely. Statistical detection is built into the math.
+
+---
+
+## 1. Fundamental Principles
+
+1. **Trust is unbounded**: Trust accumulates over time with no ceiling. More history = more trust.
+
+2. **Assertions are violation reports**: Participants don't assert "X has trust 0.8". They report "X did bad thing Y with severity Z". Trust is computed, not claimed.
+
+3. **All computation is from chain data**: Anyone can compute anyone's trust using the same open algorithm on the same data.
+
+4. **Statistical detection is explicit**: Sybil clusters, collusion rings, and anomalies are detected algorithmically and downweighted mathematically.
+
+5. **Meta-trust is emergent**: No separate meta-trust tracking. Accuracy of accusations emerges from the data.
+
+6. **Payment asymptotes to 100%**: High trust approaches full payment, but some burn always remains.
+
+---
+
+## 2. Trust Accumulation
+
+Trust accumulates from two sources, with age as a derate factor:
+
+```
+T_base = T_transactions + T_assertions
+T_effective = T_base × age_derate
+
+Where:
+  - T_transactions decays based on recency of transactions
+  - T_assertions can be positive (commendations) or negative (violations)
+  - age_derate is a 0.0 to 1.0 multiplier (see Section 2.1)
+```
+
+### 2.1 Age as Derate Factor (Not Trust Source)
+
+**Design principle**: Age should never **add** trust by itself. Age is a **derate factor** that penalizes young identities, not a source of trust for old ones.
+
+**Rationale**: If age added trust, attackers could create many idle identities, wait, and exploit accumulated age-based trust without contributing to the network.
+
+```
+age_derate(identity) = min(1.0, identity_age / AGE_MATURITY_DAYS)
+
+Where:
+  - identity_age = days since identity creation
+  - AGE_MATURITY_DAYS = days until identity reaches full trust potential (e.g., 90-180)
+  - Result: 0.0 to 1.0 multiplier
+
+Effective trust becomes:
+  T_effective = (T_transactions + T_assertions) × age_derate
+```
+
+**Effects**:
+- New identity (day 0): age_derate = 0.0, cannot earn anything regardless of activity
+- Young identity (day 30, AGE_MATURITY_DAYS=90): age_derate = 0.33, earns 33% of normal
+- Mature identity (day 90+): age_derate = 1.0, earns full rate
+- Dormant identity (any age): Still gets age_derate = 1.0, but has no T_transactions, so T_effective = 0
+
+**Why this is better than age-as-trust**:
+1. Idle identities gain nothing - they need activity to build trust
+2. Age cannot be exploited - it only removes a penalty, doesn't add value
+3. Attackers cannot pre-stage identities - they still need to do real work
+4. Honest participants reach full earning potential after maturity period
+
+### 2.2 Trust from Transactions
+
+Each verified transaction adds trust, weighted by size and recency.
+
+```
+T_transactions = Σ_i (credit_i × recency(age_i))
+
+credit_i = BASE_CREDIT × resource_weight × duration × verification_score × cluster_weight_i
+
+recency(age) = e^(-age / TAU_TRANSACTION)
+```
+
+**Resource weights**: Defined per resource class. More valuable resources earn more trust per hour.
+
+**Verification score**: 0 to 1 based on session verification (see Section 5).
+
+**Cluster weight**: Downweighting for Sybil-like patterns (see Section 4).
+
+### 2.3 Trust from Assertions
+
+Assertions add or subtract trust based on their score. They decay over time.
+
+```
+T_assertions = Σ_i (score_i × credibility_i × decay(age_i))
+
+decay(age) = RESIDUAL + (1 - RESIDUAL) × e^(-age / TAU_ASSERTION)
+```
+
+**Score**: The assertion's score [-1, 1]:
+- Negative scores subtract from trust (violations)
+- Positive scores add to trust (commendations)
+
+**Credibility**: Weight of the asserter (see Section 3).
+
+**Asymmetry option**: Negative assertions can decay slower than positive ones:
+```
+decay_negative(age) = RESIDUAL_NEG + (1 - RESIDUAL_NEG) × e^(-age / TAU_NEGATIVE)
+decay_positive(age) = RESIDUAL_POS + (1 - RESIDUAL_POS) × e^(-age / TAU_POSITIVE)
+```
+
+---
+
+## 3. Assertions as Reports
+
+Assertions are signed reports of specific incidents—positive or negative.
+
+### 3.1 Assertion Structure
+
+```
+Assertion {
+  asserter: IdentityID
+  subject: IdentityID
+  score: float [-1, 1]         # -1 = severe violation, +1 = excellent behavior
+  classification: enum {
+    # Negative classifications (score should be negative)
+    RESOURCE_MISMATCH,         # Claimed resources != delivered
+    SESSION_ABANDONMENT,       # Dropped session unexpectedly
+    PAYMENT_DISPUTE,           # Payment/escrow issues
+    VERIFICATION_FAILURE,      # Failed verification checks
+    MALICIOUS_BEHAVIOR,        # Active harm
+    NETWORK_DISAGREEMENT,      # State disagreement with consensus
+
+    # Positive classifications (score should be positive)
+    EXCELLENT_SERVICE,         # Exceeded expectations
+    RELIABLE_UPTIME,           # Consistent availability
+    FAST_RESOLUTION,           # Quick problem resolution
+    HELPFUL_BEHAVIOR,          # Assisted others in network
+
+    # Neutral
+    UNCLASSIFIED               # Requires high trust to use
+  }
+  evidence_hash: bytes         # Link to supporting data
+  reasoning: string            # Human-readable explanation
+  timestamp: uint64
+  signature: bytes
+}
+```
+
+### 3.1.1 Parameterized Infraction Severity
+
+**Design principle**: All infractions should have gray areas. Severity scales with potential network impact, not fixed values.
+
+**Infraction severity is computed, not asserted**:
+
+```
+effective_score = base_score × impact_multiplier × context_multiplier
+
+Where:
+  base_score = classification default (see table below)
+  impact_multiplier = f(transaction_value, resources_affected, duration)
+  context_multiplier = g(repeat_offense, attacker_trust, victim_count)
+```
+
+**Base scores by classification** (defaults, adjustable by governance):
+
+| Classification | Base Score | Impact Factors |
+|---------------|------------|----------------|
+| RESOURCE_MISMATCH | -0.3 | × (claimed - delivered) / claimed |
+| SESSION_ABANDONMENT | -0.2 | × session_value / avg_session_value |
+| PAYMENT_DISPUTE | -0.4 | × dispute_amount / avg_transaction |
+| VERIFICATION_FAILURE | -0.5 | × verification_confidence |
+| MALICIOUS_BEHAVIOR | -0.8 | × damage_estimate / network_daily_volume |
+| NETWORK_DISAGREEMENT | -0.3 | × stake_at_risk / total_stake |
+
+**Impact multiplier calculation**:
+
+```
+impact_multiplier = clamp(
+  log(1 + transaction_value / BASELINE_TRANSACTION) ×
+  log(1 + resources_affected / BASELINE_RESOURCES) ×
+  duration_factor,
+  MIN_IMPACT_MULTIPLIER,
+  MAX_IMPACT_MULTIPLIER
+)
+
+duration_factor = 1.0 + (violation_duration / BASELINE_DURATION)
+```
+
+**Context multiplier for repeat offenders**:
+
+```
+context_multiplier = 1.0 + (repeat_count × REPEAT_PENALTY_RATE)
+
+Where repeat_count = number of similar violations in REPEAT_LOOKBACK_DAYS
+```
+
+**Gray area examples**:
+
+| Scenario | Base | Impact | Context | Final Score |
+|----------|------|--------|---------|-------------|
+| Small resource mismatch, first offense | -0.3 | 0.5 | 1.0 | -0.15 |
+| Large resource mismatch, first offense | -0.3 | 1.5 | 1.0 | -0.45 |
+| Small mismatch, 3rd offense | -0.3 | 0.5 | 1.3 | -0.20 |
+| Massive fraud, first offense | -0.8 | 2.0 | 1.0 | -1.0 (capped) |
+
+**Measurable parameters** (determined empirically):
+
+| Parameter | Description | How to Measure |
+|-----------|-------------|----------------|
+| BASELINE_TRANSACTION | Median transaction value | 30-day rolling median |
+| BASELINE_RESOURCES | Typical resources per session | Network statistics |
+| BASELINE_DURATION | Expected session duration | Historical average |
+| REPEAT_PENALTY_RATE | How much worse repeats are | Simulation tuning |
+| MIN_IMPACT_MULTIPLIER | Floor for minor infractions | Policy decision |
+| MAX_IMPACT_MULTIPLIER | Cap for severe infractions | Policy decision |
+
+**Benefits of parameterized severity**:
+
+1. **Proportional punishment**: Small mistakes don't destroy trust
+2. **Deterrence scales**: Larger attacks risk larger penalties
+3. **Tunable via governance**: Parameters can adjust as network evolves
+4. **Empirically measurable**: All factors are observable on-chain
+5. **No false binaries**: Every infraction has appropriate gray area
+
+---
+
+**Score interpretation** (after applying multipliers):
+```
+-1.0: Maximum severity (capped)
+-0.5 to -0.8: Significant problem requiring investigation
+-0.2 to -0.5: Moderate issue, normal decay applies
+-0.1 to -0.2: Minor issue, quick recovery possible
+ 0.0: Neutral (no assertion needed)
++0.2 to +0.5: Good/very good behavior
++1.0: Maximum positive (capped)
+```
+
+These represent computed scores after applying impact and context multipliers.
+
+### 3.2 Accuser Credibility
+
+Credibility is simply a function of trust. Everything else emerges from the solver.
+
+```
+credibility(accuser) = log(1 + T_accuser) / log(1 + T_REFERENCE)
+```
+
+This means:
+- Low trust accusers have low credibility
+- High trust accusers have credibility > 1.0
+- Credibility grows logarithmically (diminishing returns)
+
+**Why this is sufficient:**
+
+The accuser's trust already incorporates all penalties:
+- Refuted accusations → trust penalty (Section 4.4)
+- Accusation spam → trust penalty (Section 4.4)
+- Targeting/harassment → trust penalty (Section 4.4)
+- Coordination with others → trust penalty via similarity detection (Section 4.2)
+- Sybil cluster membership → trust divided by cluster size (Section 4.1)
+
+Bad accusers lose trust. Lower trust = lower credibility. Their future accusations carry less weight. The system is self-correcting through the iterative solver—no separate accuracy tracking needed.
+
+### 3.3 Unclassified Assertions
+
+Only high-trust participants can file UNCLASSIFIED assertions:
+
+```
+can_file_unclassified(accuser) = T_accuser > UNCLASSIFIED_THRESHOLD
+```
+
+This allows testing new violation categories before formalizing them.
+
+### 3.4 Accusations as Verification Signals
+
+Accusations don't directly damage trust. They signal that a subject should be verified more carefully by others.
+
+**Single accusation rule:**
+```
+For each (accuser, subject) pair:
+  only the FIRST accusation in a time window has effect
+  subsequent accusations are ignored until window expires
+
+Window duration = ACCUSATION_WINDOW
+```
+
+**Accusation triggers verification:**
+```
+When subject S receives accusation:
+  verification_frequency(S) increases temporarily
+  other participants who transact with S are expected to verify more carefully
+  verification results (pass/fail) are the actual trust signal
+```
+
+**Resolution outcomes:**
+
+```
+If others verify S and find problems:
+  - S's trust drops (from failed verifications, not from accusation)
+  - Accuser's credibility rises (accusation was accurate)
+
+If others verify S and find nothing wrong:
+  - S's trust is unaffected (or rises slightly from successful verifications)
+  - Accuser's credibility drops (accusation was inaccurate)
+  - Accuser marked as having "pending unverified accusation" against S
+```
+
+**Pending accusation penalty:**
+```
+If accuser has pending unverified accusation against subject:
+  - Cannot make new accusations against subject
+  - Future accusations against ANY target are weighted less
+  - Must wait for window to expire or for others to verify
+
+unverified_accusation_penalty = count(pending_unverified) × PENDING_PENALTY_WEIGHT
+```
+
+**Why this works:**
+
+1. **Cannot spam accusations** - Only first one counts per window
+2. **Burden shifts to network** - Others verify, not accuser repeating
+3. **Accuser has skin in game** - Wrong accusations hurt credibility
+4. **Subject gets fair hearing** - Increased verification, not immediate punishment
+5. **Manufactured crisis fails** - Attacker can accuse once, but if victim passes verification, attacker loses credibility
+
+### 3.5 Verification Frequency Adjustment
+
+Accusations increase verification sampling rate for the subject.
+
+```
+accusation_boost(subject) = Σ (credibility(accuser) × recency(accusation))
+
+adjusted_rate(subject) = min(
+  BASE_VERIFICATION_RATE × (1 + accusation_boost),
+  MAX_VERIFICATION_RATE
+)
+```
+
+The subject either:
+- Passes increased verification → vindicated, accusers lose credibility
+- Fails increased verification → trust drops from failures, accusers gain credibility
+
+### 3.6 Transaction History Requirement
+
+Can only accuse providers you've actually transacted with.
+
+```
+can_accuse(accuser, subject) =
+  exists transaction where accuser was consumer and subject was provider
+  AND transaction.day > subject.creation_day
+
+accusation_weight_modifier = min(transaction_count(accuser, subject) / MIN_TRANSACTIONS_FOR_FULL_WEIGHT, 1.0)
+```
+
+This prevents:
+- Random attacks on competitors you've never used
+- Manufactured crisis by outsiders
+- Sybil swarm accusations (sybils would need to actually transact first)
+
+---
+
+## 4. Statistical Detection
+
+### 4.1 Sybil Cluster Detection
+
+Detect tightly-connected subgraphs with unusual patterns.
+
+**Build transaction graph:**
+```
+G = (V, E) where:
+  V = all identities
+  E = edges weighted by transaction volume between pairs
+```
+
+**Compute clustering coefficient:**
+```
+clustering(i) = (edges among neighbors of i) / (possible edges among neighbors)
+```
+
+**Detect suspicious clusters:**
+```
+For each connected component C:
+  internal_volume = Σ transactions within C
+  external_volume = Σ transactions between C and rest of network
+
+  isolation_score = internal_volume / (internal_volume + external_volume)
+
+  if isolation_score > ISOLATION_THRESHOLD and |C| > 1:
+    mark C as suspicious cluster
+```
+
+**Cluster weight applied to trust:**
+```
+cluster_weight(i) = 1.0 if i not in suspicious cluster
+cluster_weight(i) = 1.0 / |cluster| if i in suspicious cluster
+
+Effect: Trust from within-cluster transactions is divided among cluster members.
+```
+
+### 4.2 Behavioral Similarity Detection
+
+Detect identities that behave too similarly.
+
+**Feature vector for each identity:**
+```
+features(i) = [
+  transaction_timing_histogram,     # When do they transact?
+  assertion_timing_histogram,       # When do they accuse?
+  counterparty_distribution,        # Who do they interact with?
+  resource_class_distribution,      # What do they rent?
+  session_duration_distribution,    # How long are sessions?
+]
+```
+
+**Similarity score:**
+```
+similarity(i, j) = cosine_similarity(features(i), features(j))
+```
+
+**Similarity penalty:**
+```
+For pairs with similarity > SIMILARITY_THRESHOLD:
+  similarity_penalty(i) = Σ_j max(0, similarity(i,j) - SIMILARITY_THRESHOLD)
+
+  effective_trust(i) = T(i) / (1 + similarity_penalty(i))
+```
+
+### 4.3 Coordination Detection
+
+Detect accusers who act in coordination.
+
+**Temporal correlation:**
+```
+For each pair of accusers (i, j):
+  accusations_i = list of (accused, timestamp) by i
+  accusations_j = list of (accused, timestamp) by j
+
+  temporal_correlation = correlation of timestamps when both accuse same target
+```
+
+**Target correlation:**
+```
+target_overlap(i, j) = |targets(i) ∩ targets(j)| / |targets(i) ∪ targets(j)|
+```
+
+**Coordination score:**
+```
+coordination(i) = max over all j of: temporal_correlation(i,j) × target_overlap(i,j)
+```
+
+High coordination → reduced credibility (see Section 3.2).
+
+### 4.4 Assertion Analysis
+
+Assertions themselves are analyzed for accuracy and abuse patterns.
+
+**Assertion accuracy:**
+```
+For each assertion with score S about subject X:
+
+  time_passes...
+
+  X's trust trajectory reveals ground truth:
+    - If X's trust dropped significantly → negative assertions were accurate
+    - If X's trust remained stable/grew → negative assertions were inaccurate
+    - If X later had verified violations → positive assertions were inaccurate
+    - If X continued good behavior → positive assertions were accurate
+
+  divergence = S - normalized_outcome
+
+  If |divergence| > ACCURACY_THRESHOLD:
+    accuracy_penalty = |divergence| × DIVERGENCE_PENALTY_WEIGHT
+```
+
+**Asserter trust impact:**
+```
+For each asserter i:
+  accurate_count = assertions where |divergence| < ACCURACY_THRESHOLD
+  inaccurate_count = assertions where |divergence| >= ACCURACY_THRESHOLD
+
+  accuracy_ratio = accurate_count / (accurate_count + inaccurate_count + 1)
+
+  If accuracy_ratio < MIN_ACCURACY_RATIO:
+    T_accuracy_penalty = (MIN_ACCURACY_RATIO - accuracy_ratio) × ACCURACY_PENALTY_WEIGHT
+```
+
+**Assertion spam detection:**
+```
+For each asserter i:
+  assertion_rate = assertions in last 30 days
+  network_assertion_rate = average assertions per identity per 30 days
+
+  if assertion_rate > SPAM_THRESHOLD × network_assertion_rate:
+    spam_penalty = (assertion_rate / network_assertion_rate - SPAM_THRESHOLD) × SPAM_PENALTY_WEIGHT
+```
+
+**Targeted assertion detection:**
+```
+For each asserter i:
+  negative_assertions = assertions with score < 0
+  targets = set of identities with negative assertions from i
+  assertions_per_target = distribution
+
+  concentration = max(assertions_per_target) / sum(assertions_per_target)
+
+  if concentration > TARGETING_THRESHOLD and max(assertions_per_target) > MIN_ASSERTIONS_FOR_TARGETING:
+    targeting_penalty = concentration × TARGETING_PENALTY_WEIGHT
+```
+
+**Unsupported assertion penalty:**
+```
+For assertions without evidence_hash or with invalid evidence:
+  unsupported_penalty = UNSUPPORTED_PENALTY_BASE × |score|
+```
+
+### 4.5 Asserter Trust Adjustment
+
+Total assertion-related trust adjustment for asserter:
+
+```
+T_asserter_penalty = -(
+  T_accuracy_penalty +        # From inaccurate assertions
+  spam_penalty +              # From assertion spam
+  targeting_penalty +         # From targeting single identity
+  unsupported_penalty         # From unsupported assertions
+)
+
+This contributes to T_assertions for the asserter (as a negative assertion about themselves).
+```
+
+Bad asserters hurt themselves. Inaccurate positive assertions (vouching for bad actors) and inaccurate negative assertions (false accusations) both result in penalties.
+
+### 4.6 Anomaly Detection
+
+Flag unusual patterns for human review.
+
+**Volume anomalies:**
+```
+For each identity i:
+  recent_volume = transactions in last ANOMALY_WINDOW days
+  historical_volume = average transactions per ANOMALY_WINDOW days
+
+  if recent_volume > historical_volume × VOLUME_SPIKE_THRESHOLD:
+    flag as anomaly
+```
+
+**Accusation anomalies:**
+```
+For each identity i:
+  accusations_received_rate = accusations in last ACCUSATION_RATE_WINDOW days
+
+  if accusations_received_rate > ACCUSATION_SPIKE_THRESHOLD × network_average:
+    flag for review
+```
+
+Anomalies don't automatically affect trust—they're signals for investigation.
+
+---
+
+## 5. Sessions and Verification
+
+This is an ephemeral compute swarm. Either party can terminate at any time. Verification is about anti-collusion, not quality assurance.
+
+### 5.1 Session Model
+
+```
+Session lifecycle:
+  1. Consumer requests resources (bid)
+  2. Provider accepts (ask matched)
+  3. Escrow locked
+  4. Compute runs
+  5. Session terminates (by either party, or completion)
+  6. Escrow released based on outcome
+```
+
+**Either party can terminate at any time.** This is the fundamental quality defense:
+- Consumer sees bad quality → kills job → finds another provider
+- Provider has resource constraints → kills VM → consumer finds another
+- No one is forced to continue a bad session
+
+### 5.2 Session Outcomes
+
+```
+Session outcome types:
+
+COMPLETED_NORMAL
+  - Session ran for expected duration
+  - Consumer released escrow
+  - Trust credit for provider
+
+CONSUMER_TERMINATED_EARLY
+  - Consumer killed session before completion
+  - Partial escrow release (pro-rated)
+  - Neutral signal (consumer's choice)
+
+PROVIDER_TERMINATED
+  - Provider killed consumer's VM
+  - No escrow release for remaining time
+  - Tracked as reliability signal (not punishment)
+
+SESSION_FAILED
+  - Technical failure (network, hardware)
+  - Investigated if pattern emerges
+  - No automatic penalty
+```
+
+### 5.3 Market Defense Against Quality Degradation
+
+Quality assurance is the consumer's job, not the trust system's:
+
+```
+Bad provider delivers poor quality
+  → Consumer notices (they're using the compute)
+  → Consumer terminates session
+  → Consumer finds another provider
+  → Bad provider loses business naturally
+  → Transaction volume drops
+  → Trust decays from reduced activity
+```
+
+The trust system tracks **what happened**, not **how good it was**. Quality is implicit in:
+- Do consumers return to this provider?
+- Do sessions complete or terminate early?
+- What's the provider's retention rate?
+
+### 5.4 Verification Purpose: Anti-Collusion
+
+Verification proves transactions are **real**, not that they're **good**:
+
+```
+Verification questions:
+  - Did this VM actually run? (not a fake transaction)
+  - Did the consumer actually use resources? (not self-dealing)
+  - Are these two parties actually independent? (not sybils)
+  - Does the transaction volume match claimed resources? (not inflated)
+```
+
+Random sampling catches collusion. Quality is caught by consumer exit.
+
+### 5.5 Verification Initiation
+
+Any participant can initiate a verification on any transaction:
+- **Random verification** - Participant chooses to verify a random transaction (civic duty)
+- **Consumer-triggered** - Consumer verifies their own session
+
+Both work the same way. The initiator sends verification requests in secret to uninvolved parties.
+
+**Initiating a verification:**
+```
+Initiator selects transaction to verify
+Initiator sends secret requests to panel of uninvolved parties
+Panel members are not revealed to transaction parties
+```
+
+**Panel selection (by initiator):**
+```
+eligible_verifiers = identities where:
+  trust > VERIFIER_THRESHOLD
+  no_transaction_history(verifier, consumer)
+  no_transaction_history(verifier, provider)
+  not in same cluster as either party
+
+panel = weighted_random_sample(eligible_verifiers,
+                               size=VERIFICATION_PANEL_SIZE,
+                               weight=trust)
+```
+
+### 5.6 Verification Voting (Commit-Reveal)
+
+Votes are secret until all collected. Transaction parties cannot see early results.
+
+```
+Phase 1 - COMMIT:
+  Each panelist submits: hash(vote + secret_nonce)
+  Commits recorded but votes hidden
+  Provider/consumer cannot see how voting is going
+
+Phase 2 - REVEAL (after all commits or REVEAL_DEADLINE):
+  Panelists reveal: vote + secret_nonce
+  Hash verified against commit
+  Votes tallied
+```
+
+**Outcome determination:**
+```
+outcome = PASS if votes_pass > votes_fail else FAIL
+
+Trust impact:
+  unanimous_pass:   full positive credit
+  majority_pass:    partial positive credit
+  majority_fail:    trust penalty (severity based on margin)
+  unanimous_fail:   larger trust penalty
+```
+
+**Panelist accountability:**
+```
+Panelists who vote against majority:
+  - If their minority votes correlate with later problems → credibility boost
+  - If consistently wrong → credibility drops
+```
+
+### 5.7 What Verifiers Check
+
+```
+1. Did the session actually occur?
+2. Did resources match what was claimed in the bid?
+3. Are the parties independent (not sybils)?
+4. Is the transaction volume plausible?
+```
+
+### 5.8 Verification as Network Service
+
+Verification is civic duty. No fee. Free riders are detectable.
+
+**The key metric: verification origination**
+```
+Everyone is expected to randomly initiate verifications.
+How many verifications you originate is tracked.
+
+If you benefit from network security but never originate verifications,
+you're free-riding. This is visible and hurts your profile score.
+```
+
+Consumer-triggered checks are just one reason to initiate. Good citizens also initiate random verifications to keep the network secure.
+
+### 5.9 False Positive Handling
+
+```
+Voting prevents single-verifier false flags.
+Majority required for any trust impact.
+Pattern of failed checks matters more than single result.
+Provider's history provides context.
+```
+
+### 5.10 Profile Score
+
+The profile score aggregates behavioral signals to assess network citizenship.
+
+**Components:**
+
+```
+profile_score(identity) = Σ (component_i × weight_i)
+
+Components:
+  verification_origination:    weight = WEIGHT_VERIFICATION_ORIGINATION
+  session_completion:          weight = WEIGHT_SESSION_COMPLETION
+  consumer_retention:          weight = WEIGHT_CONSUMER_RETENTION
+  transaction_diversity:       weight = WEIGHT_TRANSACTION_DIVERSITY
+  accusation_record:           weight = WEIGHT_ACCUSATION_RECORD
+  activity_consistency:        weight = WEIGHT_ACTIVITY_CONSISTENCY
+```
+
+**Verification Origination:**
+```
+Tracks how many verifications you initiate vs your network activity.
+
+verifications_originated = number of verifications you initiated
+expected_verifications = your_transaction_volume × EXPECTED_VERIFICATION_RATE
+
+origination_ratio = verifications_originated / expected_verifications
+
+If < ORIGINATION_FREERIDER_THRESHOLD:   score = 0.0 (severe free-riding)
+If < ORIGINATION_BELOW_AVG_THRESHOLD:   score = 0.5 (below average)
+If ≥ ORIGINATION_GOOD_THRESHOLD:        score = 1.0 (good citizen)
+If > ORIGINATION_ACTIVE_THRESHOLD:      score = ORIGINATION_ACTIVE_BONUS (active contributor)
+```
+
+High activity but low verification origination = free rider.
+The network's security depends on participants initiating checks.
+
+**Session Completion:**
+```
+session_completion = normal_completions / total_sessions
+
+Measures reliability for providers, reasonable behavior for consumers.
+
+score = session_completion  # 0.0 to 1.0 directly
+```
+
+**Consumer Retention:**
+```
+For providers:
+  unique_returning_consumers = consumers who transacted more than once
+  total_unique_consumers = all consumers ever
+
+  consumer_retention = unique_returning_consumers / total_unique_consumers
+
+Returning consumers signal quality without needing explicit ratings.
+
+score = min(consumer_retention × RETENTION_SCORE_MULTIPLIER, 1.0)
+```
+
+**Transaction Diversity:**
+```
+For each identity:
+  unique_counterparties = distinct parties transacted with
+  total_transactions = all transactions
+
+  diversity = unique_counterparties / sqrt(total_transactions)
+
+Low diversity suggests sybil behavior or captive relationships.
+
+score = min(diversity, 1.0)
+```
+
+**Accusation Record:**
+```
+accusations_made_accurate = accusations where subject later failed checks
+accusations_made_inaccurate = accusations where subject passed checks
+accusations_received_verified = accusations against me that were verified true
+accusations_received_refuted = accusations against me that were not verified
+
+accuracy = accurate / (accurate + inaccurate) if any made, else 0.5
+defense = refuted / (verified + refuted) if any received, else 0.5
+
+accusation_record = (accuracy + defense) / 2
+score = accusation_record
+```
+
+**Activity Consistency:**
+```
+Measures steady participation vs burst/dormant patterns.
+
+activity_variance = stddev(monthly_transaction_counts) / mean(monthly_transaction_counts)
+
+Consistent activity is less suspicious than bursts.
+
+score = 1.0 / (1.0 + activity_variance)
+```
+
+**Profile Score Impact:**
+```
+Profile score modifies effective trust:
+
+effective_trust = base_trust × profile_modifier
+
+profile_modifier = PROFILE_MIN_MODIFIER + (profile_score / max_possible_profile_score)
+
+Range: PROFILE_MIN_MODIFIER (terrible) to PROFILE_MAX_MODIFIER (excellent)
+```
+
+### 5.11 Provider Reliability Signal
+
+Provider-terminated sessions aren't punished but are tracked:
+
+```
+reliability_score(provider) = completed_sessions / total_sessions
+
+This affects:
+  - Consumer's willingness to use provider (market signal)
+  - Bid matching (reliability shown alongside price)
+  - NOT direct trust score (that would punish legitimate resource constraints)
+```
+
+Low reliability is a market signal, not a trust violation. Some providers may offer cheap but unreliable compute - that's a valid market position.
+
+---
+
+## 6. The Iterative Trust Solver
+
+Trust computation is iterative because credibility depends on trust.
+
+### 6.1 Fixed Point Equation
+
+```
+T = f(chain_data, T)
+
+Where:
+  T is the vector of all trust scores
+  f computes trust from chain data, using T for credibility weights
+```
+
+### 6.2 Iterative Solution
+
+```
+Initialize:
+  T^(0) = T_age + T_transactions (no assertion component yet)
+
+Iterate:
+  For each identity i:
+    credibility_j = g(T^(k)_j) for all asserters j
+    T_assertions_i = compute from assertions weighted by credibility
+    T^(k+1)_i = T_age_i + T_transactions_i + T_assertions_i
+
+  Apply cluster detection and similarity penalties
+
+Converge when:
+  ||T^(k+1) - T^(k)|| / ||T^(k)|| < CONVERGENCE_EPSILON
+
+  max_iterations = SOLVER_MAX_ITERATIONS
+```
+
+### 6.3 Convergence Guarantee
+
+Convergence is guaranteed because:
+1. T_age and T_transactions are fixed (from chain data)
+2. Credibility is bounded: log(1+T)/log(1+T_ref) is bounded
+3. Violation impact is bounded by sum of severities
+4. Decay ensures old data has diminishing impact
+
+The system is a contraction mapping under reasonable parameters.
+
+---
+
+## 7. Coin Velocity Requirements
+
+Hoarding coins signals intent to exit. High trust requires economic participation.
+
+### 7.1 Balance-to-Activity Ratio
+
+```
+runway(i) = coin_balance(i) / avg_daily_outflow(i)
+
+avg_daily_outflow = (payments + burns + transfers_out) over last VELOCITY_LOOKBACK_DAYS / VELOCITY_LOOKBACK_DAYS
+```
+
+**Interpretation:**
+- Low runway: Normal reserves relative to activity
+- High runway: Suspicious accumulation with low activity
+- Infinite runway: Very suspicious - holding coins with zero outflow
+
+### 7.2 Hoarding Penalty
+
+```
+if runway(i) > RUNWAY_THRESHOLD:
+  hoarding_penalty = log(runway(i) / RUNWAY_THRESHOLD) × HOARDING_PENALTY_WEIGHT
+
+  effective_trust(i) = T(i) / (1 + hoarding_penalty)
+```
+
+Trust reduction scales logarithmically with runway excess. Higher runway = more trust reduction.
+
+### 7.3 Exemptions
+
+Hoarding penalty does not apply to:
+- New identities (< NEW_IDENTITY_EXEMPTION_DAYS old) still accumulating
+- Identities with total lifetime volume below minimum threshold
+
+```
+hoarding_exempt(i) = age(i) < NEW_IDENTITY_EXEMPTION_DAYS OR lifetime_volume(i) < MIN_VOLUME_FOR_HOARDING_CHECK
+```
+
+### 7.4 Disposal Mechanism
+
+To reduce balance without gaining trust, identities can burn coins via disposal bids.
+
+```
+Disposal bid:
+  price = negative (provider burns)
+  trust_multiplier = 0        # No trust gained
+  purpose = "disposal"
+```
+
+This allows:
+- Reducing balance to avoid hoarding penalty
+- Donating compute to research without gaming trust
+- Economic participation without strategic benefit
+
+See Section 10.4 for full disposal bid specification.
+
+---
+
+## 8. Transaction Security
+
+Large transactions require additional protection against exit scams.
+
+### 8.1 Transaction Size Classification
+
+```
+transaction_value = payment_amount + resource_value
+
+small_transaction:  value < SMALL_TRANSACTION_THRESHOLD
+medium_transaction: SMALL_TRANSACTION_THRESHOLD <= value < LARGE_TRANSACTION_THRESHOLD
+large_transaction:  value >= LARGE_TRANSACTION_THRESHOLD
+```
+
+### 8.2 Delayed Release Escrow
+
+Large transactions use time-locked escrow release.
+
+```
+For large_transaction:
+  immediate_release = payment × IMMEDIATE_RELEASE_FRACTION
+  delayed_release = payment × (1 - IMMEDIATE_RELEASE_FRACTION)
+
+  delayed_release unlocks after:
+    delay = max(ESCROW_BASE_DELAY × (1 - trust_factor), ESCROW_MIN_DELAY)
+    trust_factor = min(T_provider / TRUST_FOR_MIN_DELAY, 1.0)
+```
+
+Delay scales inversely with provider trust. Higher trust = faster release.
+
+### 8.3 Delayed Release Conditions
+
+Delayed portion releases automatically unless:
+
+```
+release_blocked if:
+  - Consumer files VERIFICATION_FAILURE assertion before release_time
+  - Evidence hash provided and validated
+  - Dispute resolution in progress
+
+If blocked:
+  - Funds held until dispute resolved
+  - Resolved in consumer favor: funds returned
+  - Resolved in provider favor: funds released + consumer penalty
+```
+
+### 8.4 Adaptive Thresholds
+
+Thresholds adjust based on identity's transaction history.
+
+```
+effective_large_threshold(i) = LARGE_THRESHOLD × (1 + log(1 + transaction_count(i)) / 10)
+```
+
+Identities with extensive history can transact larger amounts without delay.
+
+---
+
+## 9. Payment Split
+
+Payment approaches 100% to provider but never reaches it.
+
+### 9.1 Asymptotic Payment Function
+
+```
+provider_share = 1 - 1/(1 + K_PAYMENT × T)
+```
+
+Provider share approaches 100% asymptotically as trust increases, but never reaches it. K_PAYMENT controls how quickly the curve approaches 100%.
+
+### 9.2 Minimum Burn
+
+Even at infinite trust, there's always some burn:
+
+```
+burn = total_payment × (1 - provider_share)
+     = total_payment / (1 + K_PAYMENT × T)
+
+As T → ∞, burn → 0 but never reaches 0
+```
+
+### 9.3 Delegate Fees
+
+```
+delegate_fee = total_payment × DELEGATE_FEE_RATE × num_delegates
+provider_payment = (total_payment - delegate_fee) × provider_share
+burn = total_payment - delegate_fee - provider_payment
+```
+
+---
+
+## 10. Daily Distribution
+
+### 10.1 Distribution Share
+
+```
+daily_share(i) = effective_trust(i) / Σ_j effective_trust(j) × DAILY_MINT
+
+effective_trust(i) = T(i) × activity_factor(i) × cluster_weight(i)
+```
+
+### 10.2 Activity Factor
+
+Must be active to receive distribution:
+
+```
+activity_factor = min(recent_transactions / ACTIVITY_THRESHOLD, 1.0)
+
+recent = ACTIVITY_LOOKBACK_DAYS
+```
+
+### 10.3 Multi-Identity Attack Analysis
+
+**Important distinction**: The system is designed to prevent *honest activity* from benefiting by splitting across identities. However, **attacks that exploit trust can benefit from multiple identities**. This section documents both cases.
+
+#### 10.3.1 Honest Activity Splitting (No Benefit)
+
+**Design requirement**: Splitting identical *honest* activity across N identities must yield ≤ reward of single identity doing all activity.
+
+**Proof for honest activity**:
+
+Consider an attacker with total work capacity W who can either:
+- **Single identity**: Do all W work as one identity
+- **Sybil attack**: Split work as W/N across N identities
+
+**Case A: Single identity**
+```
+T_single = f(W)                    # Trust from work W
+share_single = T_single / (T_total + T_single) × MINT
+```
+
+**Case B: N Sybil identities (detected as cluster)**
+```
+T_each = f(W/N)                    # Trust from work W/N per identity
+cluster_weight = 1/N               # Cluster penalty from detection
+
+effective_each = T_each × (1/N)    # Each identity's effective trust
+effective_total = N × T_each × (1/N) = T_each
+
+share_total = T_each / (T_total + T_each) × MINT
+```
+
+**For Sybil attack to be unprofitable, we need**:
+```
+share_total ≤ share_single
+
+T_each / (T_total + T_each) ≤ T_single / (T_total + T_single)
+```
+
+**This holds when f(W/N) ≤ f(W)**, which is true for any non-negative trust function where more work = more trust.
+
+**Additional protections for undetected Sybils**:
+
+Even if Sybils evade cluster detection, these mechanisms ensure no benefit:
+
+1. **Sublinear activity factor**: Activity factor caps at 1.0, so splitting 100 transactions across 10 identities (10 each) might not hit the ACTIVITY_THRESHOLD in each, while single identity easily exceeds it.
+
+2. **Age derate**: Each new identity starts at age_derate = 0 and takes AGE_MATURITY_DAYS to reach 1.0. Single identity has full derate immediately.
+
+3. **Transaction diversity penalty**: Sybils transacting with each other have low diversity scores.
+
+4. **Verification overhead**: Each identity must be independently verified, increasing attacker cost.
+
+**Formal requirement for parameters**:
+```
+For any work W and any N > 1:
+  Σᵢ₌₁ᴺ reward(W/N, identity_i) ≤ reward(W, single_identity)
+
+Where reward() incorporates:
+  - Trust from work
+  - Activity factor
+  - Age derate
+  - Cluster weight (if detected)
+  - Profile score
+```
+
+This should be validated empirically through simulation with various attack scenarios.
+
+#### 10.3.2 Trust Exploitation Attacks (Multi-Identity DOES Benefit)
+
+**Critical acknowledgment**: When an attack exploits accumulated trust, having multiple identities **increases total reward**. These are known attack vectors requiring explicit defense.
+
+**Attack Class 1: Exit Scam with Value Transfer**
+
+```
+Attack pattern:
+  1. Build trust on identity A over time (legitimate activity)
+  2. Accumulate coins on identity A (from payments, distribution)
+  3. Create identity B, mature it to reduce transfer burns
+  4. Transfer coins from A to B (before attack)
+  5. Execute exit scam on A (exploit trust for maximum extraction)
+  6. A's trust destroyed, but value preserved in B
+
+Benefit from multiple identities:
+  Single identity: Gain from scam, lose all accumulated coins when trust drops
+  Multiple identities: Gain from scam + preserve previously earned coins in B
+```
+
+**Defense vectors to explore**:
+- Retroactive clawback of transfers preceding trust collapse
+- Transfer velocity limits based on trust trajectory
+- Delayed transfer finality for large amounts
+
+**Attack Class 2: Trust Arbitrage Across Communities**
+
+```
+Attack pattern:
+  1. Build trust with Community A through honest behavior
+  2. Create separate identity B in Community A
+  3. Use A's reputation to gain access to Community C
+  4. Exploit Community C (they see A's global trust)
+  5. Transfer gains to B before C's accusations propagate back
+
+Benefit from multiple identities:
+  Single identity: Exploitation damages trust everywhere
+  Multiple identities: Exploitation damages A, B continues unaffected
+```
+
+**Defense vectors to explore**:
+- Local trust model (Section 13) limits cross-community trust transfer
+- Longer propagation windows before trust can be leveraged in new communities
+- Accusation propagation through network bridges
+
+**Attack Class 3: Sacrificial Trust Burning**
+
+```
+Attack pattern:
+  1. Build moderate trust on N identities (A₁, A₂, ... Aₙ)
+  2. Use one identity (A₁) to vouch for malicious actor M
+  3. M exploits network, A₁ takes credibility hit
+  4. A₂...Aₙ continue operating, repeat with A₂
+  5. Cycle through identities, each enabling one exploitation
+
+Benefit from multiple identities:
+  Single identity: One exploitation, then trusted status lost
+  Multiple identities: N exploitations before all identities burned
+```
+
+**Defense vectors to explore**:
+- Cluster detection for identities with correlated vouching patterns
+- Exponential penalty for vouching for later-exposed bad actors
+- Cool-down periods after any vouched identity causes damage
+
+**Attack Class 4: Distributed Accusation Attacks**
+
+```
+Attack pattern:
+  1. Create N identities, build minimum trust on each
+  2. Coordinate accusations against target from all N
+  3. Each individual accusation has low credibility
+  4. Combined effect may trigger increased verification/scrutiny
+  5. Target suffers reputation damage or operational friction
+
+Benefit from multiple identities:
+  Single identity: Low-credibility accusation easily dismissed
+  Multiple identities: Appearance of consensus, harder to dismiss
+```
+
+**Defense vectors to explore**:
+- Coordination detection (Section 4.3) for synchronized accusations
+- Inverse credibility for accusations from similar behavioral profiles
+- Accusation rate limiting per target across all accusers
+
+**Attack Class 5: Insurance/Hedging via Identity Diversity**
+
+```
+Attack pattern:
+  1. Operate N identities with different risk profiles
+  2. Some identities take high-risk, high-reward actions
+  3. Some identities maintain conservative, trust-building behavior
+  4. Failed risky actions don't contaminate conservative identities
+  5. Successful risky actions can transfer value to conservative ones
+
+Benefit from multiple identities:
+  Single identity: Must choose one risk profile
+  Multiple identities: Portfolio approach, hedge across profiles
+```
+
+**Defense vectors to explore**:
+- This may be acceptable behavior (legitimate risk management)
+- If unacceptable, requires behavioral clustering across identities
+- Transfer pattern analysis to detect value consolidation
+
+#### 10.3.3 Absolute vs Tolerated Multi-Identity Protections
+
+**Design principle**: Some protections must be absolute (no benefit from splitting), while others may tolerate some multi-identity advantage if the cost of enforcement exceeds the benefit.
+
+**ABSOLUTE PROTECTIONS (Must Hold)**
+
+These protections must mathematically guarantee no benefit from identity splitting:
+
+**1. UBI/Daily Distribution - ABSOLUTE**
+
+```
+Untrustworthy behavior in ANY identity reduces UBI allocation across ALL linked identities.
+
+Implementation:
+  - Identity linkage detected via: transfer patterns, behavioral clustering,
+    timing correlation, network topology
+  - When linkage detected: effective_trust for distribution = min(T across linked set)
+  - Alternatively: distribution computed as if linked identities were single entity
+
+Result:
+  For identities {A, B, C} detected as linked:
+    combined_distribution ≤ max(distribution(A), distribution(B), distribution(C))
+
+  No identity splitting can increase total UBI received.
+```
+
+**2. Trust from Activity - ABSOLUTE**
+
+```
+Same work split across N identities yields ≤ trust of single identity.
+
+Already proven in Section 10.3.1:
+  - Cluster detection divides trust by cluster size
+  - Activity factor caps prevent threshold gaming
+  - Age derate penalizes new identities
+```
+
+**3. Accusation Credibility - ABSOLUTE**
+
+```
+N low-credibility accusations should not sum to high credibility.
+
+Implementation:
+  - Coordination detection (Section 4.3) identifies linked accusers
+  - Linked accusers' credibility is not additive
+  - Only highest-credibility accuser counts, others are noise
+
+Result:
+  credibility(linked_set accusing X) = max(credibility(A), credibility(B), ...)
+  Not: sum(credibility(A) + credibility(B) + ...)
+```
+
+**TOLERATED ADVANTAGES (Acceptable Tradeoffs)**
+
+These areas may provide some multi-identity benefit, accepted as cost of not over-constraining legitimate use:
+
+**1. Risk Diversification - TOLERATED**
+
+```
+Operating multiple identities with different risk profiles is legitimate.
+
+Rationale:
+  - Businesses may have separate legal entities
+  - Individuals may separate personal/professional activities
+  - Over-enforcement would harm legitimate structure
+
+Constraint:
+  - Transfer burns still apply
+  - Each identity must independently build trust
+  - No identity can leverage another's trust directly
+```
+
+**2. Community Separation - TOLERATED**
+
+```
+Building trust in separate communities without cross-contamination.
+
+Rationale:
+  - Local trust model (Section 13) already limits trust transfer
+  - Communities that don't interact shouldn't share trust
+  - Legitimate use: operator in multiple regions
+
+Constraint:
+  - Trust arbitrage attacks still penalized when detected
+  - Bridge participants propagate reputation
+```
+
+**3. Recovery via New Identity - TOLERATED WITH PENALTY**
+
+```
+Starting fresh after trust damage, with significant cost.
+
+Rationale:
+  - People can rehabilitate
+  - Over-punishment reduces network participation
+  - New identity starts at age_derate = 0, takes time to mature
+
+Constraint:
+  - Old identity's coins trapped by transfer burns
+  - Age derate means new identity earns nothing initially
+  - Behavioral similarity may link to old identity
+```
+
+#### 10.3.4 Simulation Requirements
+
+These attack classes should be explicitly modeled in simulations:
+
+| Attack Class | Key Metrics | Success Criteria for Defense |
+|--------------|-------------|------------------------------|
+| Exit Scam + Transfer | Value preserved after scam | Clawback recovers >80% of transferred value |
+| Trust Arbitrage | Cross-community exploitation rate | Local trust limits exploitation to <10% of global trust attacks |
+| Sacrificial Burning | Exploitations per identity set | Cluster detection catches >90% of correlated vouchers |
+| Distributed Accusations | False positive rate on targets | Coordination detection nullifies >95% of coordinated attacks |
+| Insurance/Hedging | Risk-adjusted returns | No significant advantage vs single identity with same total capital |
+
+**Open research questions**:
+
+1. Can transfer graph analysis detect pre-attack value extraction?
+2. What's the minimum cluster size that evades behavioral similarity detection?
+3. How do we distinguish legitimate multi-identity use (e.g., business units) from attacks?
+4. Should some multi-identity strategies be accepted as legitimate risk management?
+
+---
+
+## 11. Donation and Negative Bids
+
+### 11.1 Zero-Price Donations
+
+```
+credit = base_credit × resource_weight × duration × verification_score
+```
+
+Same credit as commercial, just no payment.
+
+### 11.2 Negative-Price Donations (Provider Burns)
+
+```
+burn_bonus = min(|bid_price| / market_rate, MAX_BURN_RATIO)
+credit = base_credit × resource_weight × duration × verification_score × (1 + burn_bonus × BURN_MULTIPLIER)
+```
+
+### 11.3 Fiat-to-Trust Tracking
+
+The network tracks:
+
+```
+current_fiat_rate = observed cloud costs per resource-hour
+current_omc_rate = market rate in OMC per resource-hour
+burn_cap_rate = MAX_BURN_RATIO × current_omc_rate
+
+trust_per_dollar = (1 + MAX_BURN_RATIO × BURN_MULTIPLIER) × base_credit / current_fiat_rate
+```
+
+This is published for transparency about the cost of trust.
+
+### 11.4 Disposal Bids (Zero Trust Gain)
+
+For identities that want to reduce their coin balance without strategic benefit.
+
+```
+Disposal bid:
+  bid_type = "disposal"
+  price = negative (provider burns own coins)
+  trust_multiplier = DISPOSAL_TRUST_MULTIPLIER
+  verification = standard (still counts as real compute)
+
+credit = base_credit × resource_weight × duration × verification_score × DISPOSAL_TRUST_MULTIPLIER
+```
+
+**Why not zero?**
+
+Some minimal trust gain is appropriate because:
+1. Real compute was provided
+2. Verification still occurred
+3. Zero would create gaming opportunities (disposal then re-donate for full credit)
+
+DISPOSAL_TRUST_MULTIPLIER should be low enough that disposal is economically irrational for trust-building but useful for:
+- Reducing hoarding penalty exposure
+- Pure altruistic donation without strategic benefit
+- Established providers who don't need more trust
+
+### 11.5 Bid Type Summary
+
+| Bid Type | Price | Trust Multiplier | Use Case |
+|----------|-------|------------------|----------|
+| Commercial | Positive | 1.0 | Normal rental market |
+| Zero donation | Zero | 1.0 | Research donation, trust building |
+| Negative donation | Negative | 1.0 + burn_bonus × 1.5 | Accelerated trust building |
+| Disposal | Negative | 0.1 | Reduce balance, pure donation |
+
+---
+
+## 12. Transfer Burns
+
+Transfers between identities are taxed based on trust, preventing reputation laundering and incentivizing compute donation.
+
+### 12.1 Transfer Burn Rate
+
+```
+transfer_burn_rate = 1 / (1 + K_TRANSFER × min(T_sender, T_receiver))
+
+amount_received = amount_sent × (1 - transfer_burn_rate)
+```
+
+Uses the minimum trust of sender and receiver. Either party being untrusted triggers high burn. K_TRANSFER typically equals K_PAYMENT for consistency.
+
+### 12.2 Burn Rate Examples
+
+| Sender Trust | Receiver Trust | Burn Rate | 100 OMC becomes |
+|--------------|----------------|-----------|-----------------|
+| 0 | 0 | 100% | 0 OMC |
+| 0 | 500 | 100% | 0 OMC |
+| 500 | 0 | 100% | 0 OMC |
+| 50 | 50 | 67% | 33 OMC |
+| 100 | 100 | 50% | 50 OMC |
+| 500 | 500 | 17% | 83 OMC |
+| 1000 | 1000 | 9% | 91 OMC |
+
+### 12.3 Reputation Laundering Prevention
+
+Without transfer burns:
+1. Attacker builds trust on v1, accumulates coins
+2. Exploits v1, trust drops to 0
+3. Transfers coins to fresh identity v2
+4. Starts over with coins intact
+
+With transfer burns:
+1. Same as above...
+2. v1 (trust=0) tries to transfer to v2 (trust=0)
+3. Burn rate = 100%, v2 receives nothing
+4. Assets are trapped in burned identity
+
+### 12.4 New Entrant Economics
+
+Transfer burns create strong incentive to donate compute rather than buy coins.
+
+**Option A: Buy coins externally, transfer in**
+```
+$100 → buy 100 OMC from someone
+Transfer to new identity (trust=0)
+Burn rate ≈ 100%
+Result: 0 OMC, 0 trust
+```
+
+**Option B: Donate compute**
+```
+$100 → rent cloud compute
+Donate to network (zero-price bid)
+Verified compute builds trust
+Result: 0 OMC, but trust earned
+```
+
+**Option C: Donate with negative bid (if you have coins)**
+```
+Acquire some coins (with burn)
+Donate compute + burn coins (negative bid)
+Accelerated trust from burn bonus
+Result: coins burned, more trust earned
+```
+
+Option B is strictly better than Option A. The network rewards contribution over capital.
+
+### 12.5 Exemptions
+
+Transfer burns do NOT apply to:
+- Escrow transactions (consumer → escrow → provider) - these use payment share instead
+- Daily distribution - earned directly, no transfer
+- Burn transactions - coins are destroyed, not transferred
+
+Transfer burns DO apply to:
+- Peer-to-peer transfers
+- Withdrawals to external addresses (receiver trust = 0)
+- Any movement of coins between identities
+
+### 12.6 Economic Balance
+
+The system should be tuned so that:
+
+```
+cost_to_earn_trust_via_transfer > cost_to_earn_trust_via_donation
+
+Specifically:
+  OMC_burned_in_transfer / trust_gained < cloud_cost / trust_gained_from_donation
+```
+
+Since transfers to low-trust receivers burn nearly 100%, and donations at market rate give full trust credit, donations are always more efficient for new entrants.
+
+---
+
+## 13. Local Trust (Network-Weighted)
+
+Trust is not global. It propagates through the transaction graph.
+
+### 13.1 The Problem with Global Trust
+
+If trust is a single number visible to everyone, an attacker can:
+1. Build trust with Community A through honest behavior
+2. Approach Community B, who sees the global trust score
+3. Exploit Community B, who has no direct experience with the attacker
+
+This is the **trust arbitrage attack**. It works because Community B is trusting based on someone else's experience.
+
+### 13.2 Trust as Seen By Observer
+
+Each identity sees a different trust score for each other identity, based on their position in the network.
+
+```
+T(subject, observer) = T_direct(subject, observer) + T_transitive(subject, observer)
+```
+
+**Direct trust** comes from personal experience:
+```
+T_direct(subject, observer) = Σ transactions where observer was counterparty to subject
+                              × verification_score × recency_decay
+```
+
+**Transitive trust** comes through trusted intermediaries:
+```
+T_transitive(subject, observer) = Σ_intermediary (
+  T(intermediary, observer) × T(subject, intermediary) × TRANSITIVITY_DECAY
+)
+```
+
+### 13.3 Transitivity Decay
+
+Trust attenuates with each hop through the network.
+
+```
+effective_trust(subject, observer, path_length) =
+  raw_trust × TRANSITIVITY_DECAY^path_length
+```
+
+TRANSITIVITY_DECAY controls how quickly trust attenuates over network distance. Lower values mean trust is more local.
+
+### 13.4 Path-Based Trust Computation
+
+For observer O evaluating subject S:
+
+```
+1. Find all paths from O to S through transaction graph
+2. For each path P:
+   trust_contribution(P) = min(trust along each edge) × TRANSITIVITY_DECAY^|P|
+3. T(S, O) = max(trust_contribution(P) for all P up to MAX_PATH_LENGTH)
+```
+
+Using max (not sum) prevents gaming by creating many weak paths.
+
+### 13.5 Bootstrap for New Observers
+
+New identities with no transaction history see a baseline:
+
+```
+T(subject, new_observer) = T_global(subject) × NEW_OBSERVER_DISCOUNT
+```
+
+As the new observer builds their own transaction graph, their local view replaces the discounted global view.
+
+### 13.6 Implications for Trust Arbitrage
+
+With local trust, the arbitrageur in Community A has:
+- High trust as seen by Community A members (direct experience)
+- Low trust as seen by Community B members (no path, or long path with high decay)
+
+Community B sees the arbitrageur's global trust discounted by NEW_OBSERVER_DISCOUNT, or even less if there's no path connecting the communities.
+
+The arbitrageur must build trust with Community B through actual transactions before they'll accept large jobs. This is exactly how human trust works.
+
+### 13.7 Network Connectivity Effects
+
+```
+If communities A and B have bridge members (who transact with both):
+  - Trust flows through bridges
+  - Arbitrageur's bad behavior in B propagates back to A through bridges
+  - Eventually A learns about B's experience
+
+If communities are isolated:
+  - Trust doesn't transfer
+  - Each community must evaluate independently
+  - This is the correct behavior
+```
+
+### 13.8 Computational Considerations
+
+Full path computation is O(n²) or worse. Practical implementations can:
+1. Cache trust scores and invalidate on new transactions
+2. Limit path search to k shortest paths
+3. Use random walks for approximation (like PageRank)
+4. Pre-compute for frequently-queried pairs
+
+---
+
+## 14. Parameter Summary
+
+All parameters are configurable at network genesis and modifiable through governance. Example values are suggestions only—actual values should be determined through simulation and empirical observation.
+
+### Trust Accumulation
+| Parameter | Description | Tradeoff |
+|-----------|-------------|----------|
+| K_AGE | Trust per day at steady state | Higher = faster baseline accumulation |
+| TAU_AGE | Days to reach steady age rate | Higher = slower initial ramp-up |
+| BASE_CREDIT | Trust per hour of compute | Higher = faster trust from activity |
+| TAU_TRANSACTION | Transaction recency half-life | Higher = older transactions matter more |
+| ACTIVITY_THRESHOLD | Min transactions for full activity factor | Higher = more activity required |
+| ACTIVITY_LOOKBACK_DAYS | Window for activity measurement | Shorter = more responsive to changes |
+
+### Assertion & Violation
+| Parameter | Description | Tradeoff |
+|-----------|-------------|----------|
+| RESIDUAL | Permanent fraction of violation | Higher = violations never fully heal |
+| TAU_ASSERTION | Assertion decay half-life | Higher = assertions matter longer |
+| TAU_NEGATIVE / TAU_POSITIVE | Asymmetric decay rates | Different values = negative/positive decay differently |
+| T_REFERENCE | Trust level for credibility = 1.0 | Higher = harder to reach full credibility |
+| UNCLASSIFIED_THRESHOLD | Trust required for UNCLASSIFIED assertions | Higher = more exclusive |
+
+### Statistical Detection
+| Parameter | Description | Tradeoff |
+|-----------|-------------|----------|
+| ISOLATION_THRESHOLD | Cluster isolation suspicion level | Higher = more tolerance for isolated groups |
+| SIMILARITY_THRESHOLD | Behavioral similarity suspicion | Higher = more tolerance for similar behavior |
+| ANOMALY_WINDOW | Window for volume anomaly detection | Shorter = more sensitive to short bursts |
+| VOLUME_SPIKE_THRESHOLD | Multiplier for volume anomaly | Higher = less sensitive |
+| ACCUSATION_SPIKE_THRESHOLD | Multiplier for accusation anomaly | Higher = less sensitive |
+| ACCUSATION_RATE_WINDOW | Window for accusation rate measurement | Shorter = more responsive |
+
+### Assertion Analysis
+| Parameter | Description | Tradeoff |
+|-----------|-------------|----------|
+| ACCURACY_THRESHOLD | Tolerance for prediction error | Higher = more tolerance for inaccuracy |
+| DIVERGENCE_PENALTY_WEIGHT | Penalty per unit of divergence | Higher = harsher on divergent assertions |
+| MIN_ACCURACY_RATIO | Minimum accuracy before penalty | Higher = stricter accuracy requirement |
+| ACCURACY_PENALTY_WEIGHT | Penalty for poor accuracy | Higher = harsher on poor accuracy |
+| SPAM_THRESHOLD | Assertion rate multiple for spam | Higher = more tolerance for high assertion rates |
+| SPAM_PENALTY_WEIGHT | Penalty per excess assertion | Higher = harsher on spam |
+| TARGETING_THRESHOLD | Concentration for harassment detection | Higher = more tolerance for focused accusations |
+| TARGETING_PENALTY_WEIGHT | Penalty for targeted harassment | Higher = harsher on targeting |
+| MIN_ASSERTIONS_FOR_TARGETING | Min assertions before targeting check | Higher = more tolerance before checking |
+| UNSUPPORTED_PENALTY_BASE | Penalty per unsupported assertion | Higher = harsher on missing evidence |
+
+### Coin Velocity
+| Parameter | Description | Tradeoff |
+|-----------|-------------|----------|
+| VELOCITY_LOOKBACK_DAYS | Window for outflow measurement | Shorter = more responsive to changes |
+| RUNWAY_THRESHOLD | Days of reserves before penalty | Higher = more tolerance for hoarding |
+| HOARDING_PENALTY_WEIGHT | Penalty scaling factor | Higher = harsher on hoarders |
+| MIN_VOLUME_FOR_HOARDING_CHECK | Volume threshold for check | Higher = more exemptions |
+| NEW_IDENTITY_EXEMPTION_DAYS | Days before hoarding check applies | Higher = more grace period |
+
+### Transaction Security
+| Parameter | Description | Tradeoff |
+|-----------|-------------|----------|
+| SMALL_TRANSACTION_THRESHOLD | Max value for "small" transaction | Higher = more transactions qualify as small |
+| LARGE_TRANSACTION_THRESHOLD | Min value for "large" transaction | Higher = fewer transactions delayed |
+| IMMEDIATE_RELEASE_FRACTION | Fraction released immediately | Higher = faster payment, more risk |
+| ESCROW_BASE_DELAY | Max delay for zero trust | Higher = more protection, slower commerce |
+| TRUST_FOR_MIN_DELAY | Trust for minimum delay | Higher = requires more trust for fast release |
+| ESCROW_MIN_DELAY | Minimum delay for large tx | Higher = more protection, slower commerce |
+
+### Payment Curve
+| Parameter | Description | Tradeoff |
+|-----------|-------------|----------|
+| K_PAYMENT | Payment curve scaling | Higher = trust matters more for payment |
+| DELEGATE_FEE_RATE | Fee per delegate | Higher = more delegate incentive, higher cost |
+
+### Donation & Disposal
+| Parameter | Description | Tradeoff |
+|-----------|-------------|----------|
+| MAX_BURN_RATIO | Max burn as multiple of market rate | Higher = more trust acceleration possible |
+| BURN_MULTIPLIER | Trust bonus per unit burn | Higher = more reward for burning |
+| DISPOSAL_TRUST_MULTIPLIER | Trust fraction for disposal bids | Higher = more trust from disposal (potential gaming) |
+
+### Transfer Burns
+| Parameter | Description | Tradeoff |
+|-----------|-------------|----------|
+| K_TRANSFER | Transfer burn curve scaling | Higher = trust matters more for transfers |
+
+### Local Trust
+| Parameter | Description | Tradeoff |
+|-----------|-------------|----------|
+| TRANSITIVITY_DECAY | Trust decay per network hop | Lower = more local trust, less network effect |
+| MAX_PATH_LENGTH | Maximum hops for trust propagation | Higher = more global trust, more computation |
+| NEW_OBSERVER_DISCOUNT | Global trust discount for new identities | Lower = more conservative toward new observers |
+
+### Accusation & Verification
+| Parameter | Description | Tradeoff |
+|-----------|-------------|----------|
+| ACCUSATION_WINDOW | Days before re-accusation allowed | Higher = less accusation spam, slower response |
+| BASE_VERIFICATION_RATE | Default verification sampling rate | Higher = more verification, more overhead |
+| MAX_VERIFICATION_RATE | Maximum verification rate when accused | Higher = more scrutiny for accused |
+| PENDING_PENALTY_WEIGHT | Credibility penalty per pending accusation | Higher = harsher on unverified accusers |
+| MIN_TRANSACTIONS_FOR_FULL_WEIGHT | Transactions for full accusation weight | Higher = requires more history |
+
+### Third-Party Verification
+| Parameter | Description | Tradeoff |
+|-----------|-------------|----------|
+| VERIFIER_THRESHOLD | Minimum trust to be eligible verifier | Higher = fewer, more trusted verifiers |
+| VERIFICATION_PANEL_SIZE | Number of verifiers per check | Higher = more robust, more overhead |
+| COMMIT_DEADLINE | Time for commit phase | Longer = more participation, slower |
+| REVEAL_DEADLINE | Time for reveal phase | Longer = more participation, slower |
+| EXPECTED_VERIFICATION_RATE | Expected verifications per transaction | Higher = more civic duty expected |
+
+### Profile Score
+| Parameter | Description | Tradeoff |
+|-----------|-------------|----------|
+| WEIGHT_VERIFICATION_ORIGINATION | Weight of verification behavior | Higher = civic duty matters more |
+| WEIGHT_SESSION_COMPLETION | Weight of session reliability | Higher = completion matters more |
+| WEIGHT_CONSUMER_RETENTION | Weight of repeat business | Higher = quality signal matters more |
+| WEIGHT_TRANSACTION_DIVERSITY | Weight of counterparty diversity | Higher = punishes captive relationships more |
+| WEIGHT_ACCUSATION_RECORD | Weight of accusation accuracy | Higher = assertion behavior matters more |
+| WEIGHT_ACTIVITY_CONSISTENCY | Weight of consistent participation | Higher = punishes burst behavior more |
+| RETENTION_SCORE_MULTIPLIER | Multiplier for retention score | Higher = easier to max retention score |
+| PROFILE_MIN_MODIFIER | Minimum profile modifier | Lower = harsher on poor profiles |
+| PROFILE_MAX_MODIFIER | Maximum profile modifier | Higher = more reward for good profiles |
+| ORIGINATION_FREERIDER_THRESHOLD | Ratio below which is free-riding | Higher = stricter free-rider detection |
+| ORIGINATION_BELOW_AVG_THRESHOLD | Ratio for below average | Higher = stricter below-average threshold |
+| ORIGINATION_GOOD_THRESHOLD | Ratio for good citizen | Higher = harder to be "good" |
+| ORIGINATION_ACTIVE_THRESHOLD | Ratio for active contributor | Higher = harder to get bonus |
+| ORIGINATION_ACTIVE_BONUS | Bonus multiplier for active | Higher = more reward for high origination |
+
+### Solver
+| Parameter | Description | Tradeoff |
+|-----------|-------------|----------|
+| CONVERGENCE_EPSILON | Relative change for convergence | Lower = more precision, more iterations |
+| SOLVER_MAX_ITERATIONS | Maximum iterations before stopping | Higher = more precision, more computation |
+
+---
+
+## 15. Simulation Scenarios
+
+1. **Normal operation**: Honest providers accumulating trust over months
+2. **Sybil cluster**: 10 fake identities transacting with each other
+3. **Collusion ring**: 5 providers making false accusations against competitor
+4. **Long-con**: Build trust for 6 months, then misbehave
+5. **False accusation**: Malicious accusation against honest provider
+6. **New entrant**: Breaking into established network
+7. **Recovery**: Provider recovering from legitimate violation
+8. **Donation bootstrapping**: New provider using negative bids to accelerate
+
+---
+
+## 16. Governance and Parameter Evolution
+
+Parameters are policy decisions, not universal constants. Networks evolve their own governance.
+
+### 16.1 Genesis Parameters
+
+Network founder sets initial parameters at creation:
+
+```
+GenesisConfig {
+  // Trust accumulation
+  k_age: float
+  tau_age: float
+  base_credit: float
+  tau_transaction: float
+
+  // Payment curve
+  k_payment: float
+
+  // Transfer burns
+  k_transfer: float
+
+  // Local trust
+  transitivity_decay: float
+  max_path_length: int
+  new_observer_discount: float
+
+  // Escrow
+  large_threshold: float
+  immediate_release_fraction: float
+  base_delay: int
+
+  // Detection thresholds
+  isolation_threshold: float
+  similarity_threshold: float
+
+  // Governance
+  voting_threshold: float          # Trust required to vote
+  proposal_threshold: float        # Trust required to propose
+  approval_quorum: float           # Fraction of trust needed to approve
+  change_delay: int                # Days before approved change takes effect
+  max_parameter_change: float      # Maximum % change per proposal
+}
+```
+
+### 16.2 Trust-Weighted Voting
+
+Parameter changes are approved by trust-weighted vote.
+
+```
+vote_weight(identity) = effective_trust(identity)
+
+total_votes_for = Σ vote_weight(i) for all i voting "yes"
+total_votes_against = Σ vote_weight(i) for all i voting "no"
+total_eligible = Σ vote_weight(i) for all i with trust > voting_threshold
+
+approval = total_votes_for / (total_votes_for + total_votes_against)
+quorum = (total_votes_for + total_votes_against) / total_eligible
+
+passed = approval > 0.5 AND quorum > approval_quorum
+```
+
+### 16.3 Proposal Lifecycle
+
+```
+1. DRAFT
+   - Anyone above proposal_threshold can create
+   - Specify: parameter, current_value, proposed_value, rationale
+
+2. DISCUSSION (7 days default)
+   - Community reviews and debates
+   - Proposer can amend
+
+3. VOTING (7 days default)
+   - Trust-weighted votes
+   - Cannot amend during voting
+
+4. APPROVED or REJECTED
+   - If passed: enters delay period
+   - If failed: archived
+
+5. ACTIVE (after change_delay)
+   - Parameter takes new value
+   - Old value recorded in history
+```
+
+### 16.4 Change Limits
+
+Prevent drastic parameter shifts:
+
+```
+max_change = current_value × max_parameter_change
+
+|proposed_value - current_value| <= max_change
+
+Example with max_parameter_change = 0.2 (20%):
+  k_payment = 0.01
+  Can change to: 0.008 - 0.012
+  Cannot change to: 0.005 or 0.02 in one proposal
+```
+
+Larger changes require multiple sequential proposals.
+
+### 16.5 Parameter Categories
+
+Different parameters may have different governance rules:
+
+| Category | Examples | Typical Threshold |
+|----------|----------|-------------------|
+| **Economic** | k_payment, k_transfer, base_credit | Higher quorum (60%) |
+| **Security** | isolation_threshold, escrow settings | Higher quorum (60%) |
+| **Tuning** | tau values, decay rates | Normal quorum (50%) |
+| **Governance** | voting_threshold, quorum requirements | Highest quorum (75%) |
+
+### 16.6 Emergency Procedures
+
+For critical security issues:
+
+```
+emergency_proposal:
+  requires: trust > emergency_threshold (top 1% of network)
+  voting_period: 24 hours
+  approval_required: 80%
+  no change_delay
+
+  automatically_expires: 30 days
+  must be ratified by normal proposal to become permanent
+```
+
+### 16.7 Fork Rights
+
+If governance fails, participants can fork:
+
+```
+Any participant can:
+  1. Export their transaction history
+  2. Create new network with different parameters
+  3. Import history (others choose whether to follow)
+
+The threat of fork constrains governance:
+  - Extreme parameter changes → participants leave
+  - Captured governance → honest participants fork
+```
+
+### 16.8 Parameter History
+
+All changes are recorded on-chain:
+
+```
+ParameterChange {
+  parameter: string
+  old_value: float
+  new_value: float
+  proposal_id: hash
+  votes_for: float
+  votes_against: float
+  effective_day: int
+}
+```
+
+This allows:
+- Auditing governance decisions
+- Rolling back if needed
+- Learning what works over time
+
+### 16.9 Governance Evolution
+
+Networks can evolve more sophisticated governance:
+
+**Early stage (founder-controlled):**
+- Founder has high trust from genesis
+- Effectively controls parameters
+- Fast iteration, high risk
+
+**Growth stage (oligarchy):**
+- Early participants have most trust
+- Founder influence dilutes
+- More conservative changes
+
+**Mature stage (distributed):**
+- Trust widely distributed
+- No single entity dominates
+- Changes require broad consensus
+
+**Advanced stage (delegated):**
+- Participants delegate votes to specialists
+- "Trust funds" form around different philosophies
+- More sophisticated monetary policy possible
+
+---
+
+## 17. Automated Monetary Policy
+
+Beyond governance-driven parameter changes, some parameters can adjust automatically based on observable network metrics. This creates responsive monetary policy without requiring constant human intervention.
+
+### 17.1 Policy Goals
+
+The system should automatically balance:
+
+1. **Trust integrity** - Maintain meaningful trust differentiation
+2. **Network growth** - Enable new participants to join productively
+3. **Economic stability** - Prevent inflation/deflation spirals
+4. **Attack resistance** - Respond to detected manipulation attempts
+
+### 17.2 Observable Metrics
+
+The network continuously tracks:
+
+```
+Network-wide metrics:
+  total_active_identities     # Identities with activity in lookback window
+  total_trust_score           # Sum of all trust scores
+  mean_trust_score            # Average trust per active identity
+  trust_gini_coefficient      # Trust inequality measure
+
+Transaction metrics:
+  daily_transaction_volume    # Total transactions per day
+  mean_transaction_value      # Average transaction size
+  verification_rate           # Actual verification as fraction of expected
+  session_completion_rate     # Sessions completing normally
+
+Economic metrics:
+  daily_burn_volume           # Coins burned via payments and transfers
+  daily_mint_volume           # Coins minted via daily distribution
+  coin_velocity               # Transactions / total supply
+  hoarding_prevalence         # Fraction of identities above runway threshold
+
+Security metrics:
+  cluster_prevalence          # Fraction of identities in suspicious clusters
+  accusation_rate             # Accusations per transaction
+  verification_failure_rate   # Failed verifications as fraction of total
+  anomaly_frequency           # How often anomalies are flagged
+```
+
+### 17.3 Payment Curve (K_PAYMENT)
+
+**What it controls:**
+- How much of each payment goes to the provider vs burn
+- Rate at which new participants can become economically viable
+
+**Trigger conditions for adjustment:**
+
+```
+If trust_gini_coefficient > GINI_HIGH_THRESHOLD:
+  # Trust too concentrated, newcomers can't compete
+  Decrease K_PAYMENT slightly → lower trust earns more
+
+If trust_gini_coefficient < GINI_LOW_THRESHOLD:
+  # Trust too flat, not enough differentiation
+  Increase K_PAYMENT slightly → trust matters more
+
+If verification_failure_rate > FAILURE_HIGH_THRESHOLD:
+  # Too many bad actors passing
+  Decrease K_PAYMENT → untrusted providers get less
+
+If mean_trust_score declining over time:
+  # Network aging or trust decay too fast
+  Review TAU values (see 17.4)
+```
+
+**Tradeoffs:**
+- Higher K_PAYMENT rewards trust but discourages new entrants
+- Lower K_PAYMENT enables growth but reduces trust incentive
+
+### 17.4 Trust Decay (TAU parameters)
+
+**What they control:**
+- How quickly old activity stops mattering
+- Balance between history and recent behavior
+
+**Trigger conditions for adjustment:**
+
+```
+If mean_trust_score growing unboundedly:
+  # Trust inflation
+  Decrease TAU_TRANSACTION → faster decay
+
+If mean_trust_score declining despite stable activity:
+  # Trust deflation
+  Increase TAU_TRANSACTION → slower decay
+
+If recovery_time (time to rebuild after violation) too long:
+  # Discourages rehabilitation
+  Decrease TAU_NEGATIVE → negative decays faster
+
+If repeat_offense_rate high:
+  # Violations not sticky enough
+  Increase TAU_NEGATIVE → violations last longer
+```
+
+**Tradeoffs:**
+- Faster decay makes recent behavior matter more, enables faster recovery
+- Slower decay provides more stability but creates trust dynasties
+
+### 17.5 Transfer Burns (K_TRANSFER)
+
+**What it controls:**
+- Cost of moving coins between identities
+- Barrier to reputation laundering
+
+**Trigger conditions for adjustment:**
+
+```
+If cluster_prevalence increasing:
+  # Sybil attacks becoming more common
+  Increase K_TRANSFER → harder to distribute coins to sybils
+
+If new_entrant_retention_rate low:
+  # New participants can't acquire coins
+  Decrease K_TRANSFER for high-trust senders
+
+If reputation_laundering_detected:
+  # Old pattern: build trust, exploit, transfer
+  Increase K_TRANSFER significantly
+```
+
+**Tradeoffs:**
+- Higher K_TRANSFER prevents laundering but creates friction
+- Lower K_TRANSFER enables commerce but enables attacks
+
+### 17.6 Verification Parameters
+
+**What they control:**
+- How much verification overhead the network bears
+- Detection sensitivity for collusion
+
+**Trigger conditions for adjustment:**
+
+```
+If verification_failure_rate low AND stable:
+  # Over-verifying, wasting resources
+  Decrease EXPECTED_VERIFICATION_RATE
+
+If verification_failure_rate increasing:
+  # More collusion detected
+  Increase EXPECTED_VERIFICATION_RATE
+
+If verifier_participation_rate low:
+  # Not enough civic duty
+  Increase WEIGHT_VERIFICATION_ORIGINATION in profile score
+
+If mean_verification_time too long:
+  # Deadlines too generous
+  Decrease COMMIT_DEADLINE and REVEAL_DEADLINE
+```
+
+**Tradeoffs:**
+- More verification catches more collusion but creates overhead
+- Less verification is efficient but misses attacks
+
+### 17.7 Detection Thresholds
+
+**What they control:**
+- Sensitivity of Sybil and collusion detection
+- False positive vs false negative balance
+
+**Trigger conditions for adjustment:**
+
+```
+If false_positive_rate (legitimate clusters flagged) high:
+  # Detection too aggressive
+  Increase ISOLATION_THRESHOLD
+  Increase SIMILARITY_THRESHOLD
+
+If confirmed_sybil_attacks increasing:
+  # Detection not catching enough
+  Decrease ISOLATION_THRESHOLD
+  Decrease SIMILARITY_THRESHOLD
+
+If honest_operators reporting harassment from detection:
+  # Natural clusters being penalized
+  Add cluster_age_exemption or increase thresholds
+```
+
+**Tradeoffs:**
+- Lower thresholds catch more attacks but create more false positives
+- Higher thresholds are less disruptive but miss sophisticated attacks
+
+### 17.8 Automatic Adjustment Limits
+
+All automatic adjustments are constrained:
+
+```
+AutomaticAdjustment {
+  parameter: string
+  current_value: float
+  new_value: float
+
+  constraints:
+    max_change_per_day: MAX_AUTO_CHANGE_RATE      # e.g., 1% per day
+    min_interval: MIN_AUTO_CHANGE_INTERVAL        # e.g., 7 days between changes
+    requires_metric_persistence: METRIC_STABLE_DAYS  # e.g., metric must be anomalous for 14 days
+
+  transparency:
+    all adjustments logged on-chain
+    triggering metric values recorded
+    can be overridden by governance vote
+}
+```
+
+### 17.9 Feedback Loops and Stability
+
+Automatic adjustments must avoid runaway feedback loops:
+
+**Dampening:**
+```
+Change rate proportional to (observed_metric - target) × DAMPENING_FACTOR
+
+DAMPENING_FACTOR < 1.0 ensures gradual convergence
+```
+
+**Dead zones:**
+```
+No adjustment when metric is within DEAD_ZONE of target
+
+Prevents oscillation around stable state
+```
+
+**Rate limiting:**
+```
+After any adjustment, wait MIN_AUTO_CHANGE_INTERVAL before next
+
+Allows effects to propagate before measuring again
+```
+
+**Human override:**
+```
+Any automatic adjustment can be reversed by governance vote
+
+Emergency brake if automation misbehaves
+```
+
+### 17.10 Parameter Interaction Matrix
+
+Some parameters interact and shouldn't be adjusted independently:
+
+| If you change... | Also consider... | Reason |
+|------------------|------------------|--------|
+| K_PAYMENT | K_TRANSFER | Maintain relative attractiveness of transfers vs earnings |
+| TAU_TRANSACTION | TAU_ASSERTION | Keep assertion impact proportional to transaction history |
+| EXPECTED_VERIFICATION_RATE | VERIFICATION_PANEL_SIZE | Total verification burden |
+| ISOLATION_THRESHOLD | SIMILARITY_THRESHOLD | Combined Sybil detection sensitivity |
+| BASE_VERIFICATION_RATE | MAX_VERIFICATION_RATE | Accused vs normal scrutiny ratio |
+
+### 17.11 Bootstrapping Automatic Policy
+
+Automatic adjustment starts disabled:
+
+```
+Network phases:
+
+  GENESIS (days 0-90):
+    - All parameters fixed at genesis values
+    - Collect baseline metrics
+    - No automatic adjustments
+
+  OBSERVATION (days 90-180):
+    - Metrics analyzed but adjustments not applied
+    - Governance can manually adjust based on observations
+    - System reports what it WOULD do automatically
+
+  LIMITED_AUTO (days 180-365):
+    - Only low-risk parameters can auto-adjust
+    - TAU values, detection thresholds
+    - Economic parameters (K_PAYMENT, K_TRANSFER) still governance-only
+
+  FULL_AUTO (day 365+):
+    - All parameters can auto-adjust within limits
+    - Governance can still override
+    - System has year of baseline data
+```
+
+---
+
+## 18. Open Questions
+
+1. **Accusation validation**: How do we determine if an accusation was "correct" for accuracy scoring?
+
+2. **Cluster detection parameters**: What isolation threshold balances false positives vs catching Sybils?
+
+3. **Credibility curve**: Is logarithmic the right shape? Should high-trust accusers have even more weight?
+
+4. **Cross-classification learning**: Can accusation patterns in one category inform trust in others?
+
+5. **Cold start**: How do the first participants bootstrap without existing trust to weight accusations?
+
+6. **Parameter governance**: Who adjusts parameters over time as the network evolves?

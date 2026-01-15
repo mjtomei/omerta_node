@@ -6,6 +6,7 @@ import Logging
 import OmertaCore
 import OmertaConsumer
 import OmertaNetwork
+import OmertaVPN
 import OmertaVM
 
 /// Server for handling encrypted UDP control messages from consumers

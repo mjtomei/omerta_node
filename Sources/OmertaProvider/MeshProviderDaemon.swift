@@ -3,6 +3,7 @@ import Logging
 import OmertaCore
 import OmertaVM
 import OmertaNetwork
+import OmertaVPN
 import OmertaMesh
 
 /// Provider daemon that uses mesh network for NAT traversal

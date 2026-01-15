@@ -3,6 +3,7 @@ import ArgumentParser
 import OmertaCore
 import OmertaVM
 import OmertaNetwork
+import OmertaVPN
 import OmertaConsumer
 import OmertaProvider
 import OmertaMesh

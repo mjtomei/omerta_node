@@ -1,0 +1,2778 @@
+{
+  "iteration": 3,
+  "seed_base": 2000,
+  "scenarios": {
+    "baseline": {
+      "with_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.6022315128882391,
+          "final_cluster": 0.0,
+          "final_mean_trust": 30.6137695922064,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.6084135159040488,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.12616194479099,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.6102065498612426,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.1012939586389,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.6111337085730105,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.463101078372105,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.6038260691654523,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.397872334962848,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.6054142075220871,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.22938201154397,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.6064564894713353,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.05655092157747,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.6084662476760478,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.62539444721226,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.6098038456247301,
+          "final_cluster": 0.0,
+          "final_mean_trust": 30.890163268744246,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.6053727594498963,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.457923119555,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.608789362502259,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.00950500353891,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.6062221301782571,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.18158039555847,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.5992732248596708,
+          "final_cluster": 0.0,
+          "final_mean_trust": 30.43944072553124,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.6089783753691594,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.68351221679774,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.608669956122781,
+          "final_cluster": 0.0,
+          "final_mean_trust": 33.07951328556701,
+          "final_identities": 30,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.6022315128882391,
+          "final_cluster": 0.0,
+          "final_mean_trust": 30.6137695922064,
+          "final_identities": 30
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.6084135159040488,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.12616194479099,
+          "final_identities": 30
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.6102065498612426,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.1012939586389,
+          "final_identities": 30
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.6111337085730105,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.463101078372105,
+          "final_identities": 30
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.6038260691654523,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.397872334962848,
+          "final_identities": 30
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.6054142075220871,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.22938201154397,
+          "final_identities": 30
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.6064564894713353,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.05655092157747,
+          "final_identities": 30
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.6084662476760478,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.62539444721226,
+          "final_identities": 30
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.6098038456247301,
+          "final_cluster": 0.0,
+          "final_mean_trust": 30.890163268744246,
+          "final_identities": 30
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.6053727594498963,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.457923119555,
+          "final_identities": 30
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.608789362502259,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.00950500353891,
+          "final_identities": 30
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.6062221301782571,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.18158039555847,
+          "final_identities": 30
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.5992732248596708,
+          "final_cluster": 0.0,
+          "final_mean_trust": 30.43944072553124,
+          "final_identities": 30
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.6089783753691594,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.68351221679774,
+          "final_identities": 30
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.608669956122781,
+          "final_cluster": 0.0,
+          "final_mean_trust": 33.07951328556701,
+          "final_identities": 30
+        }
+      ]
+    },
+    "sybil_small": {
+      "with_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.5358713180034329,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.2584342474806,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.538606633833534,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.78787575296729,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.5305984388559667,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 23.959138488309055,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.5323765216558466,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.443624910397556,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.530318694074765,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 23.411222320841524,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.5275727339716776,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 23.878830068675622,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.5319039117467645,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.577741825777395,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.5493143924184579,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 25.108349702750136,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.5278191445389071,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 23.711744622793272,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.5326200545194025,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.098339295295347,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.5345734063881689,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.202932487751728,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.528971545998599,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 23.640844602123092,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.5363519609070105,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.880839620588524,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.5364788190380579,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.682696951006882,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.5338535651601771,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.269138513202687,
+          "final_identities": 33,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.5358713180034329,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.2584342474806,
+          "final_identities": 33
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.538606633833534,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.78787575296729,
+          "final_identities": 33
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.5305984388559667,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 23.959138488309055,
+          "final_identities": 33
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.5323765216558466,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.443624910397556,
+          "final_identities": 33
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.530318694074765,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 23.411222320841524,
+          "final_identities": 33
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.5275727339716776,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 23.878830068675622,
+          "final_identities": 33
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.5319039117467645,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.577741825777395,
+          "final_identities": 33
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.5493143924184579,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 25.108349702750136,
+          "final_identities": 33
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.5278191445389071,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 23.711744622793272,
+          "final_identities": 33
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.5326200545194025,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.098339295295347,
+          "final_identities": 33
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.5345734063881689,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.202932487751728,
+          "final_identities": 33
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.528971545998599,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 23.640844602123092,
+          "final_identities": 33
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.5363519609070105,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.880839620588524,
+          "final_identities": 33
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.5364788190380579,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.682696951006882,
+          "final_identities": 33
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.5338535651601771,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.269138513202687,
+          "final_identities": 33
+        }
+      ]
+    },
+    "sybil_large": {
+      "with_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.5070778162885895,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.20718287325038,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.5153780850679411,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.64091651121074,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.5019514975069548,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 16.976924018255716,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.5049146928080946,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.17326634151744,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.5101134018853923,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.35518238874935,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.5080948785302685,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.32202125225665,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.51362797003223,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.39791325553949,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.5088900642177298,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.25611650834552,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.5106457009633198,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.304511282009226,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.5167877131110964,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.658532684940255,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.5136747916078472,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.42874622874902,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.49986762595962697,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 16.890683299836784,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.5130755801048201,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.489114978301586,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.5025096402707163,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 16.909154650308967,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.498136913582069,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 16.79589120400773,
+          "final_identities": 53,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.5070778162885895,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.20718287325038,
+          "final_identities": 53
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.5153780850679411,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.64091651121074,
+          "final_identities": 53
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.5019514975069548,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 16.976924018255716,
+          "final_identities": 53
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.5049146928080946,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.17326634151744,
+          "final_identities": 53
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.5101134018853923,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.35518238874935,
+          "final_identities": 53
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.5080948785302685,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.32202125225665,
+          "final_identities": 53
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.51362797003223,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.39791325553949,
+          "final_identities": 53
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.5088900642177298,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.25611650834552,
+          "final_identities": 53
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.5106457009633198,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.304511282009226,
+          "final_identities": 53
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.5167877131110964,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.658532684940255,
+          "final_identities": 53
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.5136747916078472,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.42874622874902,
+          "final_identities": 53
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.49986762595962697,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 16.890683299836784,
+          "final_identities": 53
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.5130755801048201,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.489114978301586,
+          "final_identities": 53
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.5025096402707163,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 16.909154650308967,
+          "final_identities": 53
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.498136913582069,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 16.79589120400773,
+          "final_identities": 53
+        }
+      ]
+    },
+    "inflation_mild": {
+      "with_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.6012230377736747,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.034089997013798,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.603963420338092,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.647703349367006,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.5935439548276619,
+          "final_cluster": 0.0,
+          "final_mean_trust": 15.87570630274895,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.5909579765732179,
+          "final_cluster": 0.0,
+          "final_mean_trust": 15.4017932559667,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.6009485955941204,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.30608579136543,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.5959673001323541,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.04078622260285,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.5957895577984412,
+          "final_cluster": 0.0,
+          "final_mean_trust": 15.910060072923917,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.595736626471954,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.31323878610545,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.5987302310019477,
+          "final_cluster": 0.0,
+          "final_mean_trust": 15.858276618599824,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.6010333357435177,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.499689986176246,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.6030157737365478,
+          "final_cluster": 0.0,
+          "final_mean_trust": 17.098470741412243,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.6032074309345565,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.644059530476593,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.5934989922583963,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.023313851316715,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.5972375284482462,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.094080320031228,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.6075268497066122,
+          "final_cluster": 0.0,
+          "final_mean_trust": 17.049650814998756,
+          "final_identities": 20,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.6012230377736747,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.034089997013798,
+          "final_identities": 20
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.603963420338092,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.647703349367006,
+          "final_identities": 20
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.5935439548276619,
+          "final_cluster": 0.0,
+          "final_mean_trust": 15.87570630274895,
+          "final_identities": 20
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.5909579765732179,
+          "final_cluster": 0.0,
+          "final_mean_trust": 15.4017932559667,
+          "final_identities": 20
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.6009485955941204,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.30608579136543,
+          "final_identities": 20
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.5959673001323541,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.04078622260285,
+          "final_identities": 20
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.5957895577984412,
+          "final_cluster": 0.0,
+          "final_mean_trust": 15.910060072923917,
+          "final_identities": 20
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.595736626471954,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.31323878610545,
+          "final_identities": 20
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.5987302310019477,
+          "final_cluster": 0.0,
+          "final_mean_trust": 15.858276618599824,
+          "final_identities": 20
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.6010333357435177,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.499689986176246,
+          "final_identities": 20
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.6030157737365478,
+          "final_cluster": 0.0,
+          "final_mean_trust": 17.098470741412243,
+          "final_identities": 20
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.6032074309345565,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.644059530476593,
+          "final_identities": 20
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.5934989922583963,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.023313851316715,
+          "final_identities": 20
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.5972375284482462,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.094080320031228,
+          "final_identities": 20
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.6075268497066122,
+          "final_cluster": 0.0,
+          "final_mean_trust": 17.049650814998756,
+          "final_identities": 20
+        }
+      ]
+    },
+    "inflation_aggressive": {
+      "with_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.6488327557372159,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.64783549205067,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.6458360641622231,
+          "final_cluster": 0.25,
+          "final_mean_trust": 85.04442296621562,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.6470176475883095,
+          "final_cluster": 0.25,
+          "final_mean_trust": 83.17831179812897,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.6474742835224838,
+          "final_cluster": 0.25,
+          "final_mean_trust": 85.29085535143498,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.6438240547462605,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.28369471039831,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.6474775931170429,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.65434749845551,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.6489478788657043,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.57550631966741,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.646277981364624,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.51917586670042,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.6462087513961989,
+          "final_cluster": 0.25,
+          "final_mean_trust": 86.39760929855328,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.6478595999013388,
+          "final_cluster": 0.25,
+          "final_mean_trust": 83.55202542390889,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.6453457087646156,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.97475220973885,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.6445613079217006,
+          "final_cluster": 0.25,
+          "final_mean_trust": 85.00837934842053,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.645663114849174,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.27604576636905,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.6440380528243902,
+          "final_cluster": 0.25,
+          "final_mean_trust": 85.0088541483294,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.6505235422290481,
+          "final_cluster": 0.25,
+          "final_mean_trust": 83.82243847587308,
+          "final_identities": 20,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.6488327557372159,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.64783549205067,
+          "final_identities": 20
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.6458360641622231,
+          "final_cluster": 0.25,
+          "final_mean_trust": 85.04442296621562,
+          "final_identities": 20
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.6470176475883095,
+          "final_cluster": 0.25,
+          "final_mean_trust": 83.17831179812897,
+          "final_identities": 20
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.6474742835224838,
+          "final_cluster": 0.25,
+          "final_mean_trust": 85.29085535143498,
+          "final_identities": 20
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.6438240547462605,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.28369471039831,
+          "final_identities": 20
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.6474775931170429,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.65434749845551,
+          "final_identities": 20
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.6489478788657043,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.57550631966741,
+          "final_identities": 20
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.646277981364624,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.51917586670042,
+          "final_identities": 20
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.6462087513961989,
+          "final_cluster": 0.25,
+          "final_mean_trust": 86.39760929855328,
+          "final_identities": 20
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.6478595999013388,
+          "final_cluster": 0.25,
+          "final_mean_trust": 83.55202542390889,
+          "final_identities": 20
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.6453457087646156,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.97475220973885,
+          "final_identities": 20
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.6445613079217006,
+          "final_cluster": 0.25,
+          "final_mean_trust": 85.00837934842053,
+          "final_identities": 20
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.645663114849174,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.27604576636905,
+          "final_identities": 20
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.6440380528243902,
+          "final_cluster": 0.25,
+          "final_mean_trust": 85.0088541483294,
+          "final_identities": 20
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.6505235422290481,
+          "final_cluster": 0.25,
+          "final_mean_trust": 83.82243847587308,
+          "final_identities": 20
+        }
+      ]
+    },
+    "combined_attack": {
+      "with_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.3507931975008367,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.16920908032951,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.3483872613179512,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.033626608532686,
+          "final_identities": 43,
+          "param_changes": 62
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.3458958020700816,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 45.57502838665921,
+          "final_identities": 43,
+          "param_changes": 60
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.34142148873081263,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.77830736894018,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.34403708710439024,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.75575396739479,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.3451181513775671,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.48349403810783,
+          "final_identities": 43,
+          "param_changes": 62
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.34537281675226533,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.8429735295148,
+          "final_identities": 43,
+          "param_changes": 63
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.34360124521129215,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.01799665708244,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.3448264318921548,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.34384147583596,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.34623773822327103,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.189187840610415,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.34324717834857243,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.08474466907307,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.3398406632800082,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 44.950529327974635,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.34715515385495915,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 45.61868905686148,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.3457141655103475,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.4240654181532,
+          "final_identities": 43,
+          "param_changes": 62
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.34538256149690977,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.00981098463105,
+          "final_identities": 43,
+          "param_changes": 61
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.3507931975008367,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.16920908032951,
+          "final_identities": 43
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.3483872613179512,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.033626608532686,
+          "final_identities": 43
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.3458958020700816,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 45.57502838665921,
+          "final_identities": 43
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.34142148873081263,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.77830736894018,
+          "final_identities": 43
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.34403708710439024,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.75575396739479,
+          "final_identities": 43
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.3451181513775671,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.48349403810783,
+          "final_identities": 43
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.34537281675226533,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.8429735295148,
+          "final_identities": 43
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.34360124521129215,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.01799665708244,
+          "final_identities": 43
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.3448264318921548,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.34384147583596,
+          "final_identities": 43
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.34623773822327103,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.189187840610415,
+          "final_identities": 43
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.34324717834857243,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.08474466907307,
+          "final_identities": 43
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.3398406632800082,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 44.950529327974635,
+          "final_identities": 43
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.34715515385495915,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 45.61868905686148,
+          "final_identities": 43
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.3457141655103475,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.4240654181532,
+          "final_identities": 43
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.34538256149690977,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.00981098463105,
+          "final_identities": 43
+        }
+      ]
+    },
+    "wave_attack": {
+      "with_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.6103731710271321,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.05516360351664,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.608745796412956,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.978748361635597,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.6146928706011292,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.281741450399963,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.6079300684886917,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.94150047540172,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.6164631798391553,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.331602040703615,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.6143257306096526,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.439229757604664,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.6154107154168371,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.895752517132653,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.6160260151866991,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.512040238165003,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.606197135937154,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.69497929043405,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.6113937484744013,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.363019522774707,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.614408294180407,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.548819044821634,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.6079654376317767,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.06887331164593,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.6081443600965951,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.907873953382781,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.6147114130207865,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.21710758712203,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.6180236670349855,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.94573233915287,
+          "final_identities": 62,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.6103731710271321,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.05516360351664,
+          "final_identities": 62
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.608745796412956,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.978748361635597,
+          "final_identities": 62
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.6146928706011292,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.281741450399963,
+          "final_identities": 62
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.6079300684886917,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.94150047540172,
+          "final_identities": 62
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.6164631798391553,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.331602040703615,
+          "final_identities": 62
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.6143257306096526,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.439229757604664,
+          "final_identities": 62
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.6154107154168371,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.895752517132653,
+          "final_identities": 62
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.6160260151866991,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.512040238165003,
+          "final_identities": 62
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.606197135937154,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.69497929043405,
+          "final_identities": 62
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.6113937484744013,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.363019522774707,
+          "final_identities": 62
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.614408294180407,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.548819044821634,
+          "final_identities": 62
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.6079654376317767,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.06887331164593,
+          "final_identities": 62
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.6081443600965951,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.907873953382781,
+          "final_identities": 62
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.6147114130207865,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.21710758712203,
+          "final_identities": 62
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.6180236670349855,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.94573233915287,
+          "final_identities": 62
+        }
+      ]
+    },
+    "slow_degradation": {
+      "with_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.6178195263854132,
+          "final_cluster": 0.0,
+          "final_mean_trust": 18.797939962961994,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.6225952431783119,
+          "final_cluster": 0.0,
+          "final_mean_trust": 18.99820157961712,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.6236574128919256,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.624400054410202,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.6291881810809986,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.93352046273037,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.6218336210375736,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.31402700975253,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.6172044513151151,
+          "final_cluster": 0.0,
+          "final_mean_trust": 18.747307291732117,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.6284889915043818,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.825946322117,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.6248431831560732,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.43648513310514,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.6256913147236084,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.525180886730496,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.6236487736412014,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.401912555259,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.6212131499625906,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.363327485651435,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.6219253655793748,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.632588632456677,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.6300617384450797,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.870369928045104,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.6226523759939677,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.601904747864815,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.6180078743201259,
+          "final_cluster": 0.0,
+          "final_mean_trust": 18.21698120468433,
+          "final_identities": 21,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.6178195263854132,
+          "final_cluster": 0.0,
+          "final_mean_trust": 18.797939962961994,
+          "final_identities": 21
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.6225952431783119,
+          "final_cluster": 0.0,
+          "final_mean_trust": 18.99820157961712,
+          "final_identities": 21
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.6236574128919256,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.624400054410202,
+          "final_identities": 21
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.6291881810809986,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.93352046273037,
+          "final_identities": 21
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.6218336210375736,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.31402700975253,
+          "final_identities": 21
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.6172044513151151,
+          "final_cluster": 0.0,
+          "final_mean_trust": 18.747307291732117,
+          "final_identities": 21
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.6284889915043818,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.825946322117,
+          "final_identities": 21
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.6248431831560732,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.43648513310514,
+          "final_identities": 21
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.6256913147236084,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.525180886730496,
+          "final_identities": 21
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.6236487736412014,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.401912555259,
+          "final_identities": 21
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.6212131499625906,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.363327485651435,
+          "final_identities": 21
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.6219253655793748,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.632588632456677,
+          "final_identities": 21
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.6300617384450797,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.870369928045104,
+          "final_identities": 21
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.6226523759939677,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.601904747864815,
+          "final_identities": 21
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.6180078743201259,
+          "final_cluster": 0.0,
+          "final_mean_trust": 18.21698120468433,
+          "final_identities": 21
+        }
+      ]
+    },
+    "hoarding": {
+      "with_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.5135290802094524,
+          "final_cluster": 0.0,
+          "final_mean_trust": 55.51353222027701,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.5101430632460332,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.49461376632017,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.5206342636004033,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.04371002106707,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.5171559826227381,
+          "final_cluster": 0.0,
+          "final_mean_trust": 56.50812720362324,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.5251184413200712,
+          "final_cluster": 0.0,
+          "final_mean_trust": 57.63569924105954,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.5231377566036345,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.453814012409296,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.5203947342758249,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.9154890366599,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.520167915398352,
+          "final_cluster": 0.0,
+          "final_mean_trust": 55.51412280844928,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.52227155935402,
+          "final_cluster": 0.0,
+          "final_mean_trust": 57.22177875713838,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.5236280464820982,
+          "final_cluster": 0.0,
+          "final_mean_trust": 57.649055957769995,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.516633432506421,
+          "final_cluster": 0.0,
+          "final_mean_trust": 56.55860487176682,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.5164664901117215,
+          "final_cluster": 0.0,
+          "final_mean_trust": 56.40184137682259,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.5236884049642633,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.03249920949765,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.5322666411881168,
+          "final_cluster": 0.0,
+          "final_mean_trust": 59.038338624746274,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.5182325088755521,
+          "final_cluster": 0.0,
+          "final_mean_trust": 57.52197474361048,
+          "final_identities": 24,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.5135290802094524,
+          "final_cluster": 0.0,
+          "final_mean_trust": 55.51353222027701,
+          "final_identities": 24
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.5101430632460332,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.49461376632017,
+          "final_identities": 24
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.5206342636004033,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.04371002106707,
+          "final_identities": 24
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.5171559826227381,
+          "final_cluster": 0.0,
+          "final_mean_trust": 56.50812720362324,
+          "final_identities": 24
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.5251184413200712,
+          "final_cluster": 0.0,
+          "final_mean_trust": 57.63569924105954,
+          "final_identities": 24
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.5231377566036345,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.453814012409296,
+          "final_identities": 24
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.5203947342758249,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.9154890366599,
+          "final_identities": 24
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.520167915398352,
+          "final_cluster": 0.0,
+          "final_mean_trust": 55.51412280844928,
+          "final_identities": 24
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.52227155935402,
+          "final_cluster": 0.0,
+          "final_mean_trust": 57.22177875713838,
+          "final_identities": 24
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.5236280464820982,
+          "final_cluster": 0.0,
+          "final_mean_trust": 57.649055957769995,
+          "final_identities": 24
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.516633432506421,
+          "final_cluster": 0.0,
+          "final_mean_trust": 56.55860487176682,
+          "final_identities": 24
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.5164664901117215,
+          "final_cluster": 0.0,
+          "final_mean_trust": 56.40184137682259,
+          "final_identities": 24
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.5236884049642633,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.03249920949765,
+          "final_identities": 24
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.5322666411881168,
+          "final_cluster": 0.0,
+          "final_mean_trust": 59.038338624746274,
+          "final_identities": 24
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.5182325088755521,
+          "final_cluster": 0.0,
+          "final_mean_trust": 57.52197474361048,
+          "final_identities": 24
+        }
+      ]
+    },
+    "gini_manipulation": {
+      "with_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.8925574734281966,
+          "final_cluster": 0.0,
+          "final_mean_trust": 259.6058342342061,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.891478252062308,
+          "final_cluster": 0.0,
+          "final_mean_trust": 259.9878927253245,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.891808440050187,
+          "final_cluster": 0.0,
+          "final_mean_trust": 260.27995053198936,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.8914180244752351,
+          "final_cluster": 0.0,
+          "final_mean_trust": 254.3893267996513,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.8925066141263692,
+          "final_cluster": 0.0,
+          "final_mean_trust": 256.65892405802947,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.8912506688372028,
+          "final_cluster": 0.0,
+          "final_mean_trust": 254.6308533360387,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.8922232099859847,
+          "final_cluster": 0.0,
+          "final_mean_trust": 257.482934131275,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.8920230512500471,
+          "final_cluster": 0.0,
+          "final_mean_trust": 262.1028918543133,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.8928351640062936,
+          "final_cluster": 0.0,
+          "final_mean_trust": 261.77510008619936,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.892377637760407,
+          "final_cluster": 0.0,
+          "final_mean_trust": 261.68513679560226,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.8916073558592377,
+          "final_cluster": 0.0,
+          "final_mean_trust": 260.44872952992876,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.8914003521297594,
+          "final_cluster": 0.0,
+          "final_mean_trust": 257.88136244149484,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.8925061680544535,
+          "final_cluster": 0.0,
+          "final_mean_trust": 260.9155945184171,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.8921170441926257,
+          "final_cluster": 0.0,
+          "final_mean_trust": 257.2359724591907,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.8925666432925967,
+          "final_cluster": 0.0,
+          "final_mean_trust": 260.486584837968,
+          "final_identities": 35,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.8925574734281966,
+          "final_cluster": 0.0,
+          "final_mean_trust": 259.6058342342061,
+          "final_identities": 35
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.891478252062308,
+          "final_cluster": 0.0,
+          "final_mean_trust": 259.9878927253245,
+          "final_identities": 35
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.891808440050187,
+          "final_cluster": 0.0,
+          "final_mean_trust": 260.27995053198936,
+          "final_identities": 35
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.8914180244752351,
+          "final_cluster": 0.0,
+          "final_mean_trust": 254.3893267996513,
+          "final_identities": 35
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.8925066141263692,
+          "final_cluster": 0.0,
+          "final_mean_trust": 256.65892405802947,
+          "final_identities": 35
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.8912506688372028,
+          "final_cluster": 0.0,
+          "final_mean_trust": 254.6308533360387,
+          "final_identities": 35
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.8922232099859847,
+          "final_cluster": 0.0,
+          "final_mean_trust": 257.482934131275,
+          "final_identities": 35
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.8920230512500471,
+          "final_cluster": 0.0,
+          "final_mean_trust": 262.1028918543133,
+          "final_identities": 35
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.8928351640062936,
+          "final_cluster": 0.0,
+          "final_mean_trust": 261.77510008619936,
+          "final_identities": 35
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.892377637760407,
+          "final_cluster": 0.0,
+          "final_mean_trust": 261.68513679560226,
+          "final_identities": 35
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.8916073558592377,
+          "final_cluster": 0.0,
+          "final_mean_trust": 260.44872952992876,
+          "final_identities": 35
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.8914003521297594,
+          "final_cluster": 0.0,
+          "final_mean_trust": 257.88136244149484,
+          "final_identities": 35
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.8925061680544535,
+          "final_cluster": 0.0,
+          "final_mean_trust": 260.9155945184171,
+          "final_identities": 35
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.8921170441926257,
+          "final_cluster": 0.0,
+          "final_mean_trust": 257.2359724591907,
+          "final_identities": 35
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.8925666432925967,
+          "final_cluster": 0.0,
+          "final_mean_trust": 260.486584837968,
+          "final_identities": 35
+        }
+      ]
+    },
+    "attack_recovery": {
+      "with_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.5887989046931807,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.798105820401446,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.580995634046902,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.501807636442642,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.5861924464513523,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.782375954963943,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.5805198969432313,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.070971804775247,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.5843764447416477,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.313351300332528,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.588608112137764,
+          "final_cluster": 0.0,
+          "final_mean_trust": 25.2102922756865,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.588110494260919,
+          "final_cluster": 0.0,
+          "final_mean_trust": 23.758437154248906,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.5803222667011371,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.42247334216705,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.5791168352372323,
+          "final_cluster": 0.0,
+          "final_mean_trust": 23.18939474108854,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.5872445771221915,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.558322170727678,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.5842916737373309,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.24054385377103,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.5809381037981,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.40974902989992,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.5838480934431852,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.221692157543476,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.5920702389527448,
+          "final_cluster": 0.0,
+          "final_mean_trust": 25.089026183864394,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.5848726392872919,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.962638557709504,
+          "final_identities": 45,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.5887989046931807,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.798105820401446,
+          "final_identities": 45
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.580995634046902,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.501807636442642,
+          "final_identities": 45
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.5861924464513523,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.782375954963943,
+          "final_identities": 45
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.5805198969432313,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.070971804775247,
+          "final_identities": 45
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.5843764447416477,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.313351300332528,
+          "final_identities": 45
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.588608112137764,
+          "final_cluster": 0.0,
+          "final_mean_trust": 25.2102922756865,
+          "final_identities": 45
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.588110494260919,
+          "final_cluster": 0.0,
+          "final_mean_trust": 23.758437154248906,
+          "final_identities": 45
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.5803222667011371,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.42247334216705,
+          "final_identities": 45
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.5791168352372323,
+          "final_cluster": 0.0,
+          "final_mean_trust": 23.18939474108854,
+          "final_identities": 45
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.5872445771221915,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.558322170727678,
+          "final_identities": 45
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.5842916737373309,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.24054385377103,
+          "final_identities": 45
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.5809381037981,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.40974902989992,
+          "final_identities": 45
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.5838480934431852,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.221692157543476,
+          "final_identities": 45
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.5920702389527448,
+          "final_cluster": 0.0,
+          "final_mean_trust": 25.089026183864394,
+          "final_identities": 45
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.5848726392872919,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.962638557709504,
+          "final_identities": 45
+        }
+      ]
+    },
+    "sustained_pressure": {
+      "with_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.5877922789514658,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.6552376200789,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.5922097173379504,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.588093788850628,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.5887890704338468,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.635043008912458,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.5954966060818073,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.00865627838237,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.5872168332583108,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.74510043531961,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.5914109907580724,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.55280306209066,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.5913734045503931,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.82441324855146,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.5889672600755657,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.051825072088107,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.5829370463876593,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.118912532130388,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.5874526298063758,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.727920875110232,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.5904434588735682,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.26366986312416,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.5853730391919556,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.435247055374727,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.589274242099647,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.311037428250824,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.5940409321912314,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.604564959300863,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.5928751341466022,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.109496367439892,
+          "final_identities": 35,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 2000,
+          "final_gini": 0.5877922789514658,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.6552376200789,
+          "final_identities": 35
+        },
+        {
+          "seed": 2001,
+          "final_gini": 0.5922097173379504,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.588093788850628,
+          "final_identities": 35
+        },
+        {
+          "seed": 2002,
+          "final_gini": 0.5887890704338468,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.635043008912458,
+          "final_identities": 35
+        },
+        {
+          "seed": 2003,
+          "final_gini": 0.5954966060818073,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.00865627838237,
+          "final_identities": 35
+        },
+        {
+          "seed": 2004,
+          "final_gini": 0.5872168332583108,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.74510043531961,
+          "final_identities": 35
+        },
+        {
+          "seed": 2005,
+          "final_gini": 0.5914109907580724,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.55280306209066,
+          "final_identities": 35
+        },
+        {
+          "seed": 2006,
+          "final_gini": 0.5913734045503931,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.82441324855146,
+          "final_identities": 35
+        },
+        {
+          "seed": 2007,
+          "final_gini": 0.5889672600755657,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.051825072088107,
+          "final_identities": 35
+        },
+        {
+          "seed": 2008,
+          "final_gini": 0.5829370463876593,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.118912532130388,
+          "final_identities": 35
+        },
+        {
+          "seed": 2009,
+          "final_gini": 0.5874526298063758,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.727920875110232,
+          "final_identities": 35
+        },
+        {
+          "seed": 2010,
+          "final_gini": 0.5904434588735682,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.26366986312416,
+          "final_identities": 35
+        },
+        {
+          "seed": 2011,
+          "final_gini": 0.5853730391919556,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.435247055374727,
+          "final_identities": 35
+        },
+        {
+          "seed": 2012,
+          "final_gini": 0.589274242099647,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.311037428250824,
+          "final_identities": 35
+        },
+        {
+          "seed": 2013,
+          "final_gini": 0.5940409321912314,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.604564959300863,
+          "final_identities": 35
+        },
+        {
+          "seed": 2014,
+          "final_gini": 0.5928751341466022,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.109496367439892,
+          "final_identities": 35
+        }
+      ]
+    }
+  }
+}

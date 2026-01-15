@@ -1,0 +1,2778 @@
+{
+  "iteration": 6,
+  "seed_base": 5000,
+  "scenarios": {
+    "baseline": {
+      "with_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.6029446399488879,
+          "final_cluster": 0.0,
+          "final_mean_trust": 30.5686967031001,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.6090356688884025,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.342714138192825,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.6055435166032374,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.777478802892258,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.60467537408602,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.104169319095455,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.6039511985683044,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.609126831469943,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.605927253690275,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.41677312688257,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.6111202014010171,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.512417900931343,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.6024930288513222,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.86008449112969,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.6067809941669204,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.367758677150753,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.6046484034952233,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.408096186730457,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.6057063525000989,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.958166783193946,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.6077848439766923,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.27948590170355,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.6149435825381961,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.487693587345426,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.6146362494856599,
+          "final_cluster": 0.0,
+          "final_mean_trust": 33.892315078485424,
+          "final_identities": 30,
+          "param_changes": 78
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.6064632185384413,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.13138379582215,
+          "final_identities": 30,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.6029446399488879,
+          "final_cluster": 0.0,
+          "final_mean_trust": 30.5686967031001,
+          "final_identities": 30
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.6090356688884025,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.342714138192825,
+          "final_identities": 30
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.6055435166032374,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.777478802892258,
+          "final_identities": 30
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.60467537408602,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.104169319095455,
+          "final_identities": 30
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.6039511985683044,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.609126831469943,
+          "final_identities": 30
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.605927253690275,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.41677312688257,
+          "final_identities": 30
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.6111202014010171,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.512417900931343,
+          "final_identities": 30
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.6024930288513222,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.86008449112969,
+          "final_identities": 30
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.6067809941669204,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.367758677150753,
+          "final_identities": 30
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.6046484034952233,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.408096186730457,
+          "final_identities": 30
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.6057063525000989,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.958166783193946,
+          "final_identities": 30
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.6077848439766923,
+          "final_cluster": 0.0,
+          "final_mean_trust": 31.27948590170355,
+          "final_identities": 30
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.6149435825381961,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.487693587345426,
+          "final_identities": 30
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.6146362494856599,
+          "final_cluster": 0.0,
+          "final_mean_trust": 33.892315078485424,
+          "final_identities": 30
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.6064632185384413,
+          "final_cluster": 0.0,
+          "final_mean_trust": 32.13138379582215,
+          "final_identities": 30
+        }
+      ]
+    },
+    "sybil_small": {
+      "with_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.5318850979394991,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.03037551428837,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.5345287503123165,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.752299441584938,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.5311744559503953,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.267472975416407,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.5310143896781694,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.782900589994526,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.5366912093504278,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 23.802546258153484,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.5317443042736929,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.342692017387275,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.5343510651206425,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.607326040502414,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.534283014880128,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.09786411659074,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.5316074480942945,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.193335744832954,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.5296499174781443,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 23.867007258496454,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.5368152119557674,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.497801309898197,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.5412826395955532,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.682298176869562,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.5377788251627053,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.53034389598765,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.5335562949189606,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.15513933474841,
+          "final_identities": 33,
+          "param_changes": 78
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.5314699363856404,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 23.891887973037928,
+          "final_identities": 33,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.5318850979394991,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.03037551428837,
+          "final_identities": 33
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.5345287503123165,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.752299441584938,
+          "final_identities": 33
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.5311744559503953,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.267472975416407,
+          "final_identities": 33
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.5310143896781694,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.782900589994526,
+          "final_identities": 33
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.5366912093504278,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 23.802546258153484,
+          "final_identities": 33
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.5317443042736929,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.342692017387275,
+          "final_identities": 33
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.5343510651206425,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.607326040502414,
+          "final_identities": 33
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.534283014880128,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.09786411659074,
+          "final_identities": 33
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.5316074480942945,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.193335744832954,
+          "final_identities": 33
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.5296499174781443,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 23.867007258496454,
+          "final_identities": 33
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.5368152119557674,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.497801309898197,
+          "final_identities": 33
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.5412826395955532,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.682298176869562,
+          "final_identities": 33
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.5377788251627053,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.53034389598765,
+          "final_identities": 33
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.5335562949189606,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 24.15513933474841,
+          "final_identities": 33
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.5314699363856404,
+          "final_cluster": 0.30303030303030304,
+          "final_mean_trust": 23.891887973037928,
+          "final_identities": 33
+        }
+      ]
+    },
+    "sybil_large": {
+      "with_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.5148863768349754,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.52000461835057,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.5120833599093229,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.444863155605933,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.5050422648976982,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.0450461048924,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.5088626095162296,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.22174838536225,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.5016154984104205,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 16.962020987605538,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.5128156219019007,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.295155660741912,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.5107950859870892,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.240822634471687,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.5169145329315521,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.59852191149904,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.5091517456696459,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.373782615143607,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.5160775156655404,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.528618186607858,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.5125308831605225,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.356994330249957,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.5071517061967444,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.223161664695063,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.5089453974683608,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.358968421217757,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.5020393342791261,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 16.970660337973953,
+          "final_identities": 53,
+          "param_changes": 78
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.5102565903021831,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.233536295874593,
+          "final_identities": 53,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.5148863768349754,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.52000461835057,
+          "final_identities": 53
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.5120833599093229,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.444863155605933,
+          "final_identities": 53
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.5050422648976982,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.0450461048924,
+          "final_identities": 53
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.5088626095162296,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.22174838536225,
+          "final_identities": 53
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.5016154984104205,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 16.962020987605538,
+          "final_identities": 53
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.5128156219019007,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.295155660741912,
+          "final_identities": 53
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.5107950859870892,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.240822634471687,
+          "final_identities": 53
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.5169145329315521,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.59852191149904,
+          "final_identities": 53
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.5091517456696459,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.373782615143607,
+          "final_identities": 53
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.5160775156655404,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.528618186607858,
+          "final_identities": 53
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.5125308831605225,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.356994330249957,
+          "final_identities": 53
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.5071517061967444,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.223161664695063,
+          "final_identities": 53
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.5089453974683608,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.358968421217757,
+          "final_identities": 53
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.5020393342791261,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 16.970660337973953,
+          "final_identities": 53
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.5102565903021831,
+          "final_cluster": 0.5660377358490566,
+          "final_mean_trust": 17.233536295874593,
+          "final_identities": 53
+        }
+      ]
+    },
+    "inflation_mild": {
+      "with_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.6053486527630796,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.88602040190222,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.5915094493783858,
+          "final_cluster": 0.0,
+          "final_mean_trust": 15.546608127386728,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.5896463940965367,
+          "final_cluster": 0.0,
+          "final_mean_trust": 15.605782481674376,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.5959748883419702,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.039926720168328,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.5905044008914045,
+          "final_cluster": 0.0,
+          "final_mean_trust": 15.691362320390706,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.5966702091194429,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.010061854768267,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.5991794026198772,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.22136032008945,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.6059350939319873,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.680901495777267,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.6040375864957964,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.90123585513197,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.5920848581052058,
+          "final_cluster": 0.0,
+          "final_mean_trust": 15.63170144091926,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.6032174182175504,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.759213105243287,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.6071561558358775,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.580451042613685,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.5967879479813016,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.219356158427694,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.6072749183093562,
+          "final_cluster": 0.0,
+          "final_mean_trust": 17.14608513616469,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.5992982134749175,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.146981423723474,
+          "final_identities": 20,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.6053486527630796,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.88602040190222,
+          "final_identities": 20
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.5915094493783858,
+          "final_cluster": 0.0,
+          "final_mean_trust": 15.546608127386728,
+          "final_identities": 20
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.5896463940965367,
+          "final_cluster": 0.0,
+          "final_mean_trust": 15.605782481674376,
+          "final_identities": 20
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.5959748883419702,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.039926720168328,
+          "final_identities": 20
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.5905044008914045,
+          "final_cluster": 0.0,
+          "final_mean_trust": 15.691362320390706,
+          "final_identities": 20
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.5966702091194429,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.010061854768267,
+          "final_identities": 20
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.5991794026198772,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.22136032008945,
+          "final_identities": 20
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.6059350939319873,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.680901495777267,
+          "final_identities": 20
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.6040375864957964,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.90123585513197,
+          "final_identities": 20
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.5920848581052058,
+          "final_cluster": 0.0,
+          "final_mean_trust": 15.63170144091926,
+          "final_identities": 20
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.6032174182175504,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.759213105243287,
+          "final_identities": 20
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.6071561558358775,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.580451042613685,
+          "final_identities": 20
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.5967879479813016,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.219356158427694,
+          "final_identities": 20
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.6072749183093562,
+          "final_cluster": 0.0,
+          "final_mean_trust": 17.14608513616469,
+          "final_identities": 20
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.5992982134749175,
+          "final_cluster": 0.0,
+          "final_mean_trust": 16.146981423723474,
+          "final_identities": 20
+        }
+      ]
+    },
+    "inflation_aggressive": {
+      "with_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.6465748308034109,
+          "final_cluster": 0.25,
+          "final_mean_trust": 83.66880873229996,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.6446796287003254,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.63294947908611,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.6460325730870935,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.26750946990191,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.6435525685835081,
+          "final_cluster": 0.25,
+          "final_mean_trust": 86.03384345646319,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.649113442112072,
+          "final_cluster": 0.25,
+          "final_mean_trust": 83.93892867925334,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.6492234931896043,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.38413564258761,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.6501193545330087,
+          "final_cluster": 0.25,
+          "final_mean_trust": 83.96092013231564,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.6513221365085538,
+          "final_cluster": 0.25,
+          "final_mean_trust": 83.55620281349813,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.6502672787707832,
+          "final_cluster": 0.25,
+          "final_mean_trust": 85.29912503981657,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.6475481126879696,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.33468822426708,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.6470740877624181,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.61864159185836,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.6455053137964425,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.63211224781683,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.64381805454834,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.33679582642151,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.6446896249570121,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.69656906399918,
+          "final_identities": 20,
+          "param_changes": 78
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.6493035676190515,
+          "final_cluster": 0.25,
+          "final_mean_trust": 82.9879393486272,
+          "final_identities": 20,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.6465748308034109,
+          "final_cluster": 0.25,
+          "final_mean_trust": 83.66880873229996,
+          "final_identities": 20
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.6446796287003254,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.63294947908611,
+          "final_identities": 20
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.6460325730870935,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.26750946990191,
+          "final_identities": 20
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.6435525685835081,
+          "final_cluster": 0.25,
+          "final_mean_trust": 86.03384345646319,
+          "final_identities": 20
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.649113442112072,
+          "final_cluster": 0.25,
+          "final_mean_trust": 83.93892867925334,
+          "final_identities": 20
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.6492234931896043,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.38413564258761,
+          "final_identities": 20
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.6501193545330087,
+          "final_cluster": 0.25,
+          "final_mean_trust": 83.96092013231564,
+          "final_identities": 20
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.6513221365085538,
+          "final_cluster": 0.25,
+          "final_mean_trust": 83.55620281349813,
+          "final_identities": 20
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.6502672787707832,
+          "final_cluster": 0.25,
+          "final_mean_trust": 85.29912503981657,
+          "final_identities": 20
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.6475481126879696,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.33468822426708,
+          "final_identities": 20
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.6470740877624181,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.61864159185836,
+          "final_identities": 20
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.6455053137964425,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.63211224781683,
+          "final_identities": 20
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.64381805454834,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.33679582642151,
+          "final_identities": 20
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.6446896249570121,
+          "final_cluster": 0.25,
+          "final_mean_trust": 84.69656906399918,
+          "final_identities": 20
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.6493035676190515,
+          "final_cluster": 0.25,
+          "final_mean_trust": 82.9879393486272,
+          "final_identities": 20
+        }
+      ]
+    },
+    "combined_attack": {
+      "with_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.34779404341350145,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.28540156667807,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.351335750737403,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.81060255656285,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.34797744065443814,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.91165490551794,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.3467381798979771,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.10063533584535,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.34148285931502065,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.856928999637155,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.34326042324583383,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.00283380607185,
+          "final_identities": 43,
+          "param_changes": 62
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.3507880582189204,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.573973072379125,
+          "final_identities": 43,
+          "param_changes": 60
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.3412885865087302,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.82006335535484,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.34931624820430307,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.164878760101416,
+          "final_identities": 43,
+          "param_changes": 62
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.3466015544714848,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.43445137011228,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.3457053067200323,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.44943789839916,
+          "final_identities": 43,
+          "param_changes": 63
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.34815993042652615,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.23694859996531,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.34465191037693843,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.14795961973166,
+          "final_identities": 43,
+          "param_changes": 61
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.3423115360215107,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.15388430363602,
+          "final_identities": 43,
+          "param_changes": 62
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.3467455993786086,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.25620790845854,
+          "final_identities": 43,
+          "param_changes": 61
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.34779404341350145,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.28540156667807,
+          "final_identities": 43
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.351335750737403,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.81060255656285,
+          "final_identities": 43
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.34797744065443814,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.91165490551794,
+          "final_identities": 43
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.3467381798979771,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.10063533584535,
+          "final_identities": 43
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.34148285931502065,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.856928999637155,
+          "final_identities": 43
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.34326042324583383,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.00283380607185,
+          "final_identities": 43
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.3507880582189204,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.573973072379125,
+          "final_identities": 43
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.3412885865087302,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.82006335535484,
+          "final_identities": 43
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.34931624820430307,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.164878760101416,
+          "final_identities": 43
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.3466015544714848,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.43445137011228,
+          "final_identities": 43
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.3457053067200323,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.44943789839916,
+          "final_identities": 43
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.34815993042652615,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 46.23694859996531,
+          "final_identities": 43
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.34465191037693843,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.14795961973166,
+          "final_identities": 43
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.3423115360215107,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.15388430363602,
+          "final_identities": 43
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.3467455993786086,
+          "final_cluster": 0.46511627906976744,
+          "final_mean_trust": 47.25620790845854,
+          "final_identities": 43
+        }
+      ]
+    },
+    "wave_attack": {
+      "with_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.6047425755751286,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.55823920430205,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.61654201181709,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.526229708756667,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.6154373122320189,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.410004830539226,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.6113300375039487,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.081166069635536,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.6110011259543416,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.974057234268415,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.6071095058257177,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.883161203876055,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.6174081781960596,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.419803784323516,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.6044363135526527,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.559541635106692,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.6172380344189884,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.370902241961,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.6183401138838699,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.601409412859514,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.6137512276235207,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.148126749834915,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.614909982839094,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.292017102088035,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.612017496367512,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.073844131454404,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.6195765181745876,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.773168772009225,
+          "final_identities": 62,
+          "param_changes": 78
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.6068910238198125,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.982838632362007,
+          "final_identities": 62,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.6047425755751286,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.55823920430205,
+          "final_identities": 62
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.61654201181709,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.526229708756667,
+          "final_identities": 62
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.6154373122320189,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.410004830539226,
+          "final_identities": 62
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.6113300375039487,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.081166069635536,
+          "final_identities": 62
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.6110011259543416,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.974057234268415,
+          "final_identities": 62
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.6071095058257177,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.883161203876055,
+          "final_identities": 62
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.6174081781960596,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.419803784323516,
+          "final_identities": 62
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.6044363135526527,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.559541635106692,
+          "final_identities": 62
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.6172380344189884,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.370902241961,
+          "final_identities": 62
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.6183401138838699,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.601409412859514,
+          "final_identities": 62
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.6137512276235207,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.148126749834915,
+          "final_identities": 62
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.614909982839094,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.292017102088035,
+          "final_identities": 62
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.612017496367512,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.073844131454404,
+          "final_identities": 62
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.6195765181745876,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 16.773168772009225,
+          "final_identities": 62
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.6068910238198125,
+          "final_cluster": 0.5161290322580645,
+          "final_mean_trust": 15.982838632362007,
+          "final_identities": 62
+        }
+      ]
+    },
+    "slow_degradation": {
+      "with_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.6175212284864431,
+          "final_cluster": 0.0,
+          "final_mean_trust": 18.829600336231017,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.6211255145445235,
+          "final_cluster": 0.0,
+          "final_mean_trust": 18.8442367881064,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.6190040493851011,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.023559609867117,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.6236268776902485,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.521802692835347,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.6227995319928684,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.599348922682864,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.6215403389089705,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.31552755123244,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.6279052123904281,
+          "final_cluster": 0.0,
+          "final_mean_trust": 20.28411701996011,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.6191910085435651,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.103866157457652,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.6229639309204532,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.129844809980554,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.6225048236109103,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.516900227185474,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.6223867603606057,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.517027834535195,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.6291275251666915,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.4784040099301,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.6300389592161352,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.665781296206287,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.62928167047247,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.743288796951695,
+          "final_identities": 21,
+          "param_changes": 78
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.6185064293918202,
+          "final_cluster": 0.0,
+          "final_mean_trust": 18.74792460221236,
+          "final_identities": 21,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.6175212284864431,
+          "final_cluster": 0.0,
+          "final_mean_trust": 18.829600336231017,
+          "final_identities": 21
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.6211255145445235,
+          "final_cluster": 0.0,
+          "final_mean_trust": 18.8442367881064,
+          "final_identities": 21
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.6190040493851011,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.023559609867117,
+          "final_identities": 21
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.6236268776902485,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.521802692835347,
+          "final_identities": 21
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.6227995319928684,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.599348922682864,
+          "final_identities": 21
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.6215403389089705,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.31552755123244,
+          "final_identities": 21
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.6279052123904281,
+          "final_cluster": 0.0,
+          "final_mean_trust": 20.28411701996011,
+          "final_identities": 21
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.6191910085435651,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.103866157457652,
+          "final_identities": 21
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.6229639309204532,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.129844809980554,
+          "final_identities": 21
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.6225048236109103,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.516900227185474,
+          "final_identities": 21
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.6223867603606057,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.517027834535195,
+          "final_identities": 21
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.6291275251666915,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.4784040099301,
+          "final_identities": 21
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.6300389592161352,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.665781296206287,
+          "final_identities": 21
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.62928167047247,
+          "final_cluster": 0.0,
+          "final_mean_trust": 19.743288796951695,
+          "final_identities": 21
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.6185064293918202,
+          "final_cluster": 0.0,
+          "final_mean_trust": 18.74792460221236,
+          "final_identities": 21
+        }
+      ]
+    },
+    "hoarding": {
+      "with_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.5172417381642728,
+          "final_cluster": 0.0,
+          "final_mean_trust": 56.72050314569975,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.5177314338892318,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.385811379674344,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.5201372045960393,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.06952899176312,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.5147064774144173,
+          "final_cluster": 0.0,
+          "final_mean_trust": 56.26075380127001,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.5282170867886724,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.06465595113742,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.5276586773958448,
+          "final_cluster": 0.0,
+          "final_mean_trust": 57.59992378276887,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.5303994289868472,
+          "final_cluster": 0.0,
+          "final_mean_trust": 60.0766643587681,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.5270649790572295,
+          "final_cluster": 0.0,
+          "final_mean_trust": 57.79412075598586,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.5178332718274252,
+          "final_cluster": 0.0,
+          "final_mean_trust": 57.18289300089447,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.5160770032379857,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.09079964131121,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.5231725198540849,
+          "final_cluster": 0.0,
+          "final_mean_trust": 57.981723168967825,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.5212890107026865,
+          "final_cluster": 0.0,
+          "final_mean_trust": 56.250455383980324,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.5166471002704721,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.430042698891484,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.519806263384215,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.845855792926315,
+          "final_identities": 24,
+          "param_changes": 78
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.522569389719849,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.01073234837443,
+          "final_identities": 24,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.5172417381642728,
+          "final_cluster": 0.0,
+          "final_mean_trust": 56.72050314569975,
+          "final_identities": 24
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.5177314338892318,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.385811379674344,
+          "final_identities": 24
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.5201372045960393,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.06952899176312,
+          "final_identities": 24
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.5147064774144173,
+          "final_cluster": 0.0,
+          "final_mean_trust": 56.26075380127001,
+          "final_identities": 24
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.5282170867886724,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.06465595113742,
+          "final_identities": 24
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.5276586773958448,
+          "final_cluster": 0.0,
+          "final_mean_trust": 57.59992378276887,
+          "final_identities": 24
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.5303994289868472,
+          "final_cluster": 0.0,
+          "final_mean_trust": 60.0766643587681,
+          "final_identities": 24
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.5270649790572295,
+          "final_cluster": 0.0,
+          "final_mean_trust": 57.79412075598586,
+          "final_identities": 24
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.5178332718274252,
+          "final_cluster": 0.0,
+          "final_mean_trust": 57.18289300089447,
+          "final_identities": 24
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.5160770032379857,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.09079964131121,
+          "final_identities": 24
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.5231725198540849,
+          "final_cluster": 0.0,
+          "final_mean_trust": 57.981723168967825,
+          "final_identities": 24
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.5212890107026865,
+          "final_cluster": 0.0,
+          "final_mean_trust": 56.250455383980324,
+          "final_identities": 24
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.5166471002704721,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.430042698891484,
+          "final_identities": 24
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.519806263384215,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.845855792926315,
+          "final_identities": 24
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.522569389719849,
+          "final_cluster": 0.0,
+          "final_mean_trust": 58.01073234837443,
+          "final_identities": 24
+        }
+      ]
+    },
+    "gini_manipulation": {
+      "with_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.8926296623159247,
+          "final_cluster": 0.0,
+          "final_mean_trust": 255.9575622905875,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.8928898440573976,
+          "final_cluster": 0.0,
+          "final_mean_trust": 263.7658836265443,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.8920697934220283,
+          "final_cluster": 0.0,
+          "final_mean_trust": 259.30231139996783,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.8921929088763774,
+          "final_cluster": 0.0,
+          "final_mean_trust": 258.61746945276076,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.8927882969287143,
+          "final_cluster": 0.0,
+          "final_mean_trust": 260.59451508657327,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.8920142484258962,
+          "final_cluster": 0.0,
+          "final_mean_trust": 262.752015736309,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.8914947283439322,
+          "final_cluster": 0.0,
+          "final_mean_trust": 255.41085391255066,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.8914505164102311,
+          "final_cluster": 0.0,
+          "final_mean_trust": 257.4699791129434,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.8926662538963724,
+          "final_cluster": 0.0,
+          "final_mean_trust": 258.57650747099353,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.891541185248798,
+          "final_cluster": 0.0,
+          "final_mean_trust": 259.55049688109693,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.8914125407553971,
+          "final_cluster": 0.0,
+          "final_mean_trust": 256.39263208568775,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.8919065197923274,
+          "final_cluster": 0.0,
+          "final_mean_trust": 256.29542543519335,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.8921437741688831,
+          "final_cluster": 0.0,
+          "final_mean_trust": 260.37164343666035,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.8923779765475782,
+          "final_cluster": 0.0,
+          "final_mean_trust": 260.98997445008945,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.8919362105883746,
+          "final_cluster": 0.0,
+          "final_mean_trust": 261.6346145389994,
+          "final_identities": 35,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.8926296623159247,
+          "final_cluster": 0.0,
+          "final_mean_trust": 255.9575622905875,
+          "final_identities": 35
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.8928898440573976,
+          "final_cluster": 0.0,
+          "final_mean_trust": 263.7658836265443,
+          "final_identities": 35
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.8920697934220283,
+          "final_cluster": 0.0,
+          "final_mean_trust": 259.30231139996783,
+          "final_identities": 35
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.8921929088763774,
+          "final_cluster": 0.0,
+          "final_mean_trust": 258.61746945276076,
+          "final_identities": 35
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.8927882969287143,
+          "final_cluster": 0.0,
+          "final_mean_trust": 260.59451508657327,
+          "final_identities": 35
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.8920142484258962,
+          "final_cluster": 0.0,
+          "final_mean_trust": 262.752015736309,
+          "final_identities": 35
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.8914947283439322,
+          "final_cluster": 0.0,
+          "final_mean_trust": 255.41085391255066,
+          "final_identities": 35
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.8914505164102311,
+          "final_cluster": 0.0,
+          "final_mean_trust": 257.4699791129434,
+          "final_identities": 35
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.8926662538963724,
+          "final_cluster": 0.0,
+          "final_mean_trust": 258.57650747099353,
+          "final_identities": 35
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.891541185248798,
+          "final_cluster": 0.0,
+          "final_mean_trust": 259.55049688109693,
+          "final_identities": 35
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.8914125407553971,
+          "final_cluster": 0.0,
+          "final_mean_trust": 256.39263208568775,
+          "final_identities": 35
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.8919065197923274,
+          "final_cluster": 0.0,
+          "final_mean_trust": 256.29542543519335,
+          "final_identities": 35
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.8921437741688831,
+          "final_cluster": 0.0,
+          "final_mean_trust": 260.37164343666035,
+          "final_identities": 35
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.8923779765475782,
+          "final_cluster": 0.0,
+          "final_mean_trust": 260.98997445008945,
+          "final_identities": 35
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.8919362105883746,
+          "final_cluster": 0.0,
+          "final_mean_trust": 261.6346145389994,
+          "final_identities": 35
+        }
+      ]
+    },
+    "attack_recovery": {
+      "with_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.583003951033376,
+          "final_cluster": 0.0,
+          "final_mean_trust": 23.78482968179691,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.5865525616760274,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.76307382886653,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.581929678004397,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.91405293007232,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.581336837442085,
+          "final_cluster": 0.0,
+          "final_mean_trust": 23.820260399269475,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.5819425361860125,
+          "final_cluster": 0.0,
+          "final_mean_trust": 23.764932436835284,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.5805511780616688,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.357354633339558,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.5869412646933655,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.39136149521434,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.5814368727490405,
+          "final_cluster": 0.0,
+          "final_mean_trust": 23.718088454880355,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.5855360631514934,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.533650276804334,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.582678029677924,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.884693314299692,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.5813583304576525,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.398071152230536,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.5855671054496865,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.605210865182507,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.5861352498914181,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.15999794832335,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.5883792385935003,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.94498293285064,
+          "final_identities": 45,
+          "param_changes": 78
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.5835823296072584,
+          "final_cluster": 0.0,
+          "final_mean_trust": 23.71470135211681,
+          "final_identities": 45,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.583003951033376,
+          "final_cluster": 0.0,
+          "final_mean_trust": 23.78482968179691,
+          "final_identities": 45
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.5865525616760274,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.76307382886653,
+          "final_identities": 45
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.581929678004397,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.91405293007232,
+          "final_identities": 45
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.581336837442085,
+          "final_cluster": 0.0,
+          "final_mean_trust": 23.820260399269475,
+          "final_identities": 45
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.5819425361860125,
+          "final_cluster": 0.0,
+          "final_mean_trust": 23.764932436835284,
+          "final_identities": 45
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.5805511780616688,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.357354633339558,
+          "final_identities": 45
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.5869412646933655,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.39136149521434,
+          "final_identities": 45
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.5814368727490405,
+          "final_cluster": 0.0,
+          "final_mean_trust": 23.718088454880355,
+          "final_identities": 45
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.5855360631514934,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.533650276804334,
+          "final_identities": 45
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.582678029677924,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.884693314299692,
+          "final_identities": 45
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.5813583304576525,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.398071152230536,
+          "final_identities": 45
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.5855671054496865,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.605210865182507,
+          "final_identities": 45
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.5861352498914181,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.15999794832335,
+          "final_identities": 45
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.5883792385935003,
+          "final_cluster": 0.0,
+          "final_mean_trust": 24.94498293285064,
+          "final_identities": 45
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.5835823296072584,
+          "final_cluster": 0.0,
+          "final_mean_trust": 23.71470135211681,
+          "final_identities": 45
+        }
+      ]
+    },
+    "sustained_pressure": {
+      "with_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.5901023684508079,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.86579761004866,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.5836652172947971,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.429057493347287,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.5935603775496958,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 24.078131212329847,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.5855987829605003,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.57706783911388,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.5816202519803026,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.17464728642347,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.5887493923085358,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.68331413010586,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.590293312783837,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.728782454119365,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.5818992657251443,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.219712342934702,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.5893339289326859,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.969292136184933,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.5980989776420368,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 24.035123451118174,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.5923330839022691,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.135495643887893,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.5841386762436913,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.386584288329267,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.5809416525710022,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.58406460817156,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.5920154614888442,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.90760790210267,
+          "final_identities": 35,
+          "param_changes": 78
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.5827708877603438,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 21.999305609326115,
+          "final_identities": 35,
+          "param_changes": 78
+        }
+      ],
+      "without_policy": [
+        {
+          "seed": 5000,
+          "final_gini": 0.5901023684508079,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.86579761004866,
+          "final_identities": 35
+        },
+        {
+          "seed": 5001,
+          "final_gini": 0.5836652172947971,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.429057493347287,
+          "final_identities": 35
+        },
+        {
+          "seed": 5002,
+          "final_gini": 0.5935603775496958,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 24.078131212329847,
+          "final_identities": 35
+        },
+        {
+          "seed": 5003,
+          "final_gini": 0.5855987829605003,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.57706783911388,
+          "final_identities": 35
+        },
+        {
+          "seed": 5004,
+          "final_gini": 0.5816202519803026,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.17464728642347,
+          "final_identities": 35
+        },
+        {
+          "seed": 5005,
+          "final_gini": 0.5887493923085358,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.68331413010586,
+          "final_identities": 35
+        },
+        {
+          "seed": 5006,
+          "final_gini": 0.590293312783837,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.728782454119365,
+          "final_identities": 35
+        },
+        {
+          "seed": 5007,
+          "final_gini": 0.5818992657251443,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.219712342934702,
+          "final_identities": 35
+        },
+        {
+          "seed": 5008,
+          "final_gini": 0.5893339289326859,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.969292136184933,
+          "final_identities": 35
+        },
+        {
+          "seed": 5009,
+          "final_gini": 0.5980989776420368,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 24.035123451118174,
+          "final_identities": 35
+        },
+        {
+          "seed": 5010,
+          "final_gini": 0.5923330839022691,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.135495643887893,
+          "final_identities": 35
+        },
+        {
+          "seed": 5011,
+          "final_gini": 0.5841386762436913,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.386584288329267,
+          "final_identities": 35
+        },
+        {
+          "seed": 5012,
+          "final_gini": 0.5809416525710022,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 22.58406460817156,
+          "final_identities": 35
+        },
+        {
+          "seed": 5013,
+          "final_gini": 0.5920154614888442,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 23.90760790210267,
+          "final_identities": 35
+        },
+        {
+          "seed": 5014,
+          "final_gini": 0.5827708877603438,
+          "final_cluster": 0.14285714285714285,
+          "final_mean_trust": 21.999305609326115,
+          "final_identities": 35
+        }
+      ]
+    }
+  }
+}

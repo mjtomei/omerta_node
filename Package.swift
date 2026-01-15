@@ -13,12 +13,9 @@ let package = Package(
         .executable(name: "omerta-mesh", targets: ["OmertaMeshCLI"]),
         .library(name: "OmertaCore", targets: ["OmertaCore"]),
         .library(name: "OmertaMesh", targets: ["OmertaMesh"]),
+        .library(name: "OmertaVPN", targets: ["OmertaVPN"]),
     ],
     dependencies: [
-        // gRPC and Protocol Buffers
-        .package(url: "https://github.com/grpc/grpc-swift.git", from: "1.23.0"),
-        .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.25.0"),
-
         // Networking
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.60.0"),
 
@@ -51,6 +48,17 @@ let package = Package(
             path: "Sources/OmertaMesh"
         ),
 
+        // VPN layer (WireGuard, tunneling, filtering)
+        .target(
+            name: "OmertaVPN",
+            dependencies: [
+                "OmertaCore",
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Sources/OmertaVPN"
+        ),
+
         // VM management (macOS only)
         .target(
             name: "OmertaVM",
@@ -61,18 +69,11 @@ let package = Package(
             path: "Sources/OmertaVM"
         ),
 
-        // Network layer
+        // Network layer (discovery, peer registry)
         .target(
             name: "OmertaNetwork",
             dependencies: [
                 "OmertaCore",
-                .product(name: "GRPC", package: "grpc-swift"),
-                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
-                .product(name: "NIO", package: "swift-nio"),
-                .product(name: "NIOCore", package: "swift-nio"),
-                .product(name: "NIOPosix", package: "swift-nio"),
-                .product(name: "NIOHTTP1", package: "swift-nio"),
-                .product(name: "NIOWebSocket", package: "swift-nio"),
                 .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/OmertaNetwork"
@@ -85,6 +86,7 @@ let package = Package(
                 "OmertaCore",
                 "OmertaVM",
                 "OmertaNetwork",
+                "OmertaVPN",
                 "OmertaConsumer",
                 "OmertaMesh",
                 .product(name: "NIOCore", package: "swift-nio"),
@@ -111,6 +113,7 @@ let package = Package(
             dependencies: [
                 "OmertaCore",
                 "OmertaNetwork",
+                "OmertaVPN",
                 "OmertaMesh",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
@@ -180,12 +183,26 @@ let package = Package(
         ),
         .testTarget(
             name: "OmertaVMTests",
-            dependencies: ["OmertaVM", "OmertaNetwork"],
+            dependencies: ["OmertaVM", "OmertaVPN"],
             path: "Tests/OmertaVMTests"
         ),
         .testTarget(
+            name: "OmertaVPNTests",
+            dependencies: [
+                "OmertaVPN",
+                "OmertaCore",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Tests/OmertaVPNTests"
+        ),
+        .testTarget(
             name: "OmertaNetworkTests",
-            dependencies: ["OmertaNetwork"],
+            dependencies: [
+                "OmertaNetwork",
+                "OmertaProvider",  // E2EConnectivityTests needs this
+                "OmertaVM",
+                "OmertaCore",
+            ],
             path: "Tests/OmertaNetworkTests"
         ),
         .testTarget(

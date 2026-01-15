@@ -2,6 +2,7 @@ import Foundation
 import Logging
 import OmertaCore
 import OmertaNetwork
+import OmertaVPN
 import OmertaMesh
 
 /// Consumer client that uses the mesh network for NAT traversal and peer discovery

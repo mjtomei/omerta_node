@@ -2,6 +2,7 @@ import Foundation
 import Logging
 import OmertaCore
 import OmertaNetwork
+import OmertaVPN
 
 /// Main entry point for consumer operations
 /// Handles VM lifecycle: request, track, and release VMs from providers
