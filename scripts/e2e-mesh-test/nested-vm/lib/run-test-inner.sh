@@ -530,46 +530,90 @@ run_test() {
 
     echo ""
 
-    # Wait for connection
-    echo -e "${CYAN}Step 6: Waiting for connection (30s)...${NC}"
-    sleep 30
-
-    # Check results
-    echo -e "${CYAN}Step 7: Results${NC}"
-
+    # Stream logs in real-time with prefixes
+    echo -e "${CYAN}Step 6: Streaming mesh output (Ctrl+C to stop)...${NC}"
     echo ""
-    echo "Peer 1 log:"
-    echo "---"
+    echo -e "${YELLOW}[peer1]${NC} = Peer 1 (behind $NAT1)"
+    echo -e "${GREEN}[peer2]${NC} = Peer 2 (behind $NAT2)"
+    [[ "$USE_RELAY" == "relay" ]] && echo -e "${CYAN}[relay]${NC} = Relay node"
+    echo ""
+    echo "--- Live output ---"
+
+    # Start background tail processes for each peer
+    local tail_pids=()
+
     if [[ "$USE_SERIAL" == "serial" ]]; then
-        get_mesh_log_serial "peer1" || echo "(no log)"
+        # For serial mode, poll the logs periodically
+        (
+            while true; do
+                serial_exec "peer1" "tail -n +1 /home/ubuntu/mesh-test/mesh.log 2>/dev/null" 3 | \
+                    sed "s/^/$(printf '\033[1;33m')[peer1]$(printf '\033[0m') /"
+                sleep 2
+            done
+        ) &
+        tail_pids+=($!)
+
+        (
+            while true; do
+                serial_exec "peer2" "tail -n +1 /home/ubuntu/mesh-test/mesh.log 2>/dev/null" 3 | \
+                    sed "s/^/$(printf '\033[0;32m')[peer2]$(printf '\033[0m') /"
+                sleep 2
+            done
+        ) &
+        tail_pids+=($!)
     else
-        lan_ssh "$NAT_GW1_INET_IP" "$PEER1_IP" "cat /home/ubuntu/mesh-test/mesh.log" 2>/dev/null || echo "(no log)"
+        # SSH-based tail with color prefixes
+        lan_ssh "$NAT_GW1_INET_IP" "$PEER1_IP" "tail -f /home/ubuntu/mesh-test/mesh.log 2>/dev/null" 2>/dev/null | \
+            sed "s/^/$(printf '\033[1;33m')[peer1]$(printf '\033[0m') /" &
+        tail_pids+=($!)
+
+        lan_ssh "$NAT_GW2_INET_IP" "$PEER2_IP" "tail -f /home/ubuntu/mesh-test/mesh.log 2>/dev/null" 2>/dev/null | \
+            sed "s/^/$(printf '\033[0;32m')[peer2]$(printf '\033[0m') /" &
+        tail_pids+=($!)
+
+        if [[ "$USE_RELAY" == "relay" ]]; then
+            inet_ssh "$RELAY_IP" "tail -f /home/ubuntu/mesh-test/mesh.log 2>/dev/null" 2>/dev/null | \
+                sed "s/^/$(printf '\033[0;36m')[relay]$(printf '\033[0m') /" &
+            tail_pids+=($!)
+        fi
     fi
-    echo "---"
+
+    # Wait for user interrupt or timeout
+    echo ""
+    echo "(Press Ctrl+C to stop streaming and see summary)"
+    echo ""
+
+    # Set up trap to clean up tail processes
+    cleanup_tails() {
+        for pid in "${tail_pids[@]}"; do
+            kill "$pid" 2>/dev/null || true
+        done
+        wait 2>/dev/null || true
+    }
+
+    # Wait with interruptible sleep
+    local stream_time=60
+    local elapsed=0
+    while [[ $elapsed -lt $stream_time ]]; do
+        sleep 5 || break
+        ((elapsed += 5))
+    done
+
+    # Clean up tail processes
+    cleanup_tails
 
     echo ""
-    echo "Peer 2 log:"
-    echo "---"
-    if [[ "$USE_SERIAL" == "serial" ]]; then
-        get_mesh_log_serial "peer2" || echo "(no log)"
-    else
-        lan_ssh "$NAT_GW2_INET_IP" "$PEER2_IP" "cat /home/ubuntu/mesh-test/mesh.log" 2>/dev/null || echo "(no log)"
-    fi
-    echo "---"
-
-    if [[ "$USE_RELAY" == "relay" ]]; then
-        echo ""
-        echo "Relay log:"
-        echo "---"
-        inet_ssh "$RELAY_IP" "cat /home/ubuntu/mesh-test/mesh.log" 2>/dev/null || echo "(no log)"
-        echo "---"
-    fi
-
+    echo "--- End of live output ---"
     echo ""
-    echo -e "${CYAN}Summary${NC}"
+
+    # Show final summary
+    echo -e "${CYAN}Step 7: Summary${NC}"
     echo "  NAT types: $NAT1 <-> $NAT2"
     echo "  Relay: ${USE_RELAY:-disabled}"
     echo "  Serial mode: ${USE_SERIAL:-disabled}"
+    echo "  Peer 1 ID: $peer1_id"
+    echo "  Peer 2 ID: $peer2_id"
+    [[ "$USE_RELAY" == "relay" ]] && echo "  Relay ID: $relay_id"
 }
 
 # Main
