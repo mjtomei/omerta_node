@@ -352,7 +352,9 @@ setup_relay() {
 
     inet_ssh "$RELAY_IP" "mkdir -p /home/ubuntu/mesh-test/lib"
 
+    # Copy both omerta CLI and omertad daemon
     inet_scp "$MESH_BIN" "$RELAY_IP" "/home/ubuntu/mesh-test/"
+    inet_scp "$SCRIPT_DIR/omertad" "$RELAY_IP" "/home/ubuntu/mesh-test/" 2>/dev/null || true
 
     local swift_lib_dir
     if swift_lib_dir=$(find_swift_lib_dir); then
@@ -363,7 +365,7 @@ setup_relay() {
         done
     fi
 
-    inet_ssh "$RELAY_IP" "chmod +x /home/ubuntu/mesh-test/omerta"
+    inet_ssh "$RELAY_IP" "chmod +x /home/ubuntu/mesh-test/omerta /home/ubuntu/mesh-test/omertad" 2>/dev/null || true
     echo "    Done"
 }
 
@@ -517,13 +519,23 @@ run_test() {
     echo "  Network ID: $network_id"
     echo "  Relay Peer ID: $relay_peer_id"
 
-    # Step 5b: Start relay daemon (or run in background for testing)
-    echo "  Starting relay/bootstrap node..."
+    # Step 5b: Start relay daemon in background
+    echo "  Starting relay/bootstrap node (omertad)..."
     inet_ssh "$RELAY_IP" \
-        "(cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omerta mesh ping $relay_peer_id \
-        --network $network_id --timeout 600 \
-        > mesh.log 2>&1 < /dev/null &)" || true
-    sleep 2
+        "(cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omertad start \
+        --network $network_id --port 9000 --dry-run \
+        > mesh.log 2>&1 < /dev/null &)"
+    sleep 3
+
+    # Verify daemon started
+    local daemon_pid
+    daemon_pid=$(inet_ssh "$RELAY_IP" "pgrep -f omertad" 2>/dev/null || true)
+    if [[ -n "$daemon_pid" ]]; then
+        echo "  Relay daemon started (PID $daemon_pid)"
+    else
+        echo -e "${RED}  Warning: Relay daemon may not have started${NC}"
+        echo "  Check log: inet_ssh $RELAY_IP 'cat /home/ubuntu/mesh-test/mesh.log'"
+    fi
 
     # Step 5c: Join network on peer1
     echo "  Peer1 joining network..."

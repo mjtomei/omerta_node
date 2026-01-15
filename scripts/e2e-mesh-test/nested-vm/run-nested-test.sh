@@ -297,11 +297,15 @@ copy_test_files() {
         exit 1
     fi
 
-    echo "Building omerta CLI..."
-    (cd "$OMERTA_DIR" && swift build --product omerta 2>&1 | tail -3)
+    echo "Building omerta CLI and daemon..."
+    (cd "$OMERTA_DIR" && swift build --product omerta --product omertad 2>&1 | tail -5)
 
     if [[ ! -f "$OMERTA_DIR/.build/debug/omerta" ]]; then
         echo -e "${RED}Error: omerta build failed${NC}"
+        exit 1
+    fi
+    if [[ ! -f "$OMERTA_DIR/.build/debug/omertad" ]]; then
+        echo -e "${RED}Error: omertad build failed${NC}"
         exit 1
     fi
 
@@ -312,9 +316,10 @@ copy_test_files() {
     # Create directory structure
     vm_ssh "mkdir -p /home/ubuntu/nested-vm-test/{lib,images,cloud-init,.run}"
 
-    # Copy binary
-    echo "Copying omerta binary..."
+    # Copy binaries
+    echo "Copying omerta and omertad binaries..."
     vm_scp "$OMERTA_DIR/.build/debug/omerta" $VM_USER@localhost:/home/ubuntu/nested-vm-test/
+    vm_scp "$OMERTA_DIR/.build/debug/omertad" $VM_USER@localhost:/home/ubuntu/nested-vm-test/
 
     # Copy Swift runtime libraries
     echo "Copying Swift runtime libraries..."
