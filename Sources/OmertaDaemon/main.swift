@@ -129,10 +129,10 @@ struct Start: AsyncParsableCommand {
         print("")
 
         // Run the mesh daemon
-        try await runMeshDaemon(identity: identity, keyData: keyData, bootstrapPeers: bootstrapPeers)
+        try await runMeshDaemon(networkId: networkId, identity: identity, keyData: keyData, bootstrapPeers: bootstrapPeers)
     }
 
-    private func runMeshDaemon(identity: OmertaMesh.IdentityKeypair, keyData: Data, bootstrapPeers: [String]) async throws {
+    private func runMeshDaemon(networkId: String, identity: OmertaMesh.IdentityKeypair, keyData: Data, bootstrapPeers: [String]) async throws {
         // Build mesh config with encryption key and bootstrap peers from network
         let meshConfig = MeshConfig(
             encryptionKey: keyData,
@@ -174,7 +174,7 @@ struct Start: AsyncParsableCommand {
             print("")
             print("Ready to accept VM requests via mesh network.")
             print("Consumers can request VMs using:")
-            print("  omerta vm request --network <network-id> --peer \(identity.peerId)")
+            print("  omerta vm request --network \(networkId) --peer \(identity.peerId)")
             print("")
             if let timeout = timeout {
                 print("Auto-shutdown in \(timeout) seconds")
