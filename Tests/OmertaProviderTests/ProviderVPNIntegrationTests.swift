@@ -5,7 +5,6 @@
 import XCTest
 import Virtualization
 @testable import OmertaProvider
-@testable import OmertaNetwork
 @testable import OmertaVM
 
 @MainActor
