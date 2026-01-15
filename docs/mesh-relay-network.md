@@ -1523,44 +1523,44 @@ struct MeshConfig {
 }
 ```
 
-## Code Reuse from OmertaNetwork
+## Code Migration from OmertaNetwork (Completed)
 
-The `OmertaNetwork` module will be **replaced entirely** by `OmertaMesh`. The following code will be migrated and reused:
+The `OmertaNetwork` NAT/P2P/DHT modules have been **replaced by `OmertaMesh`**. This section documents what was migrated.
 
-### Direct Reuse (copy with minimal changes)
+> **Status:** Migration complete. The following OmertaNetwork directories were deleted:
+> - `OmertaNetwork/NAT/` - Replaced by `OmertaMesh/STUN/`, `OmertaMesh/NAT/`, `OmertaMesh/HolePunch/`
+> - `OmertaNetwork/P2P/` - Replaced by `OmertaMesh/` (MeshNetwork, DirectConnection)
+> - `OmertaNetwork/DHT/` - Replaced by `OmertaMesh/Discovery/` (gossip-based)
+>
+> **Remaining:** `OmertaNetwork/VPN/` contains WireGuard/VPN infrastructure (planned extraction to `OmertaVPN` in Phase M5).
 
-| Existing File | New Location | Changes |
-|---------------|--------------|---------|
-| `OmertaNetwork/NAT/STUNClient.swift` | `OmertaMesh/STUN/STUNClient.swift` | Module imports only |
-| `OmertaNetwork/NAT/HolePuncher.swift` | `OmertaMesh/HolePunch/HolePuncher.swift` | Extract probe logic, remove RendezvousClient dependency |
-| `OmertaNetwork/DHT/KBucket.swift` | `OmertaMesh/Routing/KBucket.swift` | Module imports only |
-| `OmertaNetwork/P2P/WireGuardRelay.swift` | `OmertaMesh/Relay/WireGuardRelay.swift` | Module imports only |
+### What Was Migrated
 
-### Adapt and Extend
+| Original (OmertaNetwork) | New Location (OmertaMesh) | Notes |
+|--------------------------|---------------------------|-------|
+| `NAT/STUNClient.swift` | `STUN/STUNClient.swift` | Rewritten with improved NIO handling |
+| `NAT/HolePuncher.swift` | `HolePunch/HolePuncher.swift` | Removed RendezvousClient dependency |
+| `DHT/KBucket.swift` | `Routing/KBucket.swift` | Routing table logic preserved |
+| `NAT/NATTraversal.swift` | `NAT/NATDetector.swift` | Detection logic extracted |
 
-| Existing File | New Location | Changes |
-|---------------|--------------|---------|
-| `OmertaNetwork/DHT/PeerAnnouncement.swift` | `OmertaMesh/Discovery/PeerAnnouncement.swift` | Add `reachability: [ReachabilityPath]`, remove `signalingAddresses` |
-| `OmertaNetwork/DHT/DHTNode.swift` | `OmertaMesh/Discovery/PeerDiscovery.swift` | Extract routing logic, replace with gossip protocol |
-| `OmertaNetwork/NAT/NATTraversal.swift` | `OmertaMesh/NAT/NATDetector.swift` | Extract detection logic, remove RendezvousClient coordination |
+### What Was Replaced (Not Migrated)
 
-### Do Not Reuse (replaced by new design)
+| Original (OmertaNetwork) | Replacement | Reason |
+|--------------------------|-------------|--------|
+| `NAT/RendezvousClient.swift` | Mesh gossip protocol | Peer-to-peer signaling replaces centralized WebSocket |
+| `P2P/P2PSession.swift` | `MeshNetwork` actor | Full mesh connectivity instead of point-to-point |
+| `P2P/P2PVPNManager.swift` | `MeshConsumerClient` | Higher-level integration |
+| `DHT/DHTClient.swift` | `PeerDiscovery` | Gossip-based discovery |
+| `DHT/DHTTransport.swift` | `MeshNode` transport | Unified transport layer |
+| `DHT/DHTNode.swift` | Gossip protocol | Simplified peer tracking |
 
-| Existing File | Reason |
-|---------------|--------|
-| `OmertaNetwork/NAT/RendezvousClient.swift` | Replaced by peer-to-peer gossip |
-| `OmertaNetwork/P2P/P2PSession.swift` | Replaced by MeshNetwork |
-| `OmertaNetwork/P2P/P2PVPNManager.swift` | Higher-level code will use MeshNetwork directly |
-| `OmertaNetwork/DHT/DHTClient.swift` | Replaced by PeerDiscovery with gossip |
-| `OmertaNetwork/DHT/DHTTransport.swift` | Replaced by MeshNode transport |
+### Migration Phases (Completed)
 
-### Migration Strategy
-
-1. Create `OmertaMesh` module alongside `OmertaNetwork`
-2. Copy reusable files, update imports
-3. Build new functionality in `OmertaMesh`
-4. Update consumers to use `OmertaMesh`
-5. Delete `OmertaNetwork` module
+1. ✅ Created `OmertaMesh` module alongside `OmertaNetwork`
+2. ✅ Implemented new mesh functionality (Phases 1-8)
+3. ✅ Integrated mesh into CLI (Phase M4)
+4. ✅ Deleted `OmertaNetwork/NAT/`, `P2P/`, `DHT/` directories
+5. 🔲 Extract `OmertaNetwork/VPN/` to `OmertaVPN` (Phase M5)
 
 ---
 

@@ -414,6 +414,291 @@ struct Start: AsyncParsableCommand {
 
 ---
 
+### Phase M5: OmertaVPN Module Extraction
+
+**Goal:** Extract VPN infrastructure from OmertaNetwork into a new standalone OmertaVPN module, completing the OmertaNetwork deprecation.
+
+**Background:**
+After removing duplicate NAT/P2P/DHT code in the mesh refactoring (Phase M4), the remaining OmertaNetwork code is VPN infrastructure that has no equivalent in OmertaMesh. This phase creates a clean separation:
+
+- `OmertaMesh` - P2P networking, NAT traversal, relay, hole punching
+- `OmertaVPN` - WireGuard management, ephemeral VPN tunnels
+- `OmertaNetwork` - Deprecated (can be removed after this phase)
+
+**Files to Move:**
+
+| Source (OmertaNetwork/VPN/) | Destination (OmertaVPN/) |
+|----------------------------|--------------------------|
+| `EphemeralVPN.swift` | `EphemeralVPN.swift` |
+| `VPNManager.swift` | `VPNManager.swift` |
+| `LinuxWireGuardManager.swift` | `Platform/LinuxWireGuardManager.swift` |
+| `MacOSWireGuard.swift` | `Platform/MacOSWireGuard.swift` |
+| `VMNetworkConfig.swift` | `VMNetworkConfig.swift` |
+| `WireGuardPeerManager.swift` | `WireGuardPeerManager.swift` |
+
+**Package.swift Changes:**
+
+```swift
+// New OmertaVPN target
+.target(
+    name: "OmertaVPN",
+    dependencies: [
+        "OmertaCore",
+        .product(name: "Logging", package: "swift-log"),
+    ],
+    path: "Sources/OmertaVPN"
+),
+
+// Update OmertaProvider to use OmertaVPN instead of OmertaNetwork
+.target(
+    name: "OmertaProvider",
+    dependencies: [
+        "OmertaCore",
+        "OmertaVM",
+        "OmertaMesh",
+        "OmertaVPN",  // Replaces OmertaNetwork
+        // ...
+    ]
+),
+
+// Update OmertaConsumer similarly
+.target(
+    name: "OmertaConsumer",
+    dependencies: [
+        "OmertaCore",
+        "OmertaMesh",
+        "OmertaVPN",  // Replaces OmertaNetwork
+        // ...
+    ]
+),
+```
+
+**Implementation Steps:**
+
+1. **Create OmertaVPN module structure:**
+   ```
+   Sources/OmertaVPN/
+   ├── EphemeralVPN.swift
+   ├── VPNManager.swift
+   ├── VMNetworkConfig.swift
+   ├── WireGuardPeerManager.swift
+   └── Platform/
+       ├── LinuxWireGuardManager.swift
+       └── MacOSWireGuard.swift
+   ```
+
+2. **Update imports in moved files:**
+   - Change `import OmertaNetwork` to `import OmertaVPN` where applicable
+   - Remove any dependencies on deleted NAT/P2P/DHT code
+
+3. **Update dependent modules:**
+   - OmertaProvider: Replace `import OmertaNetwork` with `import OmertaVPN`
+   - OmertaConsumer: Replace `import OmertaNetwork` with `import OmertaVPN`
+   - OmertaCLI: Update any VPN-related commands
+
+4. **Update tests:**
+   - Move VPN-related tests from OmertaNetworkTests to OmertaVPNTests
+   - Update test imports
+
+5. **Remove OmertaNetwork:**
+   - Delete `Sources/OmertaNetwork/` directory
+   - Delete `Tests/OmertaNetworkTests/` directory
+   - Remove from Package.swift
+
+**Files Remaining in OmertaNetwork (to be deleted after extraction):**
+
+| File | Lines | Notes |
+|------|-------|-------|
+| `UDPControlClient.swift` | ~300 | Legacy, replaced by MeshConsumerClient |
+| `UDPControlServer.swift` | ~350 | Legacy, replaced by MeshProviderDaemon |
+| `UDPControlProtocol.swift` | ~200 | Legacy, replaced by mesh messaging |
+
+**Success Criteria:**
+- [ ] OmertaVPN module compiles independently
+- [ ] All VPN functionality works via OmertaVPN import
+- [ ] OmertaNetwork directory is deleted
+- [ ] All existing VPN tests pass
+- [ ] `swift build` succeeds
+- [ ] All VM provisioning E2E tests pass
+
+**Unit Tests:**
+
+| Test | File | Description |
+|------|------|-------------|
+| `testEphemeralVPNCreation` | `OmertaVPNTests/EphemeralVPNTests.swift` | VPN tunnel creates correctly |
+| `testWireGuardConfigGeneration` | `OmertaVPNTests/WireGuardTests.swift` | WG configs generate valid syntax |
+| `testVMNetworkConfigAllocation` | `OmertaVPNTests/VMNetworkConfigTests.swift` | IP addresses allocated correctly |
+
+**Verification:**
+```bash
+swift build
+swift test --filter OmertaVPN
+swift test  # All tests pass
+```
+
+**Deliverable:** Clean module separation with OmertaNetwork fully deprecated and removed.
+
+---
+
+### Phase M6: OmertaSTUN Extraction (Rename omerta-rendezvous)
+
+**Goal:** Simplify `omerta-rendezvous` to just a STUN server, renaming it to `omerta-stun`, and remove obsolete signaling/relay code that's now handled by OmertaMesh.
+
+**Background:**
+The original `omerta-rendezvous` binary had three components:
+1. **SignalingServer** (WebSocket) - Coordinated hole punching between peers
+2. **RelayServer** (UDP) - Relayed traffic for symmetric NAT fallback
+3. **STUNServer** - Discovered public endpoints for NAT detection
+
+With OmertaMesh integration complete:
+- Signaling is replaced by mesh gossip protocol
+- Relay is replaced by mesh relay nodes (`omerta-mesh --relay`)
+- Only STUN is still needed as a standalone service
+
+**Files to Create:**
+
+| New File | Description |
+|----------|-------------|
+| `Sources/OmertaSTUN/STUNServer.swift` | Standalone STUN server (copied from OmertaRendezvous) |
+| `Sources/OmertaSTUNCLI/main.swift` | Simple CLI for `omerta-stun` binary |
+
+**Files to Delete:**
+
+| File | Lines | Reason |
+|------|-------|--------|
+| `Sources/OmertaRendezvous/SignalingServer.swift` | ~470 | Replaced by OmertaMesh gossip |
+| `Sources/OmertaRendezvous/SignalingMessages.swift` | ~150 | Not needed without signaling |
+| `Sources/OmertaRendezvous/PeerRegistry.swift` | ~200 | Not needed without signaling |
+| `Sources/OmertaRendezvous/RelayServer.swift` | ~350 | Replaced by OmertaMesh relay |
+| `Sources/OmertaRendezvous/STUNServer.swift` | ~340 | Moved to OmertaSTUN |
+| `Sources/OmertaRendezvous/main.swift` | ~140 | Replaced by OmertaSTUNCLI |
+| `Sources/OmertaRendezvousCLI/main.swift` | ~140 | Replaced by OmertaSTUNCLI |
+| `Tests/OmertaRendezvousTests/SignalingMessagesTests.swift` | - | Testing deleted code |
+| `Tests/OmertaRendezvousTests/PeerRegistryTests.swift` | - | Testing deleted code |
+| `Tests/OmertaRendezvousTests/RelayServerTests.swift` | - | Testing deleted code |
+
+**Package.swift Changes:**
+
+```swift
+// Remove old products/targets
+- .executable(name: "omerta-rendezvous", targets: ["OmertaRendezvous"]),
+- .target(name: "OmertaRendezvousLib", ...),
+- .executableTarget(name: "OmertaRendezvous", ...),
+- .testTarget(name: "OmertaRendezvousTests", ...),
+
+// Add new products/targets
++ .executable(name: "omerta-stun", targets: ["OmertaSTUNCLI"]),
+
++ .target(
++     name: "OmertaSTUN",
++     dependencies: [
++         .product(name: "NIOCore", package: "swift-nio"),
++         .product(name: "NIOPosix", package: "swift-nio"),
++         .product(name: "Logging", package: "swift-log"),
++     ],
++     path: "Sources/OmertaSTUN"
++ ),
+
++ .executableTarget(
++     name: "OmertaSTUNCLI",
++     dependencies: [
++         "OmertaSTUN",
++         .product(name: "ArgumentParser", package: "swift-argument-parser"),
++         .product(name: "Logging", package: "swift-log"),
++     ],
++     path: "Sources/OmertaSTUNCLI"
++ ),
+
++ .testTarget(
++     name: "OmertaSTUNTests",
++     dependencies: ["OmertaSTUN"],
++     path: "Tests/OmertaSTUNTests"
++ ),
+```
+
+**Config Changes:**
+
+Remove `rendezvousServer` from `NATConfig` (no longer used):
+
+```swift
+// Sources/OmertaCore/Config/OmertaConfig.swift
+public struct NATConfig: Codable, Sendable {
+-   public var rendezvousServer: String?  // REMOVE
+    public var stunServers: [String]
+    // ... rest stays
+}
+```
+
+**New omerta-stun CLI:**
+
+```swift
+// Sources/OmertaSTUNCLI/main.swift
+@main
+struct STUNCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "omerta-stun",
+        abstract: "STUN server for NAT endpoint discovery"
+    )
+
+    @Option(name: .shortAndLong, help: "UDP port to listen on")
+    var port: UInt16 = 3478
+
+    @Option(name: .shortAndLong, help: "Log level")
+    var logLevel: String = "info"
+
+    mutating func run() async throws {
+        // Configure logging
+        LoggingSystem.bootstrap { ... }
+
+        let server = STUNServer(port: port)
+        try await server.start()
+
+        print("STUN server listening on 0.0.0.0:\(port)")
+        await waitForShutdown()
+        await server.stop()
+    }
+}
+```
+
+**Deployment Model:**
+
+Bootstrap servers now run two simple binaries:
+```bash
+# On stun.omerta.mtomei.com
+omerta-stun --port 3478
+
+# On bootstrap.omerta.mtomei.com
+omerta-mesh --relay --port 9000
+```
+
+**Success Criteria:**
+- [ ] `omerta-stun` binary compiles and runs
+- [ ] STUN endpoint discovery works with new binary
+- [ ] OmertaRendezvous module fully removed
+- [ ] `rendezvousServer` config option removed
+- [ ] All tests pass
+- [ ] `swift build` succeeds
+
+**Unit Tests:**
+
+| Test | File | Description |
+|------|------|-------------|
+| `testSTUNBindingRequest` | `OmertaSTUNTests/STUNServerTests.swift` | Server responds to binding request |
+| `testSTUNXORMappedAddress` | `OmertaSTUNTests/STUNServerTests.swift` | Response contains correct XOR-MAPPED-ADDRESS |
+
+**Verification:**
+```bash
+swift build
+.build/debug/omerta-stun --port 3478 &
+# Test with existing STUN client
+swift test --filter OmertaSTUN
+ls Sources/OmertaRendezvous  # Should not exist
+```
+
+**Deliverable:** Simplified `omerta-stun` binary with clean separation from mesh networking.
+
+---
+
 ## Test Updates
 
 ### Unit Tests to Update
@@ -843,13 +1128,15 @@ To test actual NAT traversal (not simulated), use a router:
 | M2 | MeshConsumerClient | M1 | Medium |
 | M3 | MeshProviderDaemon | M1 | Medium |
 | M4 | CLI integration | M2, M3 | Medium |
-| T1 | Unit tests | M2, M3 | Small |
+| M5 | OmertaVPN extraction | M4 | Medium |
+| M6 | OmertaSTUN extraction | M4 | Small |
+| T1 | Unit tests | M2, M3, M5, M6 | Small |
 | T2 | Integration tests | M4, T1 | Medium |
 | E1 | E2E: Same LAN | M4 | Small |
 | E2 | E2E: NAT simulation | E1 | Medium |
 | E3 | E2E: Nested VMs | E2 | Large |
 
-**Critical Path:** M1 → M2 → M3 → M4 → E1 → E2
+**Critical Path:** M1 → M2 → M3 → M4 → M5 → M6 → E1 → E2
 
 ---
 
@@ -946,11 +1233,68 @@ swift test --filter DaemonMeshIntegration
 
 ---
 
+### Phase M5: OmertaVPN Module Extraction
+
+**Success Criteria:**
+- [ ] OmertaVPN module exists and compiles
+- [ ] All VPN files moved from OmertaNetwork to OmertaVPN
+- [ ] OmertaProvider and OmertaConsumer use OmertaVPN instead of OmertaNetwork
+- [ ] OmertaNetwork directory fully removed
+- [ ] All existing tests pass
+
+**Unit Tests:**
+
+| Test | File | Description |
+|------|------|-------------|
+| `testEphemeralVPNCreation` | `OmertaVPNTests/EphemeralVPNTests.swift` | VPN tunnel initializes correctly |
+| `testWireGuardConfigGeneration` | `OmertaVPNTests/WireGuardTests.swift` | WG configs have valid syntax |
+| `testVMNetworkConfigIPAllocation` | `OmertaVPNTests/VMNetworkConfigTests.swift` | IPs allocated from correct subnet |
+| `testLinuxWireGuardManager` | `OmertaVPNTests/LinuxWireGuardTests.swift` | Linux WG interface setup works |
+| `testMacOSWireGuard` | `OmertaVPNTests/MacOSWireGuardTests.swift` | macOS WG tunnel setup works |
+
+**Verification:**
+```bash
+swift build
+swift test --filter OmertaVPN
+swift test  # All tests pass
+ls Sources/OmertaNetwork  # Should not exist
+```
+
+---
+
+### Phase M6: OmertaSTUN Extraction
+
+**Success Criteria:**
+- [ ] OmertaSTUN module exists and compiles
+- [ ] `omerta-stun` binary runs and responds to STUN requests
+- [ ] OmertaRendezvous module fully removed
+- [ ] `rendezvousServer` config option removed from NATConfig
+- [ ] All tests pass
+
+**Unit Tests:**
+
+| Test | File | Description |
+|------|------|-------------|
+| `testSTUNServerBindingRequest` | `OmertaSTUNTests/STUNServerTests.swift` | Server responds to binding request |
+| `testSTUNServerXORMappedAddress` | `OmertaSTUNTests/STUNServerTests.swift` | XOR-MAPPED-ADDRESS decoded correctly |
+
+**Verification:**
+```bash
+swift build
+.build/debug/omerta-stun --port 3478 &
+swift test --filter OmertaSTUN
+ls Sources/OmertaRendezvous  # Should not exist
+```
+
+---
+
 ### Phase T1: Unit Tests
 
 **Success Criteria:**
 - [ ] All M2 unit tests pass
 - [ ] All M3 unit tests pass
+- [ ] All M5 unit tests pass
+- [ ] All M6 unit tests pass
 - [ ] Existing OmertaConsumer tests still pass
 - [ ] Existing OmertaProvider tests still pass
 
@@ -961,6 +1305,10 @@ swift test --filter DaemonMeshIntegration
 | `Tests/OmertaConsumerTests/MeshConsumerClientTests.swift` | New | 4+ tests |
 | `Tests/OmertaProviderTests/MeshProviderDaemonTests.swift` | New | 4+ tests |
 | `Tests/OmertaCoreTests/ConfigTests.swift` | Updated | +2 tests for MeshConfigOptions |
+| `Tests/OmertaVPNTests/EphemeralVPNTests.swift` | New | 2+ tests |
+| `Tests/OmertaVPNTests/WireGuardTests.swift` | New | 2+ tests |
+| `Tests/OmertaVPNTests/VMNetworkConfigTests.swift` | New | 2+ tests |
+| `Tests/OmertaSTUNTests/STUNServerTests.swift` | New | 2+ tests |
 | `Tests/OmertaConsumerTests/ConsumerClientTests.swift` | Existing | Must still pass |
 | `Tests/OmertaProviderTests/ProviderDaemonTests.swift` | Existing | Must still pass |
 
@@ -969,6 +1317,8 @@ swift test --filter DaemonMeshIntegration
 swift test --filter OmertaConsumerTests
 swift test --filter OmertaProviderTests
 swift test --filter OmertaCoreTests
+swift test --filter OmertaVPN
+swift test --filter OmertaSTUN
 ```
 
 ---
@@ -1108,14 +1458,16 @@ sudo ./scripts/e2e-mesh-test/nested-vm/run-mesh-vm-nested.sh
 | M2 | 5 | - | - |
 | M3 | 4 | - | - |
 | M4 | - | 5 | - |
-| T1 | 9+ (all unit) | - | - |
+| M5 | 5 | - | - |
+| M6 | 2 | - | - |
+| T1 | 16+ (all unit) | - | - |
 | T2 | - | 5+ | - |
 | E1 | - | - | 1 script |
 | E2 | - | - | 3 scripts |
 | E3 | - | - | 2 scripts |
 
 **Total New Tests:**
-- Unit tests: ~9
+- Unit tests: ~16
 - Integration tests: ~10
 - E2E scripts: ~6
 
@@ -1155,6 +1507,8 @@ Integration is complete when all phase criteria are met:
 - [ ] M2: MeshConsumerClient implemented
 - [ ] M3: MeshProviderDaemon implemented
 - [ ] M4: CLI commands working
+- [ ] M5: OmertaVPN extracted, OmertaNetwork removed
+- [ ] M6: OmertaSTUN extracted, OmertaRendezvous removed
 
 **Unit Tests (T1):**
 - [ ] `swift test --filter MeshConsumerClient` passes (5 tests)

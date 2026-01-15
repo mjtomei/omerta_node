@@ -828,6 +828,12 @@ omerta vm boot-test --provider 127.0.0.1:51820 --mode reverse-ssh
 
 ### Phase 5: P2P Networking Foundation
 
+> **⚠️ SUPERSEDED:** This phase describes the original `OmertaNetwork` P2P design. It has been **replaced by `OmertaMesh`**, a complete decentralized mesh networking implementation. See:
+> - [mesh-relay-network.md](mesh-relay-network.md) - OmertaMesh design and implementation
+> - [mesh-integration-plan.md](mesh-integration-plan.md) - Integration into CLI
+>
+> The `OmertaNetwork/NAT/`, `OmertaNetwork/P2P/`, and `OmertaNetwork/DHT/` directories referenced below have been deleted. The `OmertaRendezvous` signaling/relay server is being simplified to just a STUN server (`omerta-stun`) in Phase M6.
+
 **Goal:** Complete peer-to-peer networking stack: identity, discovery, NAT traversal, and relay.
 
 **Motivation:**
@@ -3032,10 +3038,13 @@ The `OmertaMesh` module implements a complete decentralized P2P overlay network 
 - All 8 OmertaMesh phases are implemented and tested
 - `omerta-mesh` CLI works as a standalone mesh node
 - E2E test infrastructure exists in `scripts/e2e-mesh-test/`
+- ✅ OmertaMesh integrated into `OmertaCLI` and `OmertaDaemon` (Phase M1-M4)
+- ✅ `OmertaNetwork/NAT/`, `P2P/`, `DHT/` directories deleted (replaced by OmertaMesh)
+- Cross-machine mesh tests passing (Linux ↔ macOS)
 
-**Remaining Work:**
-- Integrate OmertaMesh into `OmertaCLI` and `OmertaDaemon`
-- Update existing tests to use mesh networking
+**Remaining Work (see [mesh-integration-plan.md](mesh-integration-plan.md)):**
+- Phase M5: Extract `OmertaVPN` module from remaining `OmertaNetwork/VPN/` code
+- Phase M6: Simplify `omerta-rendezvous` to `omerta-stun` (STUN server only)
 - Extend E2E test infrastructure for full VM provisioning over mesh
 
 ---
@@ -3084,7 +3093,9 @@ The `OmertaMesh` module implements a complete decentralized P2P overlay network 
 
 ## Integration Phases
 
-### Phase M1: Add OmertaMesh Dependency to Binaries
+> **Status:** Phases M1-M4 are complete. See [mesh-integration-plan.md](mesh-integration-plan.md) for detailed status and remaining phases M5-M6.
+
+### Phase M1: Add OmertaMesh Dependency to Binaries ✅
 
 **Goal:** Wire OmertaMesh into the module dependency graph.
 
@@ -3119,7 +3130,7 @@ The `OmertaMesh` module implements a complete decentralized P2P overlay network 
 
 ---
 
-### Phase M2: MeshNetwork Integration in OmertaConsumer
+### Phase M2: MeshNetwork Integration in OmertaConsumer ✅
 
 **Goal:** ConsumerClient can discover and connect to providers via mesh.
 
@@ -3214,7 +3225,7 @@ public struct OmertaConfig: Codable, Sendable {
 
 ---
 
-### Phase M3: MeshNetwork Integration in OmertaProvider
+### Phase M3: MeshNetwork Integration in OmertaProvider ✅
 
 **Goal:** ProviderDaemon joins mesh network and accepts requests via relay/hole punch.
 
@@ -3290,7 +3301,7 @@ public actor MeshProviderDaemon {
 
 ---
 
-### Phase M4: CLI Integration
+### Phase M4: CLI Integration ✅
 
 **Goal:** `omerta` and `omertad` CLIs support mesh networking.
 
