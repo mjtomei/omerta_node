@@ -99,13 +99,21 @@ create_bridges() {
     echo 1 > /proc/sys/net/ipv4/ip_forward
 
     # Add masquerade rule so VMs on the internet bridge can reach the real internet
-    # through the outer VM's primary interface
+    # through the outer VM's primary interface (use nft instead of iptables)
     local primary_if
     primary_if=$(ip route | grep default | awk '{print $5}' | head -1)
     if [[ -n "$primary_if" ]]; then
-        iptables -t nat -C POSTROUTING -s ${INET_SUBNET}.0/24 -o "$primary_if" -j MASQUERADE 2>/dev/null || \
-            iptables -t nat -A POSTROUTING -s ${INET_SUBNET}.0/24 -o "$primary_if" -j MASQUERADE
-        echo "  Added masquerade rule for ${INET_SUBNET}.0/24 -> $primary_if"
+        # Use nftables for masquerade
+        if command -v nft &>/dev/null; then
+            nft add table ip nat 2>/dev/null || true
+            nft add chain ip nat postrouting '{ type nat hook postrouting priority 100; }' 2>/dev/null || true
+            nft add rule ip nat postrouting ip saddr ${INET_SUBNET}.0/24 oifname "$primary_if" masquerade 2>/dev/null || true
+            echo "  Added nft masquerade rule for ${INET_SUBNET}.0/24 -> $primary_if"
+        elif command -v iptables &>/dev/null; then
+            iptables -t nat -C POSTROUTING -s ${INET_SUBNET}.0/24 -o "$primary_if" -j MASQUERADE 2>/dev/null || \
+                iptables -t nat -A POSTROUTING -s ${INET_SUBNET}.0/24 -o "$primary_if" -j MASQUERADE
+            echo "  Added iptables masquerade rule for ${INET_SUBNET}.0/24 -> $primary_if"
+        fi
     fi
 
     echo -e "${GREEN}Bridges created successfully${NC}"

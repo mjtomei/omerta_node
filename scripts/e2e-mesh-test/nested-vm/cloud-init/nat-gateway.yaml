@@ -43,9 +43,10 @@ users:
     ssh_authorized_keys:
       - ${SSH_PUBLIC_KEY}
 
-# Skip package updates - nftables is already in the base image
-# and the VMs don't have internet access during testing
-package_update: false
+# Install nftables - Ubuntu minimal doesn't have it pre-installed
+package_update: true
+packages:
+  - nftables
 
 write_files:
   - path: /etc/mesh-nat-type

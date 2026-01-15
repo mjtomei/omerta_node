@@ -403,13 +403,8 @@ setup_peer() {
     if swift_lib_dir=$(find_swift_lib_dir); then
         echo "    Copying Swift libs from $swift_lib_dir"
         local lib_count=0
-        for lib in "$swift_lib_dir"/libswift*.so*; do
-            if [[ -f "$lib" ]]; then
-                lan_scp "$lib" "$jump_ip" "$target_ip" "/home/ubuntu/mesh-test/lib/" 2>/dev/null && ((lib_count++)) || true
-            fi
-        done
-        # Also copy libdispatch and libBlocksRuntime if present
-        for lib in "$swift_lib_dir"/libdispatch.so* "$swift_lib_dir"/libBlocksRuntime.so*; do
+        # Copy all .so files - includes libswift*, libFoundation*, libdispatch, etc.
+        for lib in "$swift_lib_dir"/*.so*; do
             if [[ -f "$lib" ]]; then
                 lan_scp "$lib" "$jump_ip" "$target_ip" "/home/ubuntu/mesh-test/lib/" 2>/dev/null && ((lib_count++)) || true
             fi
@@ -440,13 +435,8 @@ setup_relay() {
     if swift_lib_dir=$(find_swift_lib_dir); then
         echo "    Copying Swift libs from $swift_lib_dir"
         local lib_count=0
-        for lib in "$swift_lib_dir"/libswift*.so*; do
-            if [[ -f "$lib" ]]; then
-                inet_scp "$lib" "$RELAY_IP" "/home/ubuntu/mesh-test/lib/" 2>/dev/null && ((lib_count++)) || true
-            fi
-        done
-        # Also copy libdispatch and libBlocksRuntime if present
-        for lib in "$swift_lib_dir"/libdispatch.so* "$swift_lib_dir"/libBlocksRuntime.so*; do
+        # Copy all .so files - includes libswift*, libFoundation*, libdispatch, etc.
+        for lib in "$swift_lib_dir"/*.so*; do
             if [[ -f "$lib" ]]; then
                 inet_scp "$lib" "$RELAY_IP" "/home/ubuntu/mesh-test/lib/" 2>/dev/null && ((lib_count++)) || true
             fi
@@ -500,6 +490,16 @@ run_test() {
     echo "    enp0s2 (WAN): $(inet_ssh "$NAT_GW2_INET_IP" 'ip -4 addr show enp0s2 | grep inet | awk "{print \$2}"' 2>/dev/null || echo 'not configured')"
     echo "    enp0s3 (LAN): $(inet_ssh "$NAT_GW2_INET_IP" 'ip -4 addr show enp0s3 | grep inet | awk "{print \$2}"' 2>/dev/null || echo 'not configured')"
     echo "    NAT type: $(inet_ssh "$NAT_GW2_INET_IP" 'cat /etc/mesh-nat-type' 2>/dev/null || echo 'unknown')"
+
+    # Ensure NAT gateways have IP forwarding enabled (cloud-init race condition workaround)
+    echo "  Ensuring NAT configuration is applied..."
+    for gw_ip in "$NAT_GW1_INET_IP" "$NAT_GW2_INET_IP"; do
+        local fwd=$(inet_ssh "$gw_ip" 'cat /proc/sys/net/ipv4/ip_forward' 2>/dev/null)
+        if [[ "$fwd" != "1" ]]; then
+            echo "    Applying NAT config to $gw_ip..."
+            inet_ssh "$gw_ip" 'sudo /usr/local/bin/configure-nat.sh' 2>/dev/null || true
+        fi
+    done
 
     # Check peer network config
     echo "  Checking peer1 network..."
@@ -639,9 +639,9 @@ run_test() {
         # Start relay first
         echo "  Starting relay..."
         inet_ssh "$RELAY_IP" "cd /home/ubuntu/mesh-test && \
-            LD_LIBRARY_PATH=./lib nohup ./omerta-mesh \
-            --id $relay_id \
-            --listen 0.0.0.0:9000 \
+            LD_LIBRARY_PATH=/home/ubuntu/mesh-test/lib nohup ./omerta-mesh \
+            --peer-id $relay_id \
+            --port 9000 \
             --relay \
             > relay.log 2>&1 &"
         sleep 3
@@ -653,9 +653,9 @@ run_test() {
     # Start peer1
     echo "  Starting peer1..."
     lan_ssh "$NAT_GW1_INET_IP" "$PEER1_IP" "cd /home/ubuntu/mesh-test && \
-        LD_LIBRARY_PATH=./lib nohup ./omerta-mesh \
-        --id $peer1_id \
-        --listen 0.0.0.0:9000 \
+        LD_LIBRARY_PATH=/home/ubuntu/mesh-test/lib nohup ./omerta-mesh \
+        --peer-id $peer1_id \
+        --port 9000 \
         --bootstrap $bootstrap_addr \
         > peer.log 2>&1 &"
     sleep 2
@@ -663,9 +663,9 @@ run_test() {
     # Start peer2
     echo "  Starting peer2..."
     lan_ssh "$NAT_GW2_INET_IP" "$PEER2_IP" "cd /home/ubuntu/mesh-test && \
-        LD_LIBRARY_PATH=./lib nohup ./omerta-mesh \
-        --id $peer2_id \
-        --listen 0.0.0.0:9000 \
+        LD_LIBRARY_PATH=/home/ubuntu/mesh-test/lib nohup ./omerta-mesh \
+        --peer-id $peer2_id \
+        --port 9000 \
         --bootstrap $bootstrap_addr \
         > peer.log 2>&1 &"
 
