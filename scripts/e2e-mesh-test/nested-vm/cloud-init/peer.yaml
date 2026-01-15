@@ -1,0 +1,55 @@
+#cloud-config
+# Peer VM Configuration
+#
+# This cloud-init configures an Ubuntu VM to run as a mesh peer.
+# The peer runs behind a NAT gateway.
+#
+# Variables substituted at runtime:
+#   SSH_PUBLIC_KEY - SSH public key for ubuntu user
+#   PEER_NAME - hostname
+#   PEER_IP - Peer's IP address (e.g., 10.0.1.2)
+#   GATEWAY_IP - NAT gateway IP (e.g., 10.0.1.1)
+
+hostname: ${PEER_NAME}
+
+# Network configuration - applied early in cloud-init local stage
+network:
+  version: 2
+  ethernets:
+    enp0s2:
+      addresses:
+        - ${PEER_IP}/24
+      routes:
+        - to: default
+          via: ${GATEWAY_IP}
+
+# Add STUN server hostnames and configure network wait timeout early in boot
+manage_etc_hosts: false
+bootcmd:
+  - echo "192.168.100.254 stun1.mesh.test stun2.mesh.test" >> /etc/hosts
+  - mkdir -p /etc/systemd/system/systemd-networkd-wait-online.service.d
+  - echo -e "[Service]\nExecStart=\nExecStart=/lib/systemd/systemd-networkd-wait-online --timeout=5" > /etc/systemd/system/systemd-networkd-wait-online.service.d/override.conf
+  - systemctl daemon-reload
+
+users:
+  - name: ubuntu
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ${SSH_PUBLIC_KEY}
+
+package_update: false
+
+runcmd:
+  # Bring up interface if not already
+  - ip link set enp0s2 up 2>/dev/null || true
+  # Fallback: manually add IP if cloud-init network config failed
+  - |
+    if ! ip addr show enp0s2 | grep -q "inet "; then
+      ip addr add ${PEER_IP}/24 dev enp0s2 2>/dev/null || true
+      ip route add default via ${GATEWAY_IP} 2>/dev/null || true
+      echo "Applied fallback network config"
+    fi
+  - mkdir -p /home/ubuntu/mesh-test
+  - chown ubuntu:ubuntu /home/ubuntu/mesh-test
+  - echo "Peer VM ready"

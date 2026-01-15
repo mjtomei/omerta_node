@@ -1,0 +1,53 @@
+#cloud-config
+# Relay VM Configuration
+#
+# This cloud-init configures an Ubuntu VM to run as a public relay node.
+# The relay has a direct connection to the "internet" bridge.
+#
+# Variables substituted at runtime:
+#   SSH_PUBLIC_KEY - SSH public key for ubuntu user
+#   RELAY_IP - Relay's IP address (e.g., 192.168.100.3)
+
+hostname: relay
+
+# Network configuration - applied early in cloud-init local stage
+network:
+  version: 2
+  ethernets:
+    enp0s2:
+      addresses:
+        - ${RELAY_IP}/24
+      routes:
+        - to: default
+          via: 192.168.100.254
+      nameservers:
+        addresses:
+          - 8.8.8.8
+          - 8.8.4.4
+
+# Add STUN server hostnames pointing to outer VM's bridge IP
+manage_etc_hosts: false
+bootcmd:
+  - echo "192.168.100.254 stun1.mesh.test stun2.mesh.test" >> /etc/hosts
+
+users:
+  - name: ubuntu
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ${SSH_PUBLIC_KEY}
+
+package_update: false
+
+runcmd:
+  # Bring up interface if not already
+  - ip link set enp0s2 up 2>/dev/null || true
+  # Fallback: manually add IP if cloud-init network config failed
+  - |
+    if ! ip addr show enp0s2 | grep -q "inet "; then
+      ip addr add ${RELAY_IP}/24 dev enp0s2 2>/dev/null || true
+      ip route add default via 192.168.100.254 2>/dev/null || true
+    fi
+  - mkdir -p /home/ubuntu/mesh-test
+  - chown ubuntu:ubuntu /home/ubuntu/mesh-test
+  - echo "Relay VM ready"

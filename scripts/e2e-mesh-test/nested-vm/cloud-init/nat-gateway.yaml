@@ -1,0 +1,131 @@
+#cloud-config
+# NAT Gateway VM Configuration
+#
+# This cloud-init configures an Ubuntu VM to act as a NAT gateway.
+# Variables substituted at runtime:
+#   SSH_PUBLIC_KEY - SSH public key for ubuntu user
+#   PEER_NAME - hostname
+#   INET_IP - WAN interface IP (e.g., 192.168.100.1)
+#   LAN_IP - LAN interface IP (e.g., 10.0.1.1)
+#   NAT_TYPE - NAT type (public, full-cone, addr-restrict, port-restrict, symmetric)
+
+hostname: ${PEER_NAME}
+
+# Network configuration - applied early in cloud-init local stage
+# This uses netplan v2 format with ethernets
+network:
+  version: 2
+  ethernets:
+    enp0s2:
+      addresses:
+        - ${INET_IP}/24
+      routes:
+        - to: default
+          via: 192.168.100.254
+      nameservers:
+        addresses:
+          - 8.8.8.8
+          - 8.8.4.4
+    enp0s3:
+      addresses:
+        - ${LAN_IP}/24
+
+# Create systemd override early in boot to reduce network wait timeout
+bootcmd:
+  - mkdir -p /etc/systemd/system/systemd-networkd-wait-online.service.d
+  - echo -e "[Service]\nExecStart=\nExecStart=/lib/systemd/systemd-networkd-wait-online --timeout=5" > /etc/systemd/system/systemd-networkd-wait-online.service.d/override.conf
+  - systemctl daemon-reload
+
+users:
+  - name: ubuntu
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ${SSH_PUBLIC_KEY}
+
+# Skip package updates - nftables is already in the base image
+# and the VMs don't have internet access during testing
+package_update: false
+
+write_files:
+  - path: /etc/mesh-nat-type
+    permissions: '0644'
+    content: |
+      ${NAT_TYPE}
+
+  - path: /usr/local/bin/configure-nat.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Configure NAT using nftables (Ubuntu minimal doesn't have iptables)
+      # Use MY_* prefix to avoid conflicts with template variable substitution
+      MY_NAT=$(cat /etc/mesh-nat-type 2>/dev/null | head -1)
+      MY_NAT="${MY_NAT:-full-cone}"
+      MY_WAN="${MY_WAN:-enp0s2}"
+      MY_LAN="${MY_LAN:-enp0s3}"
+
+      echo "Configuring NAT: $MY_NAT"
+      echo "  WAN: $MY_WAN"
+      echo "  LAN: $MY_LAN"
+
+      # Enable IP forwarding
+      echo 1 > /proc/sys/net/ipv4/ip_forward
+      /usr/sbin/sysctl -w net.ipv4.ip_forward=1
+
+      # Flush existing nftables rules
+      /usr/sbin/nft flush ruleset
+
+      case "$MY_NAT" in
+        public)
+          # No NAT, just forward everything
+          /usr/sbin/nft add table ip filter
+          /usr/sbin/nft add chain ip filter forward '{ type filter hook forward priority 0; policy accept; }'
+          ;;
+        full-cone)
+          # Full cone NAT - most permissive
+          /usr/sbin/nft add table ip nat
+          /usr/sbin/nft add chain ip nat postrouting '{ type nat hook postrouting priority 100; }'
+          /usr/sbin/nft add rule ip nat postrouting oifname "$MY_WAN" masquerade
+          /usr/sbin/nft add table ip filter
+          /usr/sbin/nft add chain ip filter forward '{ type filter hook forward priority 0; policy accept; }'
+          ;;
+        addr-restrict|port-restrict)
+          # Restricted cone NAT - only allow established/related
+          /usr/sbin/nft add table ip nat
+          /usr/sbin/nft add chain ip nat postrouting '{ type nat hook postrouting priority 100; }'
+          /usr/sbin/nft add rule ip nat postrouting oifname "$MY_WAN" masquerade
+          /usr/sbin/nft add table ip filter
+          /usr/sbin/nft add chain ip filter forward '{ type filter hook forward priority 0; policy drop; }'
+          /usr/sbin/nft add rule ip filter forward ct state established,related accept
+          /usr/sbin/nft add rule ip filter forward iifname "$MY_LAN" oifname "$MY_WAN" accept
+          ;;
+        symmetric)
+          # Symmetric NAT - uses random source ports
+          /usr/sbin/nft add table ip nat
+          /usr/sbin/nft add chain ip nat postrouting '{ type nat hook postrouting priority 100; }'
+          /usr/sbin/nft add rule ip nat postrouting oifname "$MY_WAN" masquerade random
+          /usr/sbin/nft add table ip filter
+          /usr/sbin/nft add chain ip filter forward '{ type filter hook forward priority 0; policy drop; }'
+          /usr/sbin/nft add rule ip filter forward ct state established,related accept
+          /usr/sbin/nft add rule ip filter forward iifname "$MY_LAN" oifname "$MY_WAN" accept
+          ;;
+      esac
+
+      echo "NAT configured. Rules:"
+      /usr/sbin/nft list ruleset
+
+runcmd:
+  # Bring up interfaces if not already
+  - ip link set enp0s2 up 2>/dev/null || true
+  - ip link set enp0s3 up 2>/dev/null || true
+  # Fallback: manually add IPs if cloud-init network config failed
+  - |
+    if ! ip addr show enp0s2 | grep -q "inet "; then
+      ip addr add ${INET_IP}/24 dev enp0s2 2>/dev/null || true
+      ip route add default via 192.168.100.254 2>/dev/null || true
+    fi
+    if ! ip addr show enp0s3 | grep -q "inet "; then
+      ip addr add ${LAN_IP}/24 dev enp0s3 2>/dev/null || true
+    fi
+  - /usr/local/bin/configure-nat.sh
+  - echo "NAT Gateway ready"
