@@ -606,6 +606,10 @@ public actor MeshNode {
             peerCache[peerId] = CachedPeerInfo(peerId: peerId, endpoint: endpoint)
             logger.info("Cached peer endpoint: \(peerId.prefix(8))... at \(endpoint)")
 
+            // Send our own announcement back so the peer has our public key
+            // This enables two-way authenticated communication
+            await announceTo(endpoint: endpoint)
+
         default:
             break
         }
