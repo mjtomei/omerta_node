@@ -189,10 +189,10 @@ public struct MeshConfigOptions: Codable, Sendable {
         self.connectionTimeout = connectionTimeout
     }
 
-    /// Default STUN servers
+    /// Default STUN servers (public STUN servers for NAT detection)
     public static let defaultSTUNServers = [
-        "stun1.mesh.test:3478",
-        "stun2.mesh.test:3479"
+        "stun.l.google.com:19302",
+        "stun1.l.google.com:19302"
     ]
 
     /// Default configuration (mesh disabled)
@@ -257,10 +257,10 @@ public struct NATConfig: Codable, Sendable {
         self.localPort = localPort
     }
 
-    /// Default STUN servers (our own relay infrastructure)
+    /// Default STUN servers (public STUN servers for NAT detection)
     public static let defaultSTUNServers = [
-        "stun1.mesh.test:3478",
-        "stun2.mesh.test:3479"
+        "stun.l.google.com:19302",
+        "stun1.l.google.com:19302"
     ]
 
     /// Timeout as TimeInterval

@@ -414,12 +414,12 @@ public extension NATTraversal {
 
     /// Quick STUN-only endpoint discovery (no rendezvous needed)
     static func discoverEndpoint(
-        stunServer: String = "stun1.mesh.test:3478"
+        stunServer: String = "stun.l.google.com:19302"
     ) async throws -> PublicEndpoint {
         let stun = STUNClient()
         let (natType, result) = try await stun.detectNATType(servers: [
             stunServer,
-            "stun2.mesh.test:3479"
+            "stun1.l.google.com:19302"
         ])
 
         return PublicEndpoint(
