@@ -399,6 +399,52 @@ After:   [A]──[B]  |  [C]──[D]
 | T4.5.4 | Path freshness query | Updates stale routes |
 | T4.5.5 | Freshness propagation | Updates spread through mesh |
 
+### 4.6 Keepalive & Network Health
+
+**Current Implementation:**
+- `ConnectionKeepalive` sends periodic pings to actively connected peers
+- Ping/pong includes `recentPeers` dictionary for gossip
+- Bootstrap connection is one-shot (connect, discover, done)
+
+**Planned Improvements:**
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| Bootstrap keepalive | Maintain persistent connection to bootstrap node(s) | High |
+| Proactive gossip | Periodically ping random known peers to spread updates | Medium |
+| Minimum connections | Maintain N connections for network resilience | Medium |
+| Adaptive ping interval | Increase frequency when network is changing | Low |
+
+**Keepalive Tests:**
+
+| Test ID | Description | Success Criteria |
+|---------|-------------|------------------|
+| T4.6.1 | Bootstrap persistence | Connection to bootstrap stays alive for duration |
+| T4.6.2 | Gossip propagation | New peer info reaches all nodes within 30s |
+| T4.6.3 | Peer rediscovery | Reconnects to lost peer within 60s via gossip |
+| T4.6.4 | NAT mapping refresh | Keepalive prevents NAT timeout (typ. 30-120s) |
+| T4.6.5 | Minimum connections | Node maintains at least N healthy connections |
+| T4.6.6 | Idle network health | Mesh stays connected when no app traffic for 5min |
+| T4.6.7 | Keepalive under load | Keepalive continues during high throughput |
+| T4.6.8 | Asymmetric keepalive | Works when one side has stricter NAT |
+
+**Implementation Plan:**
+
+1. **Bootstrap keepalive** (High priority)
+   - After initial bootstrap, don't disconnect
+   - Send periodic pings (every 15-30s) to bootstrap node(s)
+   - If bootstrap dies, try to reconnect or use discovered peers as new bootstrap
+
+2. **Proactive gossip** (Medium priority)
+   - Every 60s, pick a random known peer and ping them
+   - This spreads peer info even without active connections
+   - Helps discover when peers come/go
+
+3. **Minimum connections** (Medium priority)
+   - Config option: `minimumConnections: Int = 3`
+   - If below threshold, proactively connect to known peers
+   - Ensures network resilience even when idle
+
 ---
 
 ## Part 5: Performance Benchmarks
