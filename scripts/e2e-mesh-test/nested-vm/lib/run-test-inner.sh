@@ -568,10 +568,16 @@ run_test() {
         local peer2_lines=0
         local relay_lines=0
 
+        echo "[DEBUG] Starting log polling loop..."
+        echo "[DEBUG] NAT_GW1_INET_IP=$NAT_GW1_INET_IP PEER1_IP=$PEER1_IP"
+        echo "[DEBUG] NAT_GW2_INET_IP=$NAT_GW2_INET_IP PEER2_IP=$PEER2_IP"
+
         for i in {1..12}; do  # 12 iterations * 5 seconds = 60 seconds
+            echo "[DEBUG] Poll iteration $i..."
             # Get peer1 log
             local peer1_log
             peer1_log=$(lan_ssh "$NAT_GW1_INET_IP" "$PEER1_IP" "cat /home/ubuntu/mesh-test/mesh.log 2>/dev/null" 2>/dev/null || true)
+            echo "[DEBUG] peer1_log length: ${#peer1_log}"
             if [[ -n "$peer1_log" ]]; then
                 local new_lines
                 new_lines=$(echo "$peer1_log" | tail -n +$((peer1_lines + 1)))
