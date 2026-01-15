@@ -8,6 +8,9 @@ public actor TestNode {
     /// Unique identifier for this node
     public let id: String
 
+    /// Identity keypair for signing messages
+    public let identity: IdentityKeypair
+
     /// The NAT type this node is behind (nil = public)
     public let natType: NATType
 
@@ -90,6 +93,7 @@ public actor TestNode {
         internalEndpoint: String? = nil
     ) {
         self.id = id
+        self.identity = IdentityKeypair()
         self.natType = natType
         self.nat = nat
         self.internalEndpoint = internalEndpoint ?? "192.168.1.\(id.hashValue % 255):\(5000 + (id.hashValue % 1000))"
@@ -216,11 +220,11 @@ public actor TestNode {
     public func send(_ message: MeshMessage, to targetId: String) async {
         guard let network = network else { return }
 
-        let envelope = MeshEnvelope(
-            fromPeerId: id,
-            toPeerId: targetId,
+        guard let envelope = try? MeshEnvelope.signed(
+            from: identity,
+            to: targetId,
             payload: message
-        )
+        ) else { return }
 
         guard let data = try? JSONEncoder().encode(envelope) else { return }
 

@@ -133,6 +133,7 @@ final class Phase1Tests: XCTestCase {
         var envelope = MeshEnvelope(
             messageId: messageId,
             fromPeerId: keypair.peerId,
+            publicKey: keypair.publicKeyBase64,
             toPeerId: "recipient",
             hopCount: 0,
             timestamp: timestamp,
@@ -165,12 +166,13 @@ final class Phase1Tests: XCTestCase {
         // Signature should be present
         XCTAssertFalse(envelope.signature.isEmpty)
 
-        // Verification through the envelope method should succeed
-        XCTAssertTrue(envelope.verifySignature(publicKeyBase64: keypair.publicKeyBase64))
+        // Verification using embedded public key should succeed
+        XCTAssertTrue(envelope.verifySignature())
 
-        // Wrong key should fail
-        let otherKeypair = IdentityKeypair()
-        XCTAssertFalse(envelope.verifySignature(publicKeyBase64: otherKeypair.publicKeyBase64))
+        // Envelope with tampered signature should fail
+        var tamperedEnvelope = envelope
+        tamperedEnvelope.signature = "invalid-signature"
+        XCTAssertFalse(tamperedEnvelope.verifySignature())
     }
 
     /// Test envelope serialization
@@ -190,11 +192,12 @@ final class Phase1Tests: XCTestCase {
         // Should preserve all fields
         XCTAssertEqual(original.messageId, decoded.messageId)
         XCTAssertEqual(original.fromPeerId, decoded.fromPeerId)
+        XCTAssertEqual(original.publicKey, decoded.publicKey)
         XCTAssertEqual(original.toPeerId, decoded.toPeerId)
         XCTAssertEqual(original.signature, decoded.signature)
 
-        // Signature should still verify
-        XCTAssertTrue(decoded.verifySignature(publicKeyBase64: keypair.publicKeyBase64))
+        // Signature should still verify using embedded public key
+        XCTAssertTrue(decoded.verifySignature())
     }
 
     // MARK: - UDP Socket Tests
@@ -255,12 +258,7 @@ final class Phase1Tests: XCTestCase {
         try await nodeA.start()
         try await nodeB.start()
 
-        // Register each other's public keys (simulates prior introduction via PeerAnnouncement)
-        let idA = await nodeA.identity
-        let idB = await nodeB.identity
-        await nodeB.registerPeerPublicKey(idA.peerId, publicKey: idA.publicKeyBase64)
-        await nodeA.registerPeerPublicKey(idB.peerId, publicKey: idB.publicKeyBase64)
-
+        // Public keys are now embedded in every message, no registration needed
         let portB = await nodeB.port!
 
         // A sends ping to B
@@ -305,9 +303,8 @@ final class Phase1Tests: XCTestCase {
 
         let portB = await nodeB.port!
 
-        // Create a keypair and register it with node B
+        // Create a keypair (public key is embedded in message, no registration needed)
         let keypair = IdentityKeypair()
-        await nodeB.registerPeerPublicKey(keypair.peerId, publicKey: keypair.publicKeyBase64)
 
         // Create a signed envelope with a fixed message ID
         let envelope = try MeshEnvelope.signed(
@@ -355,20 +352,18 @@ final class Phase1Tests: XCTestCase {
         try await nodeA.start()
         try await nodeB.start()
 
-        // Add nodeA's public key to nodeB so it can verify signatures
-        try await nodeB.addPeer(publicKeyBase64: nodeA.identity.publicKeyBase64)
-
-        // Create envelope with wrong signature
-        let nodeAPeerId = await nodeA.peerId
+        // Create envelope with valid public key but wrong signature
+        let nodeAIdentity = await nodeA.identity
         let nodeBPeerId = await nodeB.peerId
         var envelope = MeshEnvelope(
-            fromPeerId: nodeAPeerId,
+            fromPeerId: nodeAIdentity.peerId,
+            publicKey: nodeAIdentity.publicKeyBase64,
             toPeerId: nodeBPeerId,
             payload: .ping(recentPeers: [:] as [String: String])
         )
         envelope.signature = "invalid-signature-base64"
 
-        // B should reject it
+        // B should reject it - signature doesn't match the embedded public key
         let accepted = await nodeB.receiveEnvelope(envelope)
         XCTAssertFalse(accepted, "Invalid signature should be rejected")
     }
@@ -381,12 +376,7 @@ final class Phase1Tests: XCTestCase {
         try await nodeA.start()
         try await nodeB.start()
 
-        // Register each other's public keys
-        let idA = await nodeA.identity
-        let idB = await nodeB.identity
-        await nodeB.registerPeerPublicKey(idA.peerId, publicKey: idA.publicKeyBase64)
-        await nodeA.registerPeerPublicKey(idB.peerId, publicKey: idB.publicKeyBase64)
-
+        // Public keys are embedded in every message, no registration needed
         let portB = await nodeB.port!
 
         // Send multiple concurrent pings

@@ -116,9 +116,6 @@ public actor MeshNode {
     /// Peer endpoints for broadcasting
     private var peerEndpoints: [PeerId: String] = [:]
 
-    /// Known peer public keys (peer ID → base64 public key) for signature verification
-    private var peerPublicKeys: [PeerId: String] = [:]
-
     /// Message IDs we've seen (for deduplication)
     private var seenMessageIds: Set<String> = []
     private let maxSeenMessages = 10000
@@ -274,16 +271,11 @@ public actor MeshNode {
             guard peerId != self.peerId else { continue }
 
             do {
-                var envelope = MeshEnvelope(
-                    fromPeerId: self.peerId,
-                    toPeerId: nil,
-                    hopCount: 0,
+                let envelope = try MeshEnvelope.signed(
+                    from: identity,
+                    to: nil,
                     payload: message
                 )
-
-                let dataToSign = try envelope.dataToSign()
-                let sig = try identity.sign(dataToSign)
-                envelope.signature = sig.base64
 
                 let data = try JSONEncoder().encode(envelope)
                 try await socket.send(data, to: endpoint)
@@ -401,24 +393,8 @@ public actor MeshNode {
         }
         markMessageSeen(envelope.messageId)
 
-        // Get the sender's public key from registry or connected peers
-        let senderPublicKey: String?
-        if let registeredKey = peerPublicKeys[envelope.fromPeerId] {
-            senderPublicKey = registeredKey
-        } else if let peer = peers[envelope.fromPeerId] {
-            senderPublicKey = await peer.publicKey.rawRepresentation.base64EncodedString()
-        } else {
-            senderPublicKey = nil
-        }
-
-        // Handle unknown sender (only PeerAnnouncements are self-authenticating)
-        guard let senderKey = senderPublicKey else {
-            await handleUnknownSender(envelope, from: address)
-            return
-        }
-
-        // Verify signature - REQUIRED for all messages from known peers
-        guard envelope.verifySignature(publicKeyBase64: senderKey) else {
+        // Verify signature using embedded public key (also verifies peer ID derivation)
+        guard envelope.verifySignature() else {
             logger.warning("Rejecting message with invalid signature",
                           metadata: ["from": "\(envelope.fromPeerId.prefix(8))..."])
             return
@@ -457,40 +433,6 @@ public actor MeshNode {
         } else {
             await handleDefaultMessage(envelope.payload, from: envelope.fromPeerId, endpoint: endpointString, hopCount: envelope.hopCount)
         }
-    }
-
-    /// Handle messages from unknown senders (not in peer registry)
-    /// Only PeerAnnouncement messages are self-authenticating and can be accepted
-    private func handleUnknownSender(_ envelope: MeshEnvelope, from address: NIOCore.SocketAddress) async {
-        // Only PeerAnnouncement messages are self-authenticating
-        guard case .peerInfo(let announcement) = envelope.payload else {
-            logger.debug("Rejecting non-announcement from unknown peer",
-                        metadata: ["from": "\(envelope.fromPeerId.prefix(8))..."])
-            return
-        }
-
-        // Verify the announcement signature using its embedded public key
-        guard envelope.verifySignature(publicKeyBase64: announcement.publicKey) else {
-            logger.warning("Rejecting announcement with invalid signature",
-                          metadata: ["from": "\(envelope.fromPeerId.prefix(8))..."])
-            return
-        }
-
-        // Verify peer ID is correctly derived from public key
-        guard IdentityKeypair.verifyPeerIdDerivation(peerId: announcement.peerId, publicKeyBase64: announcement.publicKey) else {
-            logger.warning("Rejecting announcement with mismatched peer ID",
-                          metadata: ["claimed": "\(announcement.peerId.prefix(8))..."])
-            return
-        }
-
-        // Now we can trust this peer - register their public key
-        peerPublicKeys[announcement.peerId] = announcement.publicKey
-        logger.info("Registered new peer from announcement",
-                    metadata: ["peerId": "\(announcement.peerId.prefix(8))..."])
-
-        // Process the announcement as a regular message
-        let endpointString = formatEndpoint(address)
-        await handleDefaultMessage(envelope.payload, from: envelope.fromPeerId, endpoint: endpointString, hopCount: envelope.hopCount)
     }
 
     /// Default message handling for basic protocol
@@ -593,9 +535,6 @@ public actor MeshNode {
             }
 
         case .peerInfo:
-            // Check if this is a new peer (before we cache them)
-            let isNewPeer = peerEndpoints[peerId] == nil
-
             // Record this contact when receiving a peer announcement
             await freshnessManager.recordContact(
                 peerId: peerId,
@@ -609,12 +548,6 @@ public actor MeshNode {
             peerCache[peerId] = CachedPeerInfo(peerId: peerId, endpoint: endpoint)
             logger.info("Cached peer endpoint: \(peerId.prefix(8))... at \(endpoint)")
 
-            // Send our own announcement back ONLY if this is a new peer
-            // This enables two-way authenticated communication without creating a loop
-            if isNewPeer {
-                await announceTo(endpoint: endpoint)
-            }
-
         default:
             break
         }
@@ -627,16 +560,11 @@ public actor MeshNode {
             guard peerId != originalSender && peerId != self.peerId else { continue }
 
             do {
-                var envelope = MeshEnvelope(
-                    fromPeerId: self.peerId,
-                    toPeerId: nil,
-                    hopCount: hopCount,
+                let envelope = try MeshEnvelope.signed(
+                    from: identity,
+                    to: nil,
                     payload: message
                 )
-
-                let dataToSign = try envelope.dataToSign()
-                let sig = try identity.sign(dataToSign)
-                envelope.signature = sig.base64
 
                 let data = try JSONEncoder().encode(envelope)
                 try await socket.send(data, to: endpoint)
@@ -651,17 +579,12 @@ public actor MeshNode {
     /// Send a message to an endpoint
     public func send(_ message: MeshMessage, to endpoint: String) async {
         do {
-            // Create envelope with CLI-specified peerId (not cryptographic ID)
-            var envelope = MeshEnvelope(
-                fromPeerId: peerId,  // Use self.peerId, not identity.peerId
-                toPeerId: nil,
+            // Create signed envelope with embedded public key
+            let envelope = try MeshEnvelope.signed(
+                from: identity,
+                to: nil,
                 payload: message
             )
-
-            // Sign with our identity
-            let dataToSign = try envelope.dataToSign()
-            let sig = try identity.sign(dataToSign)
-            envelope.signature = sig.base64
 
             // Encode to JSON then encrypt
             let jsonData = try JSONEncoder().encode(envelope)
@@ -1024,48 +947,11 @@ public actor MeshNode {
     }
 
     /// Register a peer's public key (for testing and bootstrap)
-    /// Once registered, messages from this peer must be signed with this key
-    public func registerPeerPublicKey(_ peerId: PeerId, publicKey: String) {
-        // Verify the peer ID matches the public key derivation
-        guard IdentityKeypair.verifyPeerIdDerivation(peerId: peerId, publicKeyBase64: publicKey) else {
-            logger.warning("Refused to register peer with mismatched ID",
-                          metadata: ["peerId": "\(peerId.prefix(8))..."])
-            return
-        }
-        peerPublicKeys[peerId] = publicKey
-    }
-
-    /// Get the registered public key for a peer (for testing)
-    public func getPublicKey(for peerId: PeerId) -> String? {
-        peerPublicKeys[peerId]
-    }
-
     /// Receive an envelope directly (for testing)
-    /// Requires sender to be registered in peerPublicKeys or peers
+    /// Verifies signature using embedded public key
     public func receiveEnvelope(_ envelope: MeshEnvelope) async -> Bool {
-        // Get sender's public key from registry or connected peers
-        let senderPublicKey: String?
-        if let registeredKey = peerPublicKeys[envelope.fromPeerId] {
-            senderPublicKey = registeredKey
-        } else if let peer = peers[envelope.fromPeerId] {
-            senderPublicKey = await peer.publicKey.rawRepresentation.base64EncodedString()
-        } else {
-            // For PeerAnnouncements, use embedded key (self-authenticating)
-            if case .peerInfo(let announcement) = envelope.payload {
-                // Verify peer ID derivation first
-                guard IdentityKeypair.verifyPeerIdDerivation(peerId: announcement.peerId, publicKeyBase64: announcement.publicKey) else {
-                    logger.warning("Rejected announcement with mismatched peer ID")
-                    return false
-                }
-                senderPublicKey = announcement.publicKey
-            } else {
-                logger.warning("Rejected message from unknown peer: \(envelope.fromPeerId.prefix(8))...")
-                return false
-            }
-        }
-
-        // Verify signature - REQUIRED for all messages
-        guard let key = senderPublicKey, envelope.verifySignature(publicKeyBase64: key) else {
+        // Verify signature using embedded public key (also verifies peer ID derivation)
+        guard envelope.verifySignature() else {
             logger.warning("Rejected message with invalid signature from \(envelope.fromPeerId.prefix(8))...")
             return false
         }
@@ -1075,11 +961,6 @@ public actor MeshNode {
             return false
         }
         markMessageSeen(envelope.messageId)
-
-        // If this was a valid announcement, register the peer
-        if case .peerInfo(let announcement) = envelope.payload {
-            peerPublicKeys[announcement.peerId] = announcement.publicKey
-        }
 
         return true
     }

@@ -174,6 +174,9 @@ public struct MeshEnvelope: Codable, Sendable {
     /// Sender's peer ID
     public let fromPeerId: PeerId
 
+    /// Sender's Ed25519 public key (base64) - enables stateless verification
+    public let publicKey: String
+
     /// Recipient's peer ID (nil for broadcast)
     public let toPeerId: PeerId?
 
@@ -192,6 +195,7 @@ public struct MeshEnvelope: Codable, Sendable {
     public init(
         messageId: String = UUID().uuidString,
         fromPeerId: PeerId,
+        publicKey: String,
         toPeerId: PeerId?,
         hopCount: Int = 0,
         timestamp: Date = Date(),
@@ -200,6 +204,7 @@ public struct MeshEnvelope: Codable, Sendable {
     ) {
         self.messageId = messageId
         self.fromPeerId = fromPeerId
+        self.publicKey = publicKey
         self.toPeerId = toPeerId
         self.hopCount = hopCount
         self.timestamp = timestamp
@@ -213,6 +218,7 @@ public struct MeshEnvelope: Codable, Sendable {
         let signable = SignableEnvelope(
             messageId: messageId,
             fromPeerId: fromPeerId,
+            publicKey: publicKey,
             toPeerId: toPeerId,
             hopCount: hopCount,
             timestamp: timestamp,
@@ -234,6 +240,7 @@ public struct MeshEnvelope: Codable, Sendable {
         var envelope = MeshEnvelope(
             messageId: messageId,
             fromPeerId: keypair.peerId,
+            publicKey: keypair.publicKeyBase64,
             toPeerId: toPeerId,
             payload: payload
         )
@@ -245,15 +252,21 @@ public struct MeshEnvelope: Codable, Sendable {
         return envelope
     }
 
-    /// Verify the signature using the sender's public key
-    public func verifySignature(publicKeyBase64: String) -> Bool {
+    /// Verify the signature using the embedded public key
+    /// Also verifies that fromPeerId is correctly derived from the public key
+    public func verifySignature() -> Bool {
+        // First verify peer ID is derived from the public key
+        guard IdentityKeypair.verifyPeerIdDerivation(peerId: fromPeerId, publicKeyBase64: publicKey) else {
+            return false
+        }
+
         guard let sigData = Data(base64Encoded: signature),
               let dataToSign = try? dataToSign() else {
             return false
         }
 
         let sig = Signature(data: sigData)
-        return sig.verify(dataToSign, publicKeyBase64: publicKeyBase64)
+        return sig.verify(dataToSign, publicKeyBase64: publicKey)
     }
 }
 
@@ -261,6 +274,7 @@ public struct MeshEnvelope: Codable, Sendable {
 private struct SignableEnvelope: Codable {
     let messageId: String
     let fromPeerId: PeerId
+    let publicKey: String
     let toPeerId: PeerId?
     let hopCount: Int
     let timestamp: Date
