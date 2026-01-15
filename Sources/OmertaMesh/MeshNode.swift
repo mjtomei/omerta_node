@@ -587,6 +587,20 @@ public actor MeshNode {
                 await handler(.data(payload), peerId)
             }
 
+        case .peerInfo:
+            // Record this contact when receiving a peer announcement
+            await freshnessManager.recordContact(
+                peerId: peerId,
+                reachability: .direct(endpoint: endpoint),
+                latencyMs: 0,
+                connectionType: .inboundDirect
+            )
+
+            // Update our peer endpoint cache - CRITICAL for connect() to work
+            peerEndpoints[peerId] = endpoint
+            peerCache[peerId] = CachedPeerInfo(peerId: peerId, endpoint: endpoint)
+            logger.info("Cached peer endpoint: \(peerId.prefix(8))... at \(endpoint)")
+
         default:
             break
         }
