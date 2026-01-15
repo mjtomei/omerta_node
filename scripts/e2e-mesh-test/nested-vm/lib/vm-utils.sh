@@ -140,6 +140,7 @@ start_vm() {
 
     local pidfile="$RUN_DIR/$vm_name/qemu.pid"
     local logfile="$RUN_DIR/$vm_name/console.log"
+    local serialsock="$RUN_DIR/$vm_name/serial.sock"
 
     mkdir -p "$(dirname "$pidfile")"
 
@@ -170,7 +171,8 @@ start_vm() {
         fi
     fi
 
-    # Start QEMU
+    # Start QEMU with serial socket for interactive access
+    # Use chardev to tee output to both file and socket
     $QEMU_CMD \
         -name "$vm_name" \
         $MACHINE_OPTS \
@@ -182,9 +184,12 @@ start_vm() {
         -drive file="$cloud_init",format=raw,if=virtio \
         $net_args \
         -display none \
-        -serial file:"$logfile" \
+        -chardev socket,id=serial0,path="$serialsock",server=on,wait=off,logfile="$logfile" \
+        -serial chardev:serial0 \
         -pidfile "$pidfile" \
         -daemonize
+
+    echo "  Serial socket: $serialsock"
 
     # Wait for PID file
     local wait_count=0
@@ -283,4 +288,128 @@ cleanup_all_vms() {
             fi
         done
     fi
+}
+
+# Run a command on VM via serial console
+# Usage: serial_exec <vm-name> <command> [timeout]
+# Returns stdout from the command
+serial_exec() {
+    local vm_name="$1"
+    local cmd="$2"
+    local timeout="${3:-10}"
+    local serialsock="$RUN_DIR/$vm_name/serial.sock"
+
+    if [[ ! -S "$serialsock" ]]; then
+        echo "ERROR: Serial socket not found: $serialsock" >&2
+        return 1
+    fi
+
+    # Create a unique marker for command completion
+    local marker="__SERIAL_EXEC_DONE_$$__"
+    local output_file=$(mktemp)
+
+    # Use socat with a timeout to send command and capture output
+    # We echo a marker at the end so we know when the command is complete
+    (
+        # Send newline first to ensure we're at a prompt
+        echo ""
+        sleep 0.3
+        # Send the command with marker echoed at the end
+        echo "$cmd; echo $marker"
+        # Wait for output
+        sleep "$timeout"
+    ) | timeout $((timeout + 2)) socat - "UNIX-CONNECT:$serialsock" 2>/dev/null > "$output_file" || true
+
+    # Extract output between command and marker, removing prompts
+    local output
+    output=$(cat "$output_file" | \
+        sed -n "/^$cmd/,/$marker/p" | \
+        grep -v "^$cmd" | \
+        grep -v "$marker" | \
+        grep -v '^ubuntu@' | \
+        grep -v '^\$ ' || true)
+
+    rm -f "$output_file"
+    echo "$output"
+}
+
+# Transfer a file to VM via serial console using base64 encoding
+# Usage: serial_put_file <vm-name> <local-file> <remote-path>
+serial_put_file() {
+    local vm_name="$1"
+    local local_file="$2"
+    local remote_path="$3"
+    local serialsock="$RUN_DIR/$vm_name/serial.sock"
+
+    if [[ ! -S "$serialsock" ]]; then
+        echo "ERROR: Serial socket not found: $serialsock" >&2
+        return 1
+    fi
+
+    if [[ ! -f "$local_file" ]]; then
+        echo "ERROR: Local file not found: $local_file" >&2
+        return 1
+    fi
+
+    # Get file size
+    local file_size=$(stat -c%s "$local_file")
+    echo "Transferring $local_file ($file_size bytes) to $vm_name:$remote_path" >&2
+
+    # For large files, split into chunks
+    local chunk_size=4096  # Base64 encoded chunk size
+    local temp_b64=$(mktemp)
+    base64 "$local_file" > "$temp_b64"
+    local total_lines=$(wc -l < "$temp_b64")
+
+    # Start file transfer
+    (
+        echo ""
+        sleep 0.2
+        echo "> $remote_path"  # Create/truncate file using shell redirection
+        sleep 0.2
+
+        # Send base64 data in chunks via heredoc
+        local line_count=0
+        while IFS= read -r line; do
+            echo "echo '$line' >> $remote_path.b64"
+            ((line_count++))
+            # Add small delay every 10 lines to avoid buffer overflow
+            if [[ $((line_count % 10)) -eq 0 ]]; then
+                sleep 0.1
+            fi
+        done < "$temp_b64"
+
+        sleep 0.5
+        # Decode the file
+        echo "base64 -d $remote_path.b64 > $remote_path && rm $remote_path.b64"
+        sleep 0.3
+        # Make executable if it looks like a binary/script
+        echo "chmod +x $remote_path 2>/dev/null || true"
+        sleep 0.2
+    ) | timeout 300 socat - "UNIX-CONNECT:$serialsock" 2>/dev/null || true
+
+    rm -f "$temp_b64"
+    echo "Transfer complete" >&2
+}
+
+# Get the serial socket path for a VM
+# Usage: get_serial_socket <vm-name>
+get_serial_socket() {
+    local vm_name="$1"
+    echo "$RUN_DIR/$vm_name/serial.sock"
+}
+
+# Interactive serial console session
+# Usage: serial_console <vm-name>
+serial_console() {
+    local vm_name="$1"
+    local serialsock="$RUN_DIR/$vm_name/serial.sock"
+
+    if [[ ! -S "$serialsock" ]]; then
+        echo "ERROR: Serial socket not found: $serialsock" >&2
+        return 1
+    fi
+
+    echo "Connecting to $vm_name serial console (Ctrl+C to exit)..." >&2
+    socat -,raw,echo=0 "UNIX-CONNECT:$serialsock"
 }

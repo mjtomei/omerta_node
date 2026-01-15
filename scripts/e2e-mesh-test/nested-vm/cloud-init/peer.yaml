@@ -40,7 +40,18 @@ users:
 
 package_update: false
 
+write_files:
+  # Enable autologin on serial console for debugging
+  - path: /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart=-/sbin/agetty --autologin ubuntu --noclear %I $TERM
+
 runcmd:
+  # Enable serial console autologin
+  - systemctl daemon-reload
+  - systemctl restart serial-getty@ttyS0
   # Bring up interface if not already
   - ip link set enp0s2 up 2>/dev/null || true
   # Fallback: manually add IP if cloud-init network config failed
