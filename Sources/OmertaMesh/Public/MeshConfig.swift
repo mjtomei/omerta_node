@@ -119,10 +119,10 @@ public struct MeshConfig: Sendable {
 
     // MARK: - Default Values
 
-    /// Default STUN servers (our own relay infrastructure)
+    /// Default STUN servers (public STUN servers for NAT detection)
     public static let defaultSTUNServers: [String] = [
-        "stun1.mesh.test:3478",
-        "stun2.mesh.test:3479"
+        "stun.l.google.com:19302",
+        "stun1.l.google.com:19302"
     ]
 
     /// Default configuration
