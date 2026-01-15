@@ -562,45 +562,54 @@ run_test() {
         ) &
         tail_pids+=($!)
     else
-        # SSH-based tail with color prefixes
-        lan_ssh "$NAT_GW1_INET_IP" "$PEER1_IP" "tail -f /home/ubuntu/mesh-test/mesh.log 2>/dev/null" 2>/dev/null | \
-            sed "s/^/$(printf '\033[1;33m')[peer1]$(printf '\033[0m') /" &
-        tail_pids+=($!)
+        # Poll-based log streaming (more reliable through nested SSH)
+        # Track last line count to only show new lines
+        local peer1_lines=0
+        local peer2_lines=0
+        local relay_lines=0
 
-        lan_ssh "$NAT_GW2_INET_IP" "$PEER2_IP" "tail -f /home/ubuntu/mesh-test/mesh.log 2>/dev/null" 2>/dev/null | \
-            sed "s/^/$(printf '\033[0;32m')[peer2]$(printf '\033[0m') /" &
-        tail_pids+=($!)
+        for i in {1..12}; do  # 12 iterations * 5 seconds = 60 seconds
+            # Get peer1 log
+            local peer1_log
+            peer1_log=$(lan_ssh "$NAT_GW1_INET_IP" "$PEER1_IP" "cat /home/ubuntu/mesh-test/mesh.log 2>/dev/null" 2>/dev/null || true)
+            if [[ -n "$peer1_log" ]]; then
+                local new_lines
+                new_lines=$(echo "$peer1_log" | tail -n +$((peer1_lines + 1)))
+                if [[ -n "$new_lines" ]]; then
+                    echo "$new_lines" | sed "s/^/$(printf '\033[1;33m')[peer1]$(printf '\033[0m') /"
+                    peer1_lines=$(echo "$peer1_log" | wc -l)
+                fi
+            fi
 
-        if [[ "$USE_RELAY" == "relay" ]]; then
-            inet_ssh "$RELAY_IP" "tail -f /home/ubuntu/mesh-test/mesh.log 2>/dev/null" 2>/dev/null | \
-                sed "s/^/$(printf '\033[0;36m')[relay]$(printf '\033[0m') /" &
-            tail_pids+=($!)
-        fi
-    fi
+            # Get peer2 log
+            local peer2_log
+            peer2_log=$(lan_ssh "$NAT_GW2_INET_IP" "$PEER2_IP" "cat /home/ubuntu/mesh-test/mesh.log 2>/dev/null" 2>/dev/null || true)
+            if [[ -n "$peer2_log" ]]; then
+                local new_lines
+                new_lines=$(echo "$peer2_log" | tail -n +$((peer2_lines + 1)))
+                if [[ -n "$new_lines" ]]; then
+                    echo "$new_lines" | sed "s/^/$(printf '\033[0;32m')[peer2]$(printf '\033[0m') /"
+                    peer2_lines=$(echo "$peer2_log" | wc -l)
+                fi
+            fi
 
-    # Wait for user interrupt or timeout
-    echo ""
-    echo "(Press Ctrl+C to stop streaming and see summary)"
-    echo ""
+            # Get relay log if enabled
+            if [[ "$USE_RELAY" == "relay" ]]; then
+                local relay_log
+                relay_log=$(inet_ssh "$RELAY_IP" "cat /home/ubuntu/mesh-test/mesh.log 2>/dev/null" 2>/dev/null || true)
+                if [[ -n "$relay_log" ]]; then
+                    local new_lines
+                    new_lines=$(echo "$relay_log" | tail -n +$((relay_lines + 1)))
+                    if [[ -n "$new_lines" ]]; then
+                        echo "$new_lines" | sed "s/^/$(printf '\033[0;36m')[relay]$(printf '\033[0m') /"
+                        relay_lines=$(echo "$relay_log" | wc -l)
+                    fi
+                fi
+            fi
 
-    # Set up trap to clean up tail processes
-    cleanup_tails() {
-        for pid in "${tail_pids[@]}"; do
-            kill "$pid" 2>/dev/null || true
+            sleep 5
         done
-        wait 2>/dev/null || true
-    }
-
-    # Wait with interruptible sleep
-    local stream_time=60
-    local elapsed=0
-    while [[ $elapsed -lt $stream_time ]]; do
-        sleep 5 || break
-        ((elapsed += 5))
-    done
-
-    # Clean up tail processes
-    cleanup_tails
+    fi
 
     echo ""
     echo "--- End of live output ---"

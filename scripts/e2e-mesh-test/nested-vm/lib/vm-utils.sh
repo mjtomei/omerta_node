@@ -31,19 +31,22 @@ else
 fi
 
 # Get SSH public key (generate if needed)
+# When running under sudo, uses root's key (which is what will be used for SSH)
 get_ssh_key() {
+    local ssh_dir="$HOME/.ssh"
+
     local key_file
-    for key_file in ~/.ssh/id_ed25519.pub ~/.ssh/id_rsa.pub; do
+    for key_file in "$ssh_dir/id_ed25519.pub" "$ssh_dir/id_rsa.pub"; do
         if [[ -f "$key_file" ]]; then
             cat "$key_file"
             return 0
         fi
     done
     # Generate a new key pair if none exists
-    echo "Generating new SSH key..." >&2
-    mkdir -p ~/.ssh
-    ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" >&2
-    cat ~/.ssh/id_ed25519.pub
+    echo "Generating new SSH key in $ssh_dir..." >&2
+    mkdir -p "$ssh_dir"
+    ssh-keygen -t ed25519 -f "$ssh_dir/id_ed25519" -N "" >&2
+    cat "$ssh_dir/id_ed25519.pub"
     return 0
 }
 
