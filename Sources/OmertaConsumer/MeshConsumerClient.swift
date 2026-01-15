@@ -188,6 +188,8 @@ public actor MeshConsumerClient {
                 requirements: requirements,
                 consumerPublicKey: vpnConfig.consumerPublicKey,
                 consumerEndpoint: consumerEndpoint,
+                consumerVPNIP: vpnConfig.consumerVPNIP,
+                vmVPNIP: vpnConfig.vmVPNIP,
                 sshPublicKey: sshPublicKey,
                 sshUser: sshUser
             )
@@ -205,13 +207,17 @@ public actor MeshConsumerClient {
                 throw MeshConsumerError.providerError(error)
             }
 
-            guard let vmIP = vmResponse.vmIP, let providerPublicKey = vmResponse.providerPublicKey else {
+            guard let providerPublicKey = vmResponse.providerPublicKey else {
                 throw MeshConsumerError.invalidResponse
             }
 
+            // Use the WireGuard tunnel IP we assigned, not the VM's local NAT IP
+            let sshIP = vpnConfig.vmVPNIP
+
             logger.info("Provider response received", metadata: [
                 "vmId": "\(vmId)",
-                "vmIP": "\(vmIP)"
+                "sshIP": "\(sshIP)",
+                "providerReportedIP": "\(vmResponse.vmIP ?? "none")"
             ])
 
             // 5. Add provider as peer on consumer's WireGuard
@@ -224,7 +230,7 @@ public actor MeshConsumerClient {
             let vmConnection = VMConnection(
                 vmId: vmId,
                 provider: PeerInfo(peerId: providerPeerId, endpoint: connection.endpoint),
-                vmIP: vmIP,
+                vmIP: sshIP,  // Use WireGuard tunnel IP for SSH
                 sshKeyPath: sshKeyPath,
                 sshUser: sshUser,
                 vpnInterface: "wg\(vmId.uuidString.prefix(8))",
@@ -408,6 +414,8 @@ struct MeshVMRequest: Codable {
     let requirements: ResourceRequirements
     let consumerPublicKey: String
     let consumerEndpoint: String
+    let consumerVPNIP: String      // Consumer's WireGuard IP (e.g., 10.x.y.1)
+    let vmVPNIP: String            // VM's WireGuard IP (e.g., 10.x.y.2)
     let sshPublicKey: String
     let sshUser: String
 }

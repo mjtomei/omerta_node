@@ -229,8 +229,13 @@ public actor MeshProviderDaemon {
             let connection = await mesh.connection(to: consumerPeerId)
             let consumerEndpoint = connection?.endpoint ?? request.consumerEndpoint
 
-            // Derive VM VPN IP
-            let vmVPNIP = "10.99.0.2"  // TODO: Allocate from pool
+            // Use VM VPN IP from request (consumer assigns this when creating WireGuard tunnel)
+            let vmVPNIP = request.vmVPNIP
+
+            logger.info("Using VPN IPs from consumer", metadata: [
+                "vmVPNIP": "\(vmVPNIP)",
+                "consumerVPNIP": "\(request.consumerVPNIP)"
+            ])
 
             // Start VM
             let vmResult = try await vmManager.startVM(
@@ -444,6 +449,8 @@ struct MeshVMRequest: Codable {
     let requirements: ResourceRequirements
     let consumerPublicKey: String
     let consumerEndpoint: String
+    let consumerVPNIP: String      // Consumer's WireGuard IP (e.g., 10.x.y.1)
+    let vmVPNIP: String            // VM's WireGuard IP (e.g., 10.x.y.2)
     let sshPublicKey: String
     let sshUser: String
 }
