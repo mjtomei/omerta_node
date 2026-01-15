@@ -394,16 +394,18 @@ setup_peer_serial() {
 }
 
 # Run mesh via serial
+# Note: peer IDs are now derived from Ed25519 identity, not passed as argument
 run_mesh_serial() {
     local vm_name="$1"
-    local peer_id="$2"
-    local port="$3"
-    local bootstrap="$4"
+    local port="$2"
+    local bootstrap="$3"
+    local extra_args="${4:-}"
 
     echo "  Starting mesh on $vm_name..."
 
-    local cmd="cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omerta-mesh --peer-id $peer_id --port $port"
+    local cmd="cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omerta-mesh --port $port"
     [[ -n "$bootstrap" ]] && cmd="$cmd --bootstrap $bootstrap"
+    [[ -n "$extra_args" ]] && cmd="$cmd $extra_args"
     cmd="$cmd > mesh.log 2>&1 &"
 
     serial_exec "$vm_name" "$cmd" 5
@@ -423,7 +425,7 @@ get_mesh_log_serial() {
 run_test() {
     echo ""
     echo -e "${CYAN}============================================================${NC}"
-    echo -e "${CYAN}NAT Test: $NAT1 <-> $NAT2 ${USE_RELAY:+(with relay)}${NC}"
+    echo -e "${CYAN}NAT Test: $NAT1 <-> $NAT2${NC}"
     echo -e "${CYAN}============================================================${NC}"
     echo ""
 
@@ -431,10 +433,9 @@ run_test() {
     echo -e "${CYAN}Step 1: Waiting for VMs...${NC}"
     wait_for_ssh "$NAT_GW1_INET_IP" "nat-gw1" || return 1
     wait_for_ssh "$NAT_GW2_INET_IP" "nat-gw2" || return 1
+    wait_for_ssh "$RELAY_IP" "relay" || return 1
     wait_for_ssh "$PEER1_IP" "peer1" "$NAT_GW1_INET_IP" || return 1
     wait_for_ssh "$PEER2_IP" "peer2" "$NAT_GW2_INET_IP" || return 1
-
-    [[ "$USE_RELAY" == "relay" ]] && { wait_for_ssh "$RELAY_IP" "relay" || return 1; }
 
     echo ""
 
@@ -484,49 +485,44 @@ run_test() {
         setup_peer "peer2" "$NAT_GW2_INET_IP" "$PEER2_IP"
     fi
 
-    [[ "$USE_RELAY" == "relay" ]] && setup_relay
+    # Always set up relay (needed as bootstrap/coordinator for NAT traversal)
+    setup_relay
 
     echo ""
 
     # Start mesh
     echo -e "${CYAN}Step 5: Starting mesh network...${NC}"
 
-    local peer1_id=$(cat /proc/sys/kernel/random/uuid)
-    local peer2_id=$(cat /proc/sys/kernel/random/uuid)
-    local relay_id=$(cat /proc/sys/kernel/random/uuid)
+    # Bootstrap address - just host:port, mesh handles peer discovery automatically
+    local bootstrap_addr="${RELAY_IP}:9000"
+    echo "  Bootstrap: $bootstrap_addr"
 
-    local bootstrap_addr
-    if [[ "$USE_RELAY" == "relay" ]]; then
-        bootstrap_addr="$RELAY_IP:9000"
-
-        echo "  Starting relay..."
-        inet_ssh "$RELAY_IP" \
-            "(cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omerta-mesh \
-            --peer-id $relay_id --port 9000 --relay \
-            > mesh.log 2>&1 < /dev/null &)"
-        sleep 3
-    else
-        bootstrap_addr="$NAT_GW1_INET_IP:9000"
-    fi
+    # Start relay first as bootstrap/coordinator
+    echo "  Starting relay..."
+    inet_ssh "$RELAY_IP" \
+        "(cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omerta-mesh \
+        --port 9000 --relay \
+        > mesh.log 2>&1 < /dev/null &)"
+    sleep 3
 
     if [[ "$USE_SERIAL" == "serial" ]]; then
-        run_mesh_serial "peer1" "$peer1_id" "9000" "$bootstrap_addr"
+        run_mesh_serial "peer1" "9000" "$bootstrap_addr"
         sleep 2
-        run_mesh_serial "peer2" "$peer2_id" "9000" "$bootstrap_addr"
+        run_mesh_serial "peer2" "9000" "$bootstrap_addr"
     else
         echo "  Starting peer1..."
-        # Wrap in subshell so it exits immediately after forking background process
         lan_ssh "$NAT_GW1_INET_IP" "$PEER1_IP" \
             "(cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omerta-mesh \
-            --peer-id $peer1_id --port 9000 --bootstrap $bootstrap_addr \
+            --port 9000 --bootstrap $bootstrap_addr \
             > mesh.log 2>&1 < /dev/null &)"
         sleep 2
 
         echo "  Starting peer2..."
         lan_ssh "$NAT_GW2_INET_IP" "$PEER2_IP" \
             "(cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omerta-mesh \
-            --peer-id $peer2_id --port 9000 --bootstrap $bootstrap_addr \
+            --port 9000 --bootstrap $bootstrap_addr \
             > mesh.log 2>&1 < /dev/null &)"
+        sleep 2
     fi
 
     echo ""
@@ -534,9 +530,9 @@ run_test() {
     # Stream logs in real-time with prefixes
     echo -e "${CYAN}Step 6: Streaming mesh output (Ctrl+C to stop)...${NC}"
     echo ""
+    echo -e "${CYAN}[relay]${NC} = Relay/Bootstrap node (public)"
     echo -e "${YELLOW}[peer1]${NC} = Peer 1 (behind $NAT1)"
     echo -e "${GREEN}[peer2]${NC} = Peer 2 (behind $NAT2)"
-    [[ "$USE_RELAY" == "relay" ]] && echo -e "${CYAN}[relay]${NC} = Relay node"
     echo ""
     echo "--- Live output ---"
 
@@ -569,16 +565,10 @@ run_test() {
         local peer2_lines=0
         local relay_lines=0
 
-        echo "[DEBUG] Starting log polling loop..."
-        echo "[DEBUG] NAT_GW1_INET_IP=$NAT_GW1_INET_IP PEER1_IP=$PEER1_IP"
-        echo "[DEBUG] NAT_GW2_INET_IP=$NAT_GW2_INET_IP PEER2_IP=$PEER2_IP"
-
         for i in {1..12}; do  # 12 iterations * 5 seconds = 60 seconds
-            echo "[DEBUG] Poll iteration $i..."
             # Get peer1 log
             local peer1_log
             peer1_log=$(lan_ssh "$NAT_GW1_INET_IP" "$PEER1_IP" "cat /home/ubuntu/mesh-test/mesh.log 2>/dev/null" 2>/dev/null || true)
-            echo "[DEBUG] peer1_log length: ${#peer1_log}"
             if [[ -n "$peer1_log" ]]; then
                 local new_lines
                 new_lines=$(echo "$peer1_log" | tail -n +$((peer1_lines + 1)))
@@ -600,17 +590,15 @@ run_test() {
                 fi
             fi
 
-            # Get relay log if enabled
-            if [[ "$USE_RELAY" == "relay" ]]; then
-                local relay_log
-                relay_log=$(inet_ssh "$RELAY_IP" "cat /home/ubuntu/mesh-test/mesh.log 2>/dev/null" 2>/dev/null || true)
-                if [[ -n "$relay_log" ]]; then
-                    local new_lines
-                    new_lines=$(echo "$relay_log" | tail -n +$((relay_lines + 1)))
-                    if [[ -n "$new_lines" ]]; then
-                        echo "$new_lines" | sed "s/^/$(printf '\033[0;36m')[relay]$(printf '\033[0m') /"
-                        relay_lines=$(echo "$relay_log" | wc -l)
-                    fi
+            # Get relay log (always running as bootstrap/coordinator)
+            local relay_log
+            relay_log=$(inet_ssh "$RELAY_IP" "cat /home/ubuntu/mesh-test/mesh.log 2>/dev/null" 2>/dev/null || true)
+            if [[ -n "$relay_log" ]]; then
+                local new_lines
+                new_lines=$(echo "$relay_log" | tail -n +$((relay_lines + 1)))
+                if [[ -n "$new_lines" ]]; then
+                    echo "$new_lines" | sed "s/^/$(printf '\033[0;36m')[relay]$(printf '\033[0m') /"
+                    relay_lines=$(echo "$relay_log" | wc -l)
                 fi
             fi
 
@@ -625,11 +613,10 @@ run_test() {
     # Show final summary
     echo -e "${CYAN}Step 7: Summary${NC}"
     echo "  NAT types: $NAT1 <-> $NAT2"
-    echo "  Relay: ${USE_RELAY:-disabled}"
+    echo "  Bootstrap: $RELAY_IP:9000"
     echo "  Serial mode: ${USE_SERIAL:-disabled}"
-    echo "  Peer 1 ID: $peer1_id"
-    echo "  Peer 2 ID: $peer2_id"
-    [[ "$USE_RELAY" == "relay" ]] && echo "  Relay ID: $relay_id"
+    echo ""
+    echo "  Check individual mesh logs for peer IDs and connection details."
 }
 
 # Main
@@ -653,7 +640,8 @@ start_nat_gateway "nat-gw2" "$NAT2" "$NAT_GW2_INET_IP" "$NAT_GW2_LAN_IP" "$BR_LA
 start_peer_vm "peer1" "$PEER1_IP" "$NAT_GW1_LAN_IP" "$BR_LAN1"
 start_peer_vm "peer2" "$PEER2_IP" "$NAT_GW2_LAN_IP" "$BR_LAN2"
 
-[[ "$USE_RELAY" == "relay" ]] && start_relay_vm
+# Always start relay VM (needed as bootstrap/coordinator for NAT traversal)
+start_relay_vm
 
 echo ""
 echo -e "${CYAN}Waiting for VMs to boot...${NC}"
