@@ -22,12 +22,12 @@ if [[ -d "/home/ubuntu/nested-vm-test" ]]; then
     IMAGES_DIR="$SCRIPT_DIR/images"
     CLOUD_INIT_DIR="$SCRIPT_DIR/cloud-init"
     RUN_DIR="$SCRIPT_DIR/.run"
-    MESH_BIN="$SCRIPT_DIR/omerta-mesh"
+    MESH_BIN="$SCRIPT_DIR/omerta"
 else
     IMAGES_DIR="$SCRIPT_DIR/../images"
     CLOUD_INIT_DIR="$SCRIPT_DIR/../cloud-init"
     RUN_DIR="$SCRIPT_DIR/../.run"
-    MESH_BIN="$SCRIPT_DIR/../omerta-mesh"
+    MESH_BIN="$SCRIPT_DIR/../omerta"
 fi
 
 # Network configuration
@@ -119,7 +119,7 @@ check_prerequisites() {
 
     # Check for omerta-mesh binary
     if [[ ! -f "$MESH_BIN" ]]; then
-        echo -e "${RED}omerta-mesh binary not found at $MESH_BIN${NC}"
+        echo -e "${RED}omerta binary not found at $MESH_BIN${NC}"
         exit 1
     fi
 
@@ -342,7 +342,7 @@ setup_peer() {
         echo "    Copied $lib_count libraries"
     fi
 
-    lan_ssh "$jump_ip" "$target_ip" "chmod +x /home/ubuntu/mesh-test/omerta-mesh"
+    lan_ssh "$jump_ip" "$target_ip" "chmod +x /home/ubuntu/mesh-test/omerta"
     echo "    Done"
 }
 
@@ -363,7 +363,7 @@ setup_relay() {
         done
     fi
 
-    inet_ssh "$RELAY_IP" "chmod +x /home/ubuntu/mesh-test/omerta-mesh"
+    inet_ssh "$RELAY_IP" "chmod +x /home/ubuntu/mesh-test/omerta"
     echo "    Done"
 }
 
@@ -377,7 +377,7 @@ setup_peer_serial() {
     serial_exec "$vm_name" "mkdir -p /home/ubuntu/mesh-test/lib" 5
 
     echo "    Transferring binary..."
-    serial_put_file "$vm_name" "$MESH_BIN" "/home/ubuntu/mesh-test/omerta-mesh"
+    serial_put_file "$vm_name" "$MESH_BIN" "/home/ubuntu/mesh-test/omerta"
 
     local swift_lib_dir
     if swift_lib_dir=$(find_swift_lib_dir); then
@@ -393,25 +393,23 @@ setup_peer_serial() {
     echo "    Done"
 }
 
-# Run mesh via serial
-# Note: peer IDs are now derived from Ed25519 identity, not passed as argument
+# Run mesh ping via serial (legacy - serial mode needs rework for new omerta CLI)
 run_mesh_serial() {
     local vm_name="$1"
-    local port="$2"
-    local bootstrap="$3"
+    local peer_id="$2"
+    local network_id="$3"
     local extra_args="${4:-}"
 
-    echo "  Starting mesh on $vm_name..."
+    echo "  Starting mesh ping on $vm_name..."
 
-    local cmd="cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omerta-mesh --port $port"
-    [[ -n "$bootstrap" ]] && cmd="$cmd --bootstrap $bootstrap"
+    local cmd="cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omerta mesh ping $peer_id --network $network_id -c 30 -v"
     [[ -n "$extra_args" ]] && cmd="$cmd $extra_args"
     cmd="$cmd > mesh.log 2>&1 &"
 
     serial_exec "$vm_name" "$cmd" 5
     sleep 2
 
-    local pid=$(serial_exec "$vm_name" "pgrep -f omerta-mesh" 3)
+    local pid=$(serial_exec "$vm_name" "pgrep -f omerta" 3)
     [[ -n "$pid" ]] && echo "    Started (PID $pid)" || echo "    WARNING: May not have started"
 }
 
@@ -490,42 +488,74 @@ run_test() {
 
     echo ""
 
-    # Start mesh
-    echo -e "${CYAN}Step 5: Starting mesh network...${NC}"
+    # Start mesh network using omerta CLI
+    echo -e "${CYAN}Step 5: Creating mesh network...${NC}"
 
-    # Bootstrap address - peers discover each other through the relay
-    local bootstrap_addr="${RELAY_IP}:9000"
-    echo "  Bootstrap: $bootstrap_addr"
+    # Step 5a: Create network on relay (acts as bootstrap node)
+    echo "  Creating network on relay..."
+    local create_output
+    create_output=$(inet_ssh "$RELAY_IP" "cd /home/ubuntu/mesh-test && \
+        LD_LIBRARY_PATH=./lib ./omerta network create \
+        --name 'nat-test' --endpoint '${RELAY_IP}:9000' 2>&1")
+    echo "$create_output" > /tmp/network-create.log
 
-    # Start relay first as bootstrap/coordinator
-    echo "  Starting relay..."
-    inet_ssh "$RELAY_IP" \
-        "(cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omerta-mesh \
-        --port 9000 --relay \
-        > mesh.log 2>&1 < /dev/null &)"
-    sleep 3
-
-    if [[ "$USE_SERIAL" == "serial" ]]; then
-        run_mesh_serial "peer1" "9000" "$bootstrap_addr"
-        sleep 2
-        run_mesh_serial "peer2" "9000" "$bootstrap_addr"
-    else
-        echo "  Starting peer1..."
-        lan_ssh "$NAT_GW1_INET_IP" "$PEER1_IP" \
-            "(cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omerta-mesh \
-            --port 9000 --bootstrap $bootstrap_addr \
-            > mesh.log 2>&1 < /dev/null &)"
-        sleep 2
-
-        echo "  Starting peer2..."
-        lan_ssh "$NAT_GW2_INET_IP" "$PEER2_IP" \
-            "(cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omerta-mesh \
-            --port 9000 --bootstrap $bootstrap_addr \
-            > mesh.log 2>&1 < /dev/null &)"
-        sleep 2
+    # Extract invite link from output
+    local invite_link
+    invite_link=$(echo "$create_output" | grep -E "^omerta://join/" | head -1)
+    if [[ -z "$invite_link" ]]; then
+        echo -e "${RED}  Failed to create network - no invite link found${NC}"
+        echo "  Output: $create_output"
+        return 1
     fi
+    echo "  Network created, invite link obtained"
 
-    echo "  Both peers bootstrapped to relay - they should discover each other automatically"
+    # Extract network ID and relay peer ID
+    local network_id
+    network_id=$(echo "$create_output" | grep "Network ID:" | sed 's/.*Network ID: //' | tr -d ' ')
+    local relay_peer_id
+    relay_peer_id=$(echo "$create_output" | grep "Your Peer ID:" | sed 's/.*Your Peer ID: //' | tr -d ' ')
+    echo "  Network ID: $network_id"
+    echo "  Relay Peer ID: $relay_peer_id"
+
+    # Step 5b: Start relay daemon (or run in background for testing)
+    echo "  Starting relay/bootstrap node..."
+    inet_ssh "$RELAY_IP" \
+        "(cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omerta mesh ping $relay_peer_id \
+        --network $network_id --timeout 600 \
+        > mesh.log 2>&1 < /dev/null &)" || true
+    sleep 2
+
+    # Step 5c: Join network on peer1
+    echo "  Peer1 joining network..."
+    lan_ssh "$NAT_GW1_INET_IP" "$PEER1_IP" \
+        "cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib ./omerta network join --key '$invite_link'" \
+        > /tmp/peer1-join.log 2>&1 || true
+    sleep 1
+
+    # Step 5d: Join network on peer2
+    echo "  Peer2 joining network..."
+    lan_ssh "$NAT_GW2_INET_IP" "$PEER2_IP" \
+        "cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib ./omerta network join --key '$invite_link'" \
+        > /tmp/peer2-join.log 2>&1 || true
+    sleep 1
+
+    # Step 5e: Test connectivity - peer1 pings relay
+    echo "  Testing peer1 -> relay connectivity..."
+    lan_ssh "$NAT_GW1_INET_IP" "$PEER1_IP" \
+        "(cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omerta mesh ping $relay_peer_id \
+        --network $network_id -c 10 -v \
+        > mesh.log 2>&1 < /dev/null &)"
+    sleep 2
+
+    # Step 5f: Test connectivity - peer2 pings relay
+    echo "  Testing peer2 -> relay connectivity..."
+    lan_ssh "$NAT_GW2_INET_IP" "$PEER2_IP" \
+        "(cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omerta mesh ping $relay_peer_id \
+        --network $network_id -c 10 -v \
+        > mesh.log 2>&1 < /dev/null &)"
+    sleep 2
+
+    echo "  Network setup complete - peers should discover each other through relay"
 
     echo ""
 
