@@ -520,11 +520,12 @@ run_test() {
     echo "  Relay Peer ID: $relay_peer_id"
 
     # Step 5b: Start relay daemon in background
+    # Use setsid to fully detach from the SSH session
     echo "  Starting relay/bootstrap node (omertad)..."
-    inet_ssh "$RELAY_IP" \
-        "(cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omertad start \
+    inet_ssh "$RELAY_IP" "cd /home/ubuntu/mesh-test && \
+        LD_LIBRARY_PATH=./lib setsid ./omertad start \
         --network $network_id --port 9000 --dry-run \
-        > mesh.log 2>&1 < /dev/null &)"
+        > mesh.log 2>&1 &"
     sleep 3
 
     # Verify daemon started
@@ -534,7 +535,9 @@ run_test() {
         echo "  Relay daemon started (PID $daemon_pid)"
     else
         echo -e "${RED}  Warning: Relay daemon may not have started${NC}"
-        echo "  Check log: inet_ssh $RELAY_IP 'cat /home/ubuntu/mesh-test/mesh.log'"
+        # Show the log to help debug
+        echo "  Relay log:"
+        inet_ssh "$RELAY_IP" "cat /home/ubuntu/mesh-test/mesh.log 2>/dev/null | head -20" || true
     fi
 
     # Step 5c: Join network on peer1
