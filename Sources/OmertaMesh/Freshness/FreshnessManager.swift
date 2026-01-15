@@ -292,4 +292,11 @@ public actor FreshnessManager {
             await recentContacts.recentPeerIds
         }
     }
+
+    /// Get recent peers with their endpoints for ping/pong messages
+    public var recentPeersWithEndpoints: [String: String] {
+        get async {
+            await recentContacts.recentPeersWithEndpoints
+        }
+    }
 }

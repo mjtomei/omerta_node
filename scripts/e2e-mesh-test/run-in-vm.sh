@@ -21,7 +21,21 @@ OMERTA_DIR="${OMERTA_DIR}"
 VM_DIR="$OMERTA_DIR/.vm-test"
 CLOUD_IMAGE="$VM_DIR/ubuntu-cloud.img"
 VM_IMAGE="$VM_DIR/test-vm.qcow2"
-CLOUD_IMAGE_URL="https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img"
+
+# Detect architecture and set appropriate image URL
+HOST_ARCH=$(uname -m)
+if [[ "$HOST_ARCH" == "aarch64" || "$HOST_ARCH" == "arm64" ]]; then
+    CLOUD_IMAGE_URL="https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img"
+    QEMU_CMD="qemu-system-aarch64"
+    EFI_CODE="/usr/share/AAVMF/AAVMF_CODE.fd"
+    EFI_VARS_TEMPLATE="/usr/share/AAVMF/AAVMF_VARS.fd"
+    EFI_VARS="$VM_DIR/AAVMF_VARS.fd"
+else
+    CLOUD_IMAGE_URL="https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img"
+    QEMU_CMD="qemu-system-x86_64"
+    EFI_CODE=""
+    EFI_VARS=""
+fi
 
 # VM settings
 VM_RAM="2G"
@@ -89,6 +103,12 @@ write_files:
     content: |
       net.ipv4.ip_forward=1
 
+bootcmd:
+  # Use VM's main IP so STUN servers are reachable from network namespaces
+  - |
+    PRIMARY_IP=\$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[0-9.]+' || echo "10.0.2.15")
+    echo "\$PRIMARY_IP stun1.mesh.test stun2.mesh.test" >> /etc/hosts
+
 runcmd:
   - sysctl -p /etc/sysctl.d/99-ip-forward.conf
   - mkdir -p /home/ubuntu/mesh-test
@@ -126,12 +146,59 @@ create_vm_disk() {
 start_vm() {
     echo -e "${CYAN}Starting VM...${NC}"
 
-    qemu-system-x86_64 \
+    local accel_opts=""
+    local cpu_opts=""
+    local machine_opts=""
+    local efi_opts=""
+
+    if [[ "$HOST_ARCH" == "aarch64" || "$HOST_ARCH" == "arm64" ]]; then
+        # ARM64 native - use virt machine with KVM if available
+        machine_opts="-machine virt"
+
+        if [[ -e /dev/kvm ]] && [[ -r /dev/kvm ]] && [[ -w /dev/kvm ]]; then
+            echo "KVM acceleration available (native ARM64)"
+            accel_opts="-accel kvm"
+            cpu_opts="-cpu host"
+        else
+            echo "Using TCG emulation (KVM not accessible)"
+            accel_opts="-accel tcg"
+            cpu_opts="-cpu cortex-a72"
+        fi
+
+        # EFI firmware for ARM64
+        if [[ ! -f "$EFI_VARS" ]]; then
+            cp "$EFI_VARS_TEMPLATE" "$EFI_VARS"
+        fi
+        efi_opts="-drive if=pflash,format=raw,readonly=on,file=$EFI_CODE -drive if=pflash,format=raw,file=$EFI_VARS"
+    else
+        # x86_64
+        machine_opts="-machine q35"
+
+        if $QEMU_CMD -accel help 2>&1 | grep -q "kvm"; then
+            if [[ -e /dev/kvm ]] && [[ -r /dev/kvm ]] && [[ -w /dev/kvm ]]; then
+                echo "KVM acceleration available"
+                accel_opts="-accel kvm"
+                cpu_opts="-cpu host"
+            else
+                echo "KVM supported but /dev/kvm not accessible, using TCG"
+                accel_opts="-accel tcg"
+                cpu_opts="-cpu qemu64"
+            fi
+        else
+            echo "Using TCG emulation (KVM not available in QEMU)"
+            accel_opts="-accel tcg"
+            cpu_opts="-cpu qemu64"
+        fi
+    fi
+
+    $QEMU_CMD \
         -name mesh-test \
-        -machine accel=kvm:tcg \
-        -cpu host \
+        $machine_opts \
+        $accel_opts \
+        $cpu_opts \
         -m "$VM_RAM" \
         -smp "$VM_CPUS" \
+        $efi_opts \
         -drive file="$VM_IMAGE",format=qcow2,if=virtio \
         -drive file="$VM_DIR/cloud-init.iso",format=raw,if=virtio \
         -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 \
@@ -189,23 +256,44 @@ vm_scp() {
 copy_test_files() {
     echo -e "${CYAN}Copying test files to VM...${NC}"
 
-    # Build the mesh binary first
-    echo "Building omerta-mesh..."
-    (cd "$OMERTA_DIR" && swift build --product omerta-mesh 2>&1 | tail -3)
+    # Wait for cloud-init to complete
+    echo "Waiting for cloud-init to finish..."
+    vm_ssh "cloud-init status --wait" || true
 
-    # Copy binary and scripts
+    # Create directories
+    vm_ssh "mkdir -p /home/ubuntu/mesh-test/lib"
+
+    # Build the mesh binary and rendezvous server
+    echo "Building omerta-mesh and omerta-rendezvous..."
+    (cd "$OMERTA_DIR" && swift build --product omerta-mesh --product omerta-rendezvous 2>&1 | tail -3)
+
+    # Copy binaries and scripts
     vm_scp "$OMERTA_DIR/.build/debug/omerta-mesh" $VM_USER@localhost:/home/ubuntu/mesh-test/
+    vm_scp "$OMERTA_DIR/.build/debug/omerta-rendezvous" $VM_USER@localhost:/home/ubuntu/mesh-test/
     vm_scp "$SCRIPT_DIR/nat-simulation.sh" $VM_USER@localhost:/home/ubuntu/mesh-test/
     vm_scp "$SCRIPT_DIR/run-nat-test.sh" $VM_USER@localhost:/home/ubuntu/mesh-test/
+
+    # Copy Swift runtime libraries
+    echo "Copying Swift runtime libraries..."
+    local SWIFT_LIB_DIR
+    if [[ -d "$HOME/.local/share/swiftly/toolchains" ]]; then
+        SWIFT_LIB_DIR=$(find "$HOME/.local/share/swiftly/toolchains" -maxdepth 2 -type d -name "usr" -exec test -d "{}/lib/swift/linux" \; -print -quit 2>/dev/null)/lib/swift/linux
+    elif [[ -d "/usr/lib/swift/linux" ]]; then
+        SWIFT_LIB_DIR="/usr/lib/swift/linux"
+    fi
+
+    if [[ -n "$SWIFT_LIB_DIR" && -d "$SWIFT_LIB_DIR" ]]; then
+        vm_scp "$SWIFT_LIB_DIR"/*.so* $VM_USER@localhost:/home/ubuntu/mesh-test/lib/ 2>/dev/null || true
+    fi
 
     # Make executable and fix paths in scripts
     vm_ssh << 'REMOTE_SCRIPT'
 chmod +x /home/ubuntu/mesh-test/*
 cd /home/ubuntu/mesh-test
 
-# Patch run-nat-test.sh to use local paths
+# Patch run-nat-test.sh to use local paths and set library path
 sed -i 's|OMERTA_DIR="${OMERTA_DIR}"|OMERTA_DIR="/home/ubuntu/mesh-test"|' run-nat-test.sh
-sed -i 's|MESH_BIN="$OMERTA_DIR/.build/debug/omerta-mesh"|MESH_BIN="/home/ubuntu/mesh-test/omerta-mesh"|' run-nat-test.sh
+sed -i 's|MESH_BIN="$OMERTA_DIR/.build/debug/omerta-mesh"|MESH_BIN="/home/ubuntu/mesh-test/omerta-mesh"\nexport LD_LIBRARY_PATH=/home/ubuntu/mesh-test/lib:\$LD_LIBRARY_PATH|' run-nat-test.sh
 
 # Patch nat-simulation.sh for VM environment
 sed -i 's|EXTERNAL_IF="eth0"|EXTERNAL_IF="enp0s2"|' nat-simulation.sh
@@ -220,6 +308,34 @@ REMOTE_SCRIPT
     echo "Files copied and configured."
 }
 
+# Start STUN servers in VM
+start_stun_servers() {
+    echo -e "${CYAN}Starting STUN servers in VM...${NC}"
+    vm_ssh << 'REMOTE_SCRIPT'
+cd /home/ubuntu/mesh-test
+export LD_LIBRARY_PATH=/home/ubuntu/mesh-test/lib:$LD_LIBRARY_PATH
+
+# Kill any existing STUN servers
+pkill -f omerta-rendezvous 2>/dev/null || true
+sleep 1
+
+# Start STUN server 1 on port 3478
+./omerta-rendezvous --stun-port 3478 --port 8080 --no-relay --log-level warning &
+sleep 1
+
+# Start STUN server 2 on port 3479
+./omerta-rendezvous --stun-port 3479 --port 8081 --no-relay --log-level warning &
+sleep 1
+
+echo "STUN servers started"
+REMOTE_SCRIPT
+}
+
+# Stop STUN servers in VM
+stop_stun_servers() {
+    vm_ssh "pkill -f omerta-rendezvous 2>/dev/null || true"
+}
+
 # Run a single NAT test
 run_nat_test() {
     local nat1=$1
@@ -231,9 +347,18 @@ run_nat_test() {
     echo -e "${CYAN}Testing: $nat1 <-> $nat2 ${relay:+(with relay)}${NC}"
     echo -e "${CYAN}============================================================${NC}"
 
-    local cmd="cd /home/ubuntu/mesh-test && sudo ./run-nat-test.sh $nat1 $nat2 $relay"
+    # Start STUN servers
+    start_stun_servers
+
+    # Pass LD_LIBRARY_PATH through sudo for Swift runtime libraries
+    local cmd="cd /home/ubuntu/mesh-test && sudo LD_LIBRARY_PATH=/home/ubuntu/mesh-test/lib:\$LD_LIBRARY_PATH ./run-nat-test.sh $nat1 $nat2 $relay"
     vm_ssh "$cmd"
-    return $?
+    local result=$?
+
+    # Stop STUN servers
+    stop_stun_servers
+
+    return $result
 }
 
 # Run all NAT combinations

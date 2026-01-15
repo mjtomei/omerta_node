@@ -72,7 +72,7 @@ public actor RelayConnection {
             // Send ping to verify relay is alive
             let startTime = Date()
             let response = try await node.sendAndReceive(
-                .ping(recentPeers: []),
+                .ping(recentPeers: [:]),
                 to: relayEndpoint,
                 timeout: connectionTimeout
             )
@@ -192,7 +192,7 @@ public actor RelayConnection {
                 // Send heartbeat ping
                 let startTime = Date()
                 let response = try await node.sendAndReceive(
-                    .ping(recentPeers: []),
+                    .ping(recentPeers: [:]),
                     to: relayEndpoint,
                     timeout: connectionTimeout
                 )

@@ -47,17 +47,28 @@ setup_namespace() {
     local name=$2
     local subnet_id=$(get_subnet_id "$name")
     local internal_net="${BASE_SUBNET}.${subnet_id}"
-    local veth_host="veth-${name}-h"
-    local veth_ns="veth-${name}-n"
+    # Interface names limited to 15 chars max (IFNAMSIZ)
+    # Use short hash of name for uniqueness
+    local short_id=$(echo "$name" | md5sum | cut -c1-6)
+    local veth_host="vh${short_id}"
+    local veth_ns="vn${short_id}"
 
     echo "Creating namespace '$name' with $nat_type NAT..."
     echo "  Internal network: ${internal_net}.0/24"
 
+    # Clean up any existing resources with same name
+    ip link del "$veth_host" 2>/dev/null || true
+    ip netns del "$name" 2>/dev/null || true
+
     # Create namespace
-    ip netns add "$name" 2>/dev/null || true
+    ip netns add "$name"
 
     # Create veth pair
-    ip link add "$veth_host" type veth peer name "$veth_ns" 2>/dev/null || true
+    if ! ip link add "$veth_host" type veth peer name "$veth_ns"; then
+        echo "ERROR: Failed to create veth pair"
+        ip netns del "$name" 2>/dev/null || true
+        exit 1
+    fi
 
     # Move one end to namespace
     ip link set "$veth_ns" netns "$name"
@@ -190,7 +201,9 @@ teardown_namespace() {
     local name=$1
     local subnet_id=$(get_subnet_id "$name")
     local internal_net="${BASE_SUBNET}.${subnet_id}"
-    local veth_host="veth-${name}-h"
+    # Match the short naming from setup
+    local short_id=$(echo "$name" | md5sum | cut -c1-6)
+    local veth_host="vh${short_id}"
 
     echo "Tearing down namespace '$name'..."
 

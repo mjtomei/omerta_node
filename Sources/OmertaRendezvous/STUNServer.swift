@@ -255,13 +255,11 @@ private final class STUNHandler: ChannelInboundHandler, @unchecked Sendable {
                 transactionId: transactionId
             )
 
-            // Send response
-            var responseBuffer = context.channel.allocator.buffer(capacity: responseData.count)
-            responseBuffer.writeBytes(responseData)
-
-            let responseEnvelope = AddressedEnvelope(remoteAddress: remoteAddress, data: responseBuffer)
-
+            // Send response - must allocate buffer on event loop
             context.eventLoop.execute {
+                var responseBuffer = context.channel.allocator.buffer(capacity: responseData.count)
+                responseBuffer.writeBytes(responseData)
+                let responseEnvelope = AddressedEnvelope(remoteAddress: remoteAddress, data: responseBuffer)
                 context.writeAndFlush(self.wrapOutboundOut(responseEnvelope), promise: nil)
             }
         }

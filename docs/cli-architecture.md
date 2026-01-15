@@ -2369,8 +2369,8 @@ omerta nat status
   "nat": {
     "rendezvousServer": "wss://rendezvous.omerta.io",
     "stunServers": [
-      "stun:rendezvous.omerta.io:3478",
-      "stun:stun.l.google.com:19302"
+      "stun1.omerta.io:3478",
+      "stun2.omerta.io:3478"
     ],
     "preferDirect": true,
     "holePunchTimeout": 5000,

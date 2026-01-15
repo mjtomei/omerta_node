@@ -32,12 +32,10 @@ public struct STUNBindingResult: Sendable {
 public actor STUNClient {
     private let logger: Logger
 
-    /// Default STUN servers
+    /// Default STUN servers (our own relay infrastructure)
     public static let defaultServers: [String] = [
-        "stun.l.google.com:19302",
-        "stun1.l.google.com:19302",
-        "stun2.l.google.com:19302",
-        "stun3.l.google.com:19302"
+        "stun1.mesh.test:3478",
+        "stun2.mesh.test:3479"
     ]
 
     public init() {
@@ -46,7 +44,7 @@ public actor STUNClient {
 
     /// Discover our public endpoint using a single STUN server
     public func discoverEndpoint(
-        server: String = "stun.l.google.com:19302",
+        server: String = "stun1.mesh.test:3478",
         localPort: UInt16 = 0,
         timeout: TimeInterval = 5.0
     ) async throws -> STUNBindingResult {

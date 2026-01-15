@@ -317,8 +317,8 @@ final class Phase2Tests: XCTestCase {
 
     // MARK: - Real STUN Server Test (Requires Internet)
 
-    /// Test with real Google STUN servers
-    /// This test requires internet connectivity
+    /// Test with real STUN servers (our own infrastructure)
+    /// This test requires internet connectivity and deployed STUN servers
     func testRealSTUNDetection() async throws {
         // Skip in CI environments
         if ProcessInfo.processInfo.environment["CI"] != nil {
@@ -326,8 +326,8 @@ final class Phase2Tests: XCTestCase {
         }
 
         let detector = NATDetector(stunServers: [
-            "stun.l.google.com:19302",
-            "stun1.l.google.com:19302"
+            "stun1.mesh.test:3478",
+            "stun2.mesh.test:3479"
         ])
 
         do {

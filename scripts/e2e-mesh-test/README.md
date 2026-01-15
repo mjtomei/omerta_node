@@ -76,9 +76,12 @@ This starts mesh nodes on both hosts and verifies they can discover and communic
 ## Requirements
 
 For VM-based testing:
-- QEMU with KVM support
-- ~2GB free disk space (for cloud image)
+- QEMU (native architecture support for best performance)
+  - On ARM64: uses `qemu-system-aarch64` with KVM
+  - On x86_64: uses `qemu-system-x86_64` with KVM
+- ~500MB free disk space (for cloud image)
 - SSH key in `~/.ssh/` for VM access
+- Swift toolchain (libraries are copied to VM automatically)
 
 For direct execution:
 - Root access

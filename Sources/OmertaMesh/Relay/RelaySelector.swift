@@ -214,7 +214,7 @@ public actor RelaySelector {
             do {
                 let startTime = Date()
                 let response = try await node.sendAndReceive(
-                    .ping(recentPeers: []),
+                    .ping(recentPeers: [:]),
                     to: endpoint,
                     timeout: 5.0
                 )

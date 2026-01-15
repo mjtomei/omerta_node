@@ -1498,10 +1498,10 @@ struct MeshConfig {
     var listenPort: UInt16 = 0          // 0 = auto-assign
     var bootstrapNodes: [String] = []
 
-    // STUN
+    // STUN (our own relay infrastructure)
     var stunServers: [String] = [
-        "stun.l.google.com:19302",
-        "stun1.l.google.com:19302"
+        "stun1.omerta.io:3478",
+        "stun2.omerta.io:3478"
     ]
 
     // Relay
@@ -1744,18 +1744,18 @@ Sources/OmertaMesh/
 
 **Exit Criteria**:
 - Can detect public/fullCone/restrictedCone/portRestrictedCone/symmetric
-- Works with Google's public STUN servers
+- Works with our own STUN servers (stun1.omerta.io, stun2.omerta.io)
 - Unit tests with mock STUN server
 
 #### Phase 2 Integration Tests
 
 ```swift
 class Phase2IntegrationTests: XCTestCase {
-    /// Real STUN detection (requires internet)
+    /// Real STUN detection (requires internet and deployed STUN servers)
     func testRealSTUNDetection() async throws {
         let detector = NATDetector(stunServers: [
-            "stun.l.google.com:19302",
-            "stun1.l.google.com:19302"
+            "stun1.omerta.io:3478",
+            "stun2.omerta.io:3478"
         ])
 
         let result = try await detector.detect()
@@ -3370,11 +3370,11 @@ class ScaleTests: XCTestCase {
 ```swift
 class EndToEndTests: XCTestCase {
 
-    /// Real STUN detection (requires internet)
+    /// Real STUN detection (requires internet and deployed STUN servers)
     func testRealSTUNDetection() async throws {
         let detector = NATDetector(stunServers: [
-            "stun.l.google.com:19302",
-            "stun1.l.google.com:19302"
+            "stun1.omerta.io:3478",
+            "stun2.omerta.io:3478"
         ])
 
         let result = try await detector.detect()

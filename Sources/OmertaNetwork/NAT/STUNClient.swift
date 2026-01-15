@@ -27,11 +27,10 @@ public actor STUNClient {
     /// STUN magic cookie (RFC 5389)
     private static let magicCookie: UInt32 = 0x2112A442
 
-    /// Default STUN servers to use
+    /// Default STUN servers (our own relay infrastructure)
     public static let defaultServers: [String] = [
-        "stun.l.google.com:19302",
-        "stun1.l.google.com:19302",
-        "stun2.l.google.com:19302"
+        "stun1.mesh.test:3478",
+        "stun2.mesh.test:3479"
     ]
 
     public init() {
@@ -40,7 +39,7 @@ public actor STUNClient {
 
     /// Discover our public endpoint using STUN
     public func discoverEndpoint(
-        server: String = "stun.l.google.com:19302",
+        server: String = "stun1.mesh.test:3478",
         localPort: UInt16 = 0,
         timeout: TimeInterval = 5.0
     ) async throws -> STUNBindingResult {

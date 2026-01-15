@@ -12,11 +12,11 @@ public typealias Endpoint = String
 public enum MeshMessage: Codable, Sendable, Equatable {
     // MARK: - Keepalive
 
-    /// Heartbeat with list of recently contacted peers
-    case ping(recentPeers: [PeerId])
+    /// Heartbeat with list of recently contacted peers (ID -> Endpoint)
+    case ping(recentPeers: [String: String])
 
     /// Heartbeat response
-    case pong(recentPeers: [PeerId])
+    case pong(recentPeers: [String: String])
 
     // MARK: - Discovery
 

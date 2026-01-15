@@ -212,6 +212,17 @@ public actor RecentContactTracker {
         allContacts.map { $0.peerId }
     }
 
+    /// Get peer ID -> endpoint mapping for recent contacts
+    public var recentPeersWithEndpoints: [String: String] {
+        var result: [String: String] = [:]
+        for contact in allContacts {
+            if case .direct(let endpoint) = contact.reachability {
+                result[contact.peerId] = endpoint
+            }
+        }
+        return result
+    }
+
     /// Number of tracked contacts
     public var count: Int {
         contacts.count

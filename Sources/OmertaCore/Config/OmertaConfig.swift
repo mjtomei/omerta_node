@@ -171,11 +171,10 @@ public struct NATConfig: Codable, Sendable {
         self.localPort = localPort
     }
 
-    /// Default STUN servers
+    /// Default STUN servers (our own relay infrastructure)
     public static let defaultSTUNServers = [
-        "stun.l.google.com:19302",
-        "stun1.l.google.com:19302",
-        "stun2.l.google.com:19302"
+        "stun1.mesh.test:3478",
+        "stun2.mesh.test:3479"
     ]
 
     /// Timeout as TimeInterval
