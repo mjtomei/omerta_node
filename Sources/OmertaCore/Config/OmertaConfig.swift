@@ -12,19 +12,22 @@ public struct OmertaConfig: Codable, Sendable {
     public var defaultNetwork: String?
     public var localKey: String?  // Auto-generated key for local/direct connections
     public var nat: NATConfig?    // NAT traversal configuration
+    public var mesh: MeshConfigOptions?  // Mesh networking configuration
 
     public init(
         ssh: SSHConfig = SSHConfig(),
         networks: [String: NetworkConfig] = [:],
         defaultNetwork: String? = nil,
         localKey: String? = nil,
-        nat: NATConfig? = nil
+        nat: NATConfig? = nil,
+        mesh: MeshConfigOptions? = nil
     ) {
         self.ssh = ssh
         self.networks = networks
         self.defaultNetwork = defaultNetwork
         self.localKey = localKey
         self.nat = nat
+        self.mesh = mesh
     }
 
     /// Get the local key as Data, or nil if not set
@@ -130,6 +133,89 @@ public struct NetworkConfig: Codable, Sendable {
         self.key = key
         self.name = name
         self.description = description
+    }
+}
+
+// MARK: - Mesh Configuration
+
+/// Configuration for mesh networking (persistent, Codable version)
+public struct MeshConfigOptions: Codable, Sendable {
+    /// Whether mesh networking is enabled
+    public var enabled: Bool
+
+    /// Local peer ID (if not set, will be auto-generated)
+    public var peerId: String?
+
+    /// Port to bind to (0 for automatic)
+    public var port: Int
+
+    /// Bootstrap peers for initial discovery (format: "peerId@host:port")
+    public var bootstrapPeers: [String]
+
+    /// STUN servers for NAT detection
+    public var stunServers: [String]
+
+    /// Whether this node can act as a relay for other peers
+    public var canRelay: Bool
+
+    /// Whether this node can coordinate hole punches
+    public var canCoordinateHolePunch: Bool
+
+    /// Keepalive interval in seconds
+    public var keepaliveInterval: Double
+
+    /// Connection timeout in seconds
+    public var connectionTimeout: Double
+
+    public init(
+        enabled: Bool = false,
+        peerId: String? = nil,
+        port: Int = 0,
+        bootstrapPeers: [String] = [],
+        stunServers: [String] = MeshConfigOptions.defaultSTUNServers,
+        canRelay: Bool = false,
+        canCoordinateHolePunch: Bool = false,
+        keepaliveInterval: Double = 15,
+        connectionTimeout: Double = 10
+    ) {
+        self.enabled = enabled
+        self.peerId = peerId
+        self.port = port
+        self.bootstrapPeers = bootstrapPeers
+        self.stunServers = stunServers
+        self.canRelay = canRelay
+        self.canCoordinateHolePunch = canCoordinateHolePunch
+        self.keepaliveInterval = keepaliveInterval
+        self.connectionTimeout = connectionTimeout
+    }
+
+    /// Default STUN servers
+    public static let defaultSTUNServers = [
+        "stun1.mesh.test:3478",
+        "stun2.mesh.test:3479"
+    ]
+
+    /// Default configuration (mesh disabled)
+    public static let `default` = MeshConfigOptions()
+
+    /// Configuration for a relay/provider node
+    public static var provider: MeshConfigOptions {
+        MeshConfigOptions(
+            enabled: true,
+            canRelay: true,
+            canCoordinateHolePunch: true,
+            keepaliveInterval: 10
+        )
+    }
+
+    /// Configuration for a consumer/client node
+    public static var consumer: MeshConfigOptions {
+        MeshConfigOptions(
+            enabled: true,
+            canRelay: false,
+            canCoordinateHolePunch: false,
+            keepaliveInterval: 15
+        )
     }
 }
 

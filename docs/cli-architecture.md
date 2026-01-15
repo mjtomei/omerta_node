@@ -3006,7 +3006,7 @@ See `vm-network-architecture.md` for detailed implementation of VM-side isolatio
 
 Phases 1-4 and 4.5 are complete. Remaining work:
 
-1. **Phase 5: P2P Networking Foundation**
+1. **Phase 5: P2P Networking Foundation** - ✅ **COMPLETE** (see [mesh-integration-plan.md](mesh-integration-plan.md))
    - 5a: Identity system (peer IDs from public keys)
    - 5b: DHT peer discovery (decentralized lookup)
    - 5c: Signaling server (optional, for NAT traversal)
@@ -3016,3 +3016,809 @@ Phases 1-4 and 4.5 are complete. Remaining work:
 2. **Phase 6: Consumer VM Image** - Pre-built VM for "easy mode"
 3. **Phase 7-8**: Port forwarding and Unified node
 4. **Phase 9-10**: Menu bar app and Key exchange UX (macOS)
+
+## Overview
+
+The `OmertaMesh` module implements a complete decentralized P2P overlay network that replaces the original Phase 5 P2P Networking Foundation. OmertaMesh provides:
+
+- NAT detection via STUN
+- Bootstrap and peer discovery via gossip
+- Relay infrastructure for NAT-bound peers
+- Freshness queries for stale connection recovery
+- Hole punching for direct connections through NAT
+- Clean public API (`MeshNetwork`, `MeshConfig`, `DirectConnection`)
+
+**Current State:**
+- All 8 OmertaMesh phases are implemented and tested
+- `omerta-mesh` CLI works as a standalone mesh node
+- E2E test infrastructure exists in `scripts/e2e-mesh-test/`
+
+**Remaining Work:**
+- Integrate OmertaMesh into `OmertaCLI` and `OmertaDaemon`
+- Update existing tests to use mesh networking
+- Extend E2E test infrastructure for full VM provisioning over mesh
+
+---
+
+## Architecture: Old vs New
+
+### Old Architecture (OmertaNetwork)
+
+```
+┌─────────────┐         Direct IP:Port          ┌─────────────┐
+│  Consumer   │◄───────────────────────────────►│  Provider   │
+│ (omerta)    │     UDPControlClient/Server     │ (omertad)   │
+└─────────────┘                                 └─────────────┘
+      │                                               │
+      │ Requires: Known IP, no NAT, or manual        │
+      │ port forwarding                               │
+      ▼                                               ▼
+┌─────────────┐                                 ┌─────────────┐
+│ EphemeralVPN│                                 │ SimpleVM    │
+│ (WireGuard) │                                 │ Manager     │
+└─────────────┘                                 └─────────────┘
+```
+
+### New Architecture (OmertaMesh)
+
+```
+┌─────────────┐                                 ┌─────────────┐
+│  Consumer   │         Mesh Network            │  Provider   │
+│ (omerta)    │◄═══════════════════════════════►│ (omertad)   │
+└──────┬──────┘    (relay, hole punch, or       └──────┬──────┘
+       │            direct based on NAT)               │
+       ▼                                               ▼
+┌─────────────┐                                 ┌─────────────┐
+│ MeshNetwork │◄────────────────────────────────│ MeshNetwork │
+│   Actor     │   discover, connect, send       │   Actor     │
+└──────┬──────┘                                 └──────┬──────┘
+       │                                               │
+       │  DirectConnection.endpoint                    │
+       ▼                                               ▼
+┌─────────────┐         WireGuard Tunnel        ┌─────────────┐
+│ EphemeralVPN│◄───────────────────────────────►│ Provider VM │
+└─────────────┘                                 └─────────────┘
+```
+
+---
+
+## Integration Phases
+
+### Phase M1: Add OmertaMesh Dependency to Binaries
+
+**Goal:** Wire OmertaMesh into the module dependency graph.
+
+**Package.swift Changes:**
+
+```swift
+// OmertaConsumer - add OmertaMesh dependency
+.target(
+    name: "OmertaConsumer",
+    dependencies: [
+        "OmertaCore",
+        "OmertaNetwork",
+        "OmertaMesh",  // NEW
+        // ...
+    ]
+)
+
+// OmertaProvider - add OmertaMesh dependency
+.target(
+    name: "OmertaProvider",
+    dependencies: [
+        "OmertaCore",
+        "OmertaVM",
+        "OmertaNetwork",
+        "OmertaMesh",  // NEW
+        // ...
+    ]
+)
+```
+
+**Deliverable:** Code compiles with new dependencies.
+
+---
+
+### Phase M2: MeshNetwork Integration in OmertaConsumer
+
+**Goal:** ConsumerClient can discover and connect to providers via mesh.
+
+**Files to Create/Modify:**
+
+| File | Changes |
+|------|---------|
+| `Sources/OmertaConsumer/MeshConsumerClient.swift` | New: Mesh-aware consumer client |
+| `Sources/OmertaConsumer/ConsumerClient.swift` | Add mesh transport option |
+| `Sources/OmertaCore/Config/OmertaConfig.swift` | Add mesh config (bootstrap peers, etc.) |
+
+**New MeshConsumerClient API:**
+
+```swift
+public actor MeshConsumerClient {
+    private let mesh: MeshNetwork
+    private let controlClient: UDPControlClient
+
+    public init(config: OmertaConfig) async throws {
+        // Create mesh network with config
+        var meshConfig = MeshConfig.default
+        meshConfig.bootstrapPeers = config.mesh?.bootstrapPeers ?? []
+
+        let peerId = config.localPeerId ?? UUID().uuidString
+        self.mesh = MeshNetwork(peerId: peerId, config: meshConfig)
+        self.controlClient = UDPControlClient(encryptionKey: config.localKeyData()!)
+    }
+
+    /// Start the mesh network
+    public func start() async throws {
+        try await mesh.start()
+    }
+
+    /// Request VM from a provider by peer ID (mesh handles NAT traversal)
+    public func requestVM(
+        providerPeerId: String,
+        resources: ResourceRequest
+    ) async throws -> VMSession {
+        // 1. Connect to provider via mesh (handles NAT)
+        let connection = try await mesh.connect(to: providerPeerId)
+
+        // 2. Send control message over mesh
+        let request = VMRequest(resources: resources, ...)
+        let requestData = try JSONEncoder().encode(request)
+        let responseData = try await mesh.sendAndReceive(
+            data: requestData,
+            to: providerPeerId,
+            timeout: 30
+        )
+        let response = try JSONDecoder().decode(VMResponse.self, from: responseData)
+
+        // 3. Use DirectConnection.endpoint for WireGuard peer config
+        return VMSession(
+            vmId: response.vmId,
+            wireGuardEndpoint: connection.endpoint,
+            wireGuardPeerPublicKey: response.wireGuardPublicKey,
+            sshAddress: response.sshAddress
+        )
+    }
+
+    /// Request VM from a provider by direct IP (legacy mode)
+    public func requestVMDirect(
+        providerAddress: String,
+        resources: ResourceRequest
+    ) async throws -> VMSession {
+        // Existing UDPControlClient flow
+        return try await controlClient.requestVM(...)
+    }
+}
+```
+
+**OmertaConfig Additions:**
+
+```swift
+public struct MeshConfig: Codable, Sendable {
+    public var enabled: Bool = false
+    public var bootstrapPeers: [String] = []
+    public var relayMode: Bool = false
+    public var stunServers: [String] = [
+        "stun1.omerta.io:3478",
+        "stun2.omerta.io:3478"
+    ]
+}
+
+public struct OmertaConfig: Codable, Sendable {
+    // Existing fields...
+    public var mesh: MeshConfig?  // NEW
+}
+```
+
+**Deliverable:** Consumer can request VMs using peer ID instead of IP address.
+
+---
+
+### Phase M3: MeshNetwork Integration in OmertaProvider
+
+**Goal:** ProviderDaemon joins mesh network and accepts requests via relay/hole punch.
+
+**Files to Create/Modify:**
+
+| File | Changes |
+|------|---------|
+| `Sources/OmertaProvider/MeshProviderDaemon.swift` | New: Mesh-aware provider daemon |
+| `Sources/OmertaProvider/ProviderDaemon.swift` | Add mesh mode option |
+
+**New MeshProviderDaemon:**
+
+```swift
+public actor MeshProviderDaemon {
+    private let mesh: MeshNetwork
+    private let vmManager: SimpleVMManager
+    private let config: Configuration
+
+    public struct Configuration {
+        public var peerId: String
+        public var meshConfig: MeshConfig
+        public var vmConfig: VMConfiguration
+        public var networkKeys: [String: Data]
+    }
+
+    public init(config: Configuration) {
+        var meshConfig = config.meshConfig
+        meshConfig.canRelay = true  // Providers can relay
+        meshConfig.canCoordinateHolePunch = true
+
+        self.mesh = MeshNetwork(peerId: config.peerId, config: meshConfig)
+        self.vmManager = SimpleVMManager()
+        self.config = config
+    }
+
+    public func start() async throws {
+        // Set up message handler for VM requests
+        await mesh.setMessageHandler { [self] fromPeerId, data in
+            return await handleMessage(from: fromPeerId, data: data)
+        }
+
+        // Start mesh network
+        try await mesh.start()
+
+        // Announce as provider
+        // (MeshNetwork handles this via gossip)
+    }
+
+    private func handleMessage(from peerId: String, data: Data) async -> Data? {
+        // Decrypt and process VM request
+        // Similar to existing UDPControlServer logic
+        guard let request = try? JSONDecoder().decode(VMRequest.self, from: data) else {
+            return nil
+        }
+
+        // Get connection info for WireGuard endpoint
+        let connection = await mesh.connection(to: peerId)
+        let consumerEndpoint = connection?.endpoint ?? ""
+
+        // Create VM with WireGuard configured to connect to consumer
+        let vm = try? await vmManager.createVM(
+            request: request,
+            consumerEndpoint: consumerEndpoint
+        )
+
+        let response = VMResponse(vmId: vm?.id, ...)
+        return try? JSONEncoder().encode(response)
+    }
+}
+```
+
+**Deliverable:** Provider can receive VM requests from NAT-bound consumers.
+
+---
+
+### Phase M4: CLI Integration
+
+**Goal:** `omerta` and `omertad` CLIs support mesh networking.
+
+**OmertaCLI Changes:**
+
+| Command | Current | New |
+|---------|---------|-----|
+| `omerta vm request --provider IP:PORT` | Direct UDP | Keep for legacy |
+| `omerta vm request --peer PEER_ID` | N/A | NEW: Via mesh |
+| `omerta mesh status` | N/A | NEW: Show mesh network status |
+| `omerta mesh peers` | N/A | NEW: List discovered peers |
+
+**New CLI Commands:**
+
+```swift
+// In OmertaCLI/main.swift
+
+struct MeshCommand: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "mesh",
+        abstract: "Mesh network operations",
+        subcommands: [
+            MeshStatus.self,
+            MeshPeers.self,
+            MeshConnect.self
+        ]
+    )
+}
+
+struct MeshStatus: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        abstract: "Show mesh network status"
+    )
+
+    mutating func run() async throws {
+        let client = try await MeshConsumerClient(config: loadConfig())
+        try await client.start()
+
+        let stats = await client.mesh.statistics()
+        print("NAT Type: \(stats.natType.rawValue)")
+        print("Public Endpoint: \(stats.publicEndpoint ?? "none")")
+        print("Known Peers: \(stats.peerCount)")
+        print("Direct Connections: \(stats.directConnectionCount)")
+        print("Relay Connections: \(stats.relayCount)")
+    }
+}
+
+struct MeshPeers: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        abstract: "List discovered peers"
+    )
+
+    mutating func run() async throws {
+        let client = try await MeshConsumerClient(config: loadConfig())
+        try await client.start()
+
+        // Wait for discovery
+        try await Task.sleep(for: .seconds(5))
+
+        let peers = await client.mesh.knownPeers()
+        for peerId in peers {
+            let connection = await client.mesh.connection(to: peerId)
+            let status = connection != nil ? "connected" : "discovered"
+            print("\(peerId.prefix(16))... [\(status)]")
+        }
+    }
+}
+```
+
+**VM Request with Peer ID:**
+
+```swift
+struct VMRequest: AsyncParsableCommand {
+    // Existing options...
+
+    @Option(name: .long, help: "Provider peer ID (mesh mode)")
+    var peer: String?
+
+    @Option(name: .long, help: "Provider IP:port (direct mode)")
+    var provider: String?
+
+    mutating func run() async throws {
+        if let peerId = peer {
+            // Mesh mode
+            let client = try await MeshConsumerClient(config: loadConfig())
+            try await client.start()
+            let session = try await client.requestVM(providerPeerId: peerId, ...)
+            print("VM ready: \(session.sshAddress)")
+        } else if let address = provider {
+            // Legacy direct mode
+            // Existing implementation
+        } else {
+            print("Error: Specify --peer or --provider")
+        }
+    }
+}
+```
+
+**OmertaDaemon Changes:**
+
+```swift
+struct Start: AsyncParsableCommand {
+    // Existing options...
+
+    @Flag(name: .long, help: "Enable mesh networking")
+    var mesh: Bool = false
+
+    @Option(name: .long, help: "Mesh peer ID")
+    var meshPeerId: String?
+
+    @Option(name: .long, help: "Bootstrap peers (comma-separated)")
+    var bootstrapPeers: String?
+
+    mutating func run() async throws {
+        if mesh {
+            // Start mesh-aware provider
+            let config = MeshProviderDaemon.Configuration(
+                peerId: meshPeerId ?? UUID().uuidString,
+                meshConfig: MeshConfig(
+                    bootstrapPeers: bootstrapPeers?.split(separator: ",").map(String.init) ?? []
+                ),
+                // ...
+            )
+            let daemon = MeshProviderDaemon(config: config)
+            try await daemon.start()
+        } else {
+            // Existing direct UDP provider
+            let daemon = ProviderDaemon(config: config)
+            try await daemon.start()
+        }
+    }
+}
+```
+
+**Deliverable:** Full CLI support for mesh networking alongside legacy direct mode.
+
+---
+
+## Test Updates
+
+### Unit Tests to Update
+
+| Test File | Changes |
+|-----------|---------|
+| `Tests/OmertaConsumerTests/ConsumerClientTests.swift` | Add tests for MeshConsumerClient |
+| `Tests/OmertaProviderTests/ProviderDaemonTests.swift` | Add tests for MeshProviderDaemon |
+| `Tests/OmertaCoreTests/ConfigTests.swift` | Add tests for MeshConfig serialization |
+
+### New Unit Tests to Create
+
+| Test File | Description |
+|-----------|-------------|
+| `Tests/OmertaConsumerTests/MeshConsumerClientTests.swift` | Test mesh client initialization, peer discovery, VM request |
+| `Tests/OmertaProviderTests/MeshProviderDaemonTests.swift` | Test mesh provider message handling, VM creation |
+| `Tests/OmertaIntegrationTests/MeshVMProvisioningTests.swift` | Test full VM provisioning over mesh |
+
+**Example Test:**
+
+```swift
+// Tests/OmertaConsumerTests/MeshConsumerClientTests.swift
+
+final class MeshConsumerClientTests: XCTestCase {
+
+    func testMeshClientStartsAndDetectsNAT() async throws {
+        var config = OmertaConfig.default
+        config.mesh = MeshConfig(enabled: true)
+
+        let client = try await MeshConsumerClient(config: config)
+        try await client.start()
+
+        let stats = await client.mesh.statistics()
+        XCTAssertNotEqual(stats.natType, .unknown)
+    }
+
+    func testMeshClientDiscoversBootstrapPeers() async throws {
+        // Start a test relay node
+        let relay = MeshNetwork.createRelay(peerId: "test-relay", port: 9000)
+        try await relay.start()
+        defer { Task { await relay.stop() } }
+
+        // Configure client with bootstrap
+        var config = OmertaConfig.default
+        config.mesh = MeshConfig(
+            enabled: true,
+            bootstrapPeers: ["test-relay@localhost:9000"]
+        )
+
+        let client = try await MeshConsumerClient(config: config)
+        try await client.start()
+
+        // Wait for discovery
+        try await Task.sleep(for: .seconds(2))
+
+        let peers = await client.mesh.knownPeers()
+        XCTAssertTrue(peers.contains("test-relay"))
+    }
+}
+```
+
+### Integration Tests to Update
+
+| Test File | Changes |
+|-----------|---------|
+| `Tests/OmertaProviderTests/ConsumerProviderHandshakeTests.swift` | Add mesh handshake tests |
+| `Tests/OmertaVMTests/VMBootIntegrationTests.swift` | Add mesh-based VM boot tests |
+
+### New Integration Tests to Create
+
+| Test File | Description |
+|-----------|-------------|
+| `Tests/OmertaIntegrationTests/MeshNATTraversalTests.swift` | Test VM provisioning through simulated NAT |
+| `Tests/OmertaIntegrationTests/MeshRelayFallbackTests.swift` | Test relay fallback when hole punch fails |
+
+---
+
+## E2E Test Infrastructure Changes
+
+### Current E2E Infrastructure
+
+```
+scripts/e2e-mesh-test/
+├── run-mesh-test.sh          # Basic mesh node test
+├── run-nat-test.sh           # NAT traversal test
+├── nat-simulation.sh         # iptables NAT rules
+├── run-in-vm.sh              # Run tests in VM
+├── run-isolated-test.sh      # Isolated network namespace test
+└── nested-vm/
+    ├── setup-infra.sh        # Set up nested VM infrastructure
+    ├── run-nested-test.sh    # Run test in nested VMs
+    ├── run-roaming-test.sh   # Test WireGuard roaming
+    └── cloud-init/
+        ├── relay.yaml        # Cloud-init for relay node
+        ├── peer.yaml         # Cloud-init for peer node
+        └── nat-gateway.yaml  # Cloud-init for NAT gateway
+```
+
+### New E2E Tests Needed
+
+#### E2E Test 1: Mesh VM Provisioning (Same LAN)
+
+```bash
+#!/bin/bash
+# scripts/e2e-mesh-test/run-mesh-vm-provision.sh
+#
+# Tests full VM provisioning over mesh network (no NAT)
+#
+# Setup:
+#   - Machine A: omertad --mesh (provider)
+#   - Machine B: omerta vm request --peer (consumer)
+#
+# Success criteria:
+#   - Consumer discovers provider via bootstrap
+#   - VM request succeeds
+#   - SSH to VM works over WireGuard tunnel
+
+set -e
+
+PROVIDER_PEER_ID="provider-$(uuidgen | cut -c1-8)"
+CONSUMER_PEER_ID="consumer-$(uuidgen | cut -c1-8)"
+PROVIDER_PORT=9000
+
+echo "=== Mesh VM Provisioning Test (Same LAN) ==="
+echo ""
+
+# Start provider with mesh
+echo "[1/4] Starting provider..."
+omertad start --mesh --mesh-peer-id "$PROVIDER_PEER_ID" --port "$PROVIDER_PORT" &
+PROVIDER_PID=$!
+sleep 5
+
+# Start consumer and request VM
+echo "[2/4] Requesting VM via mesh..."
+RESULT=$(omerta vm request \
+    --peer "$PROVIDER_PEER_ID" \
+    --bootstrap "$PROVIDER_PEER_ID@localhost:$PROVIDER_PORT" \
+    --output json)
+
+VM_IP=$(echo "$RESULT" | jq -r '.ssh_address')
+echo "VM IP: $VM_IP"
+
+# Test SSH
+echo "[3/4] Testing SSH connection..."
+ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 "omerta@$VM_IP" "echo 'SSH works!'"
+
+# Cleanup
+echo "[4/4] Cleaning up..."
+omerta vm release --all
+kill $PROVIDER_PID 2>/dev/null || true
+
+echo ""
+echo "=== TEST PASSED ==="
+```
+
+#### E2E Test 2: Mesh VM Provisioning (Through NAT)
+
+```bash
+#!/bin/bash
+# scripts/e2e-mesh-test/run-mesh-vm-nat.sh
+#
+# Tests VM provisioning when consumer is behind NAT
+#
+# Setup (using network namespaces):
+#   - ns-public: Relay node + Provider
+#   - ns-nat: Consumer behind simulated NAT
+#
+# Success criteria:
+#   - Consumer behind NAT can reach provider
+#   - Hole punch or relay establishes connection
+#   - VM provisioning succeeds
+
+set -e
+
+echo "=== Mesh VM Provisioning Test (Through NAT) ==="
+echo ""
+
+# Create network namespaces
+echo "[1/6] Setting up network namespaces..."
+sudo ip netns add ns-public || true
+sudo ip netns add ns-nat || true
+
+# Create veth pairs
+sudo ip link add veth-pub type veth peer name veth-nat
+sudo ip link set veth-pub netns ns-public
+sudo ip link set veth-nat netns ns-nat
+
+# Configure IPs
+sudo ip netns exec ns-public ip addr add 10.0.0.1/24 dev veth-pub
+sudo ip netns exec ns-public ip link set veth-pub up
+sudo ip netns exec ns-public ip link set lo up
+
+sudo ip netns exec ns-nat ip addr add 10.0.0.2/24 dev veth-nat
+sudo ip netns exec ns-nat ip link set veth-nat up
+sudo ip netns exec ns-nat ip link set lo up
+
+# Set up NAT on ns-nat (simulates being behind NAT)
+sudo ip netns exec ns-nat iptables -t nat -A POSTROUTING -o veth-nat -j MASQUERADE
+
+# Start relay in ns-public
+echo "[2/6] Starting relay node..."
+sudo ip netns exec ns-public omerta-mesh \
+    --peer-id relay-node \
+    --port 9000 \
+    --relay &
+RELAY_PID=$!
+sleep 3
+
+# Start provider in ns-public
+echo "[3/6] Starting provider..."
+sudo ip netns exec ns-public omertad start \
+    --mesh \
+    --mesh-peer-id provider-node \
+    --bootstrap "relay-node@10.0.0.1:9000" \
+    --port 9001 &
+PROVIDER_PID=$!
+sleep 5
+
+# Start consumer in ns-nat (behind NAT)
+echo "[4/6] Requesting VM from behind NAT..."
+RESULT=$(sudo ip netns exec ns-nat omerta vm request \
+    --peer provider-node \
+    --bootstrap "relay-node@10.0.0.1:9000" \
+    --output json)
+
+VM_IP=$(echo "$RESULT" | jq -r '.ssh_address')
+echo "VM IP: $VM_IP"
+
+# Test SSH (may go through relay)
+echo "[5/6] Testing SSH connection..."
+sudo ip netns exec ns-nat ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+    "omerta@$VM_IP" "echo 'SSH through NAT works!'"
+
+# Cleanup
+echo "[6/6] Cleaning up..."
+sudo ip netns exec ns-nat omerta vm release --all 2>/dev/null || true
+kill $PROVIDER_PID $RELAY_PID 2>/dev/null || true
+sudo ip netns delete ns-public 2>/dev/null || true
+sudo ip netns delete ns-nat 2>/dev/null || true
+
+echo ""
+echo "=== TEST PASSED ==="
+```
+
+#### E2E Test 3: Nested VM NAT Test
+
+```bash
+#!/bin/bash
+# scripts/e2e-mesh-test/nested-vm/run-mesh-vm-nested.sh
+#
+# Tests VM provisioning using nested VMs for realistic NAT
+#
+# Setup:
+#   - Outer VM: NAT gateway (iptables MASQUERADE)
+#   - Inner VM 1: Provider (public IP)
+#   - Inner VM 2: Consumer (behind NAT)
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "=== Mesh VM Provisioning Test (Nested VMs) ==="
+echo ""
+
+# Build binaries
+echo "[1/5] Building omerta binaries..."
+swift build -c release
+
+# Set up infrastructure
+echo "[2/5] Setting up nested VM infrastructure..."
+"$SCRIPT_DIR/setup-infra.sh"
+
+# Copy binaries to VMs
+echo "[3/5] Deploying binaries..."
+scp -P 2201 .build/release/omertad vm-provider:/usr/local/bin/
+scp -P 2201 .build/release/omerta vm-provider:/usr/local/bin/
+scp -P 2202 .build/release/omerta vm-consumer:/usr/local/bin/
+
+# Start provider
+echo "[4/5] Starting provider and requesting VM..."
+ssh -p 2201 vm-provider "omertad start --mesh --mesh-peer-id provider &"
+sleep 5
+
+# Request VM from consumer (behind NAT)
+ssh -p 2202 vm-consumer "omerta vm request --peer provider --bootstrap provider@10.0.0.10:9000"
+
+# Test result
+echo "[5/5] Verifying..."
+RESULT=$(ssh -p 2202 vm-consumer "omerta vm list --output json")
+VM_COUNT=$(echo "$RESULT" | jq '.vms | length')
+
+if [ "$VM_COUNT" -gt 0 ]; then
+    echo "=== TEST PASSED ==="
+else
+    echo "=== TEST FAILED ==="
+    exit 1
+fi
+```
+
+### CI/CD Updates
+
+```yaml
+# .github/workflows/test.yml (additions)
+
+  mesh-integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run mesh unit tests
+        run: swift test --filter OmertaMesh
+      - name: Run mesh integration tests
+        run: swift test --filter MeshIntegration
+
+  mesh-e2e-tests:
+    runs-on: ubuntu-latest
+    needs: [mesh-integration-tests]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build release binaries
+        run: swift build -c release
+      - name: Run mesh E2E tests (same LAN)
+        run: sudo ./scripts/e2e-mesh-test/run-mesh-vm-provision.sh
+      - name: Run mesh E2E tests (NAT simulation)
+        run: sudo ./scripts/e2e-mesh-test/run-mesh-vm-nat.sh
+
+  # Weekly: More expensive nested VM tests
+  mesh-e2e-nested:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up QEMU
+        run: sudo apt-get install -y qemu-system-x86 qemu-utils
+      - name: Run nested VM tests
+        run: sudo ./scripts/e2e-mesh-test/nested-vm/run-mesh-vm-nested.sh
+```
+
+---
+
+## Implementation Order
+
+| Phase | Description | Depends On | Estimated Effort |
+|-------|-------------|------------|------------------|
+| M1 | Add OmertaMesh dependencies | - | Small |
+| M2 | MeshConsumerClient | M1 | Medium |
+| M3 | MeshProviderDaemon | M1 | Medium |
+| M4 | CLI integration | M2, M3 | Medium |
+| T1 | Unit tests | M2, M3 | Small |
+| T2 | Integration tests | M4, T1 | Medium |
+| E1 | E2E: Same LAN | M4 | Small |
+| E2 | E2E: NAT simulation | E1 | Medium |
+| E3 | E2E: Nested VMs | E2 | Large |
+
+**Critical Path:** M1 → M2 → M3 → M4 → E1 → E2
+
+---
+
+## Migration Strategy
+
+### Backward Compatibility
+
+Both direct (IP-based) and mesh (peer ID-based) modes will be supported:
+
+```bash
+# Legacy: Direct connection (works without mesh infrastructure)
+omerta vm request --provider 192.168.1.100:51820
+
+# New: Mesh connection (works through NAT)
+omerta vm request --peer provider-abc123
+
+# Provider can serve both
+omertad start --port 51820 --mesh --mesh-peer-id provider-abc123
+```
+
+### Deprecation Timeline
+
+1. **Phase 1 (Current):** Both modes supported, mesh optional
+2. **Phase 2 (Future):** Mesh enabled by default, direct mode still available
+3. **Phase 3 (Future):** Direct mode deprecated, mesh required
+
+---
+
+## Success Criteria
+
+Integration is complete when:
+
+- [ ] `omerta vm request --peer PEER_ID` provisions a VM
+- [ ] `omertad start --mesh` joins mesh and accepts requests
+- [ ] VM provisioning works when consumer is behind NAT
+- [ ] VM provisioning works when provider is behind NAT
+- [ ] All existing tests pass
+- [ ] New mesh tests pass
+- [ ] E2E tests pass in CI

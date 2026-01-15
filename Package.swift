@@ -86,6 +86,7 @@ let package = Package(
                 "OmertaVM",
                 "OmertaNetwork",
                 "OmertaConsumer",
+                "OmertaMesh",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "Logging", package: "swift-log"),
@@ -110,6 +111,7 @@ let package = Package(
             dependencies: [
                 "OmertaCore",
                 "OmertaNetwork",
+                "OmertaMesh",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "Logging", package: "swift-log"),
