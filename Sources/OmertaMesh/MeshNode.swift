@@ -593,6 +593,9 @@ public actor MeshNode {
             }
 
         case .peerInfo:
+            // Check if this is a new peer (before we cache them)
+            let isNewPeer = peerEndpoints[peerId] == nil
+
             // Record this contact when receiving a peer announcement
             await freshnessManager.recordContact(
                 peerId: peerId,
@@ -606,9 +609,11 @@ public actor MeshNode {
             peerCache[peerId] = CachedPeerInfo(peerId: peerId, endpoint: endpoint)
             logger.info("Cached peer endpoint: \(peerId.prefix(8))... at \(endpoint)")
 
-            // Send our own announcement back so the peer has our public key
-            // This enables two-way authenticated communication
-            await announceTo(endpoint: endpoint)
+            // Send our own announcement back ONLY if this is a new peer
+            // This enables two-way authenticated communication without creating a loop
+            if isNewPeer {
+                await announceTo(endpoint: endpoint)
+            }
 
         default:
             break
