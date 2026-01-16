@@ -1,5 +1,23 @@
 # Realistic NAT Testing with Nested VMs
 
+## Quick Start
+
+```bash
+# Run a basic test (full-cone NAT on both sides)
+./scripts/e2e-mesh-test/nested-vm/run-nested-test.sh full-cone full-cone
+
+# Test symmetric NAT (requires relay fallback)
+./scripts/e2e-mesh-test/nested-vm/run-nested-test.sh symmetric symmetric
+
+# Get an interactive shell in the test VM
+./scripts/e2e-mesh-test/nested-vm/run-nested-test.sh --shell
+
+# Cleanup all VM images
+./scripts/e2e-mesh-test/nested-vm/run-nested-test.sh --cleanup
+```
+
+NAT types: `public`, `full-cone`, `addr-restrict`, `port-restrict`, `symmetric`
+
 ## Problem Statement
 
 The current NAT simulation using network namespaces has limitations:
@@ -49,24 +67,71 @@ Create a nested VM architecture where:
 
 ## Components
 
-### 1. NAT Gateway VMs (Lightweight Alpine Linux)
+### 1. NAT Gateway VMs (Ubuntu-based)
 - Implement actual NAT behavior using nftables
 - Support all 5 NAT types with proper connection tracking
-- Configurable via cloud-init or simple config file
+- Configurable via cloud-init
 
-### 2. Peer VMs (Minimal Ubuntu)
-- Run omerta-mesh binary
+### 2. Peer VMs (Ubuntu)
+- Run `omertad` daemon for mesh networking
+- Use `omerta` CLI for operations (talks to local daemon via IPC)
 - Isolated network - can only reach NAT gateway
 - No direct route to other peers
 
-### 3. Relay VM (Minimal Ubuntu)
-- Public IP on the "internet" bridge
-- Runs omerta-mesh in relay mode
+### 3. Relay/Bootstrap VM (Ubuntu)
+- Public IP on the "internet" bridge (192.168.100.3)
+- Runs `omertad` as bootstrap node
+- Creates network and provides invite link for peers
 - Acts as hole punch coordinator
 
 ### 4. Virtual Networks
-- `br-internet`: Simulates public internet (192.168.100.0/24)
-- `br-lan1`, `br-lan2`: Private LANs behind each NAT (10.0.x.0/24)
+- `br-mesh-inet`: Simulates public internet (192.168.100.0/24)
+- `br-mesh-lan1`, `br-mesh-lan2`: Private LANs behind each NAT (10.0.x.0/24)
+
+## Test Flow
+
+The test follows the same flow as production (see `docs/e2e-message-flow.md`):
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              Test Sequence                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  1. RELAY (192.168.100.3)                                                   │
+│     ├── omerta network create --name 'nat-test' --endpoint '192.168.100.3:9000'
+│     │   └── Returns: invite link, network ID, peer ID                       │
+│     └── omertad start --network <id>                                        │
+│         └── Listens for mesh connections, acts as bootstrap                 │
+│                                                                              │
+│  2. PEER1 (10.0.1.2 behind NAT-GW1)                                         │
+│     ├── omerta network join --key '<invite-link>'                           │
+│     │   └── Saves network config and generates identity                     │
+│     └── omertad start --network <id>                                        │
+│         └── Connects to bootstrap (relay), joins mesh                       │
+│                                                                              │
+│  3. PEER2 (10.0.2.2 behind NAT-GW2)                                         │
+│     ├── omerta network join --key '<invite-link>'                           │
+│     └── omertad start --network <id>                                        │
+│         └── Connects to bootstrap, discovers peer1 via gossip               │
+│                                                                              │
+│  4. TEST CONNECTIVITY                                                        │
+│     ├── omerta mesh ping <relay-peer-id> --network <id>                     │
+│     │   └── CLI talks to local omertad via IPC                              │
+│     │   └── omertad sends ping through mesh                                 │
+│     └── Logs show connection path (direct/hole-punch/relay)                 │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### IPC Architecture
+
+The `omerta` CLI does not run its own mesh stack. Instead:
+1. CLI connects to local `omertad` via Unix socket IPC
+2. Daemon handles all mesh complexity (NAT detection, keepalives, discovery)
+3. CLI receives endpoint info and can send direct encrypted messages
+
+This mirrors the production architecture where the daemon runs continuously
+and CLI commands are lightweight operations.
 
 ## NAT Implementation (nftables)
 
@@ -147,14 +212,20 @@ Features:
 ### Phase 3: Test Orchestrator
 **File**: `scripts/e2e-mesh-test/nested-vm/run-nested-test.sh`
 
-1. Start infrastructure (bridges)
-2. Boot NAT gateway VMs with specified NAT types
-3. Boot peer VMs behind each NAT
-4. Boot relay VM on public network
-5. Copy omerta-mesh binary and Swift libs to peer VMs
-6. Execute test scenario
-7. Collect results and logs
-8. Cleanup all VMs
+The test runs in two layers:
+- **Outer VM**: Created on host, provides KVM and network isolation
+- **Inner VMs**: NAT gateways, peers, and relay running inside outer VM
+
+Test flow:
+1. Start outer VM (downloads Ubuntu cloud image if needed)
+2. Copy `omerta` and `omertad` binaries + Swift runtime libs
+3. Run inner test script which:
+   - Creates bridges and boots inner VMs
+   - **Relay**: `omerta network create` → `omertad start`
+   - **Peers**: `omerta network join` → `omertad start`
+   - **Test**: `omerta mesh ping` (via IPC to local daemon)
+4. Stream logs from all VMs
+5. Cleanup on exit
 
 ### Phase 4: Test Scenarios
 **File**: `scripts/e2e-mesh-test/nested-vm/scenarios/`
@@ -203,23 +274,27 @@ tc qdisc add dev eth0 root netem delay 50ms loss 0.5%
 
 ```
 scripts/e2e-mesh-test/nested-vm/
-├── setup-infra.sh           # Create bridges, download images
-├── run-nested-test.sh       # Main test orchestrator
-├── cleanup.sh               # Tear down everything
+├── run-nested-test.sh       # Main entry point (runs on host)
+├── setup-infra.sh           # Create bridges, download images (runs in outer VM)
 ├── lib/
-│   ├── vm-utils.sh          # VM lifecycle helpers
-│   ├── network-utils.sh     # Bridge/interface helpers
-│   └── nat-config.sh        # NAT type configurations
-├── images/
-│   ├── nat-gateway.qcow2    # Alpine-based NAT gateway
-│   └── peer.qcow2           # Ubuntu peer VM
+│   ├── run-test-inner.sh    # Inner test logic (runs in outer VM)
+│   └── vm-utils.sh          # VM lifecycle helpers
 ├── cloud-init/
-│   ├── nat-gateway.yaml     # NAT gateway cloud-init
-│   ├── peer.yaml            # Peer VM cloud-init
-│   └── relay.yaml           # Relay VM cloud-init
-└── scenarios/
-    ├── all-combinations.yaml
-    └── stress-test.yaml
+│   ├── nat-gateway.yaml     # NAT gateway cloud-init template
+│   └── peer.yaml            # Peer VM cloud-init template
+└── images/                  # Created at runtime
+    └── ubuntu-base.img      # Downloaded Ubuntu cloud image
+```
+
+Runtime directories (created in outer VM):
+```
+/home/ubuntu/nested-vm-test/
+├── omerta                   # CLI binary
+├── omertad                  # Daemon binary
+├── lib/                     # Swift runtime libraries
+├── images/                  # VM disk images
+├── cloud-init/              # Cloud-init templates
+└── .run/                    # Runtime state (PIDs, sockets)
 ```
 
 ## Resource Requirements
