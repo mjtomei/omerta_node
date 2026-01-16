@@ -26,6 +26,7 @@ public enum ControlCommand: Codable {
     case vmList
     case status
     case peers
+    case shutdown(graceful: Bool, timeoutSeconds: Int)
 }
 
 /// Response from the daemon
@@ -36,6 +37,7 @@ public enum ControlResponse: Codable {
     case vmList([VMInfoData])
     case status(StatusData)
     case peers([PeerData])
+    case shutdownAck(ShutdownData)
     case error(String)
 
     public struct PingResultData: Codable {
@@ -115,6 +117,20 @@ public enum ControlResponse: Codable {
             self.peerId = peerId
             self.endpoint = endpoint
             self.lastSeen = lastSeen
+        }
+    }
+
+    public struct ShutdownData: Codable {
+        public let accepted: Bool
+        public let inFlightRequests: Int
+        public let activeVMs: Int
+        public let message: String
+
+        public init(accepted: Bool, inFlightRequests: Int, activeVMs: Int, message: String) {
+            self.accepted = accepted
+            self.inFlightRequests = inFlightRequests
+            self.activeVMs = activeVMs
+            self.message = message
         }
     }
 }

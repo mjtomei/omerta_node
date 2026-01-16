@@ -2850,10 +2850,63 @@ struct Kill: AsyncParsableCommand {
     @Flag(name: .long, help: "Also clean up WireGuard interfaces")
     var cleanup: Bool = false
 
-    mutating func run() async throws {
-        print("Killing omerta processes...")
+    @Option(name: .long, help: "Graceful shutdown timeout in seconds (default: 10)")
+    var timeout: Int = 10
 
+    mutating func run() async throws {
+        print("Stopping omerta processes...")
+
+        // First, try graceful shutdown via control socket for all networks
+        if !force {
+            let networkStore = NetworkStore.defaultStore()
+            try? await networkStore.load()
+            let networks = await networkStore.allNetworks()
+
+            for network in networks {
+                let client = ControlSocketClient(networkId: network.id)
+                if client.isDaemonRunning() {
+                    print("Requesting graceful shutdown for network '\(network.name)'...")
+                    do {
+                        let response = try await client.send(.shutdown(graceful: true, timeoutSeconds: timeout))
+                        if case .shutdownAck(let data) = response {
+                            if data.inFlightRequests > 0 {
+                                print("  Waiting for \(data.inFlightRequests) in-flight request(s)...")
+                            }
+                        }
+                    } catch {
+                        print("  Warning: Failed to send graceful shutdown: \(error)")
+                    }
+                }
+            }
+
+            // Wait for graceful shutdown
+            if !networks.isEmpty {
+                print("Waiting up to \(timeout)s for graceful shutdown...")
+                var waited = 0
+                while waited < timeout {
+                    try await Task.sleep(for: .seconds(1))
+                    waited += 1
+
+                    // Check if any daemons still running
+                    var anyRunning = false
+                    for network in networks {
+                        let client = ControlSocketClient(networkId: network.id)
+                        if client.isDaemonRunning() {
+                            anyRunning = true
+                            break
+                        }
+                    }
+                    if !anyRunning {
+                        print("All daemons stopped gracefully")
+                        break
+                    }
+                }
+            }
+        }
+
+        // Force kill any remaining processes
         let signal = force ? "KILL" : "TERM"
+        print("Sending SIG\(signal) to remaining processes...")
 
         // Kill omertad processes
         let killDaemon = Process()

@@ -117,6 +117,58 @@ struct DaemonConfig {
     }
 }
 
+// MARK: - Shutdown Coordinator
+
+/// Coordinates graceful shutdown of the daemon
+actor ShutdownCoordinator {
+    private var shutdownContinuation: CheckedContinuation<Void, Never>?
+    private var isShuttingDown = false
+    private var inFlightRequests = 0
+
+    /// Wait for shutdown signal
+    func waitForShutdown() async {
+        await withCheckedContinuation { continuation in
+            self.shutdownContinuation = continuation
+        }
+    }
+
+    /// Request shutdown - returns immediately, shutdown happens asynchronously
+    func requestShutdown() -> Bool {
+        guard !isShuttingDown else { return false }
+        isShuttingDown = true
+        shutdownContinuation?.resume()
+        return true
+    }
+
+    /// Check if shutdown is in progress
+    func isShutdownRequested() -> Bool {
+        isShuttingDown
+    }
+
+    /// Track in-flight request start
+    func startRequest() {
+        inFlightRequests += 1
+    }
+
+    /// Track in-flight request completion
+    func endRequest() {
+        inFlightRequests -= 1
+    }
+
+    /// Get current in-flight request count
+    func getInFlightCount() -> Int {
+        inFlightRequests
+    }
+
+    /// Wait for all in-flight requests to complete (with timeout)
+    func waitForInFlightRequests(timeout: TimeInterval) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while inFlightRequests > 0 && Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+}
+
 @main
 struct OmertaDaemon: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
@@ -126,6 +178,7 @@ struct OmertaDaemon: AsyncParsableCommand {
         subcommands: [
             Start.self,
             Stop.self,
+            Restart.self,
             Status.self,
             Config.self
         ],
@@ -285,6 +338,9 @@ struct Start: AsyncParsableCommand {
         }
         print("")
 
+        // Create shutdown coordinator
+        let shutdownCoordinator = ShutdownCoordinator()
+
         // Run the mesh daemon
         try await runMeshDaemon(
             networkId: networkId,
@@ -296,7 +352,8 @@ struct Start: AsyncParsableCommand {
             dryRun: effectiveDryRun,
             timeout: effectiveTimeout,
             canRelay: effectiveCanRelay,
-            canHolePunch: effectiveCanHolePunch
+            canHolePunch: effectiveCanHolePunch,
+            shutdownCoordinator: shutdownCoordinator
         )
     }
 
@@ -310,7 +367,8 @@ struct Start: AsyncParsableCommand {
         dryRun: Bool,
         timeout: Int?,
         canRelay: Bool,
-        canHolePunch: Bool
+        canHolePunch: Bool,
+        shutdownCoordinator: ShutdownCoordinator
     ) async throws {
         // Build mesh config with encryption key and bootstrap peers from network
         let meshConfig = MeshConfig(
@@ -352,7 +410,7 @@ struct Start: AsyncParsableCommand {
             try await daemon.start()
 
             // Start control socket and wire up command handler
-            await controlSocket.setCommandHandler { [daemon, vmTracker] command in
+            await controlSocket.setCommandHandler { [daemon, vmTracker, shutdownCoordinator] command in
                 await self.handleControlCommand(
                     command,
                     daemon: daemon,
@@ -360,7 +418,8 @@ struct Start: AsyncParsableCommand {
                     identity: identity,
                     networkKey: keyData,
                     networkId: networkId,
-                    dryRun: dryRun
+                    dryRun: dryRun,
+                    shutdownCoordinator: shutdownCoordinator
                 )
             }
             try await controlSocket.start()
@@ -401,19 +460,47 @@ struct Start: AsyncParsableCommand {
             if let timeout = timeout {
                 print("Auto-shutdown in \(timeout) seconds")
             } else {
-                print("Press Ctrl+C to stop")
+                print("Press Ctrl+C to stop, or 'omertad stop' from another terminal")
             }
             print("")
 
-            // Keep running until interrupted or timeout
-            let duration = timeout ?? (60 * 60 * 24 * 365)  // timeout or 1 year
-            try await Task.sleep(for: .seconds(duration))
-
-            if timeout != nil {
-                print("Timeout reached, shutting down...")
-                await controlSocket.stop()
-                await daemon.stop()
+            // Wait for shutdown signal or timeout
+            if let timeout = timeout {
+                // Race between timeout and shutdown signal
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        try? await Task.sleep(for: .seconds(timeout))
+                    }
+                    group.addTask {
+                        await shutdownCoordinator.waitForShutdown()
+                    }
+                    // Wait for first to complete
+                    await group.next()
+                    group.cancelAll()
+                }
+                print("Shutting down...")
+            } else {
+                // Wait indefinitely for shutdown signal
+                await shutdownCoordinator.waitForShutdown()
+                print("Shutdown requested...")
             }
+
+            // Graceful shutdown
+            print("Waiting for in-flight requests to complete...")
+            await shutdownCoordinator.waitForInFlightRequests(timeout: 30)
+
+            let remaining = await shutdownCoordinator.getInFlightCount()
+            if remaining > 0 {
+                print("Warning: \(remaining) request(s) still in progress, forcing shutdown")
+            }
+
+            print("Stopping control socket...")
+            await controlSocket.stop()
+
+            print("Stopping mesh daemon...")
+            await daemon.stop()
+
+            print("Shutdown complete")
 
         } catch let error as ControlSocketError {
             print("Error: \(error.description)")
@@ -431,7 +518,8 @@ struct Start: AsyncParsableCommand {
         identity: OmertaMesh.IdentityKeypair,
         networkKey: Data,
         networkId: String,
-        dryRun: Bool
+        dryRun: Bool,
+        shutdownCoordinator: ShutdownCoordinator
     ) async -> ControlResponse {
         switch command {
         case .ping(let peerId, let timeout):
@@ -494,6 +582,29 @@ struct Start: AsyncParsableCommand {
 
         case .vmList:
             return await handleVMList(vmTracker: vmTracker)
+
+        case .shutdown(let graceful, let timeoutSeconds):
+            let inFlight = await shutdownCoordinator.getInFlightCount()
+            let activeVMs = await daemon.getStatus().activeVMs
+
+            if graceful && inFlight > 0 {
+                // Return info about pending work, but still initiate shutdown
+                let accepted = await shutdownCoordinator.requestShutdown()
+                return .shutdownAck(ControlResponse.ShutdownData(
+                    accepted: accepted,
+                    inFlightRequests: inFlight,
+                    activeVMs: activeVMs,
+                    message: "Shutdown initiated, waiting for \(inFlight) in-flight request(s) (timeout: \(timeoutSeconds)s)"
+                ))
+            } else {
+                let accepted = await shutdownCoordinator.requestShutdown()
+                return .shutdownAck(ControlResponse.ShutdownData(
+                    accepted: accepted,
+                    inFlightRequests: inFlight,
+                    activeVMs: activeVMs,
+                    message: accepted ? "Shutdown initiated" : "Shutdown already in progress"
+                ))
+            }
         }
     }
 
@@ -724,17 +835,176 @@ struct Stop: AsyncParsableCommand {
         abstract: "Stop the provider daemon"
     )
 
+    @Option(name: .long, help: "Network ID (default: first available)")
+    var network: String?
+
+    @Option(name: .long, help: "Graceful shutdown timeout in seconds (default: 30)")
+    var timeout: Int = 30
+
+    @Flag(name: .long, help: "Force immediate shutdown (don't wait for in-flight requests)")
+    var force: Bool = false
+
     mutating func run() async throws {
+        // Find network ID
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+
+        let networkId: String
+        if let specifiedNetwork = network {
+            guard await networkStore.network(id: specifiedNetwork) != nil else {
+                print("Error: Network '\(specifiedNetwork)' not found")
+                throw ExitCode.failure
+            }
+            networkId = specifiedNetwork
+        } else {
+            let networks = await networkStore.allNetworks()
+            guard let firstNetwork = networks.first else {
+                print("Error: No networks found")
+                throw ExitCode.failure
+            }
+            networkId = firstNetwork.id
+        }
+
+        // Check if daemon is running
+        let client = ControlSocketClient(networkId: networkId)
+        guard client.isDaemonRunning() else {
+            print("Daemon is not running for network '\(networkId)'")
+            return
+        }
+
         print("Stopping Omerta Provider Daemon...")
 
-        // In a real implementation, this would:
-        // 1. Find the running daemon process (PID file)
-        // 2. Send SIGTERM signal
-        // 3. Wait for graceful shutdown
-        // 4. Send SIGKILL if timeout
+        // Send shutdown command
+        do {
+            let response = try await client.send(.shutdown(graceful: !force, timeoutSeconds: timeout))
 
-        print("Not yet implemented")
-        print("For now, use Ctrl+C in the terminal running 'omertad start'")
+            switch response {
+            case .shutdownAck(let data):
+                print(data.message)
+                if data.inFlightRequests > 0 {
+                    print("In-flight requests: \(data.inFlightRequests)")
+                }
+                if data.activeVMs > 0 {
+                    print("Active VMs: \(data.activeVMs)")
+                }
+                print("")
+                print("Daemon will shut down gracefully (timeout: \(timeout)s)")
+
+            case .error(let msg):
+                print("Error: \(msg)")
+                throw ExitCode.failure
+
+            default:
+                print("Unexpected response from daemon")
+            }
+        } catch {
+            print("Failed to stop daemon: \(error)")
+            print("")
+            print("The daemon may not be running, or you can force kill with:")
+            print("  omerta kill")
+            throw ExitCode.failure
+        }
+    }
+}
+
+// MARK: - Restart Command
+
+struct Restart: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        abstract: "Restart the provider daemon with new configuration"
+    )
+
+    @Option(name: .shortAndLong, help: "Path to new config file")
+    var config: String?
+
+    @Option(name: .long, help: "Network ID")
+    var network: String?
+
+    @Option(name: .long, help: "Graceful shutdown timeout in seconds (default: 30)")
+    var timeout: Int = 30
+
+    @Flag(name: .long, help: "Force immediate shutdown")
+    var force: Bool = false
+
+    mutating func run() async throws {
+        // Find network ID
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+
+        let networkId: String
+        if let specifiedNetwork = network {
+            guard await networkStore.network(id: specifiedNetwork) != nil else {
+                print("Error: Network '\(specifiedNetwork)' not found")
+                throw ExitCode.failure
+            }
+            networkId = specifiedNetwork
+        } else {
+            let networks = await networkStore.allNetworks()
+            guard let firstNetwork = networks.first else {
+                print("Error: No networks found")
+                throw ExitCode.failure
+            }
+            networkId = firstNetwork.id
+        }
+
+        let client = ControlSocketClient(networkId: networkId)
+        let wasRunning = client.isDaemonRunning()
+
+        if wasRunning {
+            print("Stopping current daemon...")
+
+            // Send shutdown command
+            do {
+                let response = try await client.send(.shutdown(graceful: !force, timeoutSeconds: timeout))
+                if case .shutdownAck(let data) = response {
+                    print(data.message)
+                }
+            } catch {
+                print("Warning: Failed to gracefully stop daemon: \(error)")
+                print("Attempting force kill...")
+
+                // Force kill via signal
+                let killProcess = Process()
+                killProcess.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+                killProcess.arguments = ["-TERM", "-f", "omertad.*--network.*\(networkId)"]
+                try? killProcess.run()
+                killProcess.waitUntilExit()
+            }
+
+            // Wait for daemon to stop
+            print("Waiting for daemon to stop...")
+            var attempts = 0
+            while client.isDaemonRunning() && attempts < timeout {
+                try await Task.sleep(for: .seconds(1))
+                attempts += 1
+            }
+
+            if client.isDaemonRunning() {
+                print("Warning: Daemon still running after \(timeout)s, forcing kill...")
+                let killProcess = Process()
+                killProcess.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+                killProcess.arguments = ["-KILL", "-f", "omertad.*--network.*\(networkId)"]
+                try? killProcess.run()
+                killProcess.waitUntilExit()
+                try await Task.sleep(for: .seconds(1))
+            }
+        }
+
+        print("")
+        print("Starting daemon...")
+
+        // Build start command
+        var args = ["start", "--network", networkId]
+        if let config = config {
+            args += ["--config", config]
+        }
+
+        // Start new daemon
+        print("Run in a new terminal:")
+        print("  omertad \(args.joined(separator: " "))")
+        print("")
+        print("Or to start in the background:")
+        print("  nohup omertad \(args.joined(separator: " ")) > /tmp/omertad.log 2>&1 &")
     }
 }
 
