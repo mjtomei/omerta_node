@@ -8,6 +8,101 @@ import OmertaProvider
 import OmertaConsumer
 import OmertaMesh
 
+// MARK: - Daemon Configuration
+
+/// Configuration for the omertad daemon
+/// Supports loading from a simple key=value config file
+struct DaemonConfig {
+    var network: String?
+    var port: Int = 9999
+    var noProvider: Bool = false
+    var dryRun: Bool = false
+    var timeout: Int?
+
+    /// Default config file path
+    static var defaultPath: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return "\(home)/.omerta/omertad.conf"
+    }
+
+    /// Load config from a file
+    /// - Parameter path: Path to config file
+    /// - Returns: Parsed config
+    static func load(from path: String) throws -> DaemonConfig {
+        let expandedPath = (path as NSString).expandingTildeInPath
+        let contents = try String(contentsOfFile: expandedPath, encoding: .utf8)
+        return try parse(contents)
+    }
+
+    /// Parse config from string content
+    static func parse(_ content: String) throws -> DaemonConfig {
+        var config = DaemonConfig()
+
+        for line in content.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            // Skip empty lines and comments
+            if trimmed.isEmpty || trimmed.hasPrefix("#") {
+                continue
+            }
+
+            // Parse key=value
+            guard let equalsIndex = trimmed.firstIndex(of: "=") else {
+                continue
+            }
+
+            let key = String(trimmed[..<equalsIndex]).trimmingCharacters(in: .whitespaces).lowercased()
+            let value = String(trimmed[trimmed.index(after: equalsIndex)...]).trimmingCharacters(in: .whitespaces)
+
+            // Remove quotes if present
+            let cleanValue = value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+
+            switch key {
+            case "network":
+                config.network = cleanValue
+            case "port":
+                config.port = Int(cleanValue) ?? 9999
+            case "no-provider", "noprovider", "no_provider":
+                config.noProvider = cleanValue.lowercased() == "true" || cleanValue == "1"
+            case "dry-run", "dryrun", "dry_run":
+                config.dryRun = cleanValue.lowercased() == "true" || cleanValue == "1"
+            case "timeout":
+                config.timeout = Int(cleanValue)
+            default:
+                // Unknown key, ignore
+                break
+            }
+        }
+
+        return config
+    }
+
+    /// Generate a sample config file content
+    static func sampleConfig(network: String? = nil) -> String {
+        """
+        # Omerta Daemon Configuration
+        # Place this file at ~/.omerta/omertad.conf
+
+        # Network ID (required)
+        # Get this from 'omerta network list' or 'omerta network create'
+        network=\(network ?? "YOUR_NETWORK_ID")
+
+        # Mesh port (default: 9999)
+        port=9999
+
+        # Consumer-only mode - participate in mesh but don't offer VMs
+        # Set to true if you only want to request VMs, not provide them
+        no-provider=false
+
+        # Dry run mode - simulate VM creation without actual VMs (for testing)
+        dry-run=false
+
+        # Auto-shutdown after N seconds (optional, for testing)
+        # timeout=3600
+        """
+    }
+}
+
 @main
 struct OmertaDaemon: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
@@ -31,11 +126,14 @@ struct Start: AsyncParsableCommand {
         abstract: "Start the provider daemon"
     )
 
+    @Option(name: .shortAndLong, help: "Path to config file (default: ~/.omerta/omertad.conf)")
+    var config: String?
+
     @Option(name: .long, help: "Network ID (from 'omerta network create' or 'omerta network list')")
     var network: String?
 
     @Option(name: .long, help: "Mesh port (default: 9999)")
-    var port: Int = 9999
+    var port: Int?
 
     @Flag(name: .long, help: "Consumer-only mode - participate in mesh but don't offer VMs")
     var noProvider: Bool = false
@@ -47,21 +145,52 @@ struct Start: AsyncParsableCommand {
     var timeout: Int?
 
     mutating func run() async throws {
+        // Load config file (if specified or exists at default path)
+        var fileConfig = DaemonConfig()
+        let configPath = config ?? DaemonConfig.defaultPath
+        let configPathExpanded = (configPath as NSString).expandingTildeInPath
+
+        if FileManager.default.fileExists(atPath: configPathExpanded) {
+            do {
+                fileConfig = try DaemonConfig.load(from: configPath)
+                print("Loaded config from: \(configPathExpanded)")
+            } catch {
+                print("Warning: Failed to load config file: \(error.localizedDescription)")
+            }
+        } else if config != nil {
+            // User explicitly specified a config file that doesn't exist
+            print("Error: Config file not found: \(configPathExpanded)")
+            throw ExitCode.failure
+        }
+
+        // Merge: command line options override config file
+        let effectiveNetwork = network ?? fileConfig.network
+        let effectivePort = port ?? fileConfig.port
+        let effectiveNoProvider = noProvider || fileConfig.noProvider
+        let effectiveDryRun = dryRun || fileConfig.dryRun
+        let effectiveTimeout = timeout ?? fileConfig.timeout
+
         print("Starting Omerta Provider Daemon...")
-        if dryRun {
+        if effectiveDryRun {
             print("*** DRY RUN MODE - No actual VMs will be created ***")
         }
         print("")
 
         // Load network from store
-        guard let networkId = network else {
-            print("Error: --network <id> is required")
+        guard let networkId = effectiveNetwork else {
+            print("Error: Network ID is required")
+            print("")
+            print("Either specify --network <id> or set 'network' in config file:")
+            print("  \(DaemonConfig.defaultPath)")
             print("")
             print("To create a network:")
             print("  omerta network create --name \"My Network\" --endpoint \"<your-ip>:9999\"")
             print("")
             print("To list existing networks:")
             print("  omerta network list")
+            print("")
+            print("To generate a sample config file:")
+            print("  omertad config generate")
             throw ExitCode.failure
         }
 
@@ -134,10 +263,28 @@ struct Start: AsyncParsableCommand {
         print("")
 
         // Run the mesh daemon
-        try await runMeshDaemon(networkId: networkId, identity: identity, keyData: keyData, bootstrapPeers: bootstrapPeers)
+        try await runMeshDaemon(
+            networkId: networkId,
+            identity: identity,
+            keyData: keyData,
+            bootstrapPeers: bootstrapPeers,
+            port: effectivePort,
+            noProvider: effectiveNoProvider,
+            dryRun: effectiveDryRun,
+            timeout: effectiveTimeout
+        )
     }
 
-    private func runMeshDaemon(networkId: String, identity: OmertaMesh.IdentityKeypair, keyData: Data, bootstrapPeers: [String]) async throws {
+    private func runMeshDaemon(
+        networkId: String,
+        identity: OmertaMesh.IdentityKeypair,
+        keyData: Data,
+        bootstrapPeers: [String],
+        port: Int,
+        noProvider: Bool,
+        dryRun: Bool,
+        timeout: Int?
+    ) async throws {
         // Build mesh config with encryption key and bootstrap peers from network
         let meshConfig = MeshConfig(
             encryptionKey: keyData,
@@ -604,11 +751,62 @@ struct Config: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         abstract: "Manage provider daemon configuration",
         subcommands: [
+            ConfigGenerate.self,
             ConfigShow.self,
             ConfigTrust.self,
             ConfigBlock.self
-        ]
+        ],
+        defaultSubcommand: ConfigShow.self
     )
+}
+
+struct ConfigGenerate: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "generate",
+        abstract: "Generate a sample config file"
+    )
+
+    @Option(name: .long, help: "Output path (default: ~/.omerta/omertad.conf)")
+    var output: String?
+
+    @Option(name: .long, help: "Network ID to include in config")
+    var network: String?
+
+    @Flag(name: .long, help: "Overwrite existing config file")
+    var force: Bool = false
+
+    @Flag(name: .long, help: "Print to stdout instead of writing to file")
+    var stdout: Bool = false
+
+    mutating func run() async throws {
+        let content = DaemonConfig.sampleConfig(network: network)
+
+        if stdout {
+            print(content)
+            return
+        }
+
+        let outputPath = output ?? DaemonConfig.defaultPath
+        let expandedPath = (outputPath as NSString).expandingTildeInPath
+
+        // Check if file exists
+        if FileManager.default.fileExists(atPath: expandedPath) && !force {
+            print("Config file already exists: \(expandedPath)")
+            print("Use --force to overwrite")
+            throw ExitCode.failure
+        }
+
+        // Create directory if needed
+        let directory = (expandedPath as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+
+        // Write config
+        try content.write(toFile: expandedPath, atomically: true, encoding: .utf8)
+        print("Generated config file: \(expandedPath)")
+        print("")
+        print("Edit the file to set your network ID, then start the daemon with:")
+        print("  omertad start")
+    }
 }
 
 struct ConfigShow: AsyncParsableCommand {
@@ -617,25 +815,54 @@ struct ConfigShow: AsyncParsableCommand {
         abstract: "Show current configuration"
     )
 
+    @Option(name: .shortAndLong, help: "Path to config file")
+    var config: String?
+
     mutating func run() async throws {
+        let configPath = config ?? DaemonConfig.defaultPath
+        let expandedPath = (configPath as NSString).expandingTildeInPath
+
         print("Provider Daemon Configuration")
-        print("============================")
+        print("=============================")
         print("")
-        print("Control Port: 51820 (default)")
-        print("Activity logging: enabled")
+        print("Config file: \(expandedPath)")
         print("")
-        print("Trusted networks: (none configured)")
-        print("Blocked peers: (none)")
-        print("")
-        print("Filter rules:")
-        print("  - Resource Limits: enabled")
-        print("    Max CPU: 8 cores")
-        print("    Max Memory: 16384 MB")
-        print("    Max Storage: 100 GB")
-        print("  - Quiet Hours: enabled")
-        print("    Hours: 22:00 - 08:00 (require approval)")
-        print("")
-        print("Dynamic configuration management not yet implemented")
+
+        if FileManager.default.fileExists(atPath: expandedPath) {
+            do {
+                let loadedConfig = try DaemonConfig.load(from: configPath)
+                print("Settings:")
+                print("  network:     \(loadedConfig.network ?? "(not set)")")
+                print("  port:        \(loadedConfig.port)")
+                print("  no-provider: \(loadedConfig.noProvider)")
+                print("  dry-run:     \(loadedConfig.dryRun)")
+                if let timeout = loadedConfig.timeout {
+                    print("  timeout:     \(timeout)s")
+                } else {
+                    print("  timeout:     (none)")
+                }
+                print("")
+                print("Raw file contents:")
+                print("──────────────────────────────────────")
+                let contents = try String(contentsOfFile: expandedPath, encoding: .utf8)
+                print(contents)
+                print("──────────────────────────────────────")
+            } catch {
+                print("Error reading config: \(error.localizedDescription)")
+            }
+        } else {
+            print("(Config file not found)")
+            print("")
+            print("Default settings will be used:")
+            print("  network:     (must specify via --network)")
+            print("  port:        9999")
+            print("  no-provider: false")
+            print("  dry-run:     false")
+            print("  timeout:     (none)")
+            print("")
+            print("Generate a config file with:")
+            print("  omertad config generate")
+        }
     }
 }
 
