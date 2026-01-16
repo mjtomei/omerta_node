@@ -21,14 +21,19 @@ public actor MeshProviderDaemon {
         /// Dry run mode (don't actually create VMs)
         public let dryRun: Bool
 
+        /// Consumer-only mode (don't accept VM requests)
+        public let noProvider: Bool
+
         public init(
             identity: OmertaMesh.IdentityKeypair,
             meshConfig: MeshConfig,
-            dryRun: Bool = false
+            dryRun: Bool = false,
+            noProvider: Bool = false
         ) {
             self.identity = identity
             self.meshConfig = meshConfig
             self.dryRun = dryRun
+            self.noProvider = noProvider
         }
 
         /// Create configuration from OmertaConfig
@@ -407,6 +412,11 @@ public actor MeshProviderDaemon {
     /// Get connected relays
     public func connectedRelays() async -> [String] {
         await mesh.connectedRelays()
+    }
+
+    /// Ping a peer through the mesh network
+    public func ping(peerId: String, timeout: TimeInterval = 5) async -> MeshNode.PingResult? {
+        await mesh.ping(peerId, timeout: timeout)
     }
 }
 

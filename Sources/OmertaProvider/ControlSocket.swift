@@ -43,6 +43,15 @@ public enum ControlResponse: Codable {
         public let sentPeers: [String: String]
         public let receivedPeers: [String: String]
         public let newPeers: [String: String]
+
+        public init(peerId: String, endpoint: String, latencyMs: Int, sentPeers: [String: String], receivedPeers: [String: String], newPeers: [String: String]) {
+            self.peerId = peerId
+            self.endpoint = endpoint
+            self.latencyMs = latencyMs
+            self.sentPeers = sentPeers
+            self.receivedPeers = receivedPeers
+            self.newPeers = newPeers
+        }
     }
 
     public struct VMRequestResultData: Codable {
@@ -51,6 +60,14 @@ public enum ControlResponse: Codable {
         public let vmIP: String?
         public let sshCommand: String?
         public let error: String?
+
+        public init(success: Bool, vmId: UUID?, vmIP: String?, sshCommand: String?, error: String?) {
+            self.success = success
+            self.vmId = vmId
+            self.vmIP = vmIP
+            self.sshCommand = sshCommand
+            self.error = error
+        }
     }
 
     public struct VMInfoData: Codable {
@@ -58,6 +75,13 @@ public enum ControlResponse: Codable {
         public let providerPeerId: String
         public let vmIP: String
         public let createdAt: Date
+
+        public init(vmId: UUID, providerPeerId: String, vmIP: String, createdAt: Date) {
+            self.vmId = vmId
+            self.providerPeerId = providerPeerId
+            self.vmIP = vmIP
+            self.createdAt = createdAt
+        }
     }
 
     public struct StatusData: Codable {
@@ -68,12 +92,28 @@ public enum ControlResponse: Codable {
         public let peerCount: Int
         public let activeVMs: Int
         public let uptime: TimeInterval?
+
+        public init(isRunning: Bool, peerId: String, natType: String, publicEndpoint: String?, peerCount: Int, activeVMs: Int, uptime: TimeInterval?) {
+            self.isRunning = isRunning
+            self.peerId = peerId
+            self.natType = natType
+            self.publicEndpoint = publicEndpoint
+            self.peerCount = peerCount
+            self.activeVMs = activeVMs
+            self.uptime = uptime
+        }
     }
 
     public struct PeerData: Codable {
         public let peerId: String
         public let endpoint: String
         public let lastSeen: Date?
+
+        public init(peerId: String, endpoint: String, lastSeen: Date?) {
+            self.peerId = peerId
+            self.endpoint = endpoint
+            self.lastSeen = lastSeen
+        }
     }
 }
 
@@ -86,12 +126,17 @@ public actor ControlSocketServer {
     private var eventLoopGroup: EventLoopGroup?
 
     /// Handler for incoming commands - set by the daemon
-    public var commandHandler: ((ControlCommand) async -> ControlResponse)?
+    private var commandHandler: ((ControlCommand) async -> ControlResponse)?
 
     public init(networkId: String) {
         self.networkId = networkId
         self.socketPath = Self.socketPath(forNetwork: networkId)
         self.logger = Logger(label: "io.omerta.control.server")
+    }
+
+    /// Set the command handler
+    public func setCommandHandler(_ handler: @escaping (ControlCommand) async -> ControlResponse) {
+        self.commandHandler = handler
     }
 
     /// Check if another daemon is already running for this network

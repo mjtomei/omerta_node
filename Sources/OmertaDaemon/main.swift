@@ -149,24 +149,39 @@ struct Start: AsyncParsableCommand {
         let daemonConfig = MeshProviderDaemon.Configuration(
             identity: identity,
             meshConfig: meshConfig,
-            dryRun: dryRun
+            dryRun: dryRun,
+            noProvider: noProvider
         )
 
         // Create and start mesh daemon
         let daemon = MeshProviderDaemon(config: daemonConfig)
 
+        // Create control socket for CLI communication
+        let controlSocket = ControlSocketServer(networkId: networkId)
+
         do {
             try await daemon.start()
+
+            // Start control socket and wire up command handler
+            await controlSocket.setCommandHandler { [daemon] command in
+                await self.handleControlCommand(command, daemon: daemon, networkId: networkId)
+            }
+            try await controlSocket.start()
 
             let status = await daemon.getStatus()
 
             print("")
             print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            print("  Omerta Provider Daemon Running")
+            if noProvider {
+                print("  Omerta Mesh Daemon Running (Consumer Only)")
+            } else {
+                print("  Omerta Provider Daemon Running")
+            }
             print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             print("")
             print("Peer ID: \(identity.peerId)")
             print("Mesh Port: \(port)")
+            print("Control Socket: \(ControlSocketServer.socketPath(forNetwork: networkId))")
             print("NAT Type: \(status.natType.rawValue)")
             if let publicEndpoint = status.publicEndpoint {
                 print("Public Endpoint: \(publicEndpoint)")
@@ -175,9 +190,14 @@ struct Start: AsyncParsableCommand {
                 print("Bootstrap Peers: \(bootstrapPeers.joined(separator: ", "))")
             }
             print("")
-            print("Ready to accept VM requests via mesh network.")
-            print("Consumers can request VMs using:")
-            print("  omerta vm request --network \(networkId) --peer \(identity.peerId)")
+            if noProvider {
+                print("Running in consumer-only mode (not accepting VM requests).")
+                print("Use 'omerta vm request' to request VMs from other providers.")
+            } else {
+                print("Ready to accept VM requests via mesh network.")
+                print("Consumers can request VMs using:")
+                print("  omerta vm request --network \(networkId) --peer \(identity.peerId)")
+            }
             print("")
             if let timeout = timeout {
                 print("Auto-shutdown in \(timeout) seconds")
@@ -192,12 +212,58 @@ struct Start: AsyncParsableCommand {
 
             if timeout != nil {
                 print("Timeout reached, shutting down...")
+                await controlSocket.stop()
                 await daemon.stop()
             }
 
+        } catch let error as ControlSocketError {
+            print("Error: \(error.description)")
+            throw ExitCode.failure
         } catch {
             print("Failed to start daemon: \(error)")
             throw ExitCode.failure
+        }
+    }
+
+    private func handleControlCommand(_ command: ControlCommand, daemon: MeshProviderDaemon, networkId: String) async -> ControlResponse {
+        switch command {
+        case .ping(let peerId, let timeout):
+            // Ping through the daemon's mesh network
+            if let result = await daemon.ping(peerId: peerId, timeout: TimeInterval(timeout)) {
+                return .pingResult(ControlResponse.PingResultData(
+                    peerId: result.peerId,
+                    endpoint: result.endpoint,
+                    latencyMs: result.latencyMs,
+                    sentPeers: result.sentPeers,
+                    receivedPeers: result.receivedPeers,
+                    newPeers: result.newPeers
+                ))
+            } else {
+                return .pingResult(nil)
+            }
+
+        case .status:
+            let status = await daemon.getStatus()
+            return .status(ControlResponse.StatusData(
+                isRunning: true,
+                peerId: status.peerId,
+                natType: status.natType.rawValue,
+                publicEndpoint: status.publicEndpoint,
+                peerCount: status.peerCount,
+                activeVMs: status.activeVMs,
+                uptime: nil
+            ))
+
+        case .peers:
+            let peerIds = await daemon.knownPeers()
+            let peers = peerIds.map { peerId in
+                ControlResponse.PeerData(peerId: peerId, endpoint: "", lastSeen: nil)
+            }
+            return .peers(peers)
+
+        case .vmRequest, .vmRelease, .vmList:
+            // TODO: Implement VM operations through control socket
+            return .error("VM operations via control socket not yet implemented")
         }
     }
 }
