@@ -345,6 +345,127 @@ performance-tests:
 | CPU at max throughput | <80% | <50% |
 | Packet loss under load | <0.1% | 0% |
 
+## Cross-Machine E2E Test (Mesh VM Provisioning)
+
+This test verifies the full VM provisioning flow over the mesh network between two machines.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           Linux (Consumer)                               │
+│                                                                          │
+│  ┌─────────────┐     IPC (Unix Socket)     ┌─────────────────────────┐  │
+│  │ omerta CLI  │◄─────────────────────────►│ omertad                 │  │
+│  │             │   ping → endpoint          │ (MeshNetwork running)   │  │
+│  └──────┬──────┘                           └───────────┬─────────────┘  │
+│         │                                              │                 │
+│         │  Direct encrypted UDP                        │ Mesh protocol   │
+│         │  (VM request)                                │ (keepalives,    │
+│         │                                              │  discovery)     │
+└─────────┼──────────────────────────────────────────────┼─────────────────┘
+          │                                              │
+          │         ════════════════════════════         │
+          │                  Network                     │
+          │         ════════════════════════════         │
+          │                                              │
+┌─────────┼──────────────────────────────────────────────┼─────────────────┐
+│         │                                              │                 │
+│         │                                              │                 │
+│         ▼                                              ▼                 │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │                     omertad (MeshProviderDaemon)                 │    │
+│  │                                                                  │    │
+│  │  - Receives VM request via MeshNetwork                          │    │
+│  │  - Creates VM with WireGuard                                    │    │
+│  │  - Returns VM info + provider WireGuard public key              │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│                           macOS (Provider)                               │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### Test Setup
+
+**Prerequisites:**
+- Both machines on the same network (or with port forwarding)
+- Same Omerta network created and joined on both machines
+- Swift toolchain installed on both
+
+**Create shared network (one-time setup):**
+```bash
+# On provider (macOS)
+cd /Users/matt/omerta
+.build/debug/omerta network create --name "test" --endpoint "<provider-ip>:9999"
+# Note the network ID and invite link
+
+# On consumer (Linux)
+cd ${OMERTA_DIR}
+.build/debug/omerta network join "<invite-link>"
+```
+
+### Running the Test
+
+**Step 1: Start provider daemon (macOS)**
+```bash
+cd /Users/matt/omerta
+.build/debug/omertad start --network <network-id>
+# Note the Peer ID printed (e.g., 75af67f14ec0f9ba)
+```
+
+**Step 2: Start consumer daemon (Linux)**
+```bash
+cd ${OMERTA_DIR}
+.build/debug/omertad start --network <network-id>
+```
+
+**Step 3: Request VM (Linux, separate terminal)**
+```bash
+.build/debug/omerta vm request --network <network-id> --peer <provider-peer-id>
+```
+
+**Step 4: Verify SSH access**
+```bash
+# Use the SSH command printed by vm request
+ssh -i ~/.omerta/ssh/id_ed25519 omerta@<vm-wireguard-ip>
+```
+
+### Dry Run Mode
+
+To test the mesh communication without creating actual VMs (no root required):
+
+```bash
+# Provider (macOS)
+.build/debug/omertad start --network <network-id> --dry-run
+
+# Consumer (Linux)
+.build/debug/omertad start --network <network-id> --dry-run
+
+# Request (Linux)
+.build/debug/omerta vm request --network <network-id> --peer <provider-peer-id> --dry-run
+```
+
+This tests the full mesh communication flow without VM/VPN creation.
+
+### Success Criteria
+
+| Step | Verification |
+|------|--------------|
+| Daemon startup | "Mesh provider daemon started" logged |
+| IPC ping | "Provider reachable: Xms latency" printed |
+| VM request | "VM Created Successfully!" printed |
+| WireGuard tunnel | `sudo wg show` shows peer with recent handshake |
+| SSH access | SSH command connects to VM |
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| "Provider endpoint not available" | omertad not running or can't reach provider | Start omertad, check network connectivity |
+| "No response from provider" | Provider daemon not running or wrong network | Verify both use same network ID |
+| "Failed to decrypt message" | Different network keys | Re-join network on consumer |
+| SSH timeout | VM still booting | Wait 30-60 seconds after VM creation |
+
 ## References
 
 - [VZFileHandleNetworkDeviceAttachment](https://developer.apple.com/documentation/virtualization/vzfilehandlenetworkdeviceattachment)

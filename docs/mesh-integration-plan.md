@@ -47,23 +47,34 @@ The `OmertaMesh` module implements a complete decentralized P2P overlay network 
 ### New Architecture (OmertaMesh)
 
 ```
-┌─────────────┐                                 ┌─────────────┐
-│  Consumer   │         Mesh Network            │  Provider   │
-│ (omerta)    │◄═══════════════════════════════►│ (omertad)   │
-└──────┬──────┘    (relay, hole punch, or       └──────┬──────┘
-       │            direct based on NAT)               │
-       ▼                                               ▼
-┌─────────────┐                                 ┌─────────────┐
-│ MeshNetwork │◄────────────────────────────────│ MeshNetwork │
-│   Actor     │   discover, connect, send       │   Actor     │
-└──────┬──────┘                                 └──────┬──────┘
-       │                                               │
-       │  DirectConnection.endpoint                    │
-       ▼                                               ▼
-┌─────────────┐         WireGuard Tunnel        ┌─────────────┐
-│ EphemeralVPN│◄───────────────────────────────►│ Provider VM │
-└─────────────┘                                 └─────────────┘
+┌─────────────┐     IPC (Unix Socket)     ┌─────────────┐
+│  Consumer   │◄─────────────────────────►│  omertad    │
+│ (omerta)    │   ping → endpoint         │ (daemon)    │
+└──────┬──────┘                           └──────┬──────┘
+       │                                         │
+       │  Direct encrypted UDP                   │ Full MeshNetwork
+       │  (ChaCha20-Poly1305)                    │ (keepalives, discovery,
+       │                                         │  relay, hole punch)
+       ▼                                         ▼
+┌─────────────┐                           ┌─────────────┐
+│ Mesh        │    VM Request/Response    │ Mesh        │
+│ Consumer    │◄─────────────────────────►│ Provider    │
+│ Client      │   (signed envelopes)      │ Daemon      │
+└──────┬──────┘                           └──────┬──────┘
+       │                                         │
+       │  WireGuard Tunnel                       │
+       ▼                                         ▼
+┌─────────────┐                           ┌─────────────┐
+│ EphemeralVPN│◄─────────────────────────►│ Provider VM │
+└─────────────┘                           └─────────────┘
 ```
+
+**Key Design Decision:** The CLI (`omerta`) does NOT run its own MeshNetwork.
+Instead, it queries the running daemon (`omertad`) via IPC to get the provider's
+endpoint, then sends VM requests directly using lightweight encrypted UDP.
+
+This avoids starting a full mesh protocol stack (keepalives, peer discovery,
+hole punching) for simple request/response operations.
 
 ---
 
@@ -104,76 +115,83 @@ The `OmertaMesh` module implements a complete decentralized P2P overlay network 
 
 ---
 
-### Phase M2: MeshNetwork Integration in OmertaConsumer
+### Phase M2: Lightweight MeshConsumerClient
 
-**Goal:** ConsumerClient can discover and connect to providers via mesh.
+**Status: ✅ COMPLETED**
 
-**Files to Create/Modify:**
+**Goal:** Lightweight consumer client for VM requests using direct encrypted UDP.
+
+**Design Decision:** The consumer client does NOT start its own MeshNetwork. Instead:
+1. CLI queries omertad via IPC to get provider endpoint
+2. CLI sends encrypted VM request directly to provider
+3. No mesh protocol stack overhead for simple request/response
+
+**Files Created/Modified:**
 
 | File | Changes |
 |------|---------|
-| `Sources/OmertaConsumer/MeshConsumerClient.swift` | New: Mesh-aware consumer client |
-| `Sources/OmertaConsumer/ConsumerClient.swift` | Add mesh transport option |
-| `Sources/OmertaCore/Config/OmertaConfig.swift` | Add mesh config (bootstrap peers, etc.) |
+| `Sources/OmertaConsumer/MeshConsumerClient.swift` | Lightweight direct UDP client |
+| `Sources/OmertaCore/Config/OmertaConfig.swift` | Added mesh config options |
 
-**New MeshConsumerClient API:**
+**MeshConsumerClient API (Current Implementation):**
 
 ```swift
 public actor MeshConsumerClient {
-    private let mesh: MeshNetwork
-    private let controlClient: UDPControlClient
+    // No MeshNetwork - uses direct UDP sockets
 
-    public init(config: OmertaConfig) async throws {
-        // Create mesh network with config
-        var meshConfig = MeshConfig.default
-        meshConfig.bootstrapPeers = config.mesh?.bootstrapPeers ?? []
-
-        let peerId = config.localPeerId ?? UUID().uuidString
-        self.mesh = MeshNetwork(peerId: peerId, config: meshConfig)
-        self.controlClient = UDPControlClient(encryptionKey: config.localKeyData()!)
-    }
-
-    /// Start the mesh network
-    public func start() async throws {
-        try await mesh.start()
-    }
-
-    /// Request VM from a provider by peer ID (mesh handles NAT traversal)
-    public func requestVM(
+    public init(
+        identity: OmertaMesh.IdentityKeypair,
+        networkKey: Data,
         providerPeerId: String,
-        resources: ResourceRequest
-    ) async throws -> VMSession {
-        // 1. Connect to provider via mesh (handles NAT)
-        let connection = try await mesh.connect(to: providerPeerId)
+        providerEndpoint: String,  // Obtained from omertad via IPC
+        dryRun: Bool = false
+    )
 
-        // 2. Send control message over mesh
-        let request = VMRequest(resources: resources, ...)
-        let requestData = try JSONEncoder().encode(request)
-        let responseData = try await mesh.sendAndReceive(
-            data: requestData,
-            to: providerPeerId,
-            timeout: 30
-        )
-        let response = try JSONDecoder().decode(VMResponse.self, from: responseData)
+    /// Request VM using direct encrypted UDP
+    public func requestVM(
+        requirements: ResourceRequirements,
+        sshPublicKey: String,
+        sshKeyPath: String,
+        sshUser: String
+    ) async throws -> VMConnection
 
-        // 3. Use DirectConnection.endpoint for WireGuard peer config
-        return VMSession(
-            vmId: response.vmId,
-            wireGuardEndpoint: connection.endpoint,
-            wireGuardPeerPublicKey: response.wireGuardPublicKey,
-            sshAddress: response.sshAddress
-        )
-    }
+    /// Release VM
+    public func releaseVM(_ vmConnection: VMConnection) async throws
 
-    /// Request VM from a provider by direct IP (legacy mode)
-    public func requestVMDirect(
-        providerAddress: String,
-        resources: ResourceRequest
-    ) async throws -> VMSession {
-        // Existing UDPControlClient flow
-        return try await controlClient.requestVM(...)
-    }
+    /// List active VMs
+    public func listActiveVMs() async -> [VMConnection]
 }
+```
+
+**VM Request Flow:**
+
+```
+1. CLI → omertad (IPC):  ping provider → get endpoint
+2. CLI creates MeshConsumerClient with provider endpoint
+3. CLI → provider (direct UDP):
+   - Create UDP socket on random port
+   - Create signed MeshEnvelope with VM request
+   - Encrypt with network key (ChaCha20-Poly1305)
+   - Send to provider endpoint
+   - Receive encrypted response
+   - Decrypt and verify signature
+   - Close socket
+4. CLI sets up WireGuard tunnel to VM
+```
+
+**Why Not Full MeshNetwork?**
+
+Starting a full MeshNetwork involves:
+- NAT detection via STUN
+- Keepalive timers
+- Peer discovery via gossip
+- Freshness queries
+- Hole punch coordination
+
+This is unnecessary for a simple VM request when:
+- omertad already has the provider's endpoint
+- We just need one encrypted request/response
+- The provider's mesh handles all the complexity
 ```
 
 **OmertaConfig Additions:**
@@ -884,38 +902,32 @@ grep -r "import OmertaNetwork" Sources/  # Should find nothing
 
 final class MeshConsumerClientTests: XCTestCase {
 
-    func testMeshClientStartsAndDetectsNAT() async throws {
-        var config = OmertaConfig.default
-        config.mesh = MeshConfigOptions(enabled: true)
+    func testMeshConsumerClientInitialization() async {
+        let identity = OmertaMesh.IdentityKeypair()
+        let networkKey = Data(repeating: 0x42, count: 32)
 
-        let client = try await MeshConsumerClient(config: config)
-        try await client.start()
-
-        let stats = await client.mesh.statistics()
-        XCTAssertNotEqual(stats.natType, .unknown)
-    }
-
-    func testMeshClientDiscoversBootstrapPeers() async throws {
-        // Start a test relay node
-        let relay = MeshNetwork.createRelay(peerId: "test-relay", port: 9000)
-        try await relay.start()
-        defer { Task { await relay.stop() } }
-
-        // Configure client with bootstrap
-        var config = OmertaConfig.default
-        config.mesh = MeshConfigOptions(
-            enabled: true,
-            bootstrapPeers: ["test-relay@localhost:9000"]
+        let client = MeshConsumerClient(
+            identity: identity,
+            networkKey: networkKey,
+            providerPeerId: "testprovider1234",
+            providerEndpoint: "192.168.1.100:9999",
+            dryRun: true
         )
 
-        let client = try await MeshConsumerClient(config: config)
-        try await client.start()
+        // Client should be initialized without starting a mesh
+        let vms = await client.listActiveVMs()
+        XCTAssertTrue(vms.isEmpty)
+    }
 
-        // Wait for discovery
-        try await Task.sleep(for: .seconds(2))
-
-        let peers = await client.mesh.knownPeers()
-        XCTAssertTrue(peers.contains("test-relay"))
+    func testMeshConsumerErrorDescriptions() {
+        XCTAssertEqual(
+            MeshConsumerError.noResponse.description,
+            "No response from provider (timeout)"
+        )
+        XCTAssertEqual(
+            MeshConsumerError.connectionFailed(reason: "timeout").description,
+            "Failed to connect to provider: timeout"
+        )
     }
 }
 ```
@@ -1319,26 +1331,25 @@ swift build
 
 ### Phase M2: MeshConsumerClient
 
+**Status: ✅ COMPLETED**
+
 **Success Criteria:**
-- [ ] MeshConsumerClient can initialize with config
-- [ ] MeshConsumerClient can start and detect NAT type
-- [ ] MeshConsumerClient can discover bootstrap peers
-- [ ] MeshConsumerClient can send/receive messages via mesh
+- [x] MeshConsumerClient can initialize with identity, network key, and provider endpoint
+- [x] MeshConsumerClient sends encrypted VM requests via direct UDP
+- [x] MeshConsumerClient receives and decrypts signed responses
+- [x] No full MeshNetwork started (lightweight design)
 
 **Unit Tests:**
 
 | Test | File | Description |
 |------|------|-------------|
-| `testMeshConsumerClientInit` | `MeshConsumerClientTests.swift` | Client initializes with valid config |
-| `testMeshConsumerClientStartDetectsNAT` | `MeshConsumerClientTests.swift` | Client starts and NAT type is not `.unknown` |
-| `testMeshConsumerClientDiscoversPeers` | `MeshConsumerClientTests.swift` | Client discovers bootstrap peer within 5s |
-| `testMeshConsumerClientSendReceive` | `MeshConsumerClientTests.swift` | Client sends message, receives response |
-| `testMeshConfigSerialization` | `ConfigTests.swift` | MeshConfigOptions encodes/decodes correctly |
+| `testMeshConsumerClientInitialization` | `MeshConsumerClientTests.swift` | Client initializes with identity and endpoint |
+| `testMeshConsumerErrorDescriptions` | `MeshConsumerClientTests.swift` | Error messages are correct |
+| `testMeshConfigSerialization` | `MeshConsumerClientTests.swift` | MeshConfigOptions encodes/decodes correctly |
 
 **Verification:**
 ```bash
 swift test --filter MeshConsumerClient
-swift test --filter ConfigTests
 ```
 
 ---

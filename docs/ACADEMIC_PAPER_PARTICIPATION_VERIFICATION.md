@@ -22,7 +22,7 @@ Decentralized compute sharing faces a fundamental challenge: how can strangers c
 
 The key insight underlying Omerta is that compute markets do not require global agreement—a consumer only needs to know whether a specific provider will deliver to *them*. By computing trust relative to the observer's position in the transaction graph, Omerta limits the impact of reputation attacks and enables natural scaling without the coordination overhead of global consensus.
 
-This paper presents the complete Omerta system design, including: (1) a trust accumulation model based on verified transactions rather than subjective ratings; (2) local trust computation that prevents cross-community trust arbitrage; (3) an on-chain order book for price discovery; (4) identity-bound VM access that makes credential theft useless; (5) detection mechanisms for Sybil clusters, collusion rings, and trust manipulation; and (6) automated monetary policy that adjusts economic parameters in response to detected threats.
+This paper presents the complete Omerta system design, including: (1) a trust accumulation model based on verified transactions rather than subjective ratings; (2) local trust computation that prevents cross-community trust arbitrage; (3) an on-chain order book for price discovery; (4) identity-bound VM access that makes credential theft useless; (5) detection mechanisms for Sybil clusters, collusion rings, and trust manipulation; (6) automated monetary policy that adjusts economic parameters in response to detected threats; and (7) economic analysis demonstrating that unreliable home compute creates genuine value when demand exceeds datacenter capacity.
 
 We argue that the claimed "trustlessness" of blockchain systems is largely illusory—social consensus underlies all distributed systems and emerges when sufficient value is at stake. Omerta makes this social layer explicit, providing transparent mechanisms to track and verify trust relationships. The result is a system that mirrors how human trust networks actually function: imperfect rules made workable through aligned incentives and gradual reputation building.
 
@@ -72,7 +72,7 @@ This paper makes the following contributions:
 
 6. **Explicit security analysis** distinguishing protections that must be absolute (UBI distribution, trust from activity) from those where some adversarial advantage may be tolerated (risk diversification, community separation).
 
-The remainder of this paper is organized as follows. Section 2 reviews related work on reputation systems, Sybil resistance, and blockchain consensus. Section 3 presents the system architecture. Section 4 details the trust model. Section 5 describes the economic mechanisms. Section 6 analyzes attack vectors and defenses. Section 7 presents simulation results. Section 8 discusses limitations and future work. Section 9 concludes.
+The remainder of this paper is organized as follows. Section 2 reviews related work on reputation systems, Sybil resistance, and blockchain consensus. Section 3 presents the system architecture. Section 4 details the trust model. Section 5 describes the economic mechanisms. Section 6 analyzes attack vectors and defenses. Section 7 presents simulation results, including reliability market economics and the machine intelligence demand thesis. Section 8 discusses limitations, interoperability, and future work. Section 9 concludes.
 
 \newpage
 
@@ -348,6 +348,86 @@ The simulations revealed a striking pattern: automated policy adjustments trigge
 
 Five-year simulations showed stable trust accumulation under honest conditions and recovery between attack waves under adversarial conditions. The core trust mechanisms prove robust to extended adversarial pressure.
 
+## 7.4 Reliability Market Economics
+
+A critical question for any decentralized compute network: can unreliable home providers coexist with reliable datacenters, or will one displace the other? We simulated provider competition under varying market conditions.
+
+**Provider Cost Structures:**
+
+| Provider Type | Cost/hr | Reliability | Cancellation |
+|--------------|---------|-------------|--------------|
+| Datacenter | $0.50 | 99.8% | Never (SLA) |
+| Home Provider | $0.08 | 92% | For profit (1.5× threshold) |
+
+Home providers have 6× lower costs because they already own hardware (no capex amortization), pay only marginal electricity, and have no facility overhead.
+
+**Market Outcomes by Supply/Demand:**
+
+| Market Condition | Consumer Cost Δ | DC Profit Δ | Compute Δ |
+|-----------------|-----------------|-------------|-----------|
+| Undersupplied (uniform values) | -10% | **-3%** | **+200%** |
+| Undersupplied (mixed values) | -52% | -66% | +200% |
+| Balanced | -91% | -100% | +70% |
+| Oversupplied | -84% | -100% | -8% |
+
+**Key Findings:**
+
+1. **Undersupplied markets show value creation**: When demand exceeds datacenter capacity, home providers serve unmet demand. Total compute delivered increases 200% while datacenter profits remain largely intact (only -3% with uniform consumer values).
+
+2. **Balanced/oversupplied markets show displacement**: When total capacity meets or exceeds demand, home providers' 6× cost advantage allows them to undercut datacenters completely.
+
+3. **Consumer heterogeneity matters**: When consumers have widely varying values per compute hour, middle-market competition intensifies. Datacenters retain only the premium segment.
+
+4. **Reliability tradeoff is real**: In oversupplied markets, total useful compute can decrease (-8%) because home provider unreliability causes more restarts despite lower prices.
+
+**Implication for Omerta:** The system creates genuine economic value only when **demand exceeds datacenter capacity**. This raises the question: will demand ever sustainably exceed supply?
+
+## 7.5 The Machine Intelligence Demand Thesis
+
+We argue that machine intelligence fundamentally transforms compute markets into **perpetually undersupplied markets**, making unreliable compute economically valuable for the foreseeable future.
+
+**The Traditional View:**
+
+Human-driven compute demand is bounded. Businesses have finite workloads, consumers have finite entertainment needs. Markets tend toward equilibrium where supply meets demand. In equilibrium, price competition drives out high-cost providers.
+
+Under this view, home providers would be viable only during transient demand spikes.
+
+**The New Reality:**
+
+Machine intelligence creates unbounded demand because **machines can always find productive uses for additional compute**. Unlike humans, who run out of tasks to do, AI systems have continuous demand curves:
+
+| Task Priority | Human Value | Machine Value | Notes |
+|--------------|-------------|---------------|-------|
+| Frontier research | $100/hr | $0/hr | Requires human insight (for now) |
+| Active inference | $50/hr | $40/hr | Real-time decision making |
+| Background reasoning | $20/hr | $15/hr | Exploring solution spaces |
+| Speculative search | $5/hr | $3/hr | Low-priority but positive value |
+| Precomputation | $1/hr | $0.50/hr | Preparing for future queries |
+
+The key insight: **there is always a next-best task**. A machine that cannot profitably do a $50/hr task can still generate value doing a $5/hr task. This creates a demand curve extending to arbitrarily low prices.
+
+**Implications:**
+
+1. **No "oversupplied" market exists**: Machine demand expands to absorb any available compute
+2. **All providers can coexist**: Datacenters serve high-priority tasks, home providers serve the elastic tail
+3. **Price floors are set by marginal value, not marginal cost**: Machines bid what tasks are worth
+
+**Future Projection:**
+
+As machine intelligence improves, the value per compute hour increases at all quality levels:
+
+| Era | Demand Characteristic | Market Structure |
+|-----|----------------------|------------------|
+| Human-only | Bounded, tends to equilibrium | Oversupply risk |
+| Human + subhuman AI (today) | Large, finite | Undersupplied |
+| Human + superhuman AI (future) | **Unbounded** | Permanently undersupplied |
+
+At the limit, superintelligent systems have unlimited demand for compute of any quality. Any machine cycle has positive value because it can be applied to self-improvement, exploration, or capability expansion.
+
+**Conclusion:**
+
+The economic viability of Omerta depends on perpetual undersupply. Human demand alone cannot guarantee this. But machine intelligence—which can always find productive uses for marginal compute—transforms the market structure fundamentally. In a world of AI agents, the question is not whether unreliable compute will displace datacenters, but whether we can deploy enough compute of any quality to satisfy exponentially growing machine demand.
+
 \newpage
 
 # 8. Discussion
@@ -473,9 +553,13 @@ This parallels the choice between fully homomorphic encryption and ephemeral com
 
 Our simulation studies validate that automated policy mechanisms respond appropriately to detected threats, while revealing that parameter adjustment alone cannot counter structural attacks. This suggests that effective systems need architectural defenses that make attacks infeasible by design, complemented by policy mechanisms for fine-tuning.
 
-The goal is not to replace blockchain systems—they serve real purposes and represent genuine advances. The goal is to expand the design space, recognizing that different applications may have different optimal points on the trust-cost spectrum. For compute markets specifically, we believe there is an underexplored region that could make trustworthy compute sharing accessible to more people at practical cost.
+Critically, our economic simulations demonstrate that unreliable home compute creates genuine value—not merely redistributes it—when demand exceeds datacenter capacity. In undersupplied markets, home providers serve consumers that datacenters cannot reach, increasing total compute delivered by 200% while datacenter profits remain largely intact. The viability of this model depends on perpetual undersupply.
 
-Omerta is an experiment in finding that region.
+We argue that machine intelligence guarantees this undersupply. Unlike human demand, which is bounded and tends toward equilibrium, machine intelligence creates unbounded demand for compute at any quality level. There is always a next-best task—a machine that cannot profitably do a $50/hr task can still generate value doing a $5/hr task. As AI systems improve, this demand curve extends to arbitrarily low prices, ensuring that any compute capacity finds productive use.
+
+The goal is not to replace blockchain systems—they serve real purposes and represent genuine advances. The goal is to expand the design space, recognizing that different applications may have different optimal points on the trust-cost spectrum. For compute markets specifically—especially those serving machine intelligence workloads—we believe there is an underexplored region that could make trustworthy compute sharing accessible to more people at practical cost.
+
+Omerta is an experiment in finding that region. The question is not whether unreliable compute will displace datacenters, but whether we can deploy enough compute of any quality to satisfy the exponentially growing demand of machine intelligence.
 
 \newpage
 

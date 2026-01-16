@@ -11,21 +11,27 @@ While there are still legitimate security concerns like VM escapes and malicious
 - support for checkpoint and restart of VMs
 
 TODOs
-- automatically cleanup during startup, change name of cleanup command
+- set up public bootstrap and stun servers
+- get usermode consumer working on linux and mac
+- separate out OmertaMesh into its own repo
+- test relay mode for control and data planes in OmertaMesh, implement multicast
+- implement and test wireguard connection migration
+- review omc PDFs
+- implement compute capability and utilization monitoring
+- implement mac gui
+- review code
+
+
+- add user warnings about threat model to onboarding with links to more detailed documentation
+- add statistics tracking and querying support to mesh nodes, provide link to explain what is done with data and corresponding dashboards, attack and mitigation demos
+- add paranoid mode to OmertaMesh that requires all traffic go through wireguard to a home server as the exit point
+- add multi-radio support and connection prioritization
 - quality of life improvements
   - measure and limit VM energy consumption, use lower power CPU states where useful
   - automatically disable sleep while plugged in
   - automate killing or migration of VMs when user is at keyboard
-- replace CLI tools (wg-quick, ip, iptables) with native APIs for production:
-  - Linux: use netlink API for interfaces/routing, WireGuard netlink for VPN config, nftables for NAT
-  - macOS: use NetworkExtension framework for VPN, pf for NAT
-  - eliminates sudo requirements, more robust than shelling out
-  - all implementations still use WireGuard protocol, full cross-platform interoperability
-- set up provisioning provile for the network extension entitlement, get primary network extension approval flow working
-- plan requirements for minimal initial release with support for auto-updates
 - add support for prioritizing different networks
 - add support for explicitly exposing access to guest from host so isolation can't be assumed
-- look into mechanisms for protected VMs
 - add a feature or separate tool for LLM assisted spot checking of shared compute and credit assignment
   - possibly use a blockchain for maintaining history as well as assigning coins based on contributions
 - have option for more detailed machine intelligence assisted observation of VM by host provider

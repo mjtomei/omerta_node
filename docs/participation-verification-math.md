@@ -2145,6 +2145,8 @@ All parameters are configurable at network genesis and modifiable through govern
 
 ## 15. Simulation Scenarios
 
+### 15.1 Trust System Scenarios
+
 1. **Normal operation**: Honest providers accumulating trust over months
 2. **Sybil cluster**: 10 fake identities transacting with each other
 3. **Collusion ring**: 5 providers making false accusations against competitor
@@ -2153,6 +2155,31 @@ All parameters are configurable at network genesis and modifiable through govern
 6. **New entrant**: Breaking into established network
 7. **Recovery**: Provider recovering from legitimate violation
 8. **Donation bootstrapping**: New provider using negative bids to accelerate
+
+### 15.2 Identity Rotation Scenarios
+
+9. **Wealthy sock puppet attack**: W creates puppet P, matures with minimal investment, transfers large sum to escape scrutiny (Section 19.1)
+10. **Trust inheritance validation**: Verify that large transfers cause recipient's trust to blend toward sender's trust
+11. **Circular flow detection**: W → P₁ → P₂ → W wealth cycling patterns
+
+### 15.3 Reliability Market Scenarios
+
+12. **Provider threshold convergence**: Do providers converge to single optimal cancellation threshold? (Section 19.2)
+13. **Consumer value differentiation**: How do high-value vs low-value consumers interact? (Section 19.3)
+14. **Scarcity effects**: Under resource scarcity, are low-value users priced out? (Section 19.4)
+15. **Restart cost model**: Validate that restart cost = wasted compute time, not dollar penalty
+16. **Consumer distribution effects**: Does consumer mix affect provider equilibrium? (Section 19.6)
+17. **Economic value of unreliable compute**: Does introducing home providers reduce $/useful_hr? (Section 19.7)
+
+### 15.4 Simulation Code
+
+| Scenario | Code Location |
+|----------|--------------|
+| Identity rotation attack | `/simulations/identity_rotation_attack.py` |
+| Reliability market equilibrium | `/simulations/reliability_market_v2.py` |
+| Provider convergence | `/simulations/reliability_market_equilibrium.py` |
+| Basic reliability test | `/simulations/reliability_market_simulation.py` |
+| Economic value (DC vs Home) | `/simulations/economic_value_simulation.py` |
 
 ---
 
@@ -2945,7 +2972,226 @@ If real-world usage patterns diverge significantly from targets, parameters may 
 
 ---
 
-## 19. Open Questions
+## 19. Simulation Results: Reliability Markets
+
+Simulations were conducted to validate the reliability score model (Section 5.12) and understand market dynamics. Code is in `/simulations/reliability_market_v2.py`.
+
+### 19.1 Identity Rotation Attack
+
+**Attack scenario (Attack Class 6):**
+```
+Wealthy user W wants to escape scrutiny:
+  1. W creates sock puppet P
+  2. P matures with minimal activity (trivial cost relative to W's wealth)
+  3. W transfers large amount to P
+  4. P becomes W's new "clean" identity
+```
+
+**Without defenses:**
+```
+W has 100,000 OMC, T(W) = 500 (high trust but under scrutiny)
+P has 50 OMC after minimal activity, T(P) = 100
+
+W transfers 50,000 OMC to P
+Result: P has 50,050 OMC with trust = 100 (escapes scrutiny)
+```
+
+**With trust inheritance (Section 12.8):**
+```
+Same scenario, but trust inheritance applies:
+
+transfer_ratio = 50000 / 50050 = 0.999
+blended_trust = 0.999 × T(W)_effective + 0.001 × T(P)
+
+If W is under scrutiny penalty:
+  T(W)_effective = 500 × (1 - scrutiny_penalty) = 100
+  blended_trust = 0.999 × 100 + 0.001 × 100 = 100
+  T(P)_new = min(100, 100) = 100
+
+Result: P inherits W's scrutinized trust level
+Spotlight follows the money
+```
+
+**Simulation confirms:** Trust inheritance successfully prevents identity rotation from escaping scrutiny. The recipient's trust drops to match the sender's effective trust level when the transfer dominates their balance.
+
+### 19.2 Provider Threshold Convergence
+
+**Question:** Do providers converge to a single optimal cancellation threshold, or do different reliability levels coexist?
+
+**Setup:**
+- 20 providers with initial thresholds uniformly distributed in [1.1, 4.0]
+- Threshold = cancel if `competing_bid >= current_rate × threshold`
+- Providers adapt toward strategies of better-performing providers
+
+**Result: Full convergence**
+```
+Initial threshold std: 0.844
+Final threshold std:   0.016 (98% reduction)
+Equilibrium threshold: ~2.2
+
+All providers converge to nearly identical cancellation behavior.
+```
+
+**Why convergence occurs:**
+- Providers that deviate from optimal earn less
+- Competition drives adaptation toward successful strategies
+- No stable market segmentation emerges
+
+**Implication:** The market naturally converges to a single reliability level. Explicit "reliable" vs "unreliable" tiers don't emerge spontaneously.
+
+### 19.3 Consumer Value Differentiation
+
+**Question:** How do consumers with different valuations interact in the market?
+
+**Setup:**
+- High-value consumers: $5/hr value (e.g., urgent workloads)
+- Medium-value consumers: $2/hr value (e.g., research)
+- Low-value consumers: $0.50/hr value (e.g., hobbyists)
+- Each with both low and high checkpoint intervals
+
+**Bid calculation:**
+```
+max_bid = value_per_hour × expected_efficiency
+actual_bid = min(market_price, max_bid)
+```
+
+**Results:**
+
+| Value Tier | Checkpoint | Rate Paid | Compute | Profit/hr |
+|-----------|------------|----------|---------|-----------|
+| High ($5) | Low | $1.04 | 199h | $3.96 |
+| High ($5) | High | $1.02 | 198h | $3.97 |
+| Med ($2) | Low | $1.00 | 197h | $1.00 |
+| Med ($2) | High | $1.01 | 195h | $0.97 |
+| Low ($0.5) | Low | $0.39 | 75h | $0.11 |
+| **Low ($0.5)** | **High** | **---** | **0h** | **---** |
+
+**Key findings:**
+
+1. **Low-value + high-checkpoint users are priced out entirely.** They cannot bid high enough to compete.
+
+2. **High-value users pay higher rates** ($1.04 vs $0.39) but earn more profit ($3.96 vs $0.11).
+
+3. **Checkpoint interval matters less than value** for market access.
+
+### 19.4 Scarcity Effects
+
+**Question:** How does supply/demand ratio affect price discrimination?
+
+| Scenario | Low-Value Compute |
+|----------|------------------|
+| Excess supply (20 providers, 8 consumers) | 67h |
+| Balanced (20 providers, 20 consumers) | 61h |
+| Scarcity (20 providers, 40 consumers) | **0h** |
+| Extreme scarcity (20 providers, 60 consumers) | **0h** |
+
+**Finding:** Under scarcity, low-value users are completely crowded out. High-value users outbid them for all available compute.
+
+### 19.5 Effective Cost Equalization
+
+**Question:** Do low-restart-cost users pay less per useful compute hour?
+
+**Finding:** At equilibrium, **all consumer types pay similar effective rates** when accounting for efficiency:
+
+- Low checkpoint: $1.31/useful_hr, 100% efficiency
+- High checkpoint: $1.31/useful_hr, 99% efficiency
+
+The bid calculation already compensates for expected waste, so effective costs equalize.
+
+### 19.6 Consumer Distribution Effects
+
+**Question:** Does the mix of consumer types affect provider equilibrium?
+
+| Consumer Mix | Equilibrium Threshold |
+|-------------|----------------------|
+| All low-restart-cost | 2.08 |
+| All high-restart-cost | 2.21 |
+| Mixed | 2.16-2.37 |
+
+**Finding:** More low-restart-cost consumers → slightly lower equilibrium threshold (6% difference).
+
+**Mechanism:** Low-restart-cost consumers tolerate unreliability (minimal waste), so providers can be less picky without losing business. High-restart-cost consumers bid less for unreliable providers, rewarding reliability.
+
+### 19.7 Economic Value of Unreliable Compute
+
+**Question:** Does introducing unreliable home compute create economic value compared to datacenter-only markets?
+
+**Setup:**
+- Datacenter providers: $0.50/hr cost (capex + opex), 99.8% hourly reliability, **cannot** cancel for profit (SLA)
+- Home providers: $0.08/hr cost (power only), 92% hourly reliability, **can** cancel for profit
+
+**Results:**
+
+| Scenario | $/useful_hr | Compute Delivered | Consumers Served |
+|----------|-------------|-------------------|------------------|
+| Datacenter only | $1.60 | 1,995h | 10/30 |
+| DC + Home (mixed) | $0.92 | 5,747h | 30/30 |
+
+**Economic value created:**
+- **42% cost reduction**: $1.60 → $0.92 per useful compute hour
+- **188% compute increase**: 1,995h → 5,747h delivered
+- **3× consumers served**: 10 → 30 consumers get compute
+
+**Provider profitability:**
+
+| Provider Type | Revenue/hr | Cost/hr | Profit/hr | Margin |
+|--------------|-----------|---------|-----------|--------|
+| Datacenter | $1.47 | $0.50 | $0.97 | 66% |
+| Home | $0.62 | $0.08 | $0.54 | 87% |
+
+**Key insight:** Home providers earn **higher profit margins** despite lower revenue because their costs are dramatically lower (power only, no capex amortization).
+
+**Completion rates:**
+
+| Provider Type | Completion Rate | Cancellation Reasons |
+|--------------|-----------------|---------------------|
+| Datacenter | 99.5% | Hardware failures only |
+| Home | 63% | Personal use + profit-seeking |
+
+**Why this creates value:**
+
+1. **Idle capacity utilization**: Home computers sit unused most of the time. Even at low prices, any revenue exceeds the marginal cost (power).
+
+2. **Price competition**: Home providers bid lower, forcing datacenters to compete or lose volume. Consumers benefit from lower prices.
+
+3. **Market expansion**: Low-value consumers ($0.50/hr value) can't afford datacenter prices ($0.55/hr minimum) but can afford home prices ($0.09/hr minimum).
+
+4. **Risk transfer**: Consumers who can checkpoint frequently absorb unreliability in exchange for lower prices. Those who can't pay premium for datacenter reliability.
+
+**Checkpoint interval effect:**
+
+| Checkpoint Interval | Efficiency | Effective Cost |
+|--------------------|-----------|----------------|
+| Frequent (0.1h) | 100% | $0.93/useful_hr |
+| Rare (1.0h) | 93% | $0.92/useful_hr |
+
+Frequent checkpointing maintains efficiency even with unreliable providers.
+
+### 19.8 Implications for System Design
+
+**Market-based quality assurance works:**
+- Consumers rationally discount bids based on provider reliability
+- Providers converge to optimal reliability levels
+- No explicit penalties needed - reliability score is sufficient signal
+
+**Value differentiation is effective:**
+- High-value users get priority access by bidding more
+- Low-value users get access when supply exceeds demand
+- Under scarcity, compute flows to highest-value uses
+
+**Restart cost model:**
+- Restart cost should be measured in **compute time**, not dollars
+- `checkpoint_interval` determines work lost on cancellation
+- Consumers who can checkpoint frequently tolerate unreliability
+
+**No market segmentation:**
+- Providers converge to single strategy
+- "Reliable" vs "unreliable" tiers don't emerge naturally
+- If segmentation is desired, it must be explicitly designed (e.g., SLA tiers)
+
+---
+
+## 20. Open Questions
 
 1. **Accusation validation**: How do we determine if an accusation was "correct" for accuracy scoring?
 
