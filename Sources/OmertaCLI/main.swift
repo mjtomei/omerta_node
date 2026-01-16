@@ -592,6 +592,44 @@ struct NetworkJoin: AsyncParsableCommand {
 
         do {
             let networkKey = try NetworkKey.decode(from: key)
+            let networkId = networkKey.deriveNetworkId()
+
+            // Generate identity for this network
+            let identity = IdentityKeypair()
+
+            // Save identity for this network
+            let identityStorePath = FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            ).first ?? URL(fileURLWithPath: "/tmp")
+            let identitiesPath = identityStorePath
+                .appendingPathComponent("OmertaMesh")
+                .appendingPathComponent("identities.json")
+
+            // Read existing identities, add ours (if not already present), save
+            var identities: [String: [String: String]] = [:]
+            if FileManager.default.fileExists(atPath: identitiesPath.path),
+               let data = try? Data(contentsOf: identitiesPath),
+               let existing = try? JSONDecoder().decode([String: [String: String]].self, from: data) {
+                identities = existing
+            }
+
+            // Only create identity if one doesn't already exist for this network
+            if identities[networkId] == nil {
+                identities[networkId] = [
+                    "privateKeyBase64": identity.privateKeyBase64,
+                    "createdAt": ISO8601DateFormatter().string(from: Date())
+                ]
+
+                try FileManager.default.createDirectory(
+                    at: identitiesPath.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                let identityData = try encoder.encode(identities)
+                try identityData.write(to: identitiesPath)
+            }
 
             let networkStore = NetworkStore.defaultStore()
             try await networkStore.load()
@@ -602,10 +640,11 @@ struct NetworkJoin: AsyncParsableCommand {
             print("")
             print("Network: \(network.name)")
             print("Network ID: \(network.id)")
+            print("Your Peer ID: \(identity.peerId)")
             print("Bootstrap peers: \(networkKey.bootstrapPeers.joined(separator: ", "))")
             print("")
-            print("To see all networks:")
-            print("  omerta network list")
+            print("To start participating in this network:")
+            print("  omertad start --network \(network.id)")
 
         } catch {
             print("Failed to join network: \(error)")

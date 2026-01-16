@@ -1,0 +1,50 @@
+{
+  "single_puppet": {
+    "no_defense": {
+      "defenses_enabled": false,
+      "original_wealth": 100000,
+      "final_wealth_w": 55000.0,
+      "final_wealth_p": 14999.999999999993,
+      "total_wealth_preserved": 70000.0,
+      "wealth_burned_pct": 0.3,
+      "p_trust_before_transfer": 450.0,
+      "p_trust_after_transfer": 450.0,
+      "p_effective_trust_final": 450.0,
+      "w_effective_trust": 99.99999999999997,
+      "spotlight_evaded": true,
+      "activity_cost": 900
+    },
+    "with_defense": {
+      "defenses_enabled": true,
+      "original_wealth": 100000,
+      "final_wealth_w": 51174.13213339657,
+      "final_wealth_p": 0.0,
+      "total_wealth_preserved": 51174.13213339657,
+      "wealth_burned_pct": 0.48825867866603434,
+      "p_trust_before_transfer": 450.0,
+      "p_trust_after_transfer": 99.99999999999997,
+      "p_effective_trust_final": 99.99999999999997,
+      "w_effective_trust": 99.99999999999997,
+      "spotlight_evaded": false,
+      "activity_cost": 900
+    }
+  },
+  "multi_puppet": {
+    "no_defense": {
+      "defenses_enabled": false,
+      "total_wealth_preserved": 61428.571428571435,
+      "wealth_burned_pct": 0.3857142857142857,
+      "best_puppet_effective_trust": 180.0,
+      "w_effective_trust": 100,
+      "spotlight_evaded": true
+    },
+    "with_defense": {
+      "defenses_enabled": true,
+      "total_wealth_preserved": 33535.04392501712,
+      "wealth_burned_pct": 0.6646495607498288,
+      "best_puppet_effective_trust": 100.0,
+      "w_effective_trust": 100,
+      "spotlight_evaded": false
+    }
+  }
+}

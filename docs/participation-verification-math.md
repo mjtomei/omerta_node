@@ -909,6 +909,107 @@ This affects:
 
 Low reliability is a market signal, not a trust violation. Some providers may offer cheap but unreliable compute - that's a valid market position.
 
+### 5.12 Reliability Score Model
+
+Consumers need to translate reliability scores into expected value calculations. The system provides sufficient data for this.
+
+**Reliability metrics exposed:**
+```
+For each provider:
+  completion_rate = completed_sessions / total_sessions
+  mean_completion_fraction = avg(actual_duration / expected_duration)
+
+  termination_events = [
+    {
+      cancelled_rate: price of terminated session,
+      usurping_rate: price of replacement session (null if none),
+      time_fraction: how far into session termination occurred,
+      time_to_replacement: seconds until new session started (null if none)
+    },
+    ...
+  ]
+```
+
+This allows consumers to model cancellation probability given market conditions:
+
+```
+For a session at rate R, estimate P(cancellation | market_rate M):
+
+  historical_cancellations = termination_events where usurping_rate != null
+
+  # Build model: at what price ratio does this provider cancel?
+  cancellation_threshold(provider) = distribution of (usurping_rate / cancelled_rate)
+
+  # Predict: if market rate rises to M, will my session at R be cancelled?
+  P(cancellation) = P(M/R > provider's typical cancellation threshold)
+```
+
+**Example analysis:**
+```
+Provider X termination history:
+  - Cancelled $0.80 session for $1.50 (ratio: 1.88)
+  - Cancelled $1.00 session for $2.20 (ratio: 2.20)
+  - Cancelled $0.90 session for $1.60 (ratio: 1.78)
+  - Completed session at $1.00 when market was $1.40 (held)
+
+Model: Provider X cancels when usurping_rate > 1.7 × current_rate
+
+Consumer bidding $1.00 can estimate:
+  If market rate stays < $1.70: likely safe
+  If market rate spikes to $2.00+: ~80% cancellation risk
+```
+
+**Consumer expected value calculation:**
+```
+For a job requiring duration D at price P:
+
+  P(completion) = f(provider.completion_rate, D)
+
+  # Longer jobs have higher cancellation risk
+  # Model as: P(completion) = completion_rate ^ (D / mean_session_duration)
+
+  E[cost_if_cancelled] = restart_cost + wasted_compute
+
+  expected_value = P(completion) × value_of_result
+                 - P(cancellation) × E[cost_if_cancelled]
+                 - P × D
+
+Consumer bids based on expected value, factoring in provider reliability.
+```
+
+**Example:**
+```
+Provider A: 95% completion rate, $1.00/hour
+Provider B: 80% completion rate, $0.70/hour
+
+Job: 4 hours, restart cost = $2 if cancelled
+
+Provider A:
+  P(completion) ≈ 0.95^1.5 ≈ 0.93
+  Expected cost = $4.00 + 0.07 × $2 = $4.14
+
+Provider B:
+  P(completion) ≈ 0.80^1.5 ≈ 0.72
+  Expected cost = $2.80 + 0.28 × $2 = $3.36
+
+Provider B is cheaper in expectation despite lower reliability,
+IF consumer's job can tolerate restarts.
+```
+
+**Market equilibrium:**
+- Unreliable providers must offer lower prices to attract jobs
+- Consumers with restart-tolerant workloads get cheaper compute
+- Consumers with critical workloads pay premium for reliable providers
+- No explicit penalty needed - market prices in the risk
+
+**Refund on early termination:**
+```
+When provider terminates early:
+  - Consumer receives pro-rated refund for unused time
+  - No additional penalty (reliability score is the consequence)
+  - Consumer can immediately seek replacement session
+```
+
 ---
 
 ## 6. The Iterative Trust Solver
@@ -1327,11 +1428,11 @@ Benefit from multiple identities:
   Multiple identities: Can rotate between identities, shed history at will
 ```
 
-**Defense vectors to explore**:
+**Defenses:**
 - Amount-based transfer burns (Section 12.7): progressive burn based on transfer size
-- Wealth provenance tracking: coins inherit scrutiny from source identity
+- Trust inheritance (Section 12.8): recipient's trust blends toward sender's, only downward
+- Circular flow detection (Section 4.7): catches wealth cycling between controlled identities
 - Large transfer delays: finality windows for transfers above threshold
-- Wealth concentration alerts: sudden wealth changes trigger monitoring
 
 #### 10.3.3 Absolute vs Tolerated Multi-Identity Protections
 
@@ -1691,37 +1792,108 @@ Plus: Multiple transfers to same recipient trigger circular flow detection (Sect
 **Exemption consideration:**
 Large legitimate transfers (business acquisitions, etc.) may request escrow-style transfers that are held for a delay period and visible on-chain, accepting transparency in exchange for reduced amount burns.
 
-### 12.8 Wealth Provenance Tracking
+### 12.8 Trust Inheritance on Transfer
 
-Track where wealth came from to prevent spotlight evasion.
+Large transfers force the recipient to inherit the sender's trust level, but only downward.
 
-**Provenance chain:**
+**Core principle:**
+Trust reflects your own actions. If your wealth is dominated by received transfers rather than earned activity, your trust should reflect the trustworthiness of your funding sources—but you can never *buy* higher trust.
+
+**Transfer trust impact:**
 ```
-For each coin unit:
-  provenance = list of (identity, timestamp, transaction_type)
+When P receives transfer of amount A from W:
+  balance_before = P's balance before transfer
+  balance_after = balance_before + A
 
-When coins transfer from A to B:
-  B's coins inherit A's provenance chain + new entry
+  transfer_ratio = A / balance_after
+
+  # Blend trust based on how much of new balance came from transfer
+  blended_trust = transfer_ratio × T(W) + (1 - transfer_ratio) × T(P)
+
+  # Only apply if it would DECREASE trust (can't buy trust)
+  T(P)_new = min(T(P), blended_trust)
 ```
 
-**Scrutiny inheritance:**
+**Key properties:**
+
+1. **Only decreases, never increases**: The `min()` ensures high-trust senders cannot gift trust to low-trust recipients. Trust must be earned, not transferred.
+
+2. **Proportional to wealth dominance**: Small transfers have negligible impact. Large transfers that dominate your balance force significant trust inheritance.
+
+3. **No complex provenance tracking**: Only the transfer ratio matters at time of transfer. No need to track coin lineage.
+
+**Examples:**
+
+*Low-trust sender, large transfer:*
 ```
-scrutiny_level(identity) = base_scrutiny + inherited_scrutiny
+P has 100 OMC, T(P) = 200
+W has 100,000 OMC, T(W) = 50 (under scrutiny)
 
-inherited_scrutiny = Σ (provenance_amount × source_scrutiny × recency)
-                     over all provenance entries
+W transfers 9,900 OMC to P
+transfer_ratio = 9900 / 10000 = 0.99
 
-recency(age) = e^(-age / TAU_PROVENANCE)
+blended_trust = 0.99 × 50 + 0.01 × 200 = 51.5
+T(P)_new = min(200, 51.5) = 51.5
+
+Result: P's trust collapses from 200 → 51.5
+P is now 99% "W's money" and inherits W's low trust
 ```
 
-**Effect:**
-Coins from a heavily-watched identity carry that scrutiny to the recipient. If W is under spotlight and transfers to P, P's coins are flagged as "originally from W" and P receives proportional scrutiny.
+*High-trust sender, large transfer:*
+```
+P has 100 OMC, T(P) = 50
+W has 100,000 OMC, T(W) = 800
 
-**Decay:**
-Provenance scrutiny decays over time. After TAU_PROVENANCE days, the origin is mostly forgotten. This prevents permanent tainting while maintaining short-term accountability.
+W transfers 9,900 OMC to P
+transfer_ratio = 0.99
 
-**Parameters:**
-- TAU_PROVENANCE: Decay constant for provenance scrutiny (default: 180 days)
+blended_trust = 0.99 × 800 + 0.01 × 50 = 792.5
+T(P)_new = min(50, 792.5) = 50
+
+Result: P's trust unchanged at 50
+Cannot buy trust from high-trust sender
+```
+
+*Small transfer from low-trust sender:*
+```
+P has 10,000 OMC, T(P) = 300
+W has 100,000 OMC, T(W) = 20
+
+W transfers 100 OMC to P
+transfer_ratio = 100 / 10100 = 0.0099
+
+blended_trust = 0.0099 × 20 + 0.9901 × 300 = 297.2
+T(P)_new = min(300, 297.2) = 297.2
+
+Result: Negligible impact (< 1% trust reduction)
+Small transfers don't matter
+```
+
+**Effect on identity rotation attack:**
+```
+Attack scenario:
+  W (wealthy, under scrutiny) wants to rotate to puppet P
+  W has 100,000 OMC, T(W) = 500, but scrutiny reduces effective trust
+  P has 50 OMC after minimal activity, T(P) = 100
+
+  W transfers 50,000 OMC to P
+  transfer_ratio = 50000 / 50050 = 0.999
+
+  For trust inheritance, use W's effective trust (with scrutiny penalty)
+  effective_T(W) = 500 × (1 - scrutiny_penalty) = 100
+
+  blended_trust = 0.999 × 100 + 0.001 × 100 = 100
+  T(P)_new = min(100, 100) = 100
+
+  Result: P inherits W's scrutinized trust level
+  Identity rotation provides no escape from scrutiny
+```
+
+**Interaction with transfer burns:**
+Trust inheritance applies AFTER transfer burns. The recipient's trust is affected based on who sent the coins, regardless of how much was burned in transit.
+
+**Multiple transfers:**
+Each transfer is processed independently. If P receives from multiple sources, each transfer adjusts P's trust based on the ratio at that moment. A series of small transfers from low-trust sources will gradually erode P's trust.
 
 ---
 
@@ -1912,7 +2084,6 @@ All parameters are configurable at network genesis and modifiable through govern
 | K_TRANSFER | Transfer burn curve scaling | Higher = trust matters more for transfers |
 | K_AMOUNT | Amount-based burn scaling factor | Higher = larger transfers burn more |
 | AMOUNT_SCALE | Logarithm base for amount scaling | Lower = more aggressive amount scaling |
-| TAU_PROVENANCE | Decay constant for provenance scrutiny | Shorter = faster forgetting, longer = more accountability |
 
 ### Circular Flow Detection
 | Parameter | Description | Tradeoff |
@@ -2511,7 +2682,270 @@ Network phases:
 
 ---
 
-## 18. Open Questions
+## 18. Calibration Requirements
+
+The formulas in this specification define relationships between parameters, but the **concrete values** require empirical calibration against real-world economics. This section defines calibration targets and open questions.
+
+### 18.1 Trust Accumulation Targets
+
+The system should be calibrated so that "reasonable" participation over "reasonable" time produces "reasonable" trust levels.
+
+**Target scenario: Established community member**
+```
+Goal: Reach trust = 500 in 12 months
+      (500 trust → 17% transfer burn between peers)
+
+Activity: $50/month of compute activity
+          (Either providing or consuming, at market rates)
+
+This implies:
+  BASE_CREDIT must be calibrated so that:
+  $600 annual activity × credit_factors × recency_decay ≈ 500 trust
+```
+
+**Target scenario: Casual participant**
+```
+Goal: Reach trust = 100 in 12 months
+      (100 trust → 50% transfer burn, still building reputation)
+
+Activity: $10/month of compute activity
+
+This is someone who occasionally uses the network but isn't a power user.
+```
+
+**Target scenario: Heavy participant**
+```
+Goal: Reach trust = 2000 in 24 months
+      (2000 trust → 5% transfer burn, highly trusted)
+
+Activity: $200/month of compute activity
+
+This is a business or power user with significant network participation.
+```
+
+### 18.2 Mapping Dollars to Trust
+
+**Unknown constants that need calibration:**
+
+| Parameter | Description | Calibration Method |
+|-----------|-------------|-------------------|
+| BASE_CREDIT | Trust earned per unit of activity | Set so targets above are achievable |
+| resource_weight | Multiplier by compute type (GPU vs CPU) | Based on market rate ratios |
+| TAU_TRANSACTION | Decay rate for transaction trust | Set so 1-year-old activity retains ~37% weight |
+| TAU_ASSERTION | Decay rate for assertion trust | Similar to TAU_TRANSACTION or faster |
+
+**Concrete questions to answer:**
+
+1. If I rent $10 of GPU compute at market rate, how much trust do I earn?
+2. If I provide $10 of GPU compute (verified), how much trust do I earn?
+3. How does trust from consuming compare to trust from providing?
+4. What's the effective "dollar cost" to reach each trust tier?
+
+### 18.3 Trust Tiers and Their Meaning
+
+Once calibrated, trust levels should map to intuitive categories:
+
+| Trust Level | Transfer Burn | Interpretation | Path to Reach |
+|-------------|---------------|----------------|---------------|
+| 0-50 | 67-95% | New/untrusted | Just joined |
+| 50-100 | 50-67% | Beginner | 1-3 months casual use |
+| 100-300 | 25-50% | Developing | 6-12 months regular use |
+| 300-500 | 14-25% | Established | 12+ months active use |
+| 500-1000 | 9-17% | Trusted | 1-2 years heavy use |
+| 1000-2000 | 5-9% | Highly trusted | 2+ years heavy use |
+| 2000+ | <5% | Pillar of community | Multi-year power user |
+
+### 18.4 Activity Profiles
+
+Define realistic activity patterns for calibration simulations:
+
+**Casual consumer:**
+```
+- 5-10 compute sessions per month
+- Average session: $1-2 (short tasks, experimentation)
+- Monthly spend: ~$10-20
+- Occasional gaps in activity (months with zero use)
+```
+
+**Regular consumer:**
+```
+- 20-50 compute sessions per month
+- Average session: $2-5 (regular workloads)
+- Monthly spend: ~$50-100
+- Consistent month-over-month activity
+```
+
+**Provider (hobbyist):**
+```
+- Offers compute 10-20 hours/week
+- Earns $20-50/month in payments
+- May also consume occasionally
+```
+
+**Provider (professional):**
+```
+- Offers compute 40+ hours/week
+- Earns $200-500/month in payments
+- High verification rate, consistent availability
+```
+
+**Business consumer:**
+```
+- 100+ compute sessions per month
+- Monthly spend: $500-2000
+- SLA requirements, values reliability
+```
+
+### 18.5 Calibration Validation
+
+Once parameters are set, validate with simulations:
+
+**Test 1: Cohort progression**
+```
+Simulate 1000 users with realistic activity distributions
+After 12 months:
+  - Median trust should be ~100-200 (casual users)
+  - 90th percentile should be ~500+ (active users)
+  - Inactive users (dropped off) should decay toward 0
+```
+
+**Test 2: Transfer burn distribution**
+```
+For transfers between random pairs of 12-month-old users:
+  - Median burn should be ~20-30% (established peers)
+  - Transfers involving newcomers should burn 50%+
+  - Transfers between power users should burn <10%
+```
+
+**Test 3: Attack cost validation**
+```
+To reach trust = 500 purely through Sybil activity:
+  - Should cost more than legitimate participation
+  - Cluster detection should trigger before reaching target
+  - Economic cost should exceed expected attack profit
+```
+
+**Test 4: Recovery time**
+```
+If trusted user (trust=500) misbehaves and trust drops to 0:
+  - Time to recover to trust=100 should be 3-6 months
+  - Time to recover to trust=500 should be 12+ months
+  - Cannot shortcut via wealth transfer (trust inheritance)
+```
+
+### 18.6 Median-Based Calibration
+
+**Principle:** Trust accumulation should be calibrated relative to actual network activity, not fixed dollar amounts.
+
+```
+Target: Median active user reaches trust = 300 after 12 months
+
+Where "median active user" = 50th percentile of monthly activity
+among users with at least 1 transaction per month
+
+This auto-adjusts as the network grows:
+  - Early network (few users, low volume): median might be $20/month
+  - Mature network (many users, high volume): median might be $100/month
+  - Trust accumulation rate scales proportionally
+```
+
+**Implementation:**
+```
+MEDIAN_MONTHLY_ACTIVITY = rolling_median(
+  monthly_activity for all users with activity > 0,
+  window = 90 days
+)
+
+effective_credit(transaction) = BASE_CREDIT × (
+  transaction_value / MEDIAN_MONTHLY_ACTIVITY
+) × other_factors
+
+This means:
+  - User spending at median rate reaches target trust in target time
+  - User spending 2× median reaches trust faster
+  - User spending 0.5× median reaches trust slower (but still progresses)
+```
+
+### 18.7 Accessibility and Grants
+
+**Problem:** Users with limited financial resources may struggle to build trust if trust requires spending money.
+
+**Existing mechanisms that help:**
+
+1. **Providing compute earns trust** - Users with hardware but not money can provide compute to earn trust. Even a modest laptop can contribute CPU cycles.
+
+2. **UBI distribution** - All participants receive daily coin distribution proportional to trust, creating a bootstrapping path.
+
+3. **Negative-bid donations** - Users can burn coins (received from UBI) to accelerate trust building without external funds.
+
+**Additional accessibility mechanisms:**
+
+**Trust grants for compute providers:**
+```
+New providers with limited history can receive "provisional trust"
+if sponsored by established users:
+
+sponsor_grant(new_user, sponsor, amount):
+  - Sponsor stakes some of their trust as collateral
+  - New user receives provisional_trust up to amount
+  - Provisional trust decays over 90 days
+  - If new user misbehaves, sponsor loses staked trust
+  - If new user builds real trust, provisional trust converts
+
+This lets established users vouch for newcomers they know personally.
+```
+
+**Compute-for-trust programs:**
+```
+Network-funded programs where users earn trust by:
+  - Providing compute to public-good projects (research, etc.)
+  - Participating in network maintenance tasks
+  - Contributing to verification panels
+
+These create trust-building paths that don't require spending money.
+```
+
+**Subsidized onboarding:**
+```
+During genesis or growth phases, the network may subsidize
+new user activity:
+
+  - First N transactions have boosted trust credit
+  - Matching grants for small-value activity
+  - Referral bonuses (existing user + new user both benefit)
+
+Funded from network treasury (portion of burns and fees).
+```
+
+**Progressive trust thresholds:**
+```
+Some network features could have lower trust requirements
+for users with demonstrated need:
+
+  - Basic transfer burns reduced for low-balance accounts
+  - Verification panel eligibility at lower trust for active participants
+  - UBI distribution weighted slightly toward lower-trust users
+
+This prevents a pure plutocracy while maintaining Sybil resistance.
+```
+
+### 18.8 Implementation Notes
+
+**Bootstrapping:**
+During network genesis, BASE_CREDIT may need temporary inflation to allow early participants to build trust faster. This should phase out as the network matures.
+
+**Market rate tracking:**
+Trust calculations reference "market rate" for compute. The network needs an oracle or rolling average of actual transaction prices to define this.
+
+**Currency denomination:**
+Trust calculations should be denominated in compute-hours or median-activity-units rather than fixed currency, so the system auto-adjusts to actual network economics.
+
+**Recalibration:**
+If real-world usage patterns diverge significantly from targets, parameters may need adjustment. The automated policy system (Section 17) should flag when trust distributions are outside expected ranges.
+
+---
+
+## 19. Open Questions
 
 1. **Accusation validation**: How do we determine if an accusation was "correct" for accuracy scoring?
 

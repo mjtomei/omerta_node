@@ -10,10 +10,12 @@ import OmertaMesh
 import Darwin
 private let systemSend = Darwin.send
 private let systemRecv = Darwin.recv
+private let SOCK_STREAM_VALUE = SOCK_STREAM
 #elseif canImport(Glibc)
 import Glibc
 private let systemSend = Glibc.send
 private let systemRecv = Glibc.recv
+private let SOCK_STREAM_VALUE = Int32(SOCK_STREAM.rawValue)
 #endif
 
 /// Commands that can be sent to the daemon via control socket
@@ -146,7 +148,7 @@ public actor ControlSocketServer {
         }
 
         // Try to connect to see if it's a live daemon
-        let testSocket = socket(AF_UNIX, Int32(SOCK_STREAM.rawValue), 0)
+        let testSocket = socket(AF_UNIX, SOCK_STREAM_VALUE, 0)
         guard testSocket >= 0 else {
             // Can't create socket, assume it's stale
             try? FileManager.default.removeItem(atPath: socketPath)
@@ -342,7 +344,7 @@ public actor ControlSocketClient {
         }
 
         // Create socket connection
-        let socket = socket(AF_UNIX, Int32(SOCK_STREAM.rawValue), 0)
+        let socket = socket(AF_UNIX, SOCK_STREAM_VALUE, 0)
         guard socket >= 0 else {
             throw ControlSocketError.connectionFailed
         }
