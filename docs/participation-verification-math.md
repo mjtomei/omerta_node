@@ -551,6 +551,65 @@ For each identity i:
 
 Anomalies don't automatically affect trust—they're signals for investigation.
 
+### 4.7 Circular Flow Detection
+
+Detect wealth cycling between identities to identify controlled identity networks.
+
+**Build transfer graph:**
+```
+G_transfer = (V, E) where:
+  V = all identities
+  E = directed edges weighted by net transfer volume (transfers only, not payments)
+```
+
+**Detect cycles:**
+```
+For each identity i:
+  incoming_sources = identities that transferred to i
+  outgoing_targets = identities that i transferred to
+
+  For each cycle C containing i (up to MAX_CYCLE_LENGTH):
+    cycle_volume = min(transfer volumes along cycle edges)
+    cycle_participants = identities in C
+
+    For each participant p in C:
+      circular_flow_score(p) += cycle_volume / |C|
+```
+
+**Circular flow ratio:**
+```
+For each identity i:
+  total_transfer_volume(i) = all transfers sent + received
+  circular_volume(i) = sum of cycle volumes involving i
+
+  circular_ratio(i) = circular_volume(i) / (total_transfer_volume(i) + 1)
+
+  if circular_ratio(i) > CIRCULAR_THRESHOLD:
+    flag as suspicious circular flow
+```
+
+**Circular flow penalty:**
+```
+If circular_ratio(i) > CIRCULAR_THRESHOLD:
+  circular_penalty(i) = (circular_ratio(i) - CIRCULAR_THRESHOLD) × CIRCULAR_PENALTY_WEIGHT
+
+  effective_trust(i) = T(i) / (1 + circular_penalty(i))
+```
+
+**What this catches:**
+- W → P₁ → P₂ → W patterns (wealth cycling through sock puppets)
+- Identity rotation networks (wealth moves in circles, net position unchanged)
+- Wash trading (artificial volume from circular transfers)
+
+**What this doesn't catch (by design):**
+- Legitimate economic cycles (A pays B, B pays C, C pays A for services)
+- Payments aren't included in transfer graph, only raw transfers
+
+**Parameters:**
+- MAX_CYCLE_LENGTH: Maximum cycle size to detect (default: 5)
+- CIRCULAR_THRESHOLD: Ratio above which flow is suspicious (default: 0.3)
+- CIRCULAR_PENALTY_WEIGHT: How much to penalize (default: 2.0)
+
 ---
 
 ## 5. Sessions and Verification
@@ -1239,6 +1298,41 @@ Benefit from multiple identities:
 - If unacceptable, requires behavioral clustering across identities
 - Transfer pattern analysis to detect value consolidation
 
+**Attack Class 6: Identity Rotation / Spotlight Evasion**
+
+```
+Attack pattern:
+  1. Wealthy user W has substantial coin holdings (visible, under scrutiny)
+  2. W creates sock puppet P, matures with minimal activity over time
+  3. W transfers large sum to P, accepting burn as "visibility tax"
+  4. W now operates as P - same wealth, fresh identity, no spotlight
+  5. Repeat: create P2, mature it, rotate when P gains attention
+  6. Maintain multiple puppets maturing in parallel as escape hatches
+
+Key insight:
+  - Time gates (age derate) and activity requirements have FIXED COST
+  - For wealthy users, this fixed cost is trivial relative to their holdings
+  - Transfer burn is a one-time tax, not ongoing friction
+  - Result: wealthy users can shed visibility at acceptable cost
+
+Example:
+  W has 100,000 OMC, under community scrutiny
+  W matures puppet P over 6 months with 50 OMC of activity (0.05% of wealth)
+  W transfers 50,000 OMC to P at 20% burn = 10,000 OMC cost (10% tax)
+  P now operates with 40,000 OMC as "fresh" identity
+  W retains 50,000 OMC, can repeat with P2, P3...
+
+Benefit from multiple identities:
+  Single identity: Wealth and behavior permanently visible
+  Multiple identities: Can rotate between identities, shed history at will
+```
+
+**Defense vectors to explore**:
+- Amount-based transfer burns (Section 12.7): progressive burn based on transfer size
+- Wealth provenance tracking: coins inherit scrutiny from source identity
+- Large transfer delays: finality windows for transfers above threshold
+- Wealth concentration alerts: sudden wealth changes trigger monitoring
+
 #### 10.3.3 Absolute vs Tolerated Multi-Identity Protections
 
 **Design principle**: Some protections must be absolute (no benefit from splitting), while others may tolerate some multi-identity advantage if the cost of enforcement exceeds the benefit.
@@ -1526,6 +1620,109 @@ Specifically:
 
 Since transfers to low-trust receivers burn nearly 100%, and donations at market rate give full trust credit, donations are always more efficient for new entrants.
 
+### 12.7 Transfer Amount Scaling
+
+Large transfers face additional burns to prevent identity rotation attacks (Section 10.3.2, Attack Class 6).
+
+**Problem:**
+Trust-based burns have fixed cost structure. For wealthy users, the burn percentage is acceptable as a "visibility tax" to rotate between identities. A 20% burn on a large transfer is still worth it to escape scrutiny.
+
+**Solution:**
+Add progressive amount-based component to transfer burns.
+
+**Combined transfer burn:**
+```
+trust_burn_rate = 1 / (1 + K_TRANSFER × min(T_sender, T_receiver))
+
+amount_factor = amount / MEDIAN_NETWORK_BALANCE
+amount_burn_rate = K_AMOUNT × log(1 + amount_factor) / log(AMOUNT_SCALE)
+
+combined_burn_rate = min(1.0, trust_burn_rate + amount_burn_rate)
+
+amount_received = amount_sent × (1 - combined_burn_rate)
+```
+
+**Amount burn examples:**
+
+| Amount (× median) | Amount Burn Rate | Trust Burn (T=500) | Combined |
+|-------------------|------------------|---------------------|----------|
+| 0.1× | 0% | 17% | 17% |
+| 1× | 5% | 17% | 22% |
+| 10× | 10% | 17% | 27% |
+| 100× | 15% | 17% | 32% |
+| 1000× | 20% | 17% | 37% |
+
+**Effect on identity rotation:**
+```
+Before (trust-only burns):
+  W has 100,000 OMC (1000× median), T_W = 500
+  W transfers to P (T_P = 200)
+  Burn rate = 33% (based on min trust)
+  P receives 67,000 OMC
+  Cost: 33,000 OMC to shed visibility
+
+After (with amount scaling):
+  Same scenario
+  Trust burn = 33%
+  Amount burn = 20% (1000× median)
+  Combined burn = min(1.0, 53%) = 53%
+  P receives 47,000 OMC
+  Cost: 53,000 OMC to shed visibility
+
+  Each rotation costs majority of transfer, making repeated rotation expensive.
+```
+
+**Splitting doesn't help:**
+```
+If W splits 100,000 OMC into 10 transfers of 10,000:
+  Amount factor for each = 100× median
+  Amount burn = 15% per transfer
+  After 10 transfers: ~85% × 10 × (10,000 × 0.67) = ~57,000 OMC
+  Still significant burn, just spread across transfers
+
+Plus: Multiple transfers to same recipient trigger circular flow detection (Section 4.7)
+```
+
+**Parameters:**
+- MEDIAN_NETWORK_BALANCE: Rolling median (recalculated daily)
+- K_AMOUNT: Amount scaling factor (default: 0.2)
+- AMOUNT_SCALE: Logarithm base (default: 10, meaning 10× median = K_AMOUNT burn)
+
+**Exemption consideration:**
+Large legitimate transfers (business acquisitions, etc.) may request escrow-style transfers that are held for a delay period and visible on-chain, accepting transparency in exchange for reduced amount burns.
+
+### 12.8 Wealth Provenance Tracking
+
+Track where wealth came from to prevent spotlight evasion.
+
+**Provenance chain:**
+```
+For each coin unit:
+  provenance = list of (identity, timestamp, transaction_type)
+
+When coins transfer from A to B:
+  B's coins inherit A's provenance chain + new entry
+```
+
+**Scrutiny inheritance:**
+```
+scrutiny_level(identity) = base_scrutiny + inherited_scrutiny
+
+inherited_scrutiny = Σ (provenance_amount × source_scrutiny × recency)
+                     over all provenance entries
+
+recency(age) = e^(-age / TAU_PROVENANCE)
+```
+
+**Effect:**
+Coins from a heavily-watched identity carry that scrutiny to the recipient. If W is under spotlight and transfers to P, P's coins are flagged as "originally from W" and P receives proportional scrutiny.
+
+**Decay:**
+Provenance scrutiny decays over time. After TAU_PROVENANCE days, the origin is mostly forgotten. This prevents permanent tainting while maintaining short-term accountability.
+
+**Parameters:**
+- TAU_PROVENANCE: Decay constant for provenance scrutiny (default: 180 days)
+
 ---
 
 ## 13. Local Trust (Network-Weighted)
@@ -1713,6 +1910,16 @@ All parameters are configurable at network genesis and modifiable through govern
 | Parameter | Description | Tradeoff |
 |-----------|-------------|----------|
 | K_TRANSFER | Transfer burn curve scaling | Higher = trust matters more for transfers |
+| K_AMOUNT | Amount-based burn scaling factor | Higher = larger transfers burn more |
+| AMOUNT_SCALE | Logarithm base for amount scaling | Lower = more aggressive amount scaling |
+| TAU_PROVENANCE | Decay constant for provenance scrutiny | Shorter = faster forgetting, longer = more accountability |
+
+### Circular Flow Detection
+| Parameter | Description | Tradeoff |
+|-----------|-------------|----------|
+| MAX_CYCLE_LENGTH | Maximum cycle size to detect | Higher = catches larger rings, more computation |
+| CIRCULAR_THRESHOLD | Ratio threshold for suspicious flow | Lower = more aggressive detection, more false positives |
+| CIRCULAR_PENALTY_WEIGHT | Penalty scaling for circular flows | Higher = harsher on detected cycles |
 
 ### Local Trust
 | Parameter | Description | Tradeoff |
@@ -2004,12 +2211,18 @@ Economic metrics:
   daily_mint_volume           # Coins minted via daily distribution
   coin_velocity               # Transactions / total supply
   hoarding_prevalence         # Fraction of identities above runway threshold
+  large_transfer_volume       # Volume of transfers > 10× median
+  gini_coefficient            # Wealth inequality measure
 
 Security metrics:
   cluster_prevalence          # Fraction of identities in suspicious clusters
   accusation_rate             # Accusations per transaction
   verification_failure_rate   # Failed verifications as fraction of total
   anomaly_frequency           # How often anomalies are flagged
+  circular_flow_volume        # Volume of detected circular transfers
+  circular_flow_prevalence    # Fraction of identities with high circular_ratio
+  identity_rotation_events    # Large transfers following identity maturation pattern
+  wealth_concentration_delta  # Change in top-N% wealth share
 ```
 
 ### 17.3 Payment Curve (K_PAYMENT)
@@ -2072,11 +2285,12 @@ If repeat_offense_rate high:
 - Faster decay makes recent behavior matter more, enables faster recovery
 - Slower decay provides more stability but creates trust dynasties
 
-### 17.5 Transfer Burns (K_TRANSFER)
+### 17.5 Transfer Burns (K_TRANSFER, K_AMOUNT)
 
 **What it controls:**
 - Cost of moving coins between identities
 - Barrier to reputation laundering
+- Barrier to identity rotation / spotlight evasion
 
 **Trigger conditions for adjustment:**
 
@@ -2092,11 +2306,56 @@ If new_entrant_retention_rate low:
 If reputation_laundering_detected:
   # Old pattern: build trust, exploit, transfer
   Increase K_TRANSFER significantly
+
+If identity_rotation_detected:
+  # Wealthy users shedding visibility via transfers
+  Increase K_AMOUNT → larger transfers burn more
+
+If large_transfer_volume increasing:
+  # Potential identity rotation or wealth consolidation
+  Increase K_AMOUNT moderately
+
+If legitimate_large_transfers being burned excessively:
+  # Business acquisitions, legitimate wealth transfer
+  Decrease K_AMOUNT OR increase escrow exemption usage
 ```
 
 **Tradeoffs:**
 - Higher K_TRANSFER prevents laundering but creates friction
 - Lower K_TRANSFER enables commerce but enables attacks
+- Higher K_AMOUNT prevents identity rotation but penalizes legitimate large transfers
+
+### 17.5.1 Circular Flow Detection
+
+**What it controls:**
+- Detection of wealth cycling between controlled identities
+- Penalty for artificial transaction volume
+
+**Trigger conditions for adjustment:**
+
+```
+If circular_flow_volume increasing:
+  # More wealth cycling detected
+  Decrease CIRCULAR_THRESHOLD → more aggressive detection
+  Increase CIRCULAR_PENALTY_WEIGHT → harsher penalties
+
+If false_positive_rate (legitimate cycles flagged) high:
+  # Detection too aggressive
+  Increase CIRCULAR_THRESHOLD
+  Decrease CIRCULAR_PENALTY_WEIGHT
+
+If cycle_length_distribution shifting to longer cycles:
+  # Attackers evading by using longer cycles
+  Increase MAX_CYCLE_LENGTH (with computation cost)
+
+If wash_trading_detected:
+  # Artificial volume to game metrics
+  Decrease CIRCULAR_THRESHOLD significantly
+```
+
+**Tradeoffs:**
+- Lower CIRCULAR_THRESHOLD catches more attacks but may flag legitimate business cycles
+- Higher MAX_CYCLE_LENGTH catches sophisticated attacks but increases computation
 
 ### 17.6 Verification Parameters
 

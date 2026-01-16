@@ -1279,10 +1279,35 @@ struct VMRequest: AsyncParsableCommand {
             imageId: nil
         )
 
+        // Check omertad is running
+        let controlClient = ControlSocketClient(networkId: networkId)
+        guard controlClient.isDaemonRunning() else {
+            print("Error: omertad is not running for network '\(networkId)'")
+            print("")
+            print("Start the daemon with:")
+            print("  omertad start --network \(networkId)")
+            throw ExitCode.failure
+        }
+
+        // Ping provider first so they know where to send responses
+        print("")
+        print("Establishing connection to provider...")
+        do {
+            let pingResponse = try await controlClient.send(.ping(peerId: providerPeerId, timeout: 10))
+            if case .pingResult(let result) = pingResponse, let result = result {
+                print("Provider reachable: \(result.latencyMs)ms latency")
+            } else {
+                print("Warning: Could not reach provider \(providerPeerId) - request may fail")
+            }
+        } catch {
+            print("Warning: Ping failed - \(error)")
+        }
+
         print("")
         print("Requesting VM...")
 
         try await requestVMViaMesh(
+            networkId: networkId,
             providerPeerId: providerPeerId,
             bootstrapPeers: bootstrapPeers,
             config: config,
@@ -1295,6 +1320,7 @@ struct VMRequest: AsyncParsableCommand {
     }
 
     private func requestVMViaMesh(
+        networkId: String,
         providerPeerId: String,
         bootstrapPeers: [String],
         config: OmertaConfig,
@@ -1316,14 +1342,24 @@ struct VMRequest: AsyncParsableCommand {
 
         print("Using SSH key: \(config.ssh.expandedPrivateKeyPath())")
 
+        // Load identity from store (same as omertad uses)
+        let identityStore = IdentityStore.defaultStore()
+        try await identityStore.load()
+
+        guard let identity = try await identityStore.getIdentity(forNetwork: networkId) else {
+            print("Error: No identity found for network '\(networkId)'")
+            print("This can happen if the network was created on a different machine.")
+            throw ExitCode.failure
+        }
+
+        print("Using identity: \(identity.peerId)")
+
         // Build mesh config with encryption key and bootstrap peers from network
         let meshConfig = MeshConfig(
             encryptionKey: networkKey,
             bootstrapPeers: bootstrapPeers
         )
 
-        // Create mesh consumer client with auto-generated identity
-        let identity = IdentityKeypair()
         let client = MeshConsumerClient(
             identity: identity,
             meshConfig: meshConfig,
@@ -1569,15 +1605,35 @@ struct VMRelease: AsyncParsableCommand {
 
         // Try to notify provider via mesh
         if let network = await networkStore.network(id: vm.networkId) {
+            // Check omertad is running
+            let controlClient = ControlSocketClient(networkId: vm.networkId)
+            if controlClient.isDaemonRunning() {
+                // Ping provider first to ensure they know where to respond
+                do {
+                    let _ = try await controlClient.send(.ping(peerId: vm.provider.peerId, timeout: 5))
+                } catch {
+                    print("Warning: Could not ping provider: \(error)")
+                }
+            }
+
             do {
                 let keyData = network.key.networkKey
-                let localIdentity = IdentityKeypair()
+
+                // Load shared identity from store
+                let identityStore = IdentityStore.defaultStore()
+                try await identityStore.load()
+
+                guard let identity = try await identityStore.getIdentity(forNetwork: vm.networkId) else {
+                    print("Warning: No identity found for network, skipping provider notification")
+                    throw NSError(domain: "VMRelease", code: 1, userInfo: nil)
+                }
+
                 let meshConfig = MeshConfig(
                     encryptionKey: keyData,
                     bootstrapPeers: network.key.bootstrapPeers
                 )
 
-                let mesh = MeshNetwork(identity: localIdentity, config: meshConfig)
+                let mesh = MeshNetwork(identity: identity, config: meshConfig)
                 try await mesh.start()
 
                 // Send release request to provider
