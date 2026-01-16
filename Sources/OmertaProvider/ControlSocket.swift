@@ -330,8 +330,8 @@ public actor ControlSocketClient {
         self.logger = Logger(label: "io.omerta.control.client")
     }
 
-    /// Check if daemon is running
-    public func isDaemonRunning() -> Bool {
+    /// Check if daemon is running (nonisolated for sync calls)
+    public nonisolated func isDaemonRunning() -> Bool {
         FileManager.default.fileExists(atPath: socketPath)
     }
 

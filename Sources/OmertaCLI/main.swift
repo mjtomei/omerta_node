@@ -3012,17 +3012,14 @@ struct MeshConnect: AsyncParsableCommand {
 struct MeshPing: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "ping",
-        abstract: "Ping a mesh peer and show gossip info"
+        abstract: "Ping a mesh peer and show gossip info (requires omertad to be running)"
     )
 
     @Argument(help: "Peer ID to ping")
     var peerId: String
 
-    @Option(name: .long, help: "Network ID to use for encryption key")
+    @Option(name: .long, help: "Network ID (default: first available)")
     var network: String?
-
-    @Option(name: .long, help: "Bootstrap peer (format: peerId@host:port)")
-    var bootstrap: String?
 
     @Option(name: .long, help: "Ping timeout in seconds")
     var timeout: Int = 5
@@ -3034,90 +3031,101 @@ struct MeshPing: AsyncParsableCommand {
     var verbose: Bool = false
 
     mutating func run() async throws {
-        // Load network for encryption key
+        // Find network ID
         let networkStore = NetworkStore.defaultStore()
         try await networkStore.load()
 
-        let keyData: Data
-        let bootstrapPeers: [String]
-
-        if let networkId = network {
-            guard let storedNetwork = await networkStore.network(id: networkId) else {
-                print("Error: Network '\(networkId)' not found")
+        let networkId: String
+        if let specifiedNetwork = network {
+            guard await networkStore.network(id: specifiedNetwork) != nil else {
+                print("Error: Network '\(specifiedNetwork)' not found")
                 throw ExitCode.failure
             }
-            keyData = storedNetwork.key.networkKey
-            bootstrapPeers = bootstrap.map { [$0] } ?? storedNetwork.key.bootstrapPeers
+            networkId = specifiedNetwork
         } else {
-            // Use first available network
             let networks = await networkStore.allNetworks()
             guard let firstNetwork = networks.first else {
                 print("Error: No networks found. Join a network first with 'omerta network join'")
                 throw ExitCode.failure
             }
-            keyData = firstNetwork.key.networkKey
-            bootstrapPeers = bootstrap.map { [$0] } ?? firstNetwork.key.bootstrapPeers
+            networkId = firstNetwork.id
         }
 
-        let localIdentity = IdentityKeypair()
-        let meshConfig = MeshConfig(
-            encryptionKey: keyData,
-            connectionTimeout: Double(timeout),
-            bootstrapPeers: bootstrapPeers
-        )
+        // Connect to daemon via control socket
+        let client = ControlSocketClient(networkId: networkId)
+        guard client.isDaemonRunning() else {
+            print("Error: omertad is not running for network '\(networkId)'")
+            print("")
+            print("Start the daemon with:")
+            print("  omertad start --network \(networkId)")
+            throw ExitCode.failure
+        }
 
-        let mesh = MeshNetwork(identity: localIdentity, config: meshConfig)
-
-        print("Starting mesh network...")
-        try await mesh.start()
-
-        print("Pinging \(peerId)...")
+        print("Pinging \(peerId) via omertad...")
         print("")
 
         var successCount = 0
         var totalLatency = 0
 
         for i in 0..<count {
-            if let result = await mesh.ping(peerId, timeout: Double(timeout)) {
-                successCount += 1
-                totalLatency += result.latencyMs
+            do {
+                let response = try await client.send(.ping(peerId: peerId, timeout: timeout))
 
-                if verbose {
-                    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                    print("Ping \(i + 1): \(result.latencyMs)ms from \(result.peerId.prefix(16))...")
-                    print("")
-                    print("Peers we sent (\(result.sentPeers.count)):")
-                    if result.sentPeers.isEmpty {
-                        print("  (none)")
-                    } else {
-                        for (id, endpoint) in result.sentPeers {
-                            print("  \(id.prefix(16))... @ \(endpoint)")
+                switch response {
+                case .pingResult(let result):
+                    if let result = result {
+                        successCount += 1
+                        totalLatency += result.latencyMs
+
+                        if verbose {
+                            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                            print("Ping \(i + 1): \(result.latencyMs)ms from \(result.peerId.prefix(16))...")
+                            print("")
+                            print("Peers we sent (\(result.sentPeers.count)):")
+                            if result.sentPeers.isEmpty {
+                                print("  (none)")
+                            } else {
+                                for (id, endpoint) in result.sentPeers {
+                                    print("  \(id.prefix(16))... @ \(endpoint)")
+                                }
+                            }
+                            print("")
+                            print("Peers they sent (\(result.receivedPeers.count)):")
+                            if result.receivedPeers.isEmpty {
+                                print("  (none)")
+                            } else {
+                                for (id, endpoint) in result.receivedPeers {
+                                    let isNew = result.newPeers[id] != nil
+                                    let marker = isNew ? " [NEW]" : ""
+                                    print("  \(id.prefix(16))... @ \(endpoint)\(marker)")
+                                }
+                            }
+                            if !result.newPeers.isEmpty {
+                                print("")
+                                print("New peers discovered: \(result.newPeers.count)")
+                            }
+                        } else {
+                            print("Reply from \(result.peerId.prefix(16))...: time=\(result.latencyMs)ms peers=\(result.receivedPeers.count)")
                         }
-                    }
-                    print("")
-                    print("Peers they sent (\(result.receivedPeers.count)):")
-                    if result.receivedPeers.isEmpty {
-                        print("  (none)")
                     } else {
-                        for (id, endpoint) in result.receivedPeers {
-                            let isNew = result.newPeers[id] != nil
-                            let marker = isNew ? " [NEW]" : ""
-                            print("  \(id.prefix(16))... @ \(endpoint)\(marker)")
-                        }
+                        print("Request timeout for \(peerId.prefix(16))...")
                     }
-                    if !result.newPeers.isEmpty {
-                        print("")
-                        print("New peers discovered: \(result.newPeers.count)")
-                    }
-                } else {
-                    print("Reply from \(result.peerId.prefix(16))...: time=\(result.latencyMs)ms peers=\(result.receivedPeers.count)")
+
+                case .error(let msg):
+                    print("Error: \(msg)")
+                    throw ExitCode.failure
+
+                default:
+                    print("Unexpected response from daemon")
+                    throw ExitCode.failure
                 }
 
                 if i < count - 1 {
                     try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second between pings
                 }
-            } else {
-                print("Request timeout for \(peerId.prefix(16))...")
+            } catch let error as ControlSocketError {
+                print("Error: \(error.description)")
+                throw ExitCode.failure
             }
         }
 
@@ -3129,8 +3137,6 @@ struct MeshPing: AsyncParsableCommand {
             let avgLatency = totalLatency / successCount
             print("  avg latency: \(avgLatency)ms")
         }
-
-        await mesh.stop()
     }
 }
 
