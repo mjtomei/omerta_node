@@ -2850,8 +2850,8 @@ struct Kill: AsyncParsableCommand {
     @Flag(name: .long, help: "Also clean up WireGuard interfaces")
     var cleanup: Bool = false
 
-    @Option(name: .long, help: "Graceful shutdown timeout in seconds (default: 10)")
-    var timeout: Int = 10
+    @Option(name: .long, help: "Graceful shutdown timeout in seconds (no timeout by default)")
+    var timeout: Int?
 
     mutating func run() async throws {
         print("Stopping omerta processes...")
@@ -2867,10 +2867,14 @@ struct Kill: AsyncParsableCommand {
                 if client.isDaemonRunning() {
                     print("Requesting graceful shutdown for network '\(network.name)'...")
                     do {
-                        let response = try await client.send(.shutdown(graceful: true, timeoutSeconds: timeout))
+                        // Use a large timeout for the daemon-side since we control timing here
+                        let response = try await client.send(.shutdown(graceful: true, timeoutSeconds: timeout ?? 3600))
                         if case .shutdownAck(let data) = response {
                             if data.inFlightRequests > 0 {
                                 print("  Waiting for \(data.inFlightRequests) in-flight request(s)...")
+                            }
+                            if data.activeVMs > 0 {
+                                print("  \(data.activeVMs) active VM(s)")
                             }
                         }
                     } catch {
@@ -2881,9 +2885,9 @@ struct Kill: AsyncParsableCommand {
 
             // Wait for graceful shutdown
             if !networks.isEmpty {
-                print("Waiting up to \(timeout)s for graceful shutdown...")
+                print("Waiting for graceful shutdown...")
                 var waited = 0
-                while waited < timeout {
+                while timeout == nil || waited < timeout! {
                     try await Task.sleep(for: .seconds(1))
                     waited += 1
 
@@ -2899,6 +2903,12 @@ struct Kill: AsyncParsableCommand {
                     if !anyRunning {
                         print("All daemons stopped gracefully")
                         break
+                    }
+
+                    // Print status every minute
+                    if waited % 60 == 0 {
+                        let minutes = waited / 60
+                        print("Still waiting (\(minutes) minute\(minutes == 1 ? "" : "s"))... Use 'omerta kill --force' to force stop.")
                     }
                 }
             }
