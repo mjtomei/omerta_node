@@ -1804,22 +1804,23 @@ struct VMConnect: AsyncParsableCommand {
         let expandedKeyPath = NSString(string: selectedVM.sshKeyPath).expandingTildeInPath
         let knownHostsPath = NSString(string: VMConnection.knownHostsPath).expandingTildeInPath
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        process.arguments = [
+        // Use execvp to replace this process with SSH
+        // This gives SSH direct access to the terminal for proper interactive use
+        let args = [
+            "ssh",
             "-o", "UserKnownHostsFile=\(knownHostsPath)",
             "-o", "StrictHostKeyChecking=accept-new",
             "-i", expandedKeyPath,
             "\(selectedVM.sshUser)@\(selectedVM.vmIP)"
         ]
 
-        // Connect stdin/stdout/stderr
-        process.standardInput = FileHandle.standardInput
-        process.standardOutput = FileHandle.standardOutput
-        process.standardError = FileHandle.standardError
+        // Convert to C strings for execvp
+        let cArgs = args.map { strdup($0) } + [nil]
+        execvp("/usr/bin/ssh", cArgs)
 
-        try process.run()
-        process.waitUntilExit()
+        // If we get here, exec failed
+        perror("exec ssh")
+        throw ExitCode.failure
     }
 }
 
