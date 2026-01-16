@@ -65,7 +65,11 @@ struct OmertaCLI: AsyncParsableCommand {
             Status.self,
             CheckDeps.self,
             Kill.self,
-            Ping.self
+            Ping.self,
+            SSH.self,
+            VMs.self,
+            Peers.self,
+            Networks.self
         ],
         defaultSubcommand: Status.self
     )
@@ -1554,7 +1558,10 @@ struct VMRelease: AsyncParsableCommand {
     )
 
     @Argument(help: "VM ID to release (or prefix)")
-    var vmId: String
+    var vmIdArg: String?
+
+    @Option(name: .long, help: "VM ID to release (or prefix)")
+    var vm: String?
 
     @Flag(name: [.customShort("y"), .long], help: "Skip confirmation prompt")
     var yes: Bool = false
@@ -1563,6 +1570,16 @@ struct VMRelease: AsyncParsableCommand {
     var forceLocal: Bool = false
 
     mutating func run() async throws {
+        // Get VM ID from either argument or --vm flag
+        guard let vmId = vmIdArg ?? vm else {
+            print("Error: VM ID is required")
+            print("")
+            print("Usage:")
+            print("  omerta vm release <vm-id>")
+            print("  omerta vm release --vm <vm-id>")
+            throw ExitCode.failure
+        }
+
         // Find VM by ID or prefix
         let tracker = VMTracker()
         let vms = try await tracker.loadPersistedVMs()
@@ -1701,9 +1718,24 @@ struct VMConnect: AsyncParsableCommand {
     )
 
     @Argument(help: "VM ID to connect to (or prefix)")
-    var vmId: String
+    var vmIdArg: String?
+
+    @Option(name: .long, help: "VM ID to connect to (or prefix)")
+    var vm: String?
 
     mutating func run() async throws {
+        // Get VM ID from either argument or --vm flag
+        guard let vmId = vmIdArg ?? vm else {
+            print("Error: VM ID is required")
+            print("")
+            print("Usage:")
+            print("  omerta vm connect <vm-id>")
+            print("  omerta vm connect --vm <vm-id>")
+            print("  omerta ssh <vm-id>")
+            print("  omerta ssh --vm <vm-id>")
+            throw ExitCode.failure
+        }
+
         // Find VM by ID or prefix
         let tracker = VMTracker()
         let vms = try await tracker.loadPersistedVMs()
@@ -2868,6 +2900,90 @@ struct Ping: AsyncParsableCommand {
         meshPing.count = count
         meshPing.verbose = verbose
         try await meshPing.run()
+    }
+}
+
+// MARK: - SSH Command (Top-level alias for vm connect)
+
+struct SSH: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "ssh",
+        abstract: "SSH into a VM (alias for 'omerta vm connect')"
+    )
+
+    @Argument(help: "VM ID to connect to (or prefix)")
+    var vmIdArg: String?
+
+    @Option(name: .long, help: "VM ID to connect to (or prefix)")
+    var vm: String?
+
+    mutating func run() async throws {
+        // Delegate to VMConnect implementation
+        var vmConnect = VMConnect()
+        vmConnect.vmIdArg = vmIdArg
+        vmConnect.vm = vm
+        try await vmConnect.run()
+    }
+}
+
+// MARK: - VMs Command (Top-level alias for vm list)
+
+struct VMs: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "vms",
+        abstract: "List active VMs (alias for 'omerta vm list')"
+    )
+
+    @Flag(name: .long, help: "Show detailed information")
+    var detailed: Bool = false
+
+    mutating func run() async throws {
+        // Delegate to VMList implementation
+        var vmList = VMList()
+        vmList.detailed = detailed
+        try await vmList.run()
+    }
+}
+
+// MARK: - Peers Command (Top-level alias for mesh peers)
+
+struct Peers: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "peers",
+        abstract: "List discovered mesh peers (alias for 'omerta mesh peers')"
+    )
+
+    @Option(name: .long, help: "Bootstrap peer (format: peerId@host:port)")
+    var bootstrap: String?
+
+    @Option(name: .long, help: "Discovery timeout in seconds")
+    var timeout: Int = 5
+
+    mutating func run() async throws {
+        // Delegate to MeshPeers implementation
+        var meshPeers = MeshPeers()
+        meshPeers.bootstrap = bootstrap
+        meshPeers.timeout = timeout
+        try await meshPeers.run()
+    }
+}
+
+// MARK: - Networks Command (Top-level alias for network list)
+
+struct Networks: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "networks",
+        abstract: "List joined networks (alias for 'omerta network list')"
+    )
+
+    @Flag(name: .long, help: "Show detailed information")
+    var detailed: Bool = false
+
+    mutating func run() async throws {
+        // Delegate to NetworkList implementation
+        var networkList = NetworkList()
+        networkList.detailed = detailed
+        try await networkList.run()
     }
 }
 
