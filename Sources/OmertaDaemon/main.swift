@@ -18,6 +18,8 @@ struct DaemonConfig {
     var noProvider: Bool = false
     var dryRun: Bool = false
     var timeout: Int?
+    var canRelay: Bool = true
+    var canCoordinateHolePunch: Bool = true
 
     /// Default config file path
     static var defaultPath: String {
@@ -68,6 +70,10 @@ struct DaemonConfig {
                 config.dryRun = cleanValue.lowercased() == "true" || cleanValue == "1"
             case "timeout":
                 config.timeout = Int(cleanValue)
+            case "can-relay", "canrelay", "can_relay", "relay":
+                config.canRelay = cleanValue.lowercased() == "true" || cleanValue == "1"
+            case "can-coordinate-hole-punch", "cancoordinateholepunch", "can_coordinate_hole_punch", "hole-punch", "holepunch":
+                config.canCoordinateHolePunch = cleanValue.lowercased() == "true" || cleanValue == "1"
             default:
                 // Unknown key, ignore
                 break
@@ -96,6 +102,14 @@ struct DaemonConfig {
 
         # Dry run mode - simulate VM creation without actual VMs (for testing)
         dry-run=false
+
+        # Relay mode - allow relaying traffic for other peers (default: true)
+        # Disable to reduce bandwidth usage if you're behind a restrictive NAT
+        can-relay=true
+
+        # Hole punch coordination - help other peers establish direct connections (default: true)
+        # Disable if you want to minimize participation in the mesh
+        can-coordinate-hole-punch=true
 
         # Auto-shutdown after N seconds (optional, for testing)
         # timeout=3600
@@ -141,6 +155,12 @@ struct Start: AsyncParsableCommand {
     @Flag(name: .long, help: "Dry run mode - simulate VM creation without actual VMs")
     var dryRun: Bool = false
 
+    @Flag(name: .long, help: "Disable relaying traffic for other peers")
+    var noRelay: Bool = false
+
+    @Flag(name: .long, help: "Disable hole punch coordination")
+    var noHolePunch: Bool = false
+
     @Option(name: .long, help: "Auto-shutdown after N seconds (for testing)")
     var timeout: Int?
 
@@ -164,11 +184,14 @@ struct Start: AsyncParsableCommand {
         }
 
         // Merge: command line options override config file
+        // For boolean flags: CLI flag disables (--no-relay), config enables by default
         let effectiveNetwork = network ?? fileConfig.network
         let effectivePort = port ?? fileConfig.port
         let effectiveNoProvider = noProvider || fileConfig.noProvider
         let effectiveDryRun = dryRun || fileConfig.dryRun
         let effectiveTimeout = timeout ?? fileConfig.timeout
+        let effectiveCanRelay = !noRelay && fileConfig.canRelay
+        let effectiveCanHolePunch = !noHolePunch && fileConfig.canCoordinateHolePunch
 
         print("Starting Omerta Provider Daemon...")
         if effectiveDryRun {
@@ -271,7 +294,9 @@ struct Start: AsyncParsableCommand {
             port: effectivePort,
             noProvider: effectiveNoProvider,
             dryRun: effectiveDryRun,
-            timeout: effectiveTimeout
+            timeout: effectiveTimeout,
+            canRelay: effectiveCanRelay,
+            canHolePunch: effectiveCanHolePunch
         )
     }
 
@@ -283,14 +308,16 @@ struct Start: AsyncParsableCommand {
         port: Int,
         noProvider: Bool,
         dryRun: Bool,
-        timeout: Int?
+        timeout: Int?,
+        canRelay: Bool,
+        canHolePunch: Bool
     ) async throws {
         // Build mesh config with encryption key and bootstrap peers from network
         let meshConfig = MeshConfig(
             encryptionKey: keyData,
             port: port,
-            canRelay: true,
-            canCoordinateHolePunch: true,
+            canRelay: canRelay,
+            canCoordinateHolePunch: canHolePunch,
             bootstrapPeers: bootstrapPeers
         )
 
@@ -356,6 +383,8 @@ struct Start: AsyncParsableCommand {
             if let publicEndpoint = status.publicEndpoint {
                 print("Public Endpoint: \(publicEndpoint)")
             }
+            print("Relay: \(canRelay ? "enabled" : "disabled")")
+            print("Hole Punch: \(canHolePunch ? "enabled" : "disabled")")
             if !bootstrapPeers.isEmpty {
                 print("Bootstrap Peers: \(bootstrapPeers.joined(separator: ", "))")
             }
@@ -832,14 +861,16 @@ struct ConfigShow: AsyncParsableCommand {
             do {
                 let loadedConfig = try DaemonConfig.load(from: configPath)
                 print("Settings:")
-                print("  network:     \(loadedConfig.network ?? "(not set)")")
-                print("  port:        \(loadedConfig.port)")
-                print("  no-provider: \(loadedConfig.noProvider)")
-                print("  dry-run:     \(loadedConfig.dryRun)")
+                print("  network:      \(loadedConfig.network ?? "(not set)")")
+                print("  port:         \(loadedConfig.port)")
+                print("  no-provider:  \(loadedConfig.noProvider)")
+                print("  dry-run:      \(loadedConfig.dryRun)")
+                print("  can-relay:    \(loadedConfig.canRelay)")
+                print("  hole-punch:   \(loadedConfig.canCoordinateHolePunch)")
                 if let timeout = loadedConfig.timeout {
-                    print("  timeout:     \(timeout)s")
+                    print("  timeout:      \(timeout)s")
                 } else {
-                    print("  timeout:     (none)")
+                    print("  timeout:      (none)")
                 }
                 print("")
                 print("Raw file contents:")
@@ -854,11 +885,13 @@ struct ConfigShow: AsyncParsableCommand {
             print("(Config file not found)")
             print("")
             print("Default settings will be used:")
-            print("  network:     (must specify via --network)")
-            print("  port:        9999")
-            print("  no-provider: false")
-            print("  dry-run:     false")
-            print("  timeout:     (none)")
+            print("  network:      (must specify via --network)")
+            print("  port:         9999")
+            print("  no-provider:  false")
+            print("  dry-run:      false")
+            print("  can-relay:    true")
+            print("  hole-punch:   true")
+            print("  timeout:      (none)")
             print("")
             print("Generate a config file with:")
             print("  omertad config generate")
