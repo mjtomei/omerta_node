@@ -22,6 +22,11 @@ public enum HolePunchResult: Sendable, Equatable {
         if case .success(let ep, _) = self { return ep }
         return nil
     }
+
+    public var failureReason: HolePunchFailure? {
+        if case .failed(let reason) = self { return reason }
+        return nil
+    }
 }
 
 /// Reasons for hole punch failure

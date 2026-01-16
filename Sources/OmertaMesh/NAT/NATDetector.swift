@@ -9,11 +9,25 @@ public actor NATDetector {
     private let stunClient: STUNClient
     private let logger: Logger
 
+    /// Event logger for persistent logging (optional)
+    private var eventLogger: MeshEventLogger?
+
+    /// Last detected NAT type (for change detection)
+    private var lastNATType: NATType?
+
+    /// Last detected endpoint (for change detection)
+    private var lastEndpoint: String?
+
     /// Create a NAT detector with specified STUN servers
     public init(stunServers: [String] = STUNClient.defaultServers) {
         self.stunServers = stunServers
         self.stunClient = STUNClient()
         self.logger = Logger(label: "io.omerta.mesh.nat.detector")
+    }
+
+    /// Set the event logger for persistent logging
+    public func setEventLogger(_ logger: MeshEventLogger?) {
+        self.eventLogger = logger
     }
 
     /// Detect NAT type
@@ -43,6 +57,15 @@ public actor NATDetector {
             logger.debug("First STUN result: \(result1.endpoint) from \(result1.serverAddress)")
         } catch {
             logger.error("First STUN query failed: \(error)")
+
+            // Log error
+            await eventLogger?.recordError(
+                component: MeshComponent.natDetector.rawValue,
+                operation: "detect",
+                errorType: MeshErrorCategory.network.rawValue,
+                errorMessage: "STUN query failed: \(error)"
+            )
+
             throw error
         }
 
@@ -89,6 +112,24 @@ public actor NATDetector {
             "endpoint": "\(result1.endpoint)",
             "secondMapping": "\(result2.endpoint)"
         ])
+
+        // Log NAT type change if detected
+        if let last = lastNATType, last != natType {
+            await eventLogger?.recordNATTypeChange(oldType: last.rawValue, newType: natType.rawValue)
+        } else if lastNATType == nil {
+            // First detection
+            await eventLogger?.recordNATTypeChange(oldType: nil, newType: natType.rawValue)
+        }
+        lastNATType = natType
+
+        // Log endpoint change if detected
+        if let last = lastEndpoint, last != result1.endpoint {
+            await eventLogger?.recordEndpointChange(oldEndpoint: last, newEndpoint: result1.endpoint)
+        } else if lastEndpoint == nil {
+            // First detection
+            await eventLogger?.recordEndpointChange(oldEndpoint: nil, newEndpoint: result1.endpoint)
+        }
+        lastEndpoint = result1.endpoint
 
         return NATDetectionResult(
             type: natType,

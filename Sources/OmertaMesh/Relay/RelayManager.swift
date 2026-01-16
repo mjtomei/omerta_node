@@ -43,6 +43,9 @@ public actor RelayManager {
     private let config: RelayManagerConfig
     private let logger: Logger
 
+    /// Event logger for persistent logging (optional)
+    private var eventLogger: MeshEventLogger?
+
     /// Active relay connections
     private var connections: [PeerId: RelayConnection] = [:]
 
@@ -93,6 +96,11 @@ public actor RelayManager {
         connections.removeAll()
 
         logger.info("Relay manager stopped")
+    }
+
+    /// Set the event logger for persistent logging
+    public func setEventLogger(_ logger: MeshEventLogger?) {
+        self.eventLogger = logger
     }
 
     // MARK: - Relay Connection Management
@@ -174,6 +182,13 @@ public actor RelayManager {
 
         guard let candidate = candidates.first,
               let connection = connections[candidate.peerId] else {
+            // Log relay failure
+            await eventLogger?.recordRelayEvent(
+                peerId: targetPeerId,
+                relayPeerId: "none",
+                eventType: .failed,
+                reason: "No relay connected"
+            )
             throw RelayError.notConnected
         }
 
@@ -190,6 +205,14 @@ public actor RelayManager {
         )
 
         await session.activate()
+
+        // Log relay session started
+        await eventLogger?.recordRelayEvent(
+            peerId: targetPeerId,
+            relayPeerId: candidate.peerId,
+            eventType: .started,
+            reason: "Session created"
+        )
 
         return session
     }
@@ -216,10 +239,23 @@ public actor RelayManager {
     public func endSession(_ sessionId: String) async {
         if let session = await sessionManager.getSession(sessionId) {
             let relayPeerId = session.relayPeerId
+            let remotePeerId = session.remotePeerId
+            let metrics = await session.metrics
+
             if let connection = connections[relayPeerId] {
                 await connection.endSession(sessionId)
             }
             await sessionManager.removeSession(sessionId)
+
+            // Log relay session closed
+            await eventLogger?.recordRelayEvent(
+                peerId: remotePeerId,
+                relayPeerId: relayPeerId,
+                eventType: .closed,
+                reason: "Session ended normally",
+                durationMs: Int(metrics.duration * 1000),
+                bytesRelayed: Int(metrics.bytesSent + metrics.bytesReceived)
+            )
         }
     }
 
@@ -277,6 +313,15 @@ public actor RelayManager {
         // Remove unhealthy connections
         for peerId in unhealthyRelays {
             logger.warning("Relay \(peerId) unhealthy, disconnecting")
+
+            // Log relay failure
+            await eventLogger?.recordRelayEvent(
+                peerId: "self",
+                relayPeerId: peerId,
+                eventType: .failed,
+                reason: "Health check failed"
+            )
+
             await disconnectRelay(peerId)
         }
 

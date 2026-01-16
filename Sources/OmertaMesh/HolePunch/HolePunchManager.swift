@@ -30,6 +30,9 @@ public actor HolePunchManager {
     private let config: Config
     private let logger: Logger
 
+    /// Event logger for persistent logging (optional)
+    private var eventLogger: MeshEventLogger?
+
     /// The hole puncher for executing hole punches
     public let holePuncher: HolePuncher
 
@@ -126,12 +129,28 @@ public actor HolePunchManager {
         self.natType = natType
     }
 
+    /// Set the event logger for persistent logging
+    public func setEventLogger(_ logger: MeshEventLogger?) {
+        self.eventLogger = logger
+    }
+
     // MARK: - Initiating Hole Punch
 
     /// Establish a direct connection to a peer via hole punching
     public func establishDirectConnection(to targetPeerId: PeerId) async -> HolePunchResult {
+        let startTime = Date()
+
         // Get target's NAT type
         let targetNATType = await getPeerNATType?(targetPeerId) ?? .unknown
+
+        // Log hole punch started
+        await eventLogger?.recordHolePunchEvent(
+            peerId: targetPeerId,
+            eventType: .started,
+            ourNATType: natType.rawValue,
+            peerNATType: targetNATType.rawValue,
+            strategy: nil
+        )
 
         // Check compatibility
         let compatibility = HolePunchCompatibility.check(
@@ -141,6 +160,19 @@ public actor HolePunchManager {
 
         if !compatibility.strategy.canSucceed {
             logger.info("Hole punch impossible to \(targetPeerId): \(compatibility.recommendation)")
+
+            // Log failure
+            let durationMs = Int(Date().timeIntervalSince(startTime) * 1000)
+            await eventLogger?.recordHolePunchEvent(
+                peerId: targetPeerId,
+                eventType: .failed,
+                ourNATType: natType.rawValue,
+                peerNATType: targetNATType.rawValue,
+                strategy: nil,
+                durationMs: durationMs,
+                error: "Both peers have symmetric NAT"
+            )
+
             return .failed(reason: .bothSymmetric)
         }
 
@@ -281,11 +313,24 @@ public actor HolePunchManager {
             ourStrategy = compatibility.strategy
         }
 
+        let startTime = Date()
         let result = await holePuncher.execute(
             targetPeerId: fromPeerId,
             targetEndpoint: theirEndpoint,
             strategy: ourStrategy,
             localPort: localPort
+        )
+        let durationMs = Int(Date().timeIntervalSince(startTime) * 1000)
+
+        // Log result
+        await eventLogger?.recordHolePunchEvent(
+            peerId: fromPeerId,
+            eventType: result.succeeded ? .succeeded : .failed,
+            ourNATType: natType.rawValue,
+            peerNATType: theirNATType.rawValue,
+            strategy: ourStrategy.rawValue,
+            durationMs: durationMs,
+            error: result.succeeded ? nil : result.failureReason?.description
         )
 
         // Report result
@@ -311,11 +356,24 @@ public actor HolePunchManager {
         logger.info("Executing hole punch to \(targetEndpoint) with strategy \(strategy.rawValue)")
 
         // Execute hole punch
+        let startTime = Date()
         let result = await holePuncher.execute(
             targetPeerId: targetPeerId,
             targetEndpoint: targetEndpoint,
             strategy: strategy,
             localPort: localPort
+        )
+        let durationMs = Int(Date().timeIntervalSince(startTime) * 1000)
+
+        // Log result
+        await eventLogger?.recordHolePunchEvent(
+            peerId: targetPeerId,
+            eventType: result.succeeded ? .succeeded : .failed,
+            ourNATType: natType.rawValue,
+            peerNATType: nil,
+            strategy: strategy.rawValue,
+            durationMs: durationMs,
+            error: result.succeeded ? nil : result.failureReason?.description
         )
 
         // Resume pending result
