@@ -48,6 +48,44 @@ func formatRelativeDate(_ date: Date) -> String {
     }
 }
 
+/// Resolve a network ID or prefix to a full network
+/// Returns: (network, nil) on exact match, (network, nil) on unique prefix match,
+/// (nil, error message) on no match or ambiguous match
+func resolveNetwork(_ idOrPrefix: String, store: NetworkStore) async -> (OmertaMesh.Network?, String?) {
+    // First try exact match
+    if let network = await store.network(id: idOrPrefix) {
+        return (network, nil)
+    }
+
+    // Try prefix match
+    let allNetworks = await store.allNetworks()
+    let matches = allNetworks.filter { $0.id.hasPrefix(idOrPrefix) }
+
+    switch matches.count {
+    case 0:
+        // Also try matching by name prefix (case-insensitive)
+        let nameMatches = allNetworks.filter { $0.name.lowercased().hasPrefix(idOrPrefix.lowercased()) }
+        if nameMatches.count == 1 {
+            return (nameMatches[0], nil)
+        } else if nameMatches.count > 1 {
+            var msg = "Ambiguous network name prefix '\(idOrPrefix)'. Did you mean:\n"
+            for net in nameMatches.prefix(5) {
+                msg += "  \(net.id.prefix(8))... (\(net.name))\n"
+            }
+            return (nil, msg)
+        }
+        return (nil, "Network not found: \(idOrPrefix)")
+    case 1:
+        return (matches[0], nil)
+    default:
+        var msg = "Ambiguous network ID prefix '\(idOrPrefix)'. Did you mean:\n"
+        for net in matches.prefix(5) {
+            msg += "  \(net.id.prefix(8))... (\(net.name))\n"
+        }
+        return (nil, msg)
+    }
+}
+
 @main
 struct OmertaCLI: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
@@ -65,6 +103,7 @@ struct OmertaCLI: AsyncParsableCommand {
             Status.self,
             CheckDeps.self,
             Kill.self,
+            Help.self,
             Ping.self,
             SSH.self,
             VMs.self,
@@ -719,22 +758,38 @@ struct NetworkLeave: AsyncParsableCommand {
         abstract: "Leave a network"
     )
 
-    @Option(name: .long, help: "Network ID")
-    var id: String
+    @Argument(help: "Network ID or prefix")
+    var idArg: String?
 
-    @Flag(name: .long, help: "Skip confirmation")
+    @Option(name: .long, help: "Network ID or prefix")
+    var id: String?
+
+    @Flag(name: .shortAndLong, help: "Skip confirmation")
     var force: Bool = false
 
-    mutating func run() async throws {
-        let networkStore = NetworkStore.defaultStore()
-        try await networkStore.load()
+    @Flag(name: .shortAndLong, help: "Confirm leaving (same as typing 'yes')")
+    var yes: Bool = false
 
-        guard let network = await networkStore.network(id: id) else {
-            print("Network not found: \(id)")
+    mutating func run() async throws {
+        guard let idOrPrefix = idArg ?? id else {
+            print("Error: Network ID is required")
+            print("")
+            print("Usage:")
+            print("  omerta network leave <network-id>")
+            print("  omerta network leave --id <network-id>")
             throw ExitCode.failure
         }
 
-        if !force {
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+
+        let (network, error) = await resolveNetwork(idOrPrefix, store: networkStore)
+        guard let network = network else {
+            print(error ?? "Network not found")
+            throw ExitCode.failure
+        }
+
+        if !force && !yes {
             print("Are you sure you want to leave '\(network.name)'?")
             print("You will need the network key to rejoin.")
             print("")
@@ -747,7 +802,7 @@ struct NetworkLeave: AsyncParsableCommand {
         }
 
         do {
-            try await networkStore.leave(id)
+            try await networkStore.leave(network.id)
             print("\nLeft network: \(network.name)")
         } catch {
             print("Failed to leave network: \(error)")
@@ -762,15 +817,28 @@ struct NetworkShow: AsyncParsableCommand {
         abstract: "Show detailed information about a network"
     )
 
-    @Option(name: .long, help: "Network ID")
-    var id: String
+    @Argument(help: "Network ID or prefix")
+    var idArg: String?
+
+    @Option(name: .long, help: "Network ID or prefix")
+    var id: String?
 
     mutating func run() async throws {
+        guard let idOrPrefix = idArg ?? id else {
+            print("Error: Network ID is required")
+            print("")
+            print("Usage:")
+            print("  omerta network show <network-id>")
+            print("  omerta network show --id <network-id>")
+            throw ExitCode.failure
+        }
+
         let networkStore = NetworkStore.defaultStore()
         try await networkStore.load()
 
-        guard let network = await networkStore.network(id: id) else {
-            print("Network not found: \(id)")
+        let (network, error) = await resolveNetwork(idOrPrefix, store: networkStore)
+        guard let network = network else {
+            print(error ?? "Network not found")
             throw ExitCode.failure
         }
 
@@ -2905,6 +2973,41 @@ struct Kill: AsyncParsableCommand {
     }
 }
 
+// MARK: - Help Command
+
+struct Help: ParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "help",
+        abstract: "Show help for a command",
+        discussion: "Use 'omerta help <command>' to see help for a specific command."
+    )
+
+    @Argument(parsing: .captureForPassthrough, help: "Command to show help for")
+    var subcommand: [String] = []
+
+    mutating func run() throws {
+        if subcommand.isEmpty {
+            // No subcommand specified, show main help
+            let args = ["omerta", "--help"]
+            let cArgs = args.map { strdup($0) } + [nil]
+            execvp("/proc/self/exe", cArgs)
+            // If execvp fails, try finding omerta in PATH
+            execvp("omerta", cArgs)
+            throw ExitCode.failure
+        }
+
+        // Build command with --help appended
+        let args = ["omerta"] + subcommand + ["--help"]
+        let cArgs = args.map { strdup($0) } + [nil]
+
+        // Replace this process with the help command
+        execvp("/proc/self/exe", cArgs)
+        // If execvp fails, try finding omerta in PATH
+        execvp("omerta", cArgs)
+        throw ExitCode.failure
+    }
+}
+
 // MARK: - Ping Command (Top-level alias for mesh ping)
 
 struct Ping: AsyncParsableCommand {
@@ -3337,7 +3440,27 @@ struct MeshPing: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        print("Pinging \(peerId) via omertad...")
+        // Resolve peer ID prefix
+        var resolvedPeerId = peerId
+        if peerId.count < 64 {
+            // Likely a prefix, try to resolve
+            let peersResponse = try await client.send(.peers)
+            if case .peers(let knownPeers) = peersResponse {
+                let matches = knownPeers.filter { $0.peerId.hasPrefix(peerId) }
+                if matches.count == 1 {
+                    resolvedPeerId = matches[0].peerId
+                } else if matches.count > 1 {
+                    print("Ambiguous peer ID prefix '\(peerId)'. Did you mean:")
+                    for peer in matches.prefix(5) {
+                        print("  \(peer.peerId.prefix(16))...")
+                    }
+                    throw ExitCode.failure
+                }
+                // If no matches, continue with original (will fail at ping time with better error)
+            }
+        }
+
+        print("Pinging \(resolvedPeerId.prefix(16))... via omertad...")
         print("")
 
         var successCount = 0
@@ -3345,7 +3468,7 @@ struct MeshPing: AsyncParsableCommand {
 
         for i in 0..<count {
             do {
-                let response = try await client.send(.ping(peerId: peerId, timeout: timeout))
+                let response = try await client.send(.ping(peerId: resolvedPeerId, timeout: timeout))
 
                 switch response {
                 case .pingResult(let result):
@@ -3384,7 +3507,7 @@ struct MeshPing: AsyncParsableCommand {
                             print("Reply from \(result.peerId.prefix(16))...: time=\(result.latencyMs)ms peers=\(result.receivedPeers.count)")
                         }
                     } else {
-                        print("Request timeout for \(peerId.prefix(16))...")
+                        print("Request timeout for \(resolvedPeerId.prefix(16))...")
                     }
 
                 case .error(let msg):
@@ -3407,7 +3530,7 @@ struct MeshPing: AsyncParsableCommand {
 
         print("")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        print("Ping statistics for \(peerId.prefix(16))...")
+        print("Ping statistics for \(resolvedPeerId.prefix(16))...")
         print("  \(count) packets transmitted, \(successCount) received, \(100 - (successCount * 100 / max(count, 1)))% packet loss")
         if successCount > 0 {
             let avgLatency = totalLatency / successCount
