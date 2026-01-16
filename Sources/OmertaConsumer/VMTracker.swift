@@ -5,6 +5,7 @@ import OmertaCore
 public actor VMTracker {
     private let persistencePath: String
     private var activeVMs: [UUID: VMConnection] = [:]
+    private var hasLoadedFromDisk = false
 
     public init(persistencePath: String = "~/.omerta/vms/active.json") {
         // Get the real user's home directory (handles sudo correctly)
@@ -55,19 +56,28 @@ public actor VMTracker {
 
     /// Track a new VM connection
     public func trackVM(_ connection: VMConnection) async throws {
+        try await ensureLoaded()
         activeVMs[connection.vmId] = connection
         try await persist()
     }
 
     /// Remove VM from tracking
     public func removeVM(_ vmId: UUID) async throws {
+        try await ensureLoaded()
         activeVMs.removeValue(forKey: vmId)
         try await persist()
     }
 
     /// Get all active VMs
     public func getActiveVMs() async -> [VMConnection] {
-        Array(activeVMs.values).sorted { $0.createdAt > $1.createdAt }
+        try? await ensureLoaded()
+        return Array(activeVMs.values).sorted { $0.createdAt > $1.createdAt }
+    }
+
+    /// Ensure VMs are loaded from disk (only loads once)
+    private func ensureLoaded() async throws {
+        guard !hasLoadedFromDisk else { return }
+        _ = try await loadPersistedVMs()
     }
 
     /// Get specific VM
@@ -79,6 +89,8 @@ public actor VMTracker {
 
     /// Load persisted VMs from disk
     public func loadPersistedVMs() async throws -> [VMConnection] {
+        hasLoadedFromDisk = true
+
         guard FileManager.default.fileExists(atPath: persistencePath) else {
             return []
         }

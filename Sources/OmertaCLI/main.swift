@@ -64,7 +64,8 @@ struct OmertaCLI: AsyncParsableCommand {
             NAT.self,
             Status.self,
             CheckDeps.self,
-            Kill.self
+            Kill.self,
+            Ping.self
         ],
         defaultSubcommand: Status.self
     )
@@ -1220,6 +1221,9 @@ struct VMRequest: AsyncParsableCommand {
     @Option(name: .long, help: "Timeout in seconds when using --wait (default: 120)")
     var waitTimeout: Int = 120
 
+    @Option(name: .long, help: "Heartbeat timeout in minutes - VM will be reclaimed if no heartbeat (default: 10)")
+    var timeout: Int = 10
+
     mutating func run() async throws {
         // Check for root/sudo (required for WireGuard)
         if !dryRun && getuid() != 0 {
@@ -1270,14 +1274,8 @@ struct VMRequest: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        let keyData = storedNetwork.key.networkKey
-        let bootstrapPeers = storedNetwork.key.bootstrapPeers
-
         print("Network: \(storedNetwork.name) (\(networkId))")
         print("Provider: \(providerPeerId)")
-        if !bootstrapPeers.isEmpty {
-            print("Bootstrap: \(bootstrapPeers.joined(separator: ", "))")
-        }
 
         // Load config for SSH key
         let configManager = ConfigManager()
@@ -1328,51 +1326,6 @@ struct VMRequest: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        // Ping provider first to get their endpoint for direct connection
-        print("")
-        print("Establishing connection to provider...")
-        var providerEndpoint: String?
-        do {
-            let pingResponse = try await controlClient.send(.ping(peerId: providerPeerId, timeout: 10))
-            if case .pingResult(let result) = pingResponse, let result = result {
-                print("Provider reachable: \(result.latencyMs)ms latency at \(result.endpoint)")
-                providerEndpoint = result.endpoint
-            } else {
-                print("Warning: Could not reach provider \(providerPeerId) - request may fail")
-            }
-        } catch {
-            print("Warning: Ping failed - \(error)")
-        }
-
-        print("")
-        print("Requesting VM...")
-
-        try await requestVMViaMesh(
-            networkId: networkId,
-            providerPeerId: providerPeerId,
-            providerEndpoint: providerEndpoint,
-            bootstrapPeers: bootstrapPeers,
-            config: config,
-            networkKey: keyData,
-            requirements: requirements,
-            dryRun: dryRun,
-            wait: wait,
-            waitTimeout: waitTimeout
-        )
-    }
-
-    private func requestVMViaMesh(
-        networkId: String,
-        providerPeerId: String,
-        providerEndpoint: String?,
-        bootstrapPeers: [String],
-        config: OmertaConfig,
-        networkKey: Data,
-        requirements: ResourceRequirements,
-        dryRun: Bool,
-        wait: Bool,
-        waitTimeout: Int
-    ) async throws {
         if dryRun {
             print("[DRY RUN] Skipping VPN setup")
         }
@@ -1385,75 +1338,63 @@ struct VMRequest: AsyncParsableCommand {
 
         print("Using SSH key: \(config.ssh.expandedPrivateKeyPath())")
 
-        // Load identity from store (same as omertad uses)
-        let identityStore = IdentityStore.defaultStore()
-        try await identityStore.load()
-
-        guard let identity = try await identityStore.getIdentity(forNetwork: networkId) else {
-            print("Error: No identity found for network '\(networkId)'")
-            print("This can happen if the network was created on a different machine.")
+        // Encode requirements for IPC
+        guard let requirementsData = try? JSONEncoder().encode(requirements) else {
+            print("Error: Failed to encode requirements")
             throw ExitCode.failure
         }
 
-        print("Using identity: \(identity.peerId)")
+        print("")
+        print("Requesting VM via daemon (timeout: \(timeout) minutes)...")
 
-        // Build bootstrap peers list - include provider endpoint if we have it from omertad ping
-        var effectiveBootstrapPeers = bootstrapPeers
-        if let endpoint = providerEndpoint {
-            // Add provider as a known peer so we can connect directly
-            let providerBootstrap = "\(providerPeerId)@\(endpoint)"
-            if !effectiveBootstrapPeers.contains(providerBootstrap) {
-                effectiveBootstrapPeers.append(providerBootstrap)
-            }
-            print("Using provider endpoint from omertad: \(endpoint)")
+        // Send VM request through daemon IPC
+        let response = try await controlClient.send(
+            .vmRequest(
+                peerId: providerPeerId,
+                requirements: requirementsData,
+                sshPublicKey: sshPublicKey,
+                sshUser: config.ssh.defaultUser,
+                timeoutMinutes: timeout
+            ),
+            timeout: 120  // Allow 2 minutes for the request to complete
+        )
+
+        // Handle response
+        guard case .vmRequestResult(let result) = response else {
+            print("Error: Unexpected response from daemon")
+            throw ExitCode.failure
         }
 
-        // Build mesh config with encryption key and bootstrap peers
-        let meshConfig = MeshConfig(
-            encryptionKey: networkKey,
-            bootstrapPeers: effectiveBootstrapPeers
-        )
-
-        let client = MeshConsumerClient(
-            identity: identity,
-            meshConfig: meshConfig,
-            networkKey: networkKey,
-            dryRun: dryRun
-        )
-
-        print("")
-        print("Starting mesh network...")
-        try await client.start()
-
-        let stats = await client.statistics()
-        print("NAT type: \(stats.natType.rawValue)")
-        if let publicEndpoint = stats.publicEndpoint {
-            print("Public endpoint: \(publicEndpoint)")
+        guard result.success, let vmId = result.vmId, let vmIP = result.vmIP else {
+            print("")
+            print("VM request failed: \(result.error ?? "Unknown error")")
+            throw ExitCode.failure
         }
+
+        let vmIdPrefix = vmId.uuidString.prefix(8)
+
         print("")
-
-        print("Connecting to provider \(providerPeerId)...")
-
-        let connection = try await client.requestVM(
-            fromProvider: providerPeerId,
-            requirements: requirements,
-            sshPublicKey: sshPublicKey,
-            sshKeyPath: config.ssh.privateKeyPath,
-            sshUser: config.ssh.defaultUser
-        )
+        print("VM Created Successfully!")
+        print("========================")
+        print("")
+        print("VM ID: \(vmId)")
+        print("VM IP: \(vmIP)")
+        if let sshCommand = result.sshCommand {
+            print("SSH: \(sshCommand)")
+        } else {
+            print("SSH: ssh -i \(config.ssh.expandedPrivateKeyPath()) \(config.ssh.defaultUser)@\(vmIP)")
+        }
+        print("VPN Interface: wg\(vmIdPrefix)")
+        print("Heartbeat Timeout: \(timeout) minutes")
 
         // Wait for WireGuard connection if requested
-        // Note: MeshConsumerClient doesn't have waitForConnection, so we just wait briefly
         if wait && !dryRun {
             print("")
             print("Waiting for VM to establish WireGuard connection...")
-            // Simple ping-based wait
             var connected = false
             for _ in 0..<waitTimeout {
                 try await Task.sleep(for: .seconds(1))
-                // Check if we can reach the VM (simple connectivity test)
-                // For now, just wait a few seconds for the VM to boot
-                if await pingHost(connection.vmIP) {
+                if await pingHost(vmIP) {
                     connected = true
                     break
                 }
@@ -1461,16 +1402,15 @@ struct VMRequest: AsyncParsableCommand {
             if !connected {
                 print("Warning: Could not verify VM connectivity within \(waitTimeout)s")
                 print("The VM may still be booting. You can check connection status with:")
-                print("  sudo wg show \(connection.vpnInterface)")
+                print("  sudo wg show wg\(vmIdPrefix)")
             } else {
                 print("WireGuard connection established!")
             }
         }
 
-        // Don't stop the mesh client - it needs to stay running for the VPN
-        // The mesh client state is managed by the tracked VM
-
-        printVMConnection(connection)
+        print("")
+        print("To release this VM when done:")
+        print("  omerta vm release \(vmIdPrefix)")
     }
 
     /// Simple ping check (non-blocking, quick timeout)
@@ -1489,25 +1429,6 @@ struct VMRequest: AsyncParsableCommand {
         }
     }
 
-    private func printVMConnection(_ connection: VMConnection) {
-        print("")
-        print("VM Created Successfully!")
-        print("========================")
-        print("")
-        print("VM ID: \(connection.vmId)")
-        print("Provider: \(connection.provider.endpoint)")
-        print("VM IP: \(connection.vmIP)")
-        print("VPN Interface: \(connection.vpnInterface)")
-        print("")
-        print("Connect with SSH:")
-        print("  \(connection.sshCommand)")
-        print("")
-        print("Copy files with SCP:")
-        print("  \(connection.scpCommand)")
-        print("")
-        print("To release this VM:")
-        print("  omerta vm release \(connection.vmId)")
-    }
 }
 
 // MARK: - VM List Command
@@ -1529,6 +1450,9 @@ struct VMList: AsyncParsableCommand {
             print("")
             print("To request a VM:")
             print("  omerta vm request --provider <ip:port> --network-key <key>")
+
+            // Still check for orphaned resources even if no tracked VMs
+            await checkForOrphanedResources(trackedInterfaces: [])
             return
         }
 
@@ -1557,9 +1481,36 @@ struct VMList: AsyncParsableCommand {
         print("")
         print("To release a VM:")
         print("  omerta vm release <vm-id>")
+
+        // Check for orphaned resources
+        let trackedInterfaces = Set(vms.map { $0.vpnInterface })
+        await checkForOrphanedResources(trackedInterfaces: trackedInterfaces)
+    }
+
+    private func checkForOrphanedResources(trackedInterfaces: Set<String>) async {
+        // Try to get WireGuard status (may fail without sudo, that's OK)
+        guard let status = try? WireGuardCleanup.getCleanupStatus() else {
+            return
+        }
+
+        // Find orphaned interfaces (active but not tracked)
+        let orphanedInterfaces = status.activeInterfaces.filter { !trackedInterfaces.contains($0) }
+        let orphanedProcessCount = status.orphanedProcesses.count
+
+        if orphanedInterfaces.isEmpty && orphanedProcessCount == 0 {
+            return
+        }
+
         print("")
-        print("To clean up orphaned resources:")
-        print("  omerta vm cleanup")
+        print("⚠️  Orphaned resources detected:")
+        if !orphanedInterfaces.isEmpty {
+            print("   \(orphanedInterfaces.count) WireGuard interface\(orphanedInterfaces.count == 1 ? "" : "s") not tracked")
+        }
+        if orphanedProcessCount > 0 {
+            print("   \(orphanedProcessCount) orphaned wireguard-go process\(orphanedProcessCount == 1 ? "" : "es")")
+        }
+        print("")
+        print("Run 'sudo omerta vm cleanup' to remove orphaned resources.")
     }
 
     private func formatDate(_ date: Date) -> String {
@@ -2881,6 +2832,45 @@ struct Kill: AsyncParsableCommand {
     }
 }
 
+// MARK: - Ping Command (Top-level alias for mesh ping)
+
+struct Ping: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "ping",
+        abstract: "Ping a mesh peer (alias for 'omerta mesh ping')"
+    )
+
+    @Argument(help: "Peer ID to ping")
+    var peerIdArg: String?
+
+    @Option(name: .long, help: "Peer ID to ping")
+    var peer: String?
+
+    @Option(name: .long, help: "Network ID (default: first available)")
+    var network: String?
+
+    @Option(name: .long, help: "Ping timeout in seconds")
+    var timeout: Int = 5
+
+    @Option(name: .shortAndLong, help: "Number of pings to send")
+    var count: Int = 1
+
+    @Flag(name: .shortAndLong, help: "Show detailed gossip information")
+    var verbose: Bool = false
+
+    mutating func run() async throws {
+        // Delegate to MeshPing implementation
+        var meshPing = MeshPing()
+        meshPing.peerIdArg = peerIdArg
+        meshPing.peer = peer
+        meshPing.network = network
+        meshPing.timeout = timeout
+        meshPing.count = count
+        meshPing.verbose = verbose
+        try await meshPing.run()
+    }
+}
+
 // MARK: - Mesh Commands
 
 struct Mesh: AsyncParsableCommand {
@@ -3126,7 +3116,10 @@ struct MeshPing: AsyncParsableCommand {
     )
 
     @Argument(help: "Peer ID to ping")
-    var peerId: String
+    var peerIdArg: String?
+
+    @Option(name: .long, help: "Peer ID to ping")
+    var peer: String?
 
     @Option(name: .long, help: "Network ID (default: first available)")
     var network: String?
@@ -3141,6 +3134,18 @@ struct MeshPing: AsyncParsableCommand {
     var verbose: Bool = false
 
     mutating func run() async throws {
+        // Get peer ID from either argument or --peer flag
+        guard let peerId = peerIdArg ?? peer else {
+            print("Error: Peer ID is required")
+            print("")
+            print("Usage:")
+            print("  omerta mesh ping <peer-id>")
+            print("  omerta mesh ping --peer <peer-id>")
+            print("  omerta ping <peer-id>")
+            print("  omerta ping --peer <peer-id>")
+            throw ExitCode.failure
+        }
+
         // Find network ID
         let networkStore = NetworkStore.defaultStore()
         try await networkStore.load()

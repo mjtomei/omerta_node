@@ -88,135 +88,28 @@ final class MeshConsumerClientTests: XCTestCase {
 
     // MARK: - MeshConsumerClient Initialization Tests
 
-    func testMeshConsumerClientRequiresMeshEnabled() async {
-        var config = OmertaConfig()
-        config.localKey = OmertaConfig.generateLocalKey()
-        // mesh is nil
-
-        do {
-            _ = try MeshConsumerClient(config: config)
-            XCTFail("Should throw meshNotEnabled")
-        } catch let error as MeshConsumerError {
-            XCTAssertEqual(error.description, "Mesh networking is not enabled in config")
-        } catch {
-            XCTFail("Unexpected error: \(error)")
-        }
-    }
-
-    func testMeshConsumerClientRequiresNetworkKey() async {
-        var config = OmertaConfig()
-        config.mesh = MeshConfigOptions(enabled: true)
-        // localKey is nil
-
-        do {
-            _ = try MeshConsumerClient(config: config)
-            XCTFail("Should throw noNetworkKey")
-        } catch let error as MeshConsumerError {
-            XCTAssertEqual(error.description, "No network key configured (run 'omerta init' first)")
-        } catch {
-            XCTFail("Unexpected error: \(error)")
-        }
-    }
-
-    func testMeshConsumerClientInitializesWithValidConfig() async throws {
-        var config = OmertaConfig()
-        config.mesh = MeshConfigOptions(enabled: true)
-        config.localKey = OmertaConfig.generateLocalKey()
-
-        let client = try MeshConsumerClient(config: config, dryRun: true)
-
-        // Verify mesh network was created
-        let stats = await client.statistics()
-        XCTAssertEqual(stats.natType, .unknown) // Not started yet
-    }
-
-    func testMeshConsumerClientExplicitInit() async {
+    func testMeshConsumerClientInitialization() async {
         let identity = OmertaMesh.IdentityKeypair()
         let networkKey = Data(repeating: 0x42, count: 32)
-        let meshConfig = MeshConfig(encryptionKey: networkKey)
+
+        // Use a unique temp path to avoid interference from other tests/runs
+        let tempPath = "/tmp/omerta-test-\(UUID().uuidString)/vms.json"
 
         let client = MeshConsumerClient(
             identity: identity,
-            meshConfig: meshConfig,
             networkKey: networkKey,
+            providerPeerId: "testprovider1234",
+            providerEndpoint: "192.168.1.100:9999",
+            persistencePath: tempPath,
             dryRun: true
         )
 
-        let stats = await client.statistics()
-        XCTAssertEqual(stats.peerCount, 0)
-    }
+        // Client should be initialized without starting a mesh
+        let vms = await client.listActiveVMs()
+        XCTAssertTrue(vms.isEmpty)
 
-    func testMeshConsumerClientPeerIdIsDerivedFromIdentity() async {
-        let identity = OmertaMesh.IdentityKeypair()
-        let networkKey = Data(repeating: 0x42, count: 32)
-        let meshConfig = MeshConfig(encryptionKey: networkKey)
-
-        let client = MeshConsumerClient(
-            identity: identity,
-            meshConfig: meshConfig,
-            networkKey: networkKey,
-            dryRun: true
-        )
-
-        // Verify peer ID format: 16 lowercase hex chars
-        let peerId = await client.mesh.peerId
-        XCTAssertEqual(peerId.count, 16)
-        XCTAssertTrue(peerId.allSatisfy { $0.isHexDigit })
-        XCTAssertEqual(peerId, identity.peerId)
-    }
-
-    // MARK: - MeshConsumerClient Lifecycle Tests
-
-    func testMeshConsumerClientStartStop() async throws {
-        var config = OmertaConfig()
-        config.mesh = MeshConfigOptions(enabled: true)
-        config.localKey = OmertaConfig.generateLocalKey()
-
-        let client = try MeshConsumerClient(config: config, dryRun: true)
-
-        // Start
-        try await client.start()
-
-        // Verify started
-        let stats = await client.statistics()
-        // NAT type should be detected (or unknown if no network)
-        XCTAssertTrue(stats.natType == .unknown || stats.natType != .unknown)
-
-        // Stop
-        await client.stop()
-    }
-
-    func testMeshConsumerClientDoubleStartIsNoOp() async throws {
-        var config = OmertaConfig()
-        config.mesh = MeshConfigOptions(enabled: true)
-        config.localKey = OmertaConfig.generateLocalKey()
-
-        let client = try MeshConsumerClient(config: config, dryRun: true)
-
-        try await client.start()
-        try await client.start() // Should not throw
-
-        await client.stop()
-    }
-
-    func testMeshConsumerClientRequestVMRequiresStart() async throws {
-        var config = OmertaConfig()
-        config.mesh = MeshConfigOptions(enabled: true)
-        config.localKey = OmertaConfig.generateLocalKey()
-
-        let client = try MeshConsumerClient(config: config, dryRun: true)
-
-        // Don't call start()
-
-        do {
-            _ = try await client.requestVM(
-                fromProvider: "some-provider",
-                sshPublicKey: "ssh-ed25519 AAAA..."
-            )
-            XCTFail("Should throw notStarted")
-        } catch let error as MeshConsumerError {
-            XCTAssertEqual(error.description, "Mesh consumer client not started (call start() first)")
-        }
+        // Cleanup
+        try? FileManager.default.removeItem(atPath: (tempPath as NSString).deletingLastPathComponent)
     }
 
     // MARK: - Error Description Tests

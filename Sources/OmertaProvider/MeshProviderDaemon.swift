@@ -4,6 +4,7 @@ import OmertaCore
 import OmertaVM
 import OmertaVPN
 import OmertaMesh
+import OmertaConsumer
 
 /// Provider daemon that uses mesh network for NAT traversal
 /// Allows consumers behind NAT to connect and request VMs
@@ -96,7 +97,22 @@ public actor MeshProviderDaemon {
         let vmIP: String
         let vmWireGuardPublicKey: String
         let createdAt: Date
+        let maxHeartbeatFailures: Int  // From timeoutMinutes (1 failure per minute)
     }
+
+    // MARK: - Heartbeat State
+
+    /// Track consecutive heartbeat failures per consumer
+    private var heartbeatFailures: [String: Int] = [:]  // consumerPeerId -> failure count
+
+    /// Heartbeat loop task
+    private var heartbeatTask: Task<Void, Never>?
+
+    /// Pending heartbeats waiting for response (consumerPeerId -> timestamp sent)
+    private var pendingHeartbeats: [String: Date] = [:]
+
+    /// Consumer message handler (for heartbeat requests, etc.)
+    private var consumerMessageHandler: ((String, Data) async -> Void)?
 
     // Statistics
     private var totalVMRequests: Int = 0
@@ -155,6 +171,9 @@ public actor MeshProviderDaemon {
         isRunning = true
         startedAt = Date()
 
+        // Start heartbeat loop for VM liveness checks
+        startHeartbeatLoop()
+
         let natType = await mesh.currentNATType
         let publicEndpoint = await mesh.currentPublicEndpoint
 
@@ -173,6 +192,10 @@ public actor MeshProviderDaemon {
         }
 
         logger.info("Stopping mesh provider daemon")
+
+        // Cancel heartbeat loop
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
 
         // Stop all active VMs
         for (vmId, _) in activeVMs {
@@ -205,6 +228,17 @@ public actor MeshProviderDaemon {
             "size": "\(data.count)"
         ])
 
+        // Try to decode as heartbeat response
+        if let response = try? JSONDecoder().decode(MeshVMHeartbeatResponse.self, from: data) {
+            // Remove from pending and get the VMs we asked about
+            if pendingHeartbeats.removeValue(forKey: peerId) != nil {
+                let consumerVMs = activeVMs.filter { $0.value.consumerPeerId == peerId }
+                let requestedVmIds = consumerVMs.map { $0.key }
+                await handleHeartbeatResponse(response, from: peerId, requestedVmIds: requestedVmIds)
+            }
+            return
+        }
+
         // Try to decode as VM request
         if let request = try? JSONDecoder().decode(MeshVMRequest.self, from: data) {
             await handleVMRequest(request, from: peerId)
@@ -214,6 +248,12 @@ public actor MeshProviderDaemon {
         // Try to decode as VM release request
         if let request = try? JSONDecoder().decode(MeshVMReleaseRequest.self, from: data) {
             await handleVMRelease(request, from: peerId)
+            return
+        }
+
+        // Pass to consumer message handler if set (for heartbeat requests, etc.)
+        if let handler = consumerMessageHandler {
+            await handler(peerId, data)
             return
         }
 
@@ -254,16 +294,23 @@ public actor MeshProviderDaemon {
                 reverseTunnelConfig: nil
             )
 
-            // Track VM
+            // Track VM with heartbeat timeout (default 10 minutes = 10 failures)
+            let maxFailures = request.timeoutMinutes ?? 10
             let activeVM = MeshActiveVM(
                 vmId: request.vmId,
                 consumerPeerId: consumerPeerId,
                 vmIP: vmResult.vmIP,
                 vmWireGuardPublicKey: vmResult.vmWireGuardPublicKey,
-                createdAt: Date()
+                createdAt: Date(),
+                maxHeartbeatFailures: maxFailures
             )
             activeVMs[request.vmId] = activeVM
             totalVMsCreated += 1
+
+            logger.info("VM created with heartbeat timeout", metadata: [
+                "vmId": "\(request.vmId)",
+                "maxHeartbeatFailures": "\(maxFailures)"
+            ])
 
             logger.info("VM created successfully", metadata: [
                 "vmId": "\(request.vmId)",
@@ -418,6 +465,175 @@ public actor MeshProviderDaemon {
     public func ping(peerId: String, timeout: TimeInterval = 5) async -> MeshNode.PingResult? {
         await mesh.ping(peerId, timeout: timeout)
     }
+
+    /// Set a handler for consumer-side messages (e.g., incoming heartbeat requests)
+    /// This handler is called for messages the provider daemon doesn't handle
+    public func setConsumerMessageHandler(_ handler: @escaping (String, Data) async -> Void) {
+        self.consumerMessageHandler = handler
+    }
+
+    /// Send data to a peer (exposed for consumer operations)
+    public func sendToPeer(_ data: Data, to peerId: String) async throws {
+        try await mesh.send(data, to: peerId)
+    }
+
+    // MARK: - Heartbeat Loop
+
+    /// Start the background heartbeat loop
+    private func startHeartbeatLoop() {
+        heartbeatTask = Task { [weak self] in
+            while !Task.isCancelled {
+                // Wait 60 seconds between heartbeats
+                try? await Task.sleep(for: .seconds(60))
+
+                guard !Task.isCancelled else { break }
+                guard let self = self else { break }
+
+                await self.sendHeartbeats()
+            }
+        }
+        logger.info("Heartbeat loop started (60 second interval)")
+    }
+
+    /// Send heartbeats to all consumers with active VMs
+    private func sendHeartbeats() async {
+        guard !activeVMs.isEmpty else { return }
+
+        // First, check for timed-out pending heartbeats (>30 seconds without response)
+        let now = Date()
+        for (consumerPeerId, sentAt) in pendingHeartbeats {
+            if now.timeIntervalSince(sentAt) > 30 {
+                logger.warning("Heartbeat timeout (no response)", metadata: [
+                    "consumer": "\(consumerPeerId.prefix(16))..."
+                ])
+                pendingHeartbeats.removeValue(forKey: consumerPeerId)
+                await handleHeartbeatFailure(consumerPeerId)
+            }
+        }
+
+        // Group VMs by consumer
+        var vmsByConsumer: [String: [UUID]] = [:]
+        for (vmId, vm) in activeVMs {
+            vmsByConsumer[vm.consumerPeerId, default: []].append(vmId)
+        }
+
+        logger.debug("Sending heartbeats to \(vmsByConsumer.count) consumer(s)")
+
+        // Send heartbeat to each consumer (skip if already pending)
+        for (consumerPeerId, vmIds) in vmsByConsumer {
+            if pendingHeartbeats[consumerPeerId] == nil {
+                await sendHeartbeatToConsumer(consumerPeerId, vmIds: vmIds)
+            }
+        }
+    }
+
+    /// Send heartbeat to a specific consumer
+    private func sendHeartbeatToConsumer(_ consumerPeerId: String, vmIds: [UUID]) async {
+        let heartbeat = MeshVMHeartbeat(vmIds: vmIds)
+
+        guard let heartbeatData = try? JSONEncoder().encode(heartbeat) else {
+            logger.error("Failed to encode heartbeat")
+            return
+        }
+
+        logger.debug("Sending heartbeat to consumer", metadata: [
+            "consumer": "\(consumerPeerId.prefix(16))...",
+            "vmCount": "\(vmIds.count)"
+        ])
+
+        do {
+            // Track as pending before sending
+            pendingHeartbeats[consumerPeerId] = Date()
+
+            // Send heartbeat (response will be handled in handleIncomingMessage)
+            try await mesh.send(heartbeatData, to: consumerPeerId)
+
+        } catch {
+            logger.warning("Heartbeat send failed", metadata: [
+                "consumer": "\(consumerPeerId.prefix(16))...",
+                "error": "\(error)"
+            ])
+            pendingHeartbeats.removeValue(forKey: consumerPeerId)
+            await handleHeartbeatFailure(consumerPeerId)
+        }
+    }
+
+    /// Handle successful heartbeat response
+    private func handleHeartbeatResponse(_ response: MeshVMHeartbeatResponse, from consumerPeerId: String, requestedVmIds: [UUID]) async {
+        // Reset failure count for this consumer
+        heartbeatFailures[consumerPeerId] = 0
+
+        let activeSet = Set(response.activeVmIds)
+        let requestedSet = Set(requestedVmIds)
+
+        // Find VMs that consumer no longer acknowledges
+        let abandonedIds = requestedSet.subtracting(activeSet)
+
+        if !abandonedIds.isEmpty {
+            logger.info("Consumer no longer tracking VMs", metadata: [
+                "consumer": "\(consumerPeerId.prefix(16))...",
+                "abandonedVMs": "\(abandonedIds.map { $0.uuidString.prefix(8) })"
+            ])
+
+            for vmId in abandonedIds {
+                await cleanupVM(vmId, reason: "consumer no longer tracking")
+            }
+        }
+    }
+
+    /// Handle heartbeat failure (timeout or invalid response)
+    private func handleHeartbeatFailure(_ consumerPeerId: String) async {
+        heartbeatFailures[consumerPeerId, default: 0] += 1
+        let failures = heartbeatFailures[consumerPeerId]!
+
+        logger.warning("Heartbeat failure", metadata: [
+            "consumer": "\(consumerPeerId.prefix(16))...",
+            "consecutiveFailures": "\(failures)"
+        ])
+
+        // Check each VM's timeout threshold
+        let consumerVMs = activeVMs.filter { $0.value.consumerPeerId == consumerPeerId }
+        for (vmId, vm) in consumerVMs {
+            if failures >= vm.maxHeartbeatFailures {
+                logger.warning("VM heartbeat timeout exceeded", metadata: [
+                    "vmId": "\(vmId.uuidString.prefix(8))...",
+                    "failures": "\(failures)",
+                    "maxFailures": "\(vm.maxHeartbeatFailures)"
+                ])
+                await cleanupVM(vmId, reason: "heartbeat timeout (\(failures) consecutive failures)")
+            }
+        }
+    }
+
+    /// Clean up a VM that is no longer needed
+    private func cleanupVM(_ vmId: UUID, reason: String) async {
+        guard let vm = activeVMs[vmId] else { return }
+
+        logger.info("Cleaning up VM", metadata: [
+            "vmId": "\(vmId.uuidString.prefix(8))...",
+            "reason": "\(reason)"
+        ])
+
+        do {
+            try await vmManager.stopVM(vmId: vmId)
+            activeVMs.removeValue(forKey: vmId)
+            totalVMsReleased += 1
+            logger.info("VM cleaned up successfully", metadata: ["vmId": "\(vmId.uuidString.prefix(8))..."])
+        } catch {
+            logger.error("Failed to cleanup VM", metadata: [
+                "vmId": "\(vmId.uuidString.prefix(8))...",
+                "error": "\(error)"
+            ])
+            // Still remove from tracking even if stop failed
+            activeVMs.removeValue(forKey: vmId)
+        }
+
+        // Clean up failure tracking if no more VMs from this consumer
+        let remainingVMs = activeVMs.filter { $0.value.consumerPeerId == vm.consumerPeerId }
+        if remainingVMs.isEmpty {
+            heartbeatFailures.removeValue(forKey: vm.consumerPeerId)
+        }
+    }
 }
 
 // MARK: - Supporting Types
@@ -450,42 +666,7 @@ public struct MeshVMInfo: Sendable {
     public let uptimeSeconds: Int
 }
 
-// MARK: - Protocol Messages (must match MeshConsumerClient)
-
-/// VM request message (matches MeshConsumerClient.MeshVMRequest)
-struct MeshVMRequest: Codable {
-    let type: String
-    let vmId: UUID
-    let requirements: ResourceRequirements
-    let consumerPublicKey: String
-    let consumerEndpoint: String
-    let consumerVPNIP: String      // Consumer's WireGuard IP (e.g., 10.x.y.1)
-    let vmVPNIP: String            // VM's WireGuard IP (e.g., 10.x.y.2)
-    let sshPublicKey: String
-    let sshUser: String
-}
-
-/// VM response message (matches MeshConsumerClient.MeshVMResponse)
-struct MeshVMResponse: Codable {
-    let type: String
-    let vmId: UUID
-    let vmIP: String?
-    let providerPublicKey: String?
-    let error: String?
-}
-
-/// VM release request (matches MeshConsumerClient.MeshVMReleaseRequest)
-struct MeshVMReleaseRequest: Codable {
-    let type: String
-    let vmId: UUID
-}
-
-/// VM release response
-struct MeshVMReleaseResponse: Codable {
-    let type: String
-    let vmId: UUID
-    let error: String?
-}
+// VM protocol messages are now in OmertaConsumer/VMProtocolMessages.swift
 
 // MARK: - Errors
 

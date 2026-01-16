@@ -21,7 +21,7 @@ private let SOCK_STREAM_VALUE = Int32(SOCK_STREAM.rawValue)
 /// Commands that can be sent to the daemon via control socket
 public enum ControlCommand: Codable {
     case ping(peerId: String, timeout: Int)
-    case vmRequest(peerId: String, requirements: Data, sshPublicKey: String, sshUser: String)
+    case vmRequest(peerId: String, requirements: Data, sshPublicKey: String, sshUser: String, timeoutMinutes: Int)
     case vmRelease(vmId: UUID)
     case vmList
     case status

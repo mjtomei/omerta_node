@@ -3,7 +3,9 @@ import ArgumentParser
 import Logging
 import OmertaCore
 import OmertaVM
+import OmertaVPN
 import OmertaProvider
+import OmertaConsumer
 import OmertaMesh
 
 @main
@@ -156,15 +158,36 @@ struct Start: AsyncParsableCommand {
         // Create and start mesh daemon
         let daemon = MeshProviderDaemon(config: daemonConfig)
 
+        // Create VMTracker for consumer operations
+        let vmTracker = VMTracker()
+
         // Create control socket for CLI communication
         let controlSocket = ControlSocketServer(networkId: networkId)
 
         do {
+            // Set up consumer message handler for incoming heartbeats BEFORE starting
+            await daemon.setConsumerMessageHandler { [daemon, vmTracker] peerId, data in
+                await self.handleConsumerMessage(
+                    from: peerId,
+                    data: data,
+                    daemon: daemon,
+                    vmTracker: vmTracker
+                )
+            }
+
             try await daemon.start()
 
             // Start control socket and wire up command handler
-            await controlSocket.setCommandHandler { [daemon] command in
-                await self.handleControlCommand(command, daemon: daemon, networkId: networkId)
+            await controlSocket.setCommandHandler { [daemon, vmTracker] command in
+                await self.handleControlCommand(
+                    command,
+                    daemon: daemon,
+                    vmTracker: vmTracker,
+                    identity: identity,
+                    networkKey: keyData,
+                    networkId: networkId,
+                    dryRun: dryRun
+                )
             }
             try await controlSocket.start()
 
@@ -225,7 +248,15 @@ struct Start: AsyncParsableCommand {
         }
     }
 
-    private func handleControlCommand(_ command: ControlCommand, daemon: MeshProviderDaemon, networkId: String) async -> ControlResponse {
+    private func handleControlCommand(
+        _ command: ControlCommand,
+        daemon: MeshProviderDaemon,
+        vmTracker: VMTracker,
+        identity: OmertaMesh.IdentityKeypair,
+        networkKey: Data,
+        networkId: String,
+        dryRun: Bool
+    ) async -> ControlResponse {
         switch command {
         case .ping(let peerId, let timeout):
             // Ping through the daemon's mesh network
@@ -261,9 +292,251 @@ struct Start: AsyncParsableCommand {
             }
             return .peers(peers)
 
-        case .vmRequest, .vmRelease, .vmList:
-            // TODO: Implement VM operations through control socket
-            return .error("VM operations via control socket not yet implemented")
+        case .vmRequest(let peerId, let requirements, let sshPublicKey, let sshUser, let timeoutMinutes):
+            return await handleVMRequest(
+                providerPeerId: peerId,
+                requirementsData: requirements,
+                sshPublicKey: sshPublicKey,
+                sshUser: sshUser,
+                timeoutMinutes: timeoutMinutes,
+                daemon: daemon,
+                vmTracker: vmTracker,
+                identity: identity,
+                networkKey: networkKey,
+                networkId: networkId,
+                dryRun: dryRun
+            )
+
+        case .vmRelease(let vmId):
+            return await handleVMRelease(
+                vmId: vmId,
+                daemon: daemon,
+                vmTracker: vmTracker,
+                identity: identity,
+                networkKey: networkKey
+            )
+
+        case .vmList:
+            return await handleVMList(vmTracker: vmTracker)
+        }
+    }
+
+    private func handleVMRequest(
+        providerPeerId: String,
+        requirementsData: Data,
+        sshPublicKey: String,
+        sshUser: String,
+        timeoutMinutes: Int,
+        daemon: MeshProviderDaemon,
+        vmTracker: VMTracker,
+        identity: OmertaMesh.IdentityKeypair,
+        networkKey: Data,
+        networkId: String,
+        dryRun: Bool
+    ) async -> ControlResponse {
+        // Decode requirements
+        guard let requirements = try? JSONDecoder().decode(ResourceRequirements.self, from: requirementsData) else {
+            return .vmRequestResult(ControlResponse.VMRequestResultData(
+                success: false,
+                vmId: nil,
+                vmIP: nil,
+                sshCommand: nil,
+                error: "Failed to decode resource requirements"
+            ))
+        }
+
+        // Ping provider to get their endpoint
+        guard let pingResult = await daemon.ping(peerId: providerPeerId, timeout: 10) else {
+            return .vmRequestResult(ControlResponse.VMRequestResultData(
+                success: false,
+                vmId: nil,
+                vmIP: nil,
+                sshCommand: nil,
+                error: "Failed to reach provider \(providerPeerId.prefix(16))..."
+            ))
+        }
+
+        let providerEndpoint = pingResult.endpoint
+
+        // Create MeshConsumerClient for this request
+        let client = MeshConsumerClient(
+            identity: identity,
+            networkKey: networkKey,
+            providerPeerId: providerPeerId,
+            providerEndpoint: providerEndpoint,
+            dryRun: dryRun
+        )
+
+        do {
+            // Request VM from provider (MeshConsumerClient handles VM tracking internally)
+            let connection = try await client.requestVM(
+                requirements: requirements,
+                sshPublicKey: sshPublicKey,
+                sshUser: sshUser,
+                timeoutMinutes: timeoutMinutes
+            )
+
+            return .vmRequestResult(ControlResponse.VMRequestResultData(
+                success: true,
+                vmId: connection.vmId,
+                vmIP: connection.vmIP,
+                sshCommand: connection.sshCommand,
+                error: nil
+            ))
+        } catch {
+            return .vmRequestResult(ControlResponse.VMRequestResultData(
+                success: false,
+                vmId: nil,
+                vmIP: nil,
+                sshCommand: nil,
+                error: error.localizedDescription
+            ))
+        }
+    }
+
+    private func handleVMRelease(
+        vmId: UUID,
+        daemon: MeshProviderDaemon,
+        vmTracker: VMTracker,
+        identity: OmertaMesh.IdentityKeypair,
+        networkKey: Data
+    ) async -> ControlResponse {
+        // Get VM from tracker
+        let vms = try? await vmTracker.loadPersistedVMs()
+        guard let vm = vms?.first(where: { $0.vmId == vmId }) else {
+            return .vmReleaseResult(success: false, error: "VM not found: \(vmId)")
+        }
+
+        // Create client to send release request
+        let client = MeshConsumerClient(
+            identity: identity,
+            networkKey: networkKey,
+            providerPeerId: vm.provider.peerId,
+            providerEndpoint: vm.provider.endpoint,
+            dryRun: false
+        )
+
+        do {
+            // releaseVM handles both provider notification and local cleanup
+            try await client.releaseVM(vm)
+            return .vmReleaseResult(success: true, error: nil)
+        } catch {
+            return .vmReleaseResult(success: false, error: error.localizedDescription)
+        }
+    }
+
+    private func handleVMList(vmTracker: VMTracker) async -> ControlResponse {
+        do {
+            let vms = try await vmTracker.loadPersistedVMs()
+            let vmInfos = vms.map { vm in
+                ControlResponse.VMInfoData(
+                    vmId: vm.vmId,
+                    providerPeerId: vm.provider.peerId,
+                    vmIP: vm.vmIP,
+                    createdAt: vm.createdAt
+                )
+            }
+            return .vmList(vmInfos)
+        } catch {
+            return .error("Failed to load VMs: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Consumer Message Handling
+
+    private func handleConsumerMessage(
+        from providerPeerId: String,
+        data: Data,
+        daemon: MeshProviderDaemon,
+        vmTracker: VMTracker
+    ) async {
+        // Try to decode as heartbeat request from a provider
+        guard let heartbeat = try? JSONDecoder().decode(MeshVMHeartbeat.self, from: data) else {
+            // Not a heartbeat, ignore (could be other message types in the future)
+            return
+        }
+
+        var logger = Logger(label: "io.omerta.consumer.heartbeat")
+        logger.logLevel = .info
+
+        logger.debug("Received heartbeat from provider", metadata: [
+            "provider": "\(providerPeerId.prefix(16))...",
+            "vmCount": "\(heartbeat.vmIds.count)"
+        ])
+
+        // Get all VMs we're tracking
+        guard let allVMs = try? await vmTracker.loadPersistedVMs() else {
+            logger.warning("Failed to load VMs from tracker")
+            // Still respond with empty list
+            let response = MeshVMHeartbeatResponse(activeVmIds: [])
+            if let responseData = try? JSONEncoder().encode(response) {
+                try? await daemon.sendToPeer(responseData, to: providerPeerId)
+            }
+            return
+        }
+
+        // Filter to VMs from THIS specific provider only
+        // Critical: VMs from other providers must NOT be affected
+        let vmsFromProvider = allVMs.filter { $0.provider.peerId == providerPeerId }
+        let trackedIds = Set(vmsFromProvider.map { $0.vmId })
+        let providerIds = Set(heartbeat.vmIds)
+
+        // 1. Respond with intersection (VMs we still want that provider still has)
+        let activeIds = trackedIds.intersection(providerIds)
+        let response = MeshVMHeartbeatResponse(activeVmIds: Array(activeIds))
+
+        if let responseData = try? JSONEncoder().encode(response) {
+            do {
+                try await daemon.sendToPeer(responseData, to: providerPeerId)
+                logger.debug("Sent heartbeat response", metadata: [
+                    "provider": "\(providerPeerId.prefix(16))...",
+                    "activeVMs": "\(activeIds.count)"
+                ])
+            } catch {
+                logger.warning("Failed to send heartbeat response", metadata: [
+                    "error": "\(error)"
+                ])
+            }
+        }
+
+        // 2. Cleanup: VMs we're tracking that provider no longer has
+        // This handles provider crash/restart or force-release scenarios
+        let orphanedIds = trackedIds.subtracting(providerIds)
+
+        if !orphanedIds.isEmpty {
+            logger.info("Provider no longer has VMs, cleaning up locally", metadata: [
+                "provider": "\(providerPeerId.prefix(16))...",
+                "orphanedVMs": "\(orphanedIds.map { $0.uuidString.prefix(8) })"
+            ])
+
+            for vmId in orphanedIds {
+                if let vm = vmsFromProvider.first(where: { $0.vmId == vmId }) {
+                    // Tear down WireGuard interface
+                    let interfaceName = vm.vpnInterface
+                    logger.info("Tearing down orphaned VM", metadata: [
+                        "vmId": "\(vmId.uuidString.prefix(8))...",
+                        "interface": "\(interfaceName)"
+                    ])
+
+                    // Try to remove the WireGuard interface
+                    do {
+                        let process = Process()
+                        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+                        process.arguments = ["ip", "link", "delete", interfaceName]
+                        try process.run()
+                        process.waitUntilExit()
+                    } catch {
+                        logger.debug("Failed to delete interface (may not exist)", metadata: [
+                            "interface": "\(interfaceName)",
+                            "error": "\(error)"
+                        ])
+                    }
+
+                    // Remove from tracker
+                    try? await vmTracker.removeVM(vmId)
+                    logger.info("Orphaned VM cleaned up", metadata: ["vmId": "\(vmId.uuidString.prefix(8))..."])
+                }
+            }
         }
     }
 }

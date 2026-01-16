@@ -1,16 +1,45 @@
 import Foundation
 import Logging
+import NIOCore
+import NIOPosix
 import OmertaCore
 import OmertaVPN
 import OmertaMesh
 
-/// Consumer client that uses the mesh network for NAT traversal and peer discovery
-/// This allows connecting to providers behind NAT without manual port forwarding
+#if canImport(Darwin)
+import Darwin
+private let systemSocket = Darwin.socket
+private let systemBind = Darwin.bind
+private let systemClose = Darwin.close
+private let systemSendto = Darwin.sendto
+private let systemRecvfrom = Darwin.recvfrom
+private let SOCK_DGRAM_VALUE = SOCK_DGRAM
+#elseif canImport(Glibc)
+import Glibc
+private let systemSocket = Glibc.socket
+private let systemBind = Glibc.bind
+private let systemClose = Glibc.close
+private let systemSendto = Glibc.sendto
+private let systemRecvfrom = Glibc.recvfrom
+private let SOCK_DGRAM_VALUE = Int32(SOCK_DGRAM.rawValue)
+#endif
+
+/// Lightweight consumer client for VM requests
+/// Uses direct encrypted UDP communication - no full mesh protocol stack
 public actor MeshConsumerClient {
     // MARK: - Properties
 
-    /// The underlying mesh network
-    public let mesh: MeshNetwork
+    /// Our identity for signing messages
+    private let identity: OmertaMesh.IdentityKeypair
+
+    /// Network key for encryption
+    private let networkKey: Data
+
+    /// Provider peer ID
+    private let providerPeerId: String
+
+    /// Provider endpoint (ip:port)
+    private let providerEndpoint: String
 
     /// Ephemeral VPN manager
     private let ephemeralVPN: EphemeralVPN
@@ -18,82 +47,36 @@ public actor MeshConsumerClient {
     /// VM tracker for persistence
     private let vmTracker: VMTracker
 
-    /// Network key for control message encryption
-    private let networkKey: Data
-
     /// Logger
     private let logger: Logger
 
     /// Dry run mode
     private let dryRun: Bool
 
-    /// Whether the mesh network is started
-    private var isStarted: Bool = false
-
     // MARK: - Initialization
 
-    /// Create a mesh consumer client
+    /// Create a mesh consumer client for a specific provider
     /// - Parameters:
-    ///   - config: Omerta configuration (must have mesh config)
-    ///   - persistencePath: Path to persist active VM info
-    ///   - dryRun: If true, don't actually create VPN tunnels
-    public init(
-        config: OmertaConfig,
-        persistencePath: String = "~/.omerta/vms/active.json",
-        dryRun: Bool = false
-    ) throws {
-        guard let meshOptions = config.mesh, meshOptions.enabled else {
-            throw MeshConsumerError.meshNotEnabled
-        }
-
-        guard let keyData = config.localKeyData() else {
-            throw MeshConsumerError.noNetworkKey
-        }
-
-        // Create MeshConfig from MeshConfigOptions with encryption key
-        var meshConfig = MeshConfig(
-            encryptionKey: keyData,
-            port: meshOptions.port,
-            canRelay: meshOptions.canRelay,
-            canCoordinateHolePunch: meshOptions.canCoordinateHolePunch,
-            keepaliveInterval: meshOptions.keepaliveInterval,
-            connectionTimeout: meshOptions.connectionTimeout,
-            stunServers: meshOptions.stunServers,
-            bootstrapPeers: meshOptions.bootstrapPeers
-        )
-
-        // Generate identity (peer ID is derived from public key)
-        let identity = OmertaMesh.IdentityKeypair()
-
-        self.mesh = MeshNetwork(identity: identity, config: meshConfig)
-        self.ephemeralVPN = EphemeralVPN(dryRun: dryRun)
-        self.vmTracker = VMTracker(persistencePath: persistencePath)
-        self.networkKey = keyData
-        self.dryRun = dryRun
-
-        var logger = Logger(label: "io.omerta.consumer.mesh")
-        logger.logLevel = .info
-        self.logger = logger
-    }
-
-    /// Create a mesh consumer client with explicit mesh config
-    /// - Parameters:
-    ///   - identity: Our cryptographic identity (peer ID derived from public key)
-    ///   - meshConfig: Mesh network configuration
-    ///   - networkKey: Network key for encryption
+    ///   - identity: Our cryptographic identity for signing
+    ///   - networkKey: 32-byte network key for encryption
+    ///   - providerPeerId: The provider's peer ID
+    ///   - providerEndpoint: The provider's endpoint (ip:port)
     ///   - persistencePath: Path to persist active VM info
     ///   - dryRun: If true, don't actually create VPN tunnels
     public init(
         identity: OmertaMesh.IdentityKeypair,
-        meshConfig: MeshConfig,
         networkKey: Data,
+        providerPeerId: String,
+        providerEndpoint: String,
         persistencePath: String = "~/.omerta/vms/active.json",
         dryRun: Bool = false
     ) {
-        self.mesh = MeshNetwork(identity: identity, config: meshConfig)
+        self.identity = identity
+        self.networkKey = networkKey
+        self.providerPeerId = providerPeerId
+        self.providerEndpoint = providerEndpoint
         self.ephemeralVPN = EphemeralVPN(dryRun: dryRun)
         self.vmTracker = VMTracker(persistencePath: persistencePath)
-        self.networkKey = networkKey
         self.dryRun = dryRun
 
         var logger = Logger(label: "io.omerta.consumer.mesh")
@@ -101,103 +84,51 @@ public actor MeshConsumerClient {
         self.logger = logger
     }
 
-    // MARK: - Lifecycle
-
-    /// Start the mesh network
-    public func start() async throws {
-        guard !isStarted else {
-            logger.warning("Mesh consumer client already started")
-            return
-        }
-
-        logger.info("Starting mesh consumer client")
-        try await mesh.start()
-        isStarted = true
-        let peerId = await mesh.peerId
-        let natType = await mesh.currentNATType
-        logger.info("Mesh consumer client started", metadata: [
-            "peerId": "\(peerId)",
-            "natType": "\(natType.rawValue)"
-        ])
-    }
-
-    /// Stop the mesh network
-    public func stop() async {
-        guard isStarted else { return }
-
-        logger.info("Stopping mesh consumer client")
-        await mesh.stop()
-        isStarted = false
-        logger.info("Mesh consumer client stopped")
-    }
-
     // MARK: - VM Operations
 
-    /// Request a VM from a provider via mesh network
+    /// Request a VM from the provider
     /// - Parameters:
-    ///   - providerPeerId: The provider's peer ID
     ///   - requirements: Resource requirements for the VM
     ///   - sshPublicKey: SSH public key to inject into VM
     ///   - sshKeyPath: Path to SSH private key
     ///   - sshUser: SSH username
     /// - Returns: VM connection info
     public func requestVM(
-        fromProvider providerPeerId: String,
         requirements: ResourceRequirements = ResourceRequirements(),
         sshPublicKey: String,
         sshKeyPath: String = "~/.omerta/ssh/id_ed25519",
-        sshUser: String = "omerta"
+        sshUser: String = "omerta",
+        timeoutMinutes: Int = 10
     ) async throws -> VMConnection {
-        guard isStarted else {
-            throw MeshConsumerError.notStarted
-        }
-
-        logger.info("Requesting VM from provider via mesh", metadata: [
-            "provider": "\(providerPeerId.prefix(16))..."
+        logger.info("Requesting VM from provider", metadata: [
+            "provider": "\(providerPeerId.prefix(16))...",
+            "endpoint": "\(providerEndpoint)",
+            "timeoutMinutes": "\(timeoutMinutes)"
         ])
 
-        // 1. Connect to provider via mesh (handles NAT traversal)
-        let connection: DirectConnection
-        do {
-            connection = try await mesh.connect(to: providerPeerId)
-            logger.info("Connected to provider", metadata: [
-                "method": "\(connection.method)",
-                "isDirect": "\(connection.isDirect)",
-                "endpoint": "\(connection.endpoint)"
-            ])
-        } catch {
-            logger.error("Failed to connect to provider via mesh", metadata: [
-                "provider": "\(providerPeerId.prefix(16))...",
-                "error": "\(error)"
-            ])
-            throw MeshConsumerError.connectionFailed(reason: error.localizedDescription)
-        }
-
-        // 2. Create VPN tunnel
+        // 1. Create VPN tunnel
         let vmId = UUID()
-        let vpnConfig = try await ephemeralVPN.createVPNForJob(vmId, providerEndpoint: connection.endpoint)
+        let vpnConfig = try await ephemeralVPN.createVPNForJob(vmId, providerEndpoint: providerEndpoint)
         logger.info("VPN tunnel created", metadata: ["vmId": "\(vmId)"])
 
         do {
-            // 3. Use consumer endpoint from VPN config (includes correct port)
-            let consumerEndpoint = vpnConfig.consumerEndpoint
-
-            // 4. Send VM request over mesh
+            // 2. Build VM request
             let request = MeshVMRequest(
                 vmId: vmId,
                 requirements: requirements,
                 consumerPublicKey: vpnConfig.consumerPublicKey,
-                consumerEndpoint: consumerEndpoint,
+                consumerEndpoint: vpnConfig.consumerEndpoint,
                 consumerVPNIP: vpnConfig.consumerVPNIP,
                 vmVPNIP: vpnConfig.vmVPNIP,
                 sshPublicKey: sshPublicKey,
-                sshUser: sshUser
+                sshUser: sshUser,
+                timeoutMinutes: timeoutMinutes
             )
 
             let requestData = try JSONEncoder().encode(request)
-            let response = try await sendAndReceive(data: requestData, to: providerPeerId, timeout: 60)
 
-            guard let responseData = response else {
+            // 3. Send request and wait for response (direct UDP)
+            guard let responseData = try await sendAndReceive(data: requestData, timeout: 60) else {
                 throw MeshConsumerError.noResponse
             }
 
@@ -211,7 +142,7 @@ public actor MeshConsumerClient {
                 throw MeshConsumerError.invalidResponse
             }
 
-            // Use the WireGuard tunnel IP we assigned, not the VM's local NAT IP
+            // Use the WireGuard tunnel IP we assigned
             let sshIP = vpnConfig.vmVPNIP
 
             logger.info("Provider response received", metadata: [
@@ -220,17 +151,17 @@ public actor MeshConsumerClient {
                 "providerReportedIP": "\(vmResponse.vmIP ?? "none")"
             ])
 
-            // 5. Add provider as peer on consumer's WireGuard
+            // 4. Add provider as peer on consumer's WireGuard
             try await ephemeralVPN.addProviderPeer(
                 jobId: vmId,
                 providerPublicKey: providerPublicKey
             )
 
-            // 6. Build connection info
+            // 5. Build connection info
             let vmConnection = VMConnection(
                 vmId: vmId,
-                provider: PeerInfo(peerId: providerPeerId, endpoint: connection.endpoint),
-                vmIP: sshIP,  // Use WireGuard tunnel IP for SSH
+                provider: PeerInfo(peerId: providerPeerId, endpoint: providerEndpoint),
+                vmIP: sshIP,
                 sshKeyPath: sshKeyPath,
                 sshUser: sshUser,
                 vpnInterface: "wg\(vmId.uuidString.prefix(8))",
@@ -238,17 +169,8 @@ public actor MeshConsumerClient {
                 networkId: "mesh"
             )
 
-            // 7. Track VM
+            // 6. Track VM
             try await vmTracker.trackVM(vmConnection)
-
-            // 8. Send ping to establish keepalive and gossip
-            if let pingResult = await mesh.ping(providerPeerId) {
-                logger.info("Post-request ping successful", metadata: [
-                    "latencyMs": "\(pingResult.latencyMs)",
-                    "receivedPeers": "\(pingResult.receivedPeers.count)",
-                    "newPeers": "\(pingResult.newPeers.count)"
-                ])
-            }
 
             logger.info("VM request completed", metadata: [
                 "vmId": "\(vmId)",
@@ -276,7 +198,7 @@ public actor MeshConsumerClient {
         do {
             let request = MeshVMReleaseRequest(vmId: vmConnection.vmId)
             let requestData = try JSONEncoder().encode(request)
-            _ = try await sendAndReceive(data: requestData, to: vmConnection.provider.peerId, timeout: 10)
+            _ = try await sendAndReceive(data: requestData, timeout: 10)
             logger.info("Provider acknowledged release", metadata: ["vmId": "\(vmConnection.vmId)"])
         } catch {
             if !forceLocalCleanup {
@@ -306,143 +228,122 @@ public actor MeshConsumerClient {
         await vmTracker.getActiveVMs()
     }
 
-    /// Get network statistics
-    public func statistics() async -> MeshStatistics {
-        await mesh.statistics()
-    }
-
-    /// Get known peers
-    public func knownPeers() async -> [String] {
-        await mesh.knownPeers()
-    }
-
-    /// Discover peers from bootstrap nodes
-    public func discoverPeers() async throws {
-        try await mesh.discoverPeers()
-    }
-
     // MARK: - Private Methods
 
-    /// Send data and wait for response
-    private func sendAndReceive(data: Data, to peerId: String, timeout: TimeInterval) async throws -> Data? {
-        // Create a response continuation
-        return try await withCheckedThrowingContinuation { continuation in
-            Task {
-                var responseData: Data?
+    /// Send encrypted data and wait for encrypted response via direct UDP
+    private func sendAndReceive(data: Data, timeout: TimeInterval) async throws -> Data? {
+        // Create UDP socket
+        let sock = systemSocket(AF_INET, SOCK_DGRAM_VALUE, 0)
+        guard sock >= 0 else {
+            throw MeshConsumerError.connectionFailed(reason: "Failed to create socket")
+        }
+        defer { systemClose(sock) }
 
-                // Set up temporary message handler
-                await mesh.setMessageHandler { from, receivedData in
-                    if from == peerId {
-                        responseData = receivedData
-                    }
-                }
+        // Bind to random port
+        var bindAddr = sockaddr_in()
+        bindAddr.sin_family = sa_family_t(AF_INET)
+        bindAddr.sin_port = 0  // Random port
+        bindAddr.sin_addr.s_addr = INADDR_ANY
 
-                // Send the request
-                do {
-                    try await mesh.send(data, to: peerId)
-                } catch {
-                    continuation.resume(throwing: error)
-                    return
-                }
-
-                // Wait for response with timeout
-                let deadline = Date().addingTimeInterval(timeout)
-                while Date() < deadline {
-                    if let response = responseData {
-                        continuation.resume(returning: response)
-                        return
-                    }
-                    try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-                }
-
-                continuation.resume(returning: nil)
+        let bindResult = withUnsafePointer(to: &bindAddr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                systemBind(sock, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
-    }
-
-    /// Determine consumer endpoint for provider to connect back
-    private func determineConsumerEndpoint() async throws -> String {
-        // Use mesh public endpoint if available
-        if let publicEndpoint = await mesh.currentPublicEndpoint {
-            return publicEndpoint
+        guard bindResult == 0 else {
+            throw MeshConsumerError.connectionFailed(reason: "Failed to bind socket")
         }
 
-        // Fall back to local IP
-        var ipAddress = "127.0.0.1"
+        // Set receive timeout
+        var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
-        #if os(macOS)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/ipconfig")
-        process.arguments = ["getifaddr", "en0"]
+        // Parse provider endpoint
+        let parts = providerEndpoint.split(separator: ":")
+        guard parts.count == 2,
+              let port = UInt16(parts[1]) else {
+            throw MeshConsumerError.connectionFailed(reason: "Invalid provider endpoint format")
+        }
+        let host = String(parts[0])
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
+        // Resolve host to address
+        var destAddr = sockaddr_in()
+        destAddr.sin_family = sa_family_t(AF_INET)
+        destAddr.sin_port = port.bigEndian
 
-        try? process.run()
-        process.waitUntilExit()
+        if inet_pton(AF_INET, host, &destAddr.sin_addr) != 1 {
+            throw MeshConsumerError.connectionFailed(reason: "Invalid provider IP address")
+        }
 
-        if process.terminationStatus == 0 {
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !output.isEmpty {
-                ipAddress = output
+        // Create signed envelope
+        let envelope = try MeshEnvelope.signed(
+            from: identity,
+            to: providerPeerId,
+            payload: .data(data)
+        )
+
+        // Encode to JSON then encrypt
+        let jsonData = try JSONEncoder().encode(envelope)
+        let encryptedData = try MessageEncryption.encrypt(jsonData, key: networkKey)
+
+        // Send encrypted data
+        let sendResult = withUnsafePointer(to: &destAddr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                encryptedData.withUnsafeBytes { buffer in
+                    systemSendto(sock, buffer.baseAddress!, buffer.count, 0, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
             }
         }
-        #else
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/hostname")
-        process.arguments = ["-I"]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-
-        try? process.run()
-        process.waitUntilExit()
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        if let output = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(separator: " ")
-            .first
-            .map(String.init) {
-            ipAddress = output
+        guard sendResult > 0 else {
+            throw MeshConsumerError.connectionFailed(reason: "Failed to send data")
         }
-        #endif
 
-        return "\(ipAddress):51821"
+        logger.debug("Sent \(encryptedData.count) bytes to \(providerEndpoint)")
+
+        // Receive response
+        var recvBuffer = [UInt8](repeating: 0, count: 65536)
+        var srcAddr = sockaddr_in()
+        var srcAddrLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+
+        let recvResult = withUnsafeMutablePointer(to: &srcAddr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                systemRecvfrom(sock, &recvBuffer, recvBuffer.count, 0, sockaddrPtr, &srcAddrLen)
+            }
+        }
+
+        guard recvResult > 0 else {
+            // Timeout or error
+            return nil
+        }
+
+        let receivedData = Data(recvBuffer.prefix(recvResult))
+        logger.debug("Received \(receivedData.count) bytes")
+
+        // Decrypt response
+        guard let decryptedData = try? MessageEncryption.decrypt(receivedData, key: networkKey) else {
+            throw MeshConsumerError.invalidResponse
+        }
+
+        // Decode envelope
+        guard let responseEnvelope = try? JSONDecoder().decode(MeshEnvelope.self, from: decryptedData) else {
+            throw MeshConsumerError.invalidResponse
+        }
+
+        // Verify signature
+        guard responseEnvelope.verifySignature() else {
+            throw MeshConsumerError.invalidResponse
+        }
+
+        // Extract data payload
+        if case .data(let responsePayload) = responseEnvelope.payload {
+            return responsePayload
+        }
+
+        throw MeshConsumerError.invalidResponse
     }
 }
 
-// MARK: - Mesh VM Protocol Messages
-
-/// VM request sent over mesh
-struct MeshVMRequest: Codable {
-    let type: String = "vm_request"
-    let vmId: UUID
-    let requirements: ResourceRequirements
-    let consumerPublicKey: String
-    let consumerEndpoint: String
-    let consumerVPNIP: String      // Consumer's WireGuard IP (e.g., 10.x.y.1)
-    let vmVPNIP: String            // VM's WireGuard IP (e.g., 10.x.y.2)
-    let sshPublicKey: String
-    let sshUser: String
-}
-
-/// VM response received over mesh
-struct MeshVMResponse: Codable {
-    let type: String
-    let vmId: UUID
-    let vmIP: String?
-    let providerPublicKey: String?
-    let error: String?
-}
-
-/// VM release request sent over mesh
-struct MeshVMReleaseRequest: Codable {
-    let type: String = "vm_release"
-    let vmId: UUID
-}
+// VM protocol messages are now in VMProtocolMessages.swift
 
 // MARK: - Errors
 
