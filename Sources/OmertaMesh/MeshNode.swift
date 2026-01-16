@@ -154,6 +154,9 @@ public actor MeshNode {
     /// Logger
     private let logger: Logger
 
+    /// Event logger for persistent event storage (optional)
+    private let eventLogger: MeshEventLogger?
+
     /// Freshness manager for tracking recent contacts and handling stale info
     public let freshnessManager: FreshnessManager
 
@@ -179,13 +182,15 @@ public actor MeshNode {
     /// - Parameters:
     ///   - identity: The cryptographic identity (peer ID is derived from this)
     ///   - config: Node configuration (must include encryption key)
-    public init(identity: IdentityKeypair, config: Config) throws {
+    ///   - eventLogger: Optional event logger for persistent storage
+    public init(identity: IdentityKeypair, config: Config, eventLogger: MeshEventLogger? = nil) throws {
         self.identity = identity
         self.machineId = try getOrCreateMachineId()
         self.config = config
         self.eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.socket = UDPSocket(eventLoopGroup: self.eventLoopGroup)
         self.logger = Logger(label: "io.omerta.mesh.node.\(identity.peerId.prefix(8))")
+        self.eventLogger = eventLogger
         self.endpointManager = PeerEndpointManager(logger: Logger(label: "io.omerta.mesh.endpoints"))
         self.freshnessManager = FreshnessManager()
         self.holePunchManager = HolePunchManager(
@@ -342,6 +347,9 @@ public actor MeshNode {
 
         isRunning = true
 
+        // Start event logger if provided
+        await eventLogger?.start()
+
         // Start endpoint manager for persistence and cleanup
         await endpointManager.start()
 
@@ -366,6 +374,9 @@ public actor MeshNode {
     public func stop() async {
         guard isRunning else { return }
         isRunning = false
+
+        // Stop event logger
+        await eventLogger?.stop()
 
         // Stop endpoint manager (saves to disk)
         await endpointManager.stop()
@@ -428,6 +439,16 @@ public actor MeshNode {
         guard envelope.verifySignature() else {
             logger.warning("Rejecting message with invalid signature",
                           metadata: ["from": "\(envelope.fromPeerId.prefix(8))..."])
+
+            // Log signature error
+            await eventLogger?.recordError(
+                component: MeshComponent.meshNode.rawValue,
+                operation: "verifySignature",
+                errorType: MeshErrorCategory.signature.rawValue,
+                errorMessage: "Invalid signature on incoming message",
+                peerId: envelope.fromPeerId
+            )
+
             return
         }
 
@@ -440,6 +461,13 @@ public actor MeshNode {
             from: envelope.fromPeerId,
             machineId: envelope.machineId,
             endpoint: endpointString
+        )
+
+        // Log peer seen event
+        await eventLogger?.recordPeerSeen(
+            peerId: envelope.fromPeerId,
+            endpoint: endpointString,
+            natType: nil
         )
 
         // Check if this is a response to a pending request
@@ -883,6 +911,9 @@ public actor MeshNode {
                     connectionType: .direct
                 )
 
+                // Log latency sample
+                await eventLogger?.recordLatencySample(peerId: targetPeerId, latencyMs: Double(latencyMs))
+
                 // Add to keepalive monitoring if not already monitored
                 if await !connectionKeepalive.isMonitoring(peerId: targetPeerId) {
                     await connectionKeepalive.addConnection(peerId: targetPeerId, endpoint: endpoint)
@@ -902,6 +933,10 @@ public actor MeshNode {
             return nil
         } catch {
             logger.debug("sendPing: Failed to ping \(targetPeerId): \(error)")
+
+            // Log latency loss
+            await eventLogger?.recordLatencyLoss(peerId: targetPeerId)
+
             return nil
         }
     }
