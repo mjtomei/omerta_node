@@ -45,7 +45,6 @@ public actor PeerStore {
         peers = stored
 
         // Remove expired peers
-        let now = Date()
         let validPeers = peers.filter { !$0.value.announcement.isExpired }
         peers = validPeers
 
@@ -184,3 +183,4 @@ extension PeerStore {
         return PeerStore(storePath: storePath)
     }
 }
+

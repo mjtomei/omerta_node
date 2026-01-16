@@ -35,6 +35,9 @@ struct Start: AsyncParsableCommand {
     @Option(name: .long, help: "Mesh port (default: 9999)")
     var port: Int = 9999
 
+    @Flag(name: .long, help: "Consumer-only mode - participate in mesh but don't offer VMs")
+    var noProvider: Bool = false
+
     @Flag(name: .long, help: "Dry run mode - simulate VM creation without actual VMs")
     var dryRun: Bool = false
 
