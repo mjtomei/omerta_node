@@ -1464,3 +1464,79 @@ public struct BootstrapCapabilities {
 - Existing peer IDs will change format (base64 → hex)
 - No backwards compatibility needed (mesh is not in production)
 - CLI users will need to remove any --peerId flags
+
+## Known Limitations
+
+### Peer Alias Conflicts
+
+The application blocks creation of conflicting aliases (two peers with the same alias) through UI/API validation. However, alias conflicts **cannot be fully prevented** in the following scenarios:
+
+1. **Manual peer list edits** - Users who directly edit their peer list file (`~/.omerta/peers.json` or similar) can create duplicate aliases
+2. **Inconsistent state across peers** - Different peers may independently assign the same alias to different peer IDs, leading to confusion when sharing peer references
+3. **Race conditions** - In distributed scenarios, two users might simultaneously assign the same alias before either sees the other's assignment
+
+**Mitigation:** The canonical identifier is always the cryptographic peer ID (16-char hex derived from public key). Aliases are local conveniences only and should not be trusted for identity verification. When resolving ambiguous aliases, the application should prompt for clarification or fall back to the full peer ID.
+
+### Network Key Rotation
+
+Network keys can be rotated by creating a new network. This works because:
+
+1. **Network ID is derived from key** - `SHA256(networkKey)[0..8]` → new key = new network ID
+2. **Peer identities are independent** - Cryptographic peer IDs don't change when network key changes
+3. **Attestations are network-agnostic** - Same attestations valid across networks
+
+**Cryptographic roles (important distinction):**
+- **Network key** (symmetric, 32 bytes) = message encryption/confidentiality only
+- **Identity key** (asymmetric, Ed25519) = attestation signing/authenticity
+
+To **forge an attestation**, an attacker needs the **signer's private identity key** - the network key alone only enables eavesdropping and message injection, not signature forgery.
+
+**Decision:** Network-agnostic attestations. Attestations attest to peer properties (identity, capabilities, trust level) without binding to a specific network. Benefits:
+- Network key rotation doesn't require attestation regeneration
+- Same attestation valid across multiple networks
+- Simpler rotation procedure
+
+**Rotation procedure:**
+1. Generate new network key
+2. Create new network (derives new network ID automatically)
+3. Distribute new key to trusted peers out-of-band
+4. Peers join new network with existing attestations
+5. Old network is abandoned
+
+**Edge cases that cannot be fully handled:**
+
+1. **Partial migration (split-brain)** - If some peers join the new network while others remain on the old, they cannot communicate. The app can warn but cannot force migration.
+
+2. **Offline peers** - Peers offline during rotation won't receive the new key. They must be given the new key out-of-band when they return. The app cannot automatically migrate them.
+
+3. **In-flight messages** - Messages encrypted with the old key during rotation will fail to decrypt on the new network. Brief message loss is expected during transition.
+
+4. **Active VM sessions** - VMs provisioned on the old network may have stale state. Recommend completing or terminating active sessions before rotation.
+
+5. **Network key compromise** - If the symmetric network key is compromised:
+   - Attacker could decrypt past/future messages (if captured)
+   - Attacker could inject encrypted messages (but NOT forge attestation signatures)
+   - Attestations remain trustworthy (signed with identity keys, not network key)
+   - Rotation restores confidentiality for future messages
+
+6. **Identity key compromise** - If a peer's identity key is compromised (separate from network key):
+   - Attacker CAN forge attestations from that peer
+   - That peer must generate new identity (new peer ID)
+   - Other peers must revoke trust in old peer ID
+   - Network key rotation does NOT help - this requires identity rotation
+
+7. **Bootstrap node compromise** - If the bootstrap/relay node's compute is compromised:
+   - Attacker has access to all stored attestations and network data
+   - Attacker has the node's private identity key
+   - Attacker can impersonate the bootstrap node and MITM peer discovery
+   - All data on that node must be considered exfiltrated or tampered
+   - **Must create entirely new network from scratch:**
+     - New bootstrap node on fresh compute
+     - New network key
+     - New bootstrap identity
+     - All peers notified out-of-band
+     - All attestations re-issued by original signers (attestations stored on compromised node cannot be trusted even if signatures verify - attacker had time to forge while in possession of keys)
+
+8. **Bootstrap peer references** - Stored bootstrap peer lists may contain old network IDs. These must be updated manually or peers won't find each other.
+
+9. **Rollback** - If rotation fails partway, some peers may be on old network, some on new. Recovery requires manual coordination to pick one network and re-distribute that key.
