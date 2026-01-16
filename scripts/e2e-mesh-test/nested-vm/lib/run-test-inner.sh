@@ -328,7 +328,9 @@ setup_peer() {
 
     lan_ssh "$jump_ip" "$target_ip" "mkdir -p /home/ubuntu/mesh-test/lib"
 
+    # Copy both omerta CLI and omertad daemon
     lan_scp "$MESH_BIN" "$jump_ip" "$target_ip" "/home/ubuntu/mesh-test/"
+    lan_scp "$SCRIPT_DIR/omertad" "$jump_ip" "$target_ip" "/home/ubuntu/mesh-test/" 2>/dev/null || true
 
     local swift_lib_dir
     if swift_lib_dir=$(find_swift_lib_dir); then
@@ -342,7 +344,7 @@ setup_peer() {
         echo "    Copied $lib_count libraries"
     fi
 
-    lan_ssh "$jump_ip" "$target_ip" "chmod +x /home/ubuntu/mesh-test/omerta"
+    lan_ssh "$jump_ip" "$target_ip" "chmod +x /home/ubuntu/mesh-test/omerta /home/ubuntu/mesh-test/omertad" 2>/dev/null || true
     echo "    Done"
 }
 
@@ -554,23 +556,57 @@ run_test() {
         > /tmp/peer2-join.log 2>&1 || true
     sleep 1
 
-    # Step 5e: Test connectivity - peer1 pings relay
-    echo "  Testing peer1 -> relay connectivity..."
+    # Step 5e: Start omertad on peer1 (required for CLI IPC)
+    echo "  Starting omertad on peer1..."
+    lan_ssh "$NAT_GW1_INET_IP" "$PEER1_IP" "cd /home/ubuntu/mesh-test && \
+        LD_LIBRARY_PATH=./lib setsid ./omertad start \
+        --network $network_id \
+        > mesh.log 2>&1 &"
+    sleep 2
+
+    # Verify peer1 daemon started
+    local peer1_daemon_pid
+    peer1_daemon_pid=$(lan_ssh "$NAT_GW1_INET_IP" "$PEER1_IP" "pgrep -f omertad" 2>/dev/null || true)
+    if [[ -n "$peer1_daemon_pid" ]]; then
+        echo "    Peer1 daemon started (PID $peer1_daemon_pid)"
+    else
+        echo -e "${RED}    Warning: Peer1 daemon may not have started${NC}"
+    fi
+
+    # Step 5f: Start omertad on peer2 (required for CLI IPC)
+    echo "  Starting omertad on peer2..."
+    lan_ssh "$NAT_GW2_INET_IP" "$PEER2_IP" "cd /home/ubuntu/mesh-test && \
+        LD_LIBRARY_PATH=./lib setsid ./omertad start \
+        --network $network_id \
+        > mesh.log 2>&1 &"
+    sleep 2
+
+    # Verify peer2 daemon started
+    local peer2_daemon_pid
+    peer2_daemon_pid=$(lan_ssh "$NAT_GW2_INET_IP" "$PEER2_IP" "pgrep -f omertad" 2>/dev/null || true)
+    if [[ -n "$peer2_daemon_pid" ]]; then
+        echo "    Peer2 daemon started (PID $peer2_daemon_pid)"
+    else
+        echo -e "${RED}    Warning: Peer2 daemon may not have started${NC}"
+    fi
+
+    # Step 5g: Test connectivity - peer1 pings relay via IPC to local daemon
+    echo "  Testing peer1 -> relay connectivity (via local omertad)..."
     lan_ssh "$NAT_GW1_INET_IP" "$PEER1_IP" \
         "(cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omerta mesh ping $relay_peer_id \
         --network $network_id -c 10 -v \
-        > mesh.log 2>&1 < /dev/null &)"
+        >> mesh.log 2>&1 < /dev/null &)"
     sleep 2
 
-    # Step 5f: Test connectivity - peer2 pings relay
-    echo "  Testing peer2 -> relay connectivity..."
+    # Step 5h: Test connectivity - peer2 pings relay via IPC to local daemon
+    echo "  Testing peer2 -> relay connectivity (via local omertad)..."
     lan_ssh "$NAT_GW2_INET_IP" "$PEER2_IP" \
         "(cd /home/ubuntu/mesh-test && LD_LIBRARY_PATH=./lib nohup ./omerta mesh ping $relay_peer_id \
         --network $network_id -c 10 -v \
-        > mesh.log 2>&1 < /dev/null &)"
+        >> mesh.log 2>&1 < /dev/null &)"
     sleep 2
 
-    echo "  Network setup complete - peers should discover each other through relay"
+    echo "  Network setup complete - all peers running omertad, discovery via mesh"
 
     echo ""
 
