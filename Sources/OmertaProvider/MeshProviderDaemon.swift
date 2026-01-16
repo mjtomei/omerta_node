@@ -111,6 +111,9 @@ public actor MeshProviderDaemon {
     /// Pending heartbeats waiting for response (consumerPeerId -> timestamp sent)
     private var pendingHeartbeats: [String: Date] = [:]
 
+    /// Pending ACKs waiting for response (vmId -> continuation)
+    private var pendingAcks: [UUID: CheckedContinuation<MeshVMAck, any Error>] = [:]
+
     /// Consumer message handler (for heartbeat requests, etc.)
     private var consumerMessageHandler: ((String, Data) async -> Void)?
 
@@ -239,6 +242,18 @@ public actor MeshProviderDaemon {
             return
         }
 
+        // Try to decode as VM ACK
+        if let ack = try? JSONDecoder().decode(MeshVMAck.self, from: data) {
+            handleVMAck(ack)
+            return
+        }
+
+        // Try to decode as VM release ACK
+        if let ack = try? JSONDecoder().decode(MeshVMReleaseAck.self, from: data) {
+            handleVMReleaseAck(ack)
+            return
+        }
+
         // Try to decode as VM request
         if let request = try? JSONDecoder().decode(MeshVMRequest.self, from: data) {
             await handleVMRequest(request, from: peerId)
@@ -317,7 +332,7 @@ public actor MeshProviderDaemon {
                 "vmIP": "\(vmResult.vmIP)"
             ])
 
-            // Send success response
+            // Send success response and wait for ACK
             let response = MeshVMResponse(
                 type: "vm_created",
                 vmId: request.vmId,
@@ -326,7 +341,7 @@ public actor MeshProviderDaemon {
                 error: nil
             )
 
-            try await sendResponse(response, to: consumerPeerId)
+            await sendVMResponseWithAck(response, to: consumerPeerId)
 
         } catch {
             logger.error("VM creation failed", metadata: [
@@ -334,7 +349,7 @@ public actor MeshProviderDaemon {
                 "error": "\(error)"
             ])
 
-            // Send error response
+            // Send error response (no ACK needed for errors)
             let response = MeshVMResponse(
                 type: "vm_error",
                 vmId: request.vmId,
@@ -412,10 +427,85 @@ public actor MeshProviderDaemon {
         }
     }
 
+    /// Handle VM ACK from consumer
+    private func handleVMAck(_ ack: MeshVMAck) {
+        if let continuation = pendingAcks.removeValue(forKey: ack.vmId) {
+            continuation.resume(returning: ack)
+            logger.debug("Received VM ACK", metadata: [
+                "vmId": "\(ack.vmId.uuidString.prefix(8))...",
+                "success": "\(ack.success)"
+            ])
+        } else {
+            logger.warning("Received ACK for unknown VM", metadata: [
+                "vmId": "\(ack.vmId.uuidString.prefix(8))..."
+            ])
+        }
+    }
+
+    /// Handle VM release ACK from consumer
+    private func handleVMReleaseAck(_ ack: MeshVMReleaseAck) {
+        // Release ACKs are informational - we don't wait for them
+        logger.debug("Received VM release ACK", metadata: [
+            "vmId": "\(ack.vmId.uuidString.prefix(8))...",
+            "success": "\(ack.success)"
+        ])
+    }
+
     /// Send response to a peer
     private func sendResponse<T: Encodable>(_ response: T, to peerId: String) async throws {
         let data = try JSONEncoder().encode(response)
         try await mesh.send(data, to: peerId)
+    }
+
+    /// Send VM response and wait for ACK
+    /// If ACK not received within timeout, logs warning but doesn't fail
+    private func sendVMResponseWithAck(
+        _ response: MeshVMResponse,
+        to consumerPeerId: String,
+        timeout: TimeInterval = 5.0
+    ) async {
+        do {
+            let data = try JSONEncoder().encode(response)
+
+            // Send the response first
+            try await mesh.send(data, to: consumerPeerId)
+
+            // Wait for ACK with timeout
+            do {
+                let ack = try await withCheckedThrowingContinuation { continuation in
+                    pendingAcks[response.vmId] = continuation
+
+                    // Create timeout task
+                    Task {
+                        try? await Task.sleep(for: .seconds(timeout))
+                        // If still pending, timeout
+                        if let cont = self.pendingAcks.removeValue(forKey: response.vmId) {
+                            cont.resume(throwing: MeshProviderError.ackTimeout)
+                        }
+                    }
+                }
+
+                if ack.success {
+                    logger.info("VM response ACKed", metadata: ["vmId": "\(response.vmId.uuidString.prefix(8))..."])
+                } else {
+                    logger.warning("Consumer rejected VM response", metadata: ["vmId": "\(response.vmId.uuidString.prefix(8))..."])
+                }
+
+            } catch is MeshProviderError {
+                logger.warning("No ACK received for VM response (timeout)", metadata: [
+                    "vmId": "\(response.vmId.uuidString.prefix(8))...",
+                    "consumer": "\(consumerPeerId.prefix(16))..."
+                ])
+            }
+
+        } catch {
+            logger.error("Failed to send VM response", metadata: [
+                "vmId": "\(response.vmId.uuidString.prefix(8))...",
+                "error": "\(error)"
+            ])
+            // Clean up pending ACK if send failed
+            pendingAcks.removeValue(forKey: response.vmId)
+        }
     }
 
     // MARK: - Status
@@ -677,6 +767,7 @@ public enum MeshProviderError: Error, CustomStringConvertible {
     case notStarted
     case vmCreationFailed(String)
     case vmNotFound(UUID)
+    case ackTimeout
 
     public var description: String {
         switch self {
@@ -690,6 +781,8 @@ public enum MeshProviderError: Error, CustomStringConvertible {
             return "VM creation failed: \(reason)"
         case .vmNotFound(let vmId):
             return "VM not found: \(vmId)"
+        case .ackTimeout:
+            return "ACK timeout waiting for consumer response"
         }
     }
 }

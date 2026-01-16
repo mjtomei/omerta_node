@@ -125,7 +125,7 @@ public actor MeshNetwork {
                 holePunchProbeInterval: config.holePunchProbeInterval
             )
 
-            let node = MeshNode(identity: identity, config: nodeConfig)
+            let node = try MeshNode(identity: identity, config: nodeConfig)
             self.meshNode = node
 
             // Start the node

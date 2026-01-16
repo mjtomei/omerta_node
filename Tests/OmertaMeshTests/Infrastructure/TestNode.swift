@@ -222,6 +222,7 @@ public actor TestNode {
 
         guard let envelope = try? MeshEnvelope.signed(
             from: identity,
+            machineId: "test-machine-\(id)",
             to: targetId,
             payload: message
         ) else { return }

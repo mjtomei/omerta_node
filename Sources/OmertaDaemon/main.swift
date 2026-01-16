@@ -646,13 +646,24 @@ struct Start: AsyncParsableCommand {
         let providerEndpoint = pingResult.endpoint
 
         // Create MeshConsumerClient for this request
-        let client = MeshConsumerClient(
-            identity: identity,
-            networkKey: networkKey,
-            providerPeerId: providerPeerId,
-            providerEndpoint: providerEndpoint,
-            dryRun: dryRun
-        )
+        let client: MeshConsumerClient
+        do {
+            client = try MeshConsumerClient(
+                identity: identity,
+                networkKey: networkKey,
+                providerPeerId: providerPeerId,
+                providerEndpoint: providerEndpoint,
+                dryRun: dryRun
+            )
+        } catch {
+            return .vmRequestResult(ControlResponse.VMRequestResultData(
+                success: false,
+                vmId: nil,
+                vmIP: nil,
+                sshCommand: nil,
+                error: "Failed to initialize consumer client: \(error)"
+            ))
+        }
 
         do {
             // Request VM from provider (MeshConsumerClient handles VM tracking internally)
@@ -695,15 +706,15 @@ struct Start: AsyncParsableCommand {
         }
 
         // Create client to send release request
-        let client = MeshConsumerClient(
-            identity: identity,
-            networkKey: networkKey,
-            providerPeerId: vm.provider.peerId,
-            providerEndpoint: vm.provider.endpoint,
-            dryRun: false
-        )
-
+        let client: MeshConsumerClient
         do {
+            client = try MeshConsumerClient(
+                identity: identity,
+                networkKey: networkKey,
+                providerPeerId: vm.provider.peerId,
+                providerEndpoint: vm.provider.endpoint,
+                dryRun: false
+            )
             // releaseVM handles both provider notification and local cleanup
             try await client.releaseVM(vm)
             return .vmReleaseResult(success: true, error: nil)

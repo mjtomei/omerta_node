@@ -27,7 +27,7 @@ final class Phase1Tests: XCTestCase {
         let identity = IdentityKeypair()
         let testKey = Data(repeating: 0x42, count: 32)
         let config = MeshNode.Config(encryptionKey: testKey, port: port)
-        return MeshNode(identity: identity, config: config)
+        return try MeshNode(identity: identity, config: config)
     }
 
     // MARK: - Identity Tests
@@ -134,6 +134,7 @@ final class Phase1Tests: XCTestCase {
             messageId: messageId,
             fromPeerId: keypair.peerId,
             publicKey: keypair.publicKeyBase64,
+            machineId: "test-machine-id",
             toPeerId: "recipient",
             hopCount: 0,
             timestamp: timestamp,
@@ -181,6 +182,7 @@ final class Phase1Tests: XCTestCase {
 
         let original = try MeshEnvelope.signed(
             from: keypair,
+            machineId: "test-machine-id",
             to: "recipient",
             payload: .ping(recentPeers: ["peer1": "endpoint1", "peer2": "endpoint2"])
         )
@@ -310,6 +312,7 @@ final class Phase1Tests: XCTestCase {
         let envelope = try MeshEnvelope.signed(
             messageId: "test-dedup-id",
             from: keypair,
+            machineId: "test-machine-id",
             to: nil,
             payload: .ping(recentPeers: [:] as [String: String])
         )
@@ -358,6 +361,7 @@ final class Phase1Tests: XCTestCase {
         var envelope = MeshEnvelope(
             fromPeerId: nodeAIdentity.peerId,
             publicKey: nodeAIdentity.publicKeyBase64,
+            machineId: "test-machine-id",
             toPeerId: nodeBPeerId,
             payload: .ping(recentPeers: [:] as [String: String])
         )
@@ -455,8 +459,7 @@ final class Phase1Tests: XCTestCase {
         let keypair = IdentityKeypair()
         let connection = PeerConnection(
             peerId: keypair.peerId,
-            publicKey: keypair.publicKey,
-            endpoints: ["127.0.0.1:5000"]
+            publicKey: keypair.publicKey
         )
 
         // Initial state
@@ -490,31 +493,63 @@ final class Phase1Tests: XCTestCase {
         XCTAssertNotNil(lastSeen)
     }
 
-    /// Test peer endpoint management
-    func testPeerEndpointManagement() async throws {
+    /// Test peer active endpoint management
+    func testPeerActiveEndpoint() async throws {
         let keypair = IdentityKeypair()
         let connection = PeerConnection(
             peerId: keypair.peerId,
-            publicKey: keypair.publicKey,
-            endpoints: []
+            publicKey: keypair.publicKey
         )
 
-        // Add endpoints
-        await connection.addEndpoint("1.2.3.4:5000")
-        await connection.addEndpoint("5.6.7.8:5000")
+        // Initially no active endpoint
+        let initial = await connection.activeEndpoint
+        XCTAssertNil(initial)
 
-        let endpoints = await connection.endpoints
-        XCTAssertEqual(endpoints.count, 2)
-
-        // Set active
+        // Set active endpoint
         await connection.setActiveEndpoint("1.2.3.4:5000")
         let active = await connection.activeEndpoint
         XCTAssertEqual(active, "1.2.3.4:5000")
 
-        // Remove endpoint
-        await connection.removeEndpoint("1.2.3.4:5000")
+        // Change active endpoint
+        await connection.setActiveEndpoint("5.6.7.8:5000")
         let newActive = await connection.activeEndpoint
         XCTAssertEqual(newActive, "5.6.7.8:5000")
+
+        // Clear active endpoint
+        await connection.setActiveEndpoint(nil)
+        let cleared = await connection.activeEndpoint
+        XCTAssertNil(cleared)
+    }
+
+    /// Test PeerEndpointManager endpoint tracking
+    func testPeerEndpointManager() async throws {
+        let manager = PeerEndpointManager()
+
+        let peerId = "test-peer-123"
+        let machineId = "test-machine-456"
+
+        // Initially no endpoints
+        let initial = await manager.getEndpoints(peerId: peerId, machineId: machineId)
+        XCTAssertTrue(initial.isEmpty)
+
+        // Record message received - should add endpoint
+        await manager.recordMessageReceived(from: peerId, machineId: machineId, endpoint: "1.2.3.4:5000")
+        let afterFirst = await manager.getEndpoints(peerId: peerId, machineId: machineId)
+        XCTAssertEqual(afterFirst, ["1.2.3.4:5000"])
+
+        // Record from different endpoint - should add to front
+        await manager.recordMessageReceived(from: peerId, machineId: machineId, endpoint: "5.6.7.8:5000")
+        let afterSecond = await manager.getEndpoints(peerId: peerId, machineId: machineId)
+        XCTAssertEqual(afterSecond, ["5.6.7.8:5000", "1.2.3.4:5000"])
+
+        // Record from first endpoint again - should move to front
+        await manager.recordMessageReceived(from: peerId, machineId: machineId, endpoint: "1.2.3.4:5000")
+        let afterPromote = await manager.getEndpoints(peerId: peerId, machineId: machineId)
+        XCTAssertEqual(afterPromote, ["1.2.3.4:5000", "5.6.7.8:5000"])
+
+        // Best endpoint should be first
+        let best = await manager.getBestEndpoint(peerId: peerId, machineId: machineId)
+        XCTAssertEqual(best, "1.2.3.4:5000")
     }
 
     /// Test message deduplication in peer connection
@@ -522,8 +557,7 @@ final class Phase1Tests: XCTestCase {
         let keypair = IdentityKeypair()
         let connection = PeerConnection(
             peerId: keypair.peerId,
-            publicKey: keypair.publicKey,
-            endpoints: []
+            publicKey: keypair.publicKey
         )
 
         let messageId = "test-message-123"

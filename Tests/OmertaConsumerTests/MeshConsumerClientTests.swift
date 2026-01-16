@@ -88,14 +88,14 @@ final class MeshConsumerClientTests: XCTestCase {
 
     // MARK: - MeshConsumerClient Initialization Tests
 
-    func testMeshConsumerClientInitialization() async {
+    func testMeshConsumerClientInitialization() async throws {
         let identity = OmertaMesh.IdentityKeypair()
         let networkKey = Data(repeating: 0x42, count: 32)
 
         // Use a unique temp path to avoid interference from other tests/runs
         let tempPath = "/tmp/omerta-test-\(UUID().uuidString)/vms.json"
 
-        let client = MeshConsumerClient(
+        let client = try MeshConsumerClient(
             identity: identity,
             networkKey: networkKey,
             providerPeerId: "testprovider1234",

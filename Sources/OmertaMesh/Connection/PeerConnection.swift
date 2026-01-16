@@ -12,10 +12,7 @@ public actor PeerConnection {
     /// The peer's public key for signature verification
     public let publicKey: Curve25519.Signing.PublicKey
 
-    /// Known endpoints for this peer (in preference order)
-    public private(set) var endpoints: [String]
-
-    /// The currently active endpoint
+    /// The currently active endpoint (endpoint management now handled by PeerEndpointManager)
     public private(set) var activeEndpoint: String?
 
     /// Connection state
@@ -44,54 +41,33 @@ public actor PeerConnection {
         case failed(Error)
     }
 
-    public init(peerId: PeerId, publicKey: Curve25519.Signing.PublicKey, endpoints: [String] = []) {
+    public init(peerId: PeerId, publicKey: Curve25519.Signing.PublicKey) {
         self.peerId = peerId
         self.publicKey = publicKey
-        self.endpoints = endpoints
     }
 
     /// Create from public key data
-    public init(publicKeyData: Data, endpoints: [String] = []) throws {
+    public init(publicKeyData: Data) throws {
         let publicKey = try Curve25519.Signing.PublicKey(rawRepresentation: publicKeyData)
         self.peerId = publicKey.peerId
         self.publicKey = publicKey
-        self.endpoints = endpoints
     }
 
     /// Create from base64 public key
-    public init(publicKeyBase64: String, endpoints: [String] = []) throws {
+    public init(publicKeyBase64: String) throws {
         guard let keyData = Data(base64Encoded: publicKeyBase64),
               let publicKey = try? Curve25519.Signing.PublicKey(rawRepresentation: keyData) else {
             throw PeerConnectionError.invalidPublicKey
         }
         self.peerId = publicKey.peerId
         self.publicKey = publicKey
-        self.endpoints = endpoints
     }
 
     // MARK: - Endpoint Management
 
-    /// Add an endpoint for this peer
-    public func addEndpoint(_ endpoint: String) {
-        if !endpoints.contains(endpoint) {
-            endpoints.append(endpoint)
-        }
-    }
-
     /// Set the active endpoint
     public func setActiveEndpoint(_ endpoint: String?) {
         activeEndpoint = endpoint
-        if let endpoint = endpoint, !endpoints.contains(endpoint) {
-            endpoints.insert(endpoint, at: 0)
-        }
-    }
-
-    /// Remove an endpoint
-    public func removeEndpoint(_ endpoint: String) {
-        endpoints.removeAll { $0 == endpoint }
-        if activeEndpoint == endpoint {
-            activeEndpoint = endpoints.first
-        }
     }
 
     // MARK: - Connection State

@@ -32,6 +32,9 @@ public actor MeshConsumerClient {
     /// Our identity for signing messages
     private let identity: OmertaMesh.IdentityKeypair
 
+    /// Our machine ID for identifying this physical machine
+    private let machineId: OmertaMesh.MachineId
+
     /// Network key for encryption
     private let networkKey: Data
 
@@ -70,8 +73,9 @@ public actor MeshConsumerClient {
         providerEndpoint: String,
         persistencePath: String = "~/.omerta/vms/active.json",
         dryRun: Bool = false
-    ) {
+    ) throws {
         self.identity = identity
+        self.machineId = try OmertaMesh.getOrCreateMachineId()
         self.networkKey = networkKey
         self.providerPeerId = providerPeerId
         self.providerEndpoint = providerEndpoint
@@ -135,10 +139,14 @@ public actor MeshConsumerClient {
             let vmResponse = try JSONDecoder().decode(MeshVMResponse.self, from: responseData)
 
             if let error = vmResponse.error {
+                // Send negative ACK for error response
+                await sendAck(vmId: vmId, success: false)
                 throw MeshConsumerError.providerError(error)
             }
 
             guard let providerPublicKey = vmResponse.providerPublicKey else {
+                // Send negative ACK for invalid response
+                await sendAck(vmId: vmId, success: false)
                 throw MeshConsumerError.invalidResponse
             }
 
@@ -150,6 +158,9 @@ public actor MeshConsumerClient {
                 "sshIP": "\(sshIP)",
                 "providerReportedIP": "\(vmResponse.vmIP ?? "none")"
             ])
+
+            // Send positive ACK to confirm we received the response
+            await sendAck(vmId: vmId, success: true)
 
             // 4. Add provider as peer on consumer's WireGuard
             try await ephemeralVPN.addProviderPeer(
@@ -278,6 +289,7 @@ public actor MeshConsumerClient {
         // Create signed envelope
         let envelope = try MeshEnvelope.signed(
             from: identity,
+            machineId: machineId,
             to: providerPeerId,
             payload: .data(data)
         )
@@ -340,6 +352,82 @@ public actor MeshConsumerClient {
         }
 
         throw MeshConsumerError.invalidResponse
+    }
+
+    /// Send ACK to provider confirming we received their response
+    private func sendAck(vmId: UUID, success: Bool) async {
+        let ack = MeshVMAck(vmId: vmId, success: success)
+
+        guard let ackData = try? JSONEncoder().encode(ack) else {
+            logger.warning("Failed to encode ACK")
+            return
+        }
+
+        // Send ACK without waiting for response (fire and forget)
+        do {
+            _ = try await sendOnly(data: ackData)
+            logger.debug("Sent ACK", metadata: [
+                "vmId": "\(vmId.uuidString.prefix(8))...",
+                "success": "\(success)"
+            ])
+        } catch {
+            logger.warning("Failed to send ACK", metadata: [
+                "vmId": "\(vmId.uuidString.prefix(8))...",
+                "error": "\(error)"
+            ])
+        }
+    }
+
+    /// Send encrypted data without waiting for response (fire and forget)
+    private func sendOnly(data: Data) async throws {
+        // Create UDP socket
+        let sock = systemSocket(AF_INET, SOCK_DGRAM_VALUE, 0)
+        guard sock >= 0 else {
+            throw MeshConsumerError.connectionFailed(reason: "Failed to create socket")
+        }
+        defer { _ = systemClose(sock) }
+
+        // Parse endpoint
+        let parts = providerEndpoint.split(separator: ":")
+        guard parts.count == 2,
+              let port = UInt16(parts[1]) else {
+            throw MeshConsumerError.connectionFailed(reason: "Invalid provider endpoint")
+        }
+        let host = String(parts[0])
+
+        // Resolve host to address
+        var destAddr = sockaddr_in()
+        destAddr.sin_family = sa_family_t(AF_INET)
+        destAddr.sin_port = port.bigEndian
+
+        if inet_pton(AF_INET, host, &destAddr.sin_addr) != 1 {
+            throw MeshConsumerError.connectionFailed(reason: "Invalid provider IP address")
+        }
+
+        // Create signed envelope
+        let envelope = try MeshEnvelope.signed(
+            from: identity,
+            machineId: machineId,
+            to: providerPeerId,
+            payload: .data(data)
+        )
+
+        // Encode to JSON then encrypt
+        let jsonData = try JSONEncoder().encode(envelope)
+        let encryptedData = try MessageEncryption.encrypt(jsonData, key: networkKey)
+
+        // Send encrypted data
+        let sendResult = withUnsafePointer(to: &destAddr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                encryptedData.withUnsafeBytes { buffer in
+                    systemSendto(sock, buffer.baseAddress!, buffer.count, 0, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+        }
+
+        guard sendResult >= 0 else {
+            throw MeshConsumerError.connectionFailed(reason: "Failed to send data")
+        }
     }
 }
 

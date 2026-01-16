@@ -177,6 +177,9 @@ public struct MeshEnvelope: Codable, Sendable {
     /// Sender's Ed25519 public key (base64) - enables stateless verification
     public let publicKey: String
 
+    /// Sender's machine ID - identifies which physical machine sent this
+    public let machineId: MachineId
+
     /// Recipient's peer ID (nil for broadcast)
     public let toPeerId: PeerId?
 
@@ -196,6 +199,7 @@ public struct MeshEnvelope: Codable, Sendable {
         messageId: String = UUID().uuidString,
         fromPeerId: PeerId,
         publicKey: String,
+        machineId: MachineId,
         toPeerId: PeerId?,
         hopCount: Int = 0,
         timestamp: Date = Date(),
@@ -205,6 +209,7 @@ public struct MeshEnvelope: Codable, Sendable {
         self.messageId = messageId
         self.fromPeerId = fromPeerId
         self.publicKey = publicKey
+        self.machineId = machineId
         self.toPeerId = toPeerId
         self.hopCount = hopCount
         self.timestamp = timestamp
@@ -219,6 +224,7 @@ public struct MeshEnvelope: Codable, Sendable {
             messageId: messageId,
             fromPeerId: fromPeerId,
             publicKey: publicKey,
+            machineId: machineId,
             toPeerId: toPeerId,
             hopCount: hopCount,
             timestamp: timestamp,
@@ -234,6 +240,7 @@ public struct MeshEnvelope: Codable, Sendable {
     public static func signed(
         messageId: String = UUID().uuidString,
         from keypair: IdentityKeypair,
+        machineId: MachineId,
         to toPeerId: PeerId?,
         payload: MeshMessage
     ) throws -> MeshEnvelope {
@@ -241,6 +248,7 @@ public struct MeshEnvelope: Codable, Sendable {
             messageId: messageId,
             fromPeerId: keypair.peerId,
             publicKey: keypair.publicKeyBase64,
+            machineId: machineId,
             toPeerId: toPeerId,
             payload: payload
         )
@@ -275,6 +283,7 @@ private struct SignableEnvelope: Codable {
     let messageId: String
     let fromPeerId: PeerId
     let publicKey: String
+    let machineId: MachineId
     let toPeerId: PeerId?
     let hopCount: Int
     let timestamp: Date

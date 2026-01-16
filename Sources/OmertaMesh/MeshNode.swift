@@ -108,8 +108,14 @@ public actor MeshNode {
         identity.peerId
     }
 
+    /// This node's machine ID (identifies this physical machine)
+    public let machineId: MachineId
+
     /// Node configuration
     public let config: Config
+
+    /// Endpoint manager for multi-endpoint tracking by (peerId, machineId)
+    public let endpointManager: PeerEndpointManager
 
     /// Cached peer info
     private var peerCache: [PeerId: CachedPeerInfo] = [:]
@@ -173,12 +179,14 @@ public actor MeshNode {
     /// - Parameters:
     ///   - identity: The cryptographic identity (peer ID is derived from this)
     ///   - config: Node configuration (must include encryption key)
-    public init(identity: IdentityKeypair, config: Config) {
+    public init(identity: IdentityKeypair, config: Config) throws {
         self.identity = identity
+        self.machineId = try getOrCreateMachineId()
         self.config = config
         self.eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.socket = UDPSocket(eventLoopGroup: self.eventLoopGroup)
         self.logger = Logger(label: "io.omerta.mesh.node.\(identity.peerId.prefix(8))")
+        self.endpointManager = PeerEndpointManager(logger: Logger(label: "io.omerta.mesh.endpoints"))
         self.freshnessManager = FreshnessManager()
         self.holePunchManager = HolePunchManager(
             peerId: identity.peerId,
@@ -289,6 +297,7 @@ public actor MeshNode {
             do {
                 let envelope = try MeshEnvelope.signed(
                     from: identity,
+                    machineId: machineId,
                     to: nil,
                     payload: message
                 )
@@ -333,6 +342,9 @@ public actor MeshNode {
 
         isRunning = true
 
+        // Start endpoint manager for persistence and cleanup
+        await endpointManager.start()
+
         // Start freshness manager
         await freshnessManager.start()
 
@@ -354,6 +366,9 @@ public actor MeshNode {
     public func stop() async {
         guard isRunning else { return }
         isRunning = false
+
+        // Stop endpoint manager (saves to disk)
+        await endpointManager.stop()
 
         // Stop freshness manager
         await freshnessManager.stop()
@@ -419,6 +434,13 @@ public actor MeshNode {
         // Update peer info and track endpoint
         let endpointString = formatEndpoint(address)
         await updatePeerEndpointFromMessage(peerId: envelope.fromPeerId, endpoint: endpointString)
+
+        // Record in endpoint manager for multi-endpoint tracking
+        await endpointManager.recordMessageReceived(
+            from: envelope.fromPeerId,
+            machineId: envelope.machineId,
+            endpoint: endpointString
+        )
 
         // Check if this is a response to a pending request
         if case .pong = envelope.payload {
@@ -578,6 +600,7 @@ public actor MeshNode {
             do {
                 let envelope = try MeshEnvelope.signed(
                     from: identity,
+                    machineId: machineId,
                     to: nil,
                     payload: message
                 )
@@ -598,6 +621,7 @@ public actor MeshNode {
             // Create signed envelope with embedded public key
             let envelope = try MeshEnvelope.signed(
                 from: identity,
+                machineId: machineId,
                 to: nil,
                 payload: message
             )
@@ -665,8 +689,8 @@ public actor MeshNode {
     }
 
     /// Add a peer with known public key
-    public func addPeer(publicKeyBase64: String, endpoints: [String] = []) throws {
-        let connection = try PeerConnection(publicKeyBase64: publicKeyBase64, endpoints: endpoints)
+    public func addPeer(publicKeyBase64: String) throws {
+        let connection = try PeerConnection(publicKeyBase64: publicKeyBase64)
         peers[connection.peerId] = connection
     }
 
@@ -699,6 +723,8 @@ public actor MeshNode {
 
     /// Update a peer's endpoint (public API for MeshNetwork)
     public func updatePeerEndpoint(_ peerId: PeerId, endpoint: Endpoint) async {
+        // Don't add ourselves as a peer
+        guard peerId != self.peerId else { return }
         peerEndpoints[peerId] = endpoint
         peerCache[peerId] = CachedPeerInfo(peerId: peerId, endpoint: endpoint)
     }

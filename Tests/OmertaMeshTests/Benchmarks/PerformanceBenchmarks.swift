@@ -274,6 +274,7 @@ final class PerformanceBenchmarks: XCTestCase {
         let envelope = MeshEnvelope(
             fromPeerId: "sender",
             publicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            machineId: "test-machine",
             toPeerId: "receiver",
             payload: message
         )

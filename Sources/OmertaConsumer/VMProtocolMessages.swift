@@ -118,3 +118,32 @@ public struct MeshVMHeartbeatResponse: Codable, Sendable {
         self.timestamp = Date()
     }
 }
+
+// MARK: - VM ACK Messages
+
+/// ACK for VM response - confirms consumer received and accepted the response
+/// Provider waits for this before considering delivery successful
+public struct MeshVMAck: Codable, Sendable {
+    public let type: String
+    public let vmId: UUID
+    public let success: Bool  // false if consumer rejected/error
+
+    public init(vmId: UUID, success: Bool) {
+        self.type = "vm_ack"
+        self.vmId = vmId
+        self.success = success
+    }
+}
+
+/// ACK for VM release response - confirms consumer received the release confirmation
+public struct MeshVMReleaseAck: Codable, Sendable {
+    public let type: String
+    public let vmId: UUID
+    public let success: Bool
+
+    public init(vmId: UUID, success: Bool) {
+        self.type = "vm_release_ack"
+        self.vmId = vmId
+        self.success = success
+    }
+}
