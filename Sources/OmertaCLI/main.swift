@@ -1447,25 +1447,27 @@ struct VMList: AsyncParsableCommand {
 
     mutating func run() async throws {
         let tracker = VMTracker()
-        let vms = try await tracker.loadPersistedVMs()
+        let allVMs = try await tracker.loadPersistedVMs()
+        // Sort by creation date, most recent first
+        let vms = allVMs.sorted { $0.createdAt > $1.createdAt }
 
         if vms.isEmpty {
             print("No active VMs")
             print("")
             print("To request a VM:")
-            print("  omerta vm request --provider <ip:port> --network-key <key>")
+            print("  omerta vm request --network <id> --peer <provider-id>")
 
             // Still check for orphaned resources even if no tracked VMs
             await checkForOrphanedResources(trackedInterfaces: [])
             return
         }
 
-        print("Active VMs")
-        print("==========")
+        print("Active VMs (most recent first)")
+        print("==============================")
         print("")
 
-        for vm in vms {
-            print("[\(vm.vmId.uuidString.prefix(8))...] \(vm.vmIP)")
+        for (index, vm) in vms.enumerated() {
+            print("\(index + 1). [\(vm.vmId.uuidString.prefix(8))...] \(vm.vmIP)")
             print("   Provider: \(vm.provider.endpoint)")
             print("   Network: \(vm.networkId)")
             print("   Created: \(formatDate(vm.createdAt))")
@@ -1478,13 +1480,15 @@ struct VMList: AsyncParsableCommand {
             print("")
         }
 
-        print("Total: \(vms.count) VMs")
+        print("Total: \(vms.count) VM\(vms.count == 1 ? "" : "s")")
         print("")
-        print("To connect to a VM:")
-        print("  omerta vm connect <vm-id>")
+        print("To connect:")
+        print("  omerta ssh           # connect to most recent (1)")
+        print("  omerta ssh 2         # connect by index")
+        print("  omerta ssh BAE       # connect by ID prefix")
         print("")
-        print("To release a VM:")
-        print("  omerta vm release <vm-id>")
+        print("To release:")
+        print("  omerta vm release 1  # release by index")
 
         // Check for orphaned resources
         let trackedInterfaces = Set(vms.map { $0.vpnInterface })
@@ -1557,10 +1561,10 @@ struct VMRelease: AsyncParsableCommand {
         abstract: "Release a VM"
     )
 
-    @Argument(help: "VM ID to release (or prefix)")
+    @Argument(help: "VM ID, prefix, or index (1=most recent)")
     var vmIdArg: String?
 
-    @Option(name: .long, help: "VM ID to release (or prefix)")
+    @Option(name: .long, help: "VM ID, prefix, or index (1=most recent)")
     var vm: String?
 
     @Flag(name: [.customShort("y"), .long], help: "Skip confirmation prompt")
@@ -1576,39 +1580,52 @@ struct VMRelease: AsyncParsableCommand {
             print("")
             print("Usage:")
             print("  omerta vm release <vm-id>")
+            print("  omerta vm release 1        # release by index")
             print("  omerta vm release --vm <vm-id>")
             throw ExitCode.failure
         }
 
-        // Find VM by ID or prefix
+        // Load VMs sorted by creation date (most recent first)
         let tracker = VMTracker()
-        let vms = try await tracker.loadPersistedVMs()
+        let allVMs = try await tracker.loadPersistedVMs()
+        let vms = allVMs.sorted { $0.createdAt > $1.createdAt }
 
-        let matchingVMs = vms.filter {
-            $0.vmId.uuidString.lowercased().hasPrefix(vmId.lowercased()) ||
-            $0.vmId.uuidString.lowercased() == vmId.lowercased()
-        }
+        let selectedVM: VMConnection
 
-        guard let vm = matchingVMs.first else {
-            print("Error: VM not found: \(vmId)")
-            print("")
-            print("Active VMs:")
-            for v in vms {
-                print("  \(v.vmId.uuidString.prefix(8))... - \(v.vmIP)")
+        // Check if it's a numeric index (1-based)
+        if let index = Int(vmId), index >= 1 && index <= vms.count {
+            selectedVM = vms[index - 1]
+        } else {
+            // Find VM by ID or prefix
+            let matchingVMs = vms.filter {
+                $0.vmId.uuidString.lowercased().hasPrefix(vmId.lowercased()) ||
+                $0.vmId.uuidString.lowercased() == vmId.lowercased()
             }
-            throw ExitCode.failure
-        }
 
-        if matchingVMs.count > 1 {
-            print("Error: Multiple VMs match '\(vmId)'. Be more specific:")
-            for v in matchingVMs {
-                print("  \(v.vmId)")
+            guard let matched = matchingVMs.first else {
+                print("Error: VM not found: \(vmId)")
+                print("")
+                print("Active VMs:")
+                for (i, v) in vms.enumerated() {
+                    print("  \(i + 1). [\(v.vmId.uuidString.prefix(8))...] \(v.vmIP)")
+                }
+                throw ExitCode.failure
             }
-            throw ExitCode.failure
+
+            if matchingVMs.count > 1 {
+                print("Error: Multiple VMs match '\(vmId)'. Be more specific:")
+                for (i, v) in vms.enumerated() {
+                    let marker = matchingVMs.contains(where: { $0.vmId == v.vmId }) ? " <--" : ""
+                    print("  \(i + 1). [\(v.vmId.uuidString.prefix(8))...] \(v.vmIP)\(marker)")
+                }
+                throw ExitCode.failure
+            }
+
+            selectedVM = matched
         }
 
         if !yes {
-            print("Release VM \(vm.vmId.uuidString.prefix(8))... at \(vm.vmIP)?")
+            print("Release VM \(selectedVM.vmId.uuidString.prefix(8))... at \(selectedVM.vmIP)?")
             print("Type 'yes' to confirm: ", terminator: "")
 
             guard let response = readLine()?.lowercased(), response == "yes" else {
@@ -1626,13 +1643,13 @@ struct VMRelease: AsyncParsableCommand {
         var providerNotified = false
 
         // Try to notify provider via mesh
-        if let network = await networkStore.network(id: vm.networkId) {
+        if let network = await networkStore.network(id: selectedVM.networkId) {
             // Check omertad is running
-            let controlClient = ControlSocketClient(networkId: vm.networkId)
+            let controlClient = ControlSocketClient(networkId: selectedVM.networkId)
             if controlClient.isDaemonRunning() {
                 // Ping provider first to ensure they know where to respond
                 do {
-                    let _ = try await controlClient.send(.ping(peerId: vm.provider.peerId, timeout: 5))
+                    let _ = try await controlClient.send(.ping(peerId: selectedVM.provider.peerId, timeout: 5))
                 } catch {
                     print("Warning: Could not ping provider: \(error)")
                 }
@@ -1645,7 +1662,7 @@ struct VMRelease: AsyncParsableCommand {
                 let identityStore = IdentityStore.defaultStore()
                 try await identityStore.load()
 
-                guard let identity = try await identityStore.getIdentity(forNetwork: vm.networkId) else {
+                guard let identity = try await identityStore.getIdentity(forNetwork: selectedVM.networkId) else {
                     print("Warning: No identity found for network, skipping provider notification")
                     throw NSError(domain: "VMRelease", code: 1, userInfo: nil)
                 }
@@ -1660,9 +1677,9 @@ struct VMRelease: AsyncParsableCommand {
 
                 // Send release request to provider
                 print("Notifying provider...")
-                let releaseRequest = ["type": "vm_release", "vmId": vm.vmId.uuidString]
+                let releaseRequest = ["type": "vm_release", "vmId": selectedVM.vmId.uuidString]
                 if let requestData = try? JSONEncoder().encode(releaseRequest) {
-                    try await mesh.send(requestData, to: vm.provider.peerId)
+                    try await mesh.send(requestData, to: selectedVM.provider.peerId)
                     // Wait briefly for acknowledgment
                     try await Task.sleep(nanoseconds: 500_000_000)
                     providerNotified = true
@@ -1674,17 +1691,17 @@ struct VMRelease: AsyncParsableCommand {
                 print("Warning: Could not notify provider: \(error)")
             }
         } else {
-            print("Warning: Network '\(vm.networkId)' not found, skipping provider notification")
+            print("Warning: Network '\(selectedVM.networkId)' not found, skipping provider notification")
         }
 
         // Local cleanup
         do {
             // 1. Tear down VPN tunnel
             let ephemeralVPN = EphemeralVPN()
-            try await ephemeralVPN.destroyVPN(for: vm.vmId)
+            try await ephemeralVPN.destroyVPN(for: selectedVM.vmId)
 
             // 2. Remove from tracker
-            try await tracker.removeVM(vm.vmId)
+            try await tracker.removeVM(selectedVM.vmId)
 
             print("")
             print("VM released successfully")
@@ -1704,7 +1721,7 @@ struct VMRelease: AsyncParsableCommand {
 
             // Force local cleanup
             print("Forcing local cleanup...")
-            try? await tracker.removeVM(vm.vmId)
+            try? await tracker.removeVM(selectedVM.vmId)
             print("Local cleanup complete")
         }
     }
@@ -1717,55 +1734,84 @@ struct VMConnect: AsyncParsableCommand {
         abstract: "SSH into a VM"
     )
 
-    @Argument(help: "VM ID to connect to (or prefix)")
+    @Argument(help: "VM ID, prefix, or index (1=most recent). Defaults to most recent if omitted.")
     var vmIdArg: String?
 
-    @Option(name: .long, help: "VM ID to connect to (or prefix)")
+    @Option(name: .long, help: "VM ID, prefix, or index (1=most recent)")
     var vm: String?
 
     mutating func run() async throws {
-        // Get VM ID from either argument or --vm flag
-        guard let vmId = vmIdArg ?? vm else {
-            print("Error: VM ID is required")
-            print("")
-            print("Usage:")
-            print("  omerta vm connect <vm-id>")
-            print("  omerta vm connect --vm <vm-id>")
-            print("  omerta ssh <vm-id>")
-            print("  omerta ssh --vm <vm-id>")
-            throw ExitCode.failure
-        }
-
-        // Find VM by ID or prefix
+        // Load VMs sorted by creation date (most recent first)
         let tracker = VMTracker()
-        let vms = try await tracker.loadPersistedVMs()
+        let allVMs = try await tracker.loadPersistedVMs()
+        let vms = allVMs.sorted { $0.createdAt > $1.createdAt }
 
-        let matchingVMs = vms.filter {
-            $0.vmId.uuidString.lowercased().hasPrefix(vmId.lowercased()) ||
-            $0.vmId.uuidString.lowercased() == vmId.lowercased()
-        }
-
-        guard let vm = matchingVMs.first else {
-            print("Error: VM not found: \(vmId)")
+        guard !vms.isEmpty else {
+            print("Error: No active VMs")
+            print("")
+            print("Request a VM with:")
+            print("  omerta vm request --network <id> --peer <provider-id>")
             throw ExitCode.failure
         }
 
-        if matchingVMs.count > 1 {
-            print("Error: Multiple VMs match '\(vmId)'. Be more specific:")
-            for v in matchingVMs {
-                print("  \(v.vmId)")
+        // Get VM ID from either argument or --vm flag, default to most recent
+        let vmId = vmIdArg ?? vm
+        let selectedVM: VMConnection
+
+        if let vmId = vmId {
+            // Check if it's a numeric index (1-based)
+            if let index = Int(vmId), index >= 1 && index <= vms.count {
+                selectedVM = vms[index - 1]
+            } else {
+                // Find VM by ID or prefix
+                let matchingVMs = vms.filter {
+                    $0.vmId.uuidString.lowercased().hasPrefix(vmId.lowercased()) ||
+                    $0.vmId.uuidString.lowercased() == vmId.lowercased()
+                }
+
+                guard let matched = matchingVMs.first else {
+                    print("Error: VM not found: \(vmId)")
+                    print("")
+                    print("Active VMs:")
+                    for (i, v) in vms.enumerated() {
+                        print("  \(i + 1). [\(v.vmId.uuidString.prefix(8))...] \(v.vmIP)")
+                    }
+                    throw ExitCode.failure
+                }
+
+                if matchingVMs.count > 1 {
+                    print("Error: Multiple VMs match '\(vmId)'. Be more specific:")
+                    for (i, v) in vms.enumerated() {
+                        let marker = matchingVMs.contains(where: { $0.vmId == v.vmId }) ? " <--" : ""
+                        print("  \(i + 1). [\(v.vmId.uuidString.prefix(8))...] \(v.vmIP)\(marker)")
+                    }
+                    throw ExitCode.failure
+                }
+
+                selectedVM = matched
             }
-            throw ExitCode.failure
+        } else {
+            // Default to most recent VM
+            selectedVM = vms[0]
         }
 
-        print("Connecting to VM \(vm.vmId.uuidString.prefix(8))... at \(vm.vmIP)")
+        print("Connecting to VM \(selectedVM.vmId.uuidString.prefix(8))... at \(selectedVM.vmIP)")
         print("")
+        // Flush stdout before execing SSH
+        fflush(stdout)
 
-        // Execute SSH
-        let expandedKeyPath = NSString(string: vm.sshKeyPath).expandingTildeInPath
+        // Execute SSH with proper options for ephemeral VMs
+        let expandedKeyPath = NSString(string: selectedVM.sshKeyPath).expandingTildeInPath
+        let knownHostsPath = NSString(string: VMConnection.knownHostsPath).expandingTildeInPath
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        process.arguments = ["-i", expandedKeyPath, "\(vm.sshUser)@\(vm.vmIP)"]
+        process.arguments = [
+            "-o", "UserKnownHostsFile=\(knownHostsPath)",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-i", expandedKeyPath,
+            "\(selectedVM.sshUser)@\(selectedVM.vmIP)"
+        ]
 
         // Connect stdin/stdout/stderr
         process.standardInput = FileHandle.standardInput
@@ -2911,10 +2957,10 @@ struct SSH: AsyncParsableCommand {
         abstract: "SSH into a VM (alias for 'omerta vm connect')"
     )
 
-    @Argument(help: "VM ID to connect to (or prefix)")
+    @Argument(help: "VM ID, prefix, or index (1=most recent). Defaults to most recent if omitted.")
     var vmIdArg: String?
 
-    @Option(name: .long, help: "VM ID to connect to (or prefix)")
+    @Option(name: .long, help: "VM ID, prefix, or index (1=most recent)")
     var vm: String?
 
     mutating func run() async throws {
