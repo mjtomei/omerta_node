@@ -1328,13 +1328,15 @@ struct VMRequest: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        // Ping provider first so they know where to send responses
+        // Ping provider first to get their endpoint for direct connection
         print("")
         print("Establishing connection to provider...")
+        var providerEndpoint: String?
         do {
             let pingResponse = try await controlClient.send(.ping(peerId: providerPeerId, timeout: 10))
             if case .pingResult(let result) = pingResponse, let result = result {
-                print("Provider reachable: \(result.latencyMs)ms latency")
+                print("Provider reachable: \(result.latencyMs)ms latency at \(result.endpoint)")
+                providerEndpoint = result.endpoint
             } else {
                 print("Warning: Could not reach provider \(providerPeerId) - request may fail")
             }
@@ -1348,6 +1350,7 @@ struct VMRequest: AsyncParsableCommand {
         try await requestVMViaMesh(
             networkId: networkId,
             providerPeerId: providerPeerId,
+            providerEndpoint: providerEndpoint,
             bootstrapPeers: bootstrapPeers,
             config: config,
             networkKey: keyData,
@@ -1361,6 +1364,7 @@ struct VMRequest: AsyncParsableCommand {
     private func requestVMViaMesh(
         networkId: String,
         providerPeerId: String,
+        providerEndpoint: String?,
         bootstrapPeers: [String],
         config: OmertaConfig,
         networkKey: Data,
@@ -1393,10 +1397,21 @@ struct VMRequest: AsyncParsableCommand {
 
         print("Using identity: \(identity.peerId)")
 
-        // Build mesh config with encryption key and bootstrap peers from network
+        // Build bootstrap peers list - include provider endpoint if we have it from omertad ping
+        var effectiveBootstrapPeers = bootstrapPeers
+        if let endpoint = providerEndpoint {
+            // Add provider as a known peer so we can connect directly
+            let providerBootstrap = "\(providerPeerId)@\(endpoint)"
+            if !effectiveBootstrapPeers.contains(providerBootstrap) {
+                effectiveBootstrapPeers.append(providerBootstrap)
+            }
+            print("Using provider endpoint from omertad: \(endpoint)")
+        }
+
+        // Build mesh config with encryption key and bootstrap peers
         let meshConfig = MeshConfig(
             encryptionKey: networkKey,
-            bootstrapPeers: bootstrapPeers
+            bootstrapPeers: effectiveBootstrapPeers
         )
 
         let client = MeshConsumerClient(
