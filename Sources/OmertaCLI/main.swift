@@ -1723,93 +1723,67 @@ struct VMRelease: AsyncParsableCommand {
 
         print("Releasing VM...")
 
-        // Load network for mesh communication
-        let networkStore = NetworkStore.defaultStore()
-        try await networkStore.load()
-
         var providerNotified = false
+        var usedDaemon = false
 
-        // Try to notify provider via mesh
-        if let network = await networkStore.network(id: selectedVM.networkId) {
-            // Check omertad is running
-            let controlClient = ControlSocketClient(networkId: selectedVM.networkId)
-            if controlClient.isDaemonRunning() {
-                // Ping provider first to ensure they know where to respond
-                do {
-                    let _ = try await controlClient.send(.ping(peerId: selectedVM.provider.peerId, timeout: 5))
-                } catch {
-                    print("Warning: Could not ping provider: \(error)")
-                }
-            }
-
+        // Check if daemon is running for this network
+        let controlClient = ControlSocketClient(networkId: selectedVM.networkId)
+        if controlClient.isDaemonRunning() {
+            // Use IPC to release via daemon (handles provider notification + local cleanup)
+            print("Releasing via omertad...")
             do {
-                let keyData = network.key.networkKey
-
-                // Load shared identity from store
-                let identityStore = IdentityStore.defaultStore()
-                try await identityStore.load()
-
-                guard let identity = try await identityStore.getIdentity(forNetwork: selectedVM.networkId) else {
-                    print("Warning: No identity found for network, skipping provider notification")
-                    throw NSError(domain: "VMRelease", code: 1, userInfo: nil)
+                let response = try await controlClient.send(.vmRelease(vmId: selectedVM.vmId))
+                switch response {
+                case .vmReleaseResult(let success, let error):
+                    if success {
+                        providerNotified = true
+                        usedDaemon = true
+                        print("Provider notified via daemon")
+                    } else if let error = error {
+                        print("Warning: Daemon release failed: \(error)")
+                    }
+                case .error(let error):
+                    print("Warning: IPC error: \(error)")
+                default:
+                    print("Warning: Unexpected response from daemon")
                 }
-
-                let meshConfig = MeshConfig(
-                    encryptionKey: keyData,
-                    bootstrapPeers: network.key.bootstrapPeers
-                )
-
-                let mesh = MeshNetwork(identity: identity, config: meshConfig)
-                try await mesh.start()
-
-                // Send release request to provider
-                print("Notifying provider...")
-                let releaseRequest = ["type": "vm_release", "vmId": selectedVM.vmId.uuidString]
-                if let requestData = try? JSONEncoder().encode(releaseRequest) {
-                    try await mesh.send(requestData, to: selectedVM.provider.peerId)
-                    // Wait briefly for acknowledgment
-                    try await Task.sleep(nanoseconds: 500_000_000)
-                    providerNotified = true
-                    print("Provider notified")
-                }
-
-                await mesh.stop()
             } catch {
-                print("Warning: Could not notify provider: \(error)")
+                print("Warning: Could not communicate with daemon: \(error)")
             }
-        } else {
-            print("Warning: Network '\(selectedVM.networkId)' not found, skipping provider notification")
         }
 
-        // Local cleanup
-        do {
-            // 1. Tear down VPN tunnel
-            let ephemeralVPN = EphemeralVPN()
-            try await ephemeralVPN.destroyVPN(for: selectedVM.vmId)
+        // If daemon didn't handle it, do local cleanup
+        if !usedDaemon {
+            // Local cleanup only (no provider notification without daemon)
+            do {
+                // 1. Tear down VPN tunnel
+                let ephemeralVPN = EphemeralVPN()
+                try await ephemeralVPN.destroyVPN(for: selectedVM.vmId)
 
-            // 2. Remove from tracker
-            try await tracker.removeVM(selectedVM.vmId)
-
-            print("")
-            print("VM released successfully")
-            if providerNotified {
-                print("Provider has been notified to stop the VM.")
-            } else {
-                print("Note: Provider was not notified. VM may still be running on provider.")
-            }
-        } catch {
-            print("")
-            print("Error: Failed to release VM locally: \(error)")
-            if !forceLocal {
+                // 2. Remove from tracker
+                try await tracker.removeVM(selectedVM.vmId)
+            } catch {
                 print("")
-                print("Use --force-local to force cleanup of local resources.")
-                throw ExitCode.failure
-            }
+                print("Error: Failed to release VM locally: \(error)")
+                if !forceLocal {
+                    print("")
+                    print("Use --force-local to force cleanup of local resources.")
+                    throw ExitCode.failure
+                }
 
-            // Force local cleanup
-            print("Forcing local cleanup...")
-            try? await tracker.removeVM(selectedVM.vmId)
-            print("Local cleanup complete")
+                // Force local cleanup
+                print("Forcing local cleanup...")
+                try? await tracker.removeVM(selectedVM.vmId)
+                print("Local cleanup complete")
+            }
+        }
+
+        print("")
+        print("VM released successfully")
+        if providerNotified {
+            print("Provider has been notified to stop the VM.")
+        } else {
+            print("Note: Provider was not notified (daemon not running). VM may still be running on provider.")
         }
     }
 }
@@ -3194,20 +3168,16 @@ struct VMs: AsyncParsableCommand {
 struct Peers: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "peers",
-        abstract: "List discovered mesh peers (alias for 'omerta mesh peers')"
+        abstract: "List discovered mesh peers (alias for 'omerta mesh peers', requires omertad)"
     )
 
-    @Option(name: .long, help: "Bootstrap peer (format: peerId@host:port)")
-    var bootstrap: String?
-
-    @Option(name: .long, help: "Discovery timeout in seconds")
-    var timeout: Int = 5
+    @Option(name: .long, help: "Network ID (default: first available)")
+    var network: String?
 
     mutating func run() async throws {
         // Delegate to MeshPeers implementation
         var meshPeers = MeshPeers()
-        meshPeers.bootstrap = bootstrap
-        meshPeers.timeout = timeout
+        meshPeers.network = network
         try await meshPeers.run()
     }
 }
@@ -3249,223 +3219,226 @@ struct Mesh: AsyncParsableCommand {
 struct MeshStatus: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "status",
-        abstract: "Show mesh network status"
+        abstract: "Show mesh network status (requires omertad to be running)"
     )
 
-    @Option(name: .long, help: "Bootstrap peer (format: peerId@host:port)")
-    var bootstrap: String?
-
-    @Option(name: .long, help: "Discovery timeout in seconds")
-    var timeout: Int = 10
+    @Option(name: .long, help: "Network ID (default: first available)")
+    var network: String?
 
     mutating func run() async throws {
-        // Load config
-        let configManager = ConfigManager()
-        let config: OmertaConfig
-        do {
-            config = try await configManager.load()
-        } catch ConfigError.notInitialized {
-            print("Error: Omerta not initialized. Run 'omerta init' first.")
+        // Find network ID
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+
+        let networkId: String
+        if let specifiedNetwork = network {
+            guard await networkStore.network(id: specifiedNetwork) != nil else {
+                print("Error: Network '\(specifiedNetwork)' not found")
+                throw ExitCode.failure
+            }
+            networkId = specifiedNetwork
+        } else {
+            let networks = await networkStore.allNetworks()
+            guard let firstNetwork = networks.first else {
+                print("Error: No networks found. Join a network first with 'omerta network join'")
+                throw ExitCode.failure
+            }
+            networkId = firstNetwork.id
+        }
+
+        // Connect to daemon via control socket
+        let client = ControlSocketClient(networkId: networkId)
+        guard client.isDaemonRunning() else {
+            print("Error: omertad is not running for network '\(networkId)'")
+            print("")
+            print("Start the daemon with:")
+            print("  omertad start --network \(networkId)")
             throw ExitCode.failure
         }
 
-        // Build mesh config
-        var meshOptions = config.mesh ?? MeshConfigOptions.consumer
-        meshOptions.enabled = true
-        if let bootstrap = bootstrap {
-            meshOptions.bootstrapPeers = [bootstrap]
-        }
+        // Get status from daemon
+        let response = try await client.send(.status)
 
-        // Create mesh consumer client
-        var configWithMesh = config
-        configWithMesh.mesh = meshOptions
-
-        guard let keyData = config.localKeyData() else {
-            print("Error: No local key in config. Run 'omerta init' first.")
+        switch response {
+        case .status(let status):
+            print("")
+            print("Mesh Network Status")
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            print("Peer ID:           \(status.peerId)")
+            print("NAT Type:          \(status.natType)")
+            print("Public Endpoint:   \(status.publicEndpoint ?? "none")")
+            print("Known Peers:       \(status.peerCount)")
+            print("Active VMs:        \(status.activeVMs)")
+            if let uptime = status.uptime {
+                let hours = Int(uptime) / 3600
+                let minutes = (Int(uptime) % 3600) / 60
+                let seconds = Int(uptime) % 60
+                print("Uptime:            \(hours)h \(minutes)m \(seconds)s")
+            }
+            print("")
+        case .error(let error):
+            print("Error: \(error)")
+            throw ExitCode.failure
+        default:
+            print("Error: Unexpected response from daemon")
             throw ExitCode.failure
         }
-
-        let identity = IdentityKeypair()
-        let meshConfig = MeshConfig(
-            encryptionKey: keyData,
-            stunServers: meshOptions.stunServers,
-            bootstrapPeers: meshOptions.bootstrapPeers
-        )
-
-        let mesh = MeshNetwork(identity: identity, config: meshConfig)
-
-        print("Starting mesh network...")
-        try await mesh.start()
-
-        // Wait for discovery
-        if timeout > 0 {
-            print("Discovering peers for \(timeout) seconds...")
-            try await Task.sleep(for: .seconds(timeout))
-        }
-
-        // Get statistics
-        let stats = await mesh.statistics()
-        let natType = await mesh.currentNATType
-        let publicEndpoint = await mesh.currentPublicEndpoint
-
-        print("")
-        print("Mesh Network Status")
-        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        print("Peer ID:           \(identity.peerId)")
-        print("NAT Type:          \(natType.rawValue)")
-        print("Public Endpoint:   \(publicEndpoint ?? "none")")
-        print("Known Peers:       \(stats.peerCount)")
-        print("Direct Connections: \(stats.directConnectionCount)")
-        print("Relay Connections:  \(stats.relayCount)")
-        print("")
-
-        await mesh.stop()
     }
 }
 
 struct MeshPeers: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "peers",
-        abstract: "List discovered mesh peers"
+        abstract: "List discovered mesh peers (requires omertad to be running)"
     )
 
-    @Option(name: .long, help: "Bootstrap peer (format: peerId@host:port)")
-    var bootstrap: String?
-
-    @Option(name: .long, help: "Discovery timeout in seconds")
-    var timeout: Int = 5
+    @Option(name: .long, help: "Network ID (default: first available)")
+    var network: String?
 
     mutating func run() async throws {
-        // Load config
-        let configManager = ConfigManager()
-        let config: OmertaConfig
-        do {
-            config = try await configManager.load()
-        } catch ConfigError.notInitialized {
-            print("Error: Omerta not initialized. Run 'omerta init' first.")
-            throw ExitCode.failure
-        }
+        // Find network ID
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
 
-        // Build mesh config
-        var meshOptions = config.mesh ?? MeshConfigOptions.consumer
-        meshOptions.enabled = true
-        if let bootstrap = bootstrap {
-            meshOptions.bootstrapPeers = [bootstrap]
-        }
-
-        guard let keyData = config.localKeyData() else {
-            print("Error: No local key in config. Run 'omerta init' first.")
-            throw ExitCode.failure
-        }
-
-        let identity = IdentityKeypair()
-        let meshConfig = MeshConfig(
-            encryptionKey: keyData,
-            stunServers: meshOptions.stunServers,
-            bootstrapPeers: meshOptions.bootstrapPeers
-        )
-
-        let mesh = MeshNetwork(identity: identity, config: meshConfig)
-
-        print("Starting mesh network...")
-        try await mesh.start()
-
-        // Wait for discovery
-        print("Discovering peers...")
-        try await Task.sleep(for: .seconds(timeout))
-
-        // List peers
-        let peers = await mesh.knownPeers()
-
-        print("")
-        if peers.isEmpty {
-            print("No peers discovered")
-        } else {
-            print("Discovered Peers (\(peers.count)):")
-            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            for peer in peers {
-                let connection = await mesh.connection(to: peer)
-                let status = connection != nil ? "connected" : "discovered"
-                let method = connection?.method.rawValue ?? "-"
-                print("  \(peer.prefix(20))...  [\(status)] via \(method)")
+        let networkId: String
+        if let specifiedNetwork = network {
+            guard await networkStore.network(id: specifiedNetwork) != nil else {
+                print("Error: Network '\(specifiedNetwork)' not found")
+                throw ExitCode.failure
             }
+            networkId = specifiedNetwork
+        } else {
+            let networks = await networkStore.allNetworks()
+            guard let firstNetwork = networks.first else {
+                print("Error: No networks found. Join a network first with 'omerta network join'")
+                throw ExitCode.failure
+            }
+            networkId = firstNetwork.id
         }
-        print("")
 
-        await mesh.stop()
+        // Connect to daemon via control socket
+        let client = ControlSocketClient(networkId: networkId)
+        guard client.isDaemonRunning() else {
+            print("Error: omertad is not running for network '\(networkId)'")
+            print("")
+            print("Start the daemon with:")
+            print("  omertad start --network \(networkId)")
+            throw ExitCode.failure
+        }
+
+        // Get peers from daemon
+        let response = try await client.send(.peers)
+
+        switch response {
+        case .peers(let peers):
+            print("")
+            if peers.isEmpty {
+                print("No peers discovered")
+            } else {
+                print("Discovered Peers (\(peers.count)):")
+                print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                for peer in peers {
+                    var lastSeenStr = ""
+                    if let lastSeen = peer.lastSeen {
+                        let elapsed = Date().timeIntervalSince(lastSeen)
+                        if elapsed < 60 {
+                            lastSeenStr = " (seen \(Int(elapsed))s ago)"
+                        } else if elapsed < 3600 {
+                            lastSeenStr = " (seen \(Int(elapsed / 60))m ago)"
+                        } else {
+                            lastSeenStr = " (seen \(Int(elapsed / 3600))h ago)"
+                        }
+                    }
+                    print("  \(peer.peerId.prefix(16))... @ \(peer.endpoint)\(lastSeenStr)")
+                }
+            }
+            print("")
+        case .error(let error):
+            print("Error: \(error)")
+            throw ExitCode.failure
+        default:
+            print("Error: Unexpected response from daemon")
+            throw ExitCode.failure
+        }
     }
 }
 
 struct MeshConnect: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "connect",
-        abstract: "Connect to a mesh peer"
+        abstract: "Connect to a mesh peer (requires omertad to be running)"
     )
 
     @Argument(help: "Peer ID to connect to")
     var peerId: String
 
-    @Option(name: .long, help: "Bootstrap peer (format: peerId@host:port)")
-    var bootstrap: String?
+    @Option(name: .long, help: "Network ID (default: first available)")
+    var network: String?
 
     @Option(name: .long, help: "Connection timeout in seconds")
     var timeout: Int = 30
 
     mutating func run() async throws {
-        // Load config
-        let configManager = ConfigManager()
-        let config: OmertaConfig
-        do {
-            config = try await configManager.load()
-        } catch ConfigError.notInitialized {
-            print("Error: Omerta not initialized. Run 'omerta init' first.")
-            throw ExitCode.failure
-        }
+        // Find network ID
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
 
-        // Build mesh config
-        var meshOptions = config.mesh ?? MeshConfigOptions.consumer
-        meshOptions.enabled = true
-        if let bootstrap = bootstrap {
-            meshOptions.bootstrapPeers = [bootstrap]
-        }
-
-        guard let keyData = config.localKeyData() else {
-            print("Error: No local key in config. Run 'omerta init' first.")
-            throw ExitCode.failure
-        }
-
-        let localIdentity = IdentityKeypair()
-        let meshConfig = MeshConfig(
-            encryptionKey: keyData,
-            connectionTimeout: Double(timeout),
-            stunServers: meshOptions.stunServers,
-            bootstrapPeers: meshOptions.bootstrapPeers
-        )
-
-        let mesh = MeshNetwork(identity: localIdentity, config: meshConfig)
-
-        print("Starting mesh network...")
-        try await mesh.start()
-
-        print("Connecting to \(peerId)...")
-        do {
-            let connection = try await mesh.connect(to: peerId)
-            print("")
-            print("Connected!")
-            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            print("Peer ID:    \(peerId)")
-            print("Endpoint:   \(connection.endpoint)")
-            print("Direct:     \(connection.isDirect)")
-            print("Method:     \(connection.method.rawValue)")
-            if let rtt = connection.rttMs {
-                print("RTT:        \(String(format: "%.1f", rtt)) ms")
+        let networkId: String
+        if let specifiedNetwork = network {
+            guard await networkStore.network(id: specifiedNetwork) != nil else {
+                print("Error: Network '\(specifiedNetwork)' not found")
+                throw ExitCode.failure
             }
-            print("")
-        } catch {
-            print("Failed to connect: \(error)")
+            networkId = specifiedNetwork
+        } else {
+            let networks = await networkStore.allNetworks()
+            guard let firstNetwork = networks.first else {
+                print("Error: No networks found. Join a network first with 'omerta network join'")
+                throw ExitCode.failure
+            }
+            networkId = firstNetwork.id
         }
 
-        await mesh.stop()
+        // Connect to daemon via control socket
+        let client = ControlSocketClient(networkId: networkId)
+        guard client.isDaemonRunning() else {
+            print("Error: omertad is not running for network '\(networkId)'")
+            print("")
+            print("Start the daemon with:")
+            print("  omertad start --network \(networkId)")
+            throw ExitCode.failure
+        }
+
+        print("Connecting to \(peerId) via omertad...")
+
+        // Connect through daemon
+        let response = try await client.send(.connect(peerId: peerId, timeout: timeout))
+
+        switch response {
+        case .connectResult(let result):
+            if result.success {
+                print("")
+                print("Connected!")
+                print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                print("Peer ID:    \(result.peerId)")
+                print("Endpoint:   \(result.endpoint ?? "unknown")")
+                print("Direct:     \(result.isDirect)")
+                print("Method:     \(result.method)")
+                if let rtt = result.rttMs {
+                    print("RTT:        \(String(format: "%.1f", rtt)) ms")
+                }
+                print("")
+            } else {
+                print("Failed to connect: \(result.error ?? "Unknown error")")
+                throw ExitCode.failure
+            }
+        case .error(let error):
+            print("Error: \(error)")
+            throw ExitCode.failure
+        default:
+            print("Error: Unexpected response from daemon")
+            throw ExitCode.failure
+        }
     }
 }
 

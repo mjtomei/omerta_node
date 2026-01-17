@@ -21,6 +21,7 @@ private let SOCK_STREAM_VALUE = Int32(SOCK_STREAM.rawValue)
 /// Commands that can be sent to the daemon via control socket
 public enum ControlCommand: Codable {
     case ping(peerId: String, timeout: Int)
+    case connect(peerId: String, timeout: Int)
     case vmRequest(peerId: String, requirements: Data, sshPublicKey: String, sshUser: String, timeoutMinutes: Int)
     case vmRelease(vmId: UUID)
     case vmList
@@ -32,6 +33,7 @@ public enum ControlCommand: Codable {
 /// Response from the daemon
 public enum ControlResponse: Codable {
     case pingResult(PingResultData?)
+    case connectResult(ConnectResultData)
     case vmRequestResult(VMRequestResultData)
     case vmReleaseResult(success: Bool, error: String?)
     case vmList([VMInfoData])
@@ -55,6 +57,26 @@ public enum ControlResponse: Codable {
             self.sentPeers = sentPeers
             self.receivedPeers = receivedPeers
             self.newPeers = newPeers
+        }
+    }
+
+    public struct ConnectResultData: Codable {
+        public let success: Bool
+        public let peerId: String
+        public let endpoint: String?
+        public let isDirect: Bool
+        public let method: String
+        public let rttMs: Double?
+        public let error: String?
+
+        public init(success: Bool, peerId: String, endpoint: String?, isDirect: Bool, method: String, rttMs: Double?, error: String?) {
+            self.success = success
+            self.peerId = peerId
+            self.endpoint = endpoint
+            self.isDirect = isDirect
+            self.method = method
+            self.rttMs = rttMs
+            self.error = error
         }
     }
 
