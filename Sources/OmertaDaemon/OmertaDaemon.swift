@@ -228,6 +228,9 @@ struct Start: AsyncParsableCommand {
     @Flag(name: .long, help: "Disable hole punch coordination")
     var noHolePunch: Bool = false
 
+    @Flag(name: .long, help: "Enable persistent event logging for debugging")
+    var enableEventLogging: Bool = false
+
     @Option(name: .long, help: "Auto-shutdown after N seconds (for testing)")
     var timeout: Int?
 
@@ -367,6 +370,7 @@ struct Start: AsyncParsableCommand {
             timeout: effectiveTimeout,
             canRelay: effectiveCanRelay,
             canHolePunch: effectiveCanHolePunch,
+            enableEventLogging: enableEventLogging,
             shutdownCoordinator: shutdownCoordinator
         )
     }
@@ -382,6 +386,7 @@ struct Start: AsyncParsableCommand {
         timeout: Int?,
         canRelay: Bool,
         canHolePunch: Bool,
+        enableEventLogging: Bool,
         shutdownCoordinator: ShutdownCoordinator
     ) async throws {
         // Build mesh config with encryption key and bootstrap peers from network
@@ -390,7 +395,8 @@ struct Start: AsyncParsableCommand {
             port: port,
             canRelay: canRelay,
             canCoordinateHolePunch: canHolePunch,
-            bootstrapPeers: bootstrapPeers
+            bootstrapPeers: bootstrapPeers,
+            enableEventLogging: enableEventLogging
         )
 
         // Create mesh daemon configuration
@@ -398,7 +404,8 @@ struct Start: AsyncParsableCommand {
             identity: identity,
             meshConfig: meshConfig,
             dryRun: dryRun,
-            noProvider: noProvider
+            noProvider: noProvider,
+            enableEventLogging: enableEventLogging
         )
 
         // Create and start mesh daemon

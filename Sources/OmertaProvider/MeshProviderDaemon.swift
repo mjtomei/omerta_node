@@ -25,16 +25,21 @@ public actor MeshProviderDaemon {
         /// Consumer-only mode (don't accept VM requests)
         public let noProvider: Bool
 
+        /// Enable persistent event logging
+        public let enableEventLogging: Bool
+
         public init(
             identity: OmertaMesh.IdentityKeypair,
             meshConfig: MeshConfig,
             dryRun: Bool = false,
-            noProvider: Bool = false
+            noProvider: Bool = false,
+            enableEventLogging: Bool = false
         ) {
             self.identity = identity
             self.meshConfig = meshConfig
             self.dryRun = dryRun
             self.noProvider = noProvider
+            self.enableEventLogging = enableEventLogging
         }
 
         /// Create configuration from OmertaConfig
@@ -74,6 +79,9 @@ public actor MeshProviderDaemon {
 
     private let config: Configuration
     private let logger: Logger
+
+    /// Event logger for persistent event storage
+    private let eventLogger: ProviderEventLogger?
 
     /// The mesh network
     public let mesh: MeshNetwork
@@ -138,6 +146,13 @@ public actor MeshProviderDaemon {
         var logger = Logger(label: "io.omerta.provider.mesh")
         logger.logLevel = .info
         self.logger = logger
+
+        // Create event logger if enabled
+        if config.enableEventLogging {
+            self.eventLogger = try? ProviderEventLogger()
+        } else {
+            self.eventLogger = nil
+        }
 
         if config.dryRun {
             logger.info("MeshProviderDaemon initialized in DRY RUN mode")
@@ -291,6 +306,15 @@ public actor MeshProviderDaemon {
             "from": "\(consumerPeerId.prefix(16))..."
         ])
 
+        // Log VM request
+        await eventLogger?.recordVMRequest(
+            vmId: request.vmId,
+            consumerPeerId: consumerPeerId,
+            cpuCores: Int(request.requirements.cpuCores ?? 1),
+            memoryMB: Int(request.requirements.memoryMB ?? 1024),
+            diskGB: Int((request.requirements.storageMB ?? 10240) / 1024) // Convert MB to GB
+        )
+
         do {
             // Get connection info to determine consumer endpoint
             let connection = await mesh.connection(to: consumerPeerId)
@@ -339,6 +363,15 @@ public actor MeshProviderDaemon {
                 "vmIP": "\(vmResult.vmIP)"
             ])
 
+            // Log VM creation success
+            await eventLogger?.recordVMCreated(
+                vmId: request.vmId,
+                consumerPeerId: consumerPeerId,
+                success: true,
+                error: nil,
+                durationMs: Int(Date().timeIntervalSince(activeVM.createdAt) * 1000)
+            )
+
             // Send success response and wait for ACK
             let response = MeshVMResponse(
                 type: "vm_created",
@@ -355,6 +388,25 @@ public actor MeshProviderDaemon {
                 "vmId": "\(request.vmId)",
                 "error": "\(error)"
             ])
+
+            // Log VM creation failure
+            await eventLogger?.recordVMCreated(
+                vmId: request.vmId,
+                consumerPeerId: consumerPeerId,
+                success: false,
+                error: error.localizedDescription,
+                durationMs: nil
+            )
+
+            // Log error
+            await eventLogger?.recordError(
+                component: "VMManager",
+                operation: "createVM",
+                errorType: "vm_creation_failed",
+                errorMessage: error.localizedDescription,
+                vmId: request.vmId,
+                consumerPeerId: consumerPeerId
+            )
 
             // Send error response (no ACK needed for errors)
             let response = MeshVMResponse(
@@ -406,11 +458,20 @@ public actor MeshProviderDaemon {
 
         // Stop the VM
         do {
+            let durationMs = Int(Date().timeIntervalSince(activeVM.createdAt) * 1000)
             try await vmManager.stopVM(vmId: request.vmId)
             activeVMs.removeValue(forKey: request.vmId)
             totalVMsReleased += 1
 
             logger.info("VM released successfully", metadata: ["vmId": "\(request.vmId)"])
+
+            // Log VM release
+            await eventLogger?.recordVMReleased(
+                vmId: request.vmId,
+                consumerPeerId: consumerPeerId,
+                reason: "user_requested",
+                durationMs: durationMs
+            )
 
             let response = MeshVMReleaseResponse(
                 type: "vm_released",
@@ -424,6 +485,16 @@ public actor MeshProviderDaemon {
                 "vmId": "\(request.vmId)",
                 "error": "\(error)"
             ])
+
+            // Log error
+            await eventLogger?.recordError(
+                component: "VMManager",
+                operation: "releaseVM",
+                errorType: "vm_release_failed",
+                errorMessage: error.localizedDescription,
+                vmId: request.vmId,
+                consumerPeerId: consumerPeerId
+            )
 
             let response = MeshVMReleaseResponse(
                 type: "vm_error",

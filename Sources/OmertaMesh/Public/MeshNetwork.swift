@@ -36,6 +36,9 @@ public actor MeshNetwork {
     /// Internal mesh node
     private var meshNode: MeshNode?
 
+    /// Event logger for persistent event storage
+    private var eventLogger: MeshEventLogger?
+
     /// Detected NAT type
     private var natType: NATType = .unknown
 
@@ -125,7 +128,12 @@ public actor MeshNetwork {
                 holePunchProbeInterval: config.holePunchProbeInterval
             )
 
-            let node = try MeshNode(identity: identity, config: nodeConfig)
+            // Create event logger if enabled
+            if config.enableEventLogging {
+                self.eventLogger = try? MeshEventLogger(logDir: config.eventLogDir)
+            }
+
+            let node = try MeshNode(identity: identity, config: nodeConfig, eventLogger: eventLogger)
             self.meshNode = node
 
             // Start the node

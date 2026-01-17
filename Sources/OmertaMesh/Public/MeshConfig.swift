@@ -85,6 +85,14 @@ public struct MeshConfig: Sendable {
     /// Interval between freshness queries for the same peer (seconds)
     public var freshnessQueryInterval: TimeInterval
 
+    // MARK: - Logging Settings
+
+    /// Whether to enable persistent event logging (default: false)
+    public var enableEventLogging: Bool
+
+    /// Custom directory for event logs (default: ~/.config/OmertaMesh/logs)
+    public var eventLogDir: String?
+
     // MARK: - Initialization
 
     public init(
@@ -108,7 +116,9 @@ public struct MeshConfig: Sendable {
         holePunchProbeInterval: TimeInterval = 0.2,
         holePunchTimeout: TimeInterval = 10,
         recentContactMaxAge: TimeInterval = 300,
-        freshnessQueryInterval: TimeInterval = 30
+        freshnessQueryInterval: TimeInterval = 30,
+        enableEventLogging: Bool = false,
+        eventLogDir: String? = nil
     ) {
         self.encryptionKey = encryptionKey
         self.storageDirectory = storageDirectory
@@ -131,6 +141,8 @@ public struct MeshConfig: Sendable {
         self.holePunchTimeout = holePunchTimeout
         self.recentContactMaxAge = recentContactMaxAge
         self.freshnessQueryInterval = freshnessQueryInterval
+        self.enableEventLogging = enableEventLogging
+        self.eventLogDir = eventLogDir
     }
 
     /// Create a config from a NetworkKey
@@ -139,7 +151,9 @@ public struct MeshConfig: Sendable {
         storageDirectory: URL? = nil,
         port: Int = 0,
         canRelay: Bool = false,
-        canCoordinateHolePunch: Bool = false
+        canCoordinateHolePunch: Bool = false,
+        enableEventLogging: Bool = false,
+        eventLogDir: String? = nil
     ) {
         self.encryptionKey = networkKey.networkKey
         self.storageDirectory = storageDirectory
@@ -162,6 +176,8 @@ public struct MeshConfig: Sendable {
         self.holePunchTimeout = 10
         self.recentContactMaxAge = 300
         self.freshnessQueryInterval = 30
+        self.enableEventLogging = enableEventLogging
+        self.eventLogDir = eventLogDir
     }
 
     // MARK: - Default Values
@@ -270,6 +286,8 @@ public class MeshConfigBuilder {
     private var holePunchTimeout: TimeInterval = 10
     private var recentContactMaxAge: TimeInterval = 300
     private var freshnessQueryInterval: TimeInterval = 30
+    private var enableEventLogging: Bool = false
+    private var eventLogDir: String?
 
     public init(encryptionKey: Data) {
         self.encryptionKey = encryptionKey
@@ -341,6 +359,18 @@ public class MeshConfigBuilder {
         return self
     }
 
+    @discardableResult
+    public func enableEventLogging(_ enabled: Bool) -> Self {
+        self.enableEventLogging = enabled
+        return self
+    }
+
+    @discardableResult
+    public func eventLogDir(_ dir: String?) -> Self {
+        self.eventLogDir = dir
+        return self
+    }
+
     public func build() throws -> MeshConfig {
         let config = MeshConfig(
             encryptionKey: encryptionKey,
@@ -363,7 +393,9 @@ public class MeshConfigBuilder {
             holePunchProbeInterval: holePunchProbeInterval,
             holePunchTimeout: holePunchTimeout,
             recentContactMaxAge: recentContactMaxAge,
-            freshnessQueryInterval: freshnessQueryInterval
+            freshnessQueryInterval: freshnessQueryInterval,
+            enableEventLogging: enableEventLogging,
+            eventLogDir: eventLogDir
         )
         try config.validate()
         return config
@@ -391,7 +423,9 @@ public class MeshConfigBuilder {
             holePunchProbeInterval: holePunchProbeInterval,
             holePunchTimeout: holePunchTimeout,
             recentContactMaxAge: recentContactMaxAge,
-            freshnessQueryInterval: freshnessQueryInterval
+            freshnessQueryInterval: freshnessQueryInterval,
+            enableEventLogging: enableEventLogging,
+            eventLogDir: eventLogDir
         )
     }
 }

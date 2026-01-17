@@ -207,5 +207,10 @@ let package = Package(
             ],
             path: "Tests/OmertaMeshTests"
         ),
+        .testTarget(
+            name: "OmertaDaemonTests",
+            dependencies: ["OmertaDaemon", "OmertaCore"],
+            path: "Tests/OmertaDaemonTests"
+        ),
     ]
 )
