@@ -934,7 +934,8 @@ public actor MeshNode {
 
         // Build our recentPeers to send (with machineId)
         let peerInfoList = await buildPeerEndpointInfoList()
-        let sentPeers = Dictionary(uniqueKeysWithValues: peerInfoList.prefix(5).map { ($0.peerId, $0.endpoint) })
+        // Use uniquingKeysWith to handle duplicate peerIds (same peer, different machines)
+        let sentPeers = Dictionary(peerInfoList.prefix(5).map { ($0.peerId, $0.endpoint) }, uniquingKeysWith: { first, _ in first })
         let ping = MeshMessage.ping(recentPeers: Array(peerInfoList.prefix(5)))
 
         let startTime = Date()
@@ -953,8 +954,8 @@ public actor MeshNode {
                     }
                 }
 
-                // Convert received peers to dictionary for result
-                let receivedPeersDict = Dictionary(uniqueKeysWithValues: receivedPeers.map { ($0.peerId, $0.endpoint) })
+                // Convert received peers to dictionary for result (use first endpoint for each peer)
+                let receivedPeersDict = Dictionary(receivedPeers.map { ($0.peerId, $0.endpoint) }, uniquingKeysWith: { first, _ in first })
 
                 // Record this as a recent contact
                 await freshnessManager.recordContact(
