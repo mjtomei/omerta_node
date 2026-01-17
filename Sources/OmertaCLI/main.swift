@@ -603,13 +603,15 @@ struct NetworkCreate: AsyncParsableCommand {
 
         // Save identity for this network
         // Store the identity we generated (not a new one from getOrCreate)
-        let identityStorePath = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? URL(fileURLWithPath: "/tmp")
-        let identitiesPath = identityStorePath
-            .appendingPathComponent("OmertaMesh")
-            .appendingPathComponent("identities.json")
+        // Use getRealUserHome() to handle sudo correctly
+        let homeDir = OmertaConfig.getRealUserHome()
+        #if os(macOS)
+        let identitiesPath = URL(fileURLWithPath: homeDir)
+            .appendingPathComponent("Library/Application Support/OmertaMesh/identities.json")
+        #else
+        let identitiesPath = URL(fileURLWithPath: homeDir)
+            .appendingPathComponent(".local/share/OmertaMesh/identities.json")
+        #endif
 
         // Read existing identities, add ours, save
         var identities: [String: [String: String]] = [:]
@@ -687,13 +689,15 @@ struct NetworkJoin: AsyncParsableCommand {
             let identity = IdentityKeypair()
 
             // Save identity for this network
-            let identityStorePath = FileManager.default.urls(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask
-            ).first ?? URL(fileURLWithPath: "/tmp")
-            let identitiesPath = identityStorePath
-                .appendingPathComponent("OmertaMesh")
-                .appendingPathComponent("identities.json")
+            // Use getRealUserHome() to handle sudo correctly
+            let homeDir = OmertaConfig.getRealUserHome()
+            #if os(macOS)
+            let identitiesPath = URL(fileURLWithPath: homeDir)
+                .appendingPathComponent("Library/Application Support/OmertaMesh/identities.json")
+            #else
+            let identitiesPath = URL(fileURLWithPath: homeDir)
+                .appendingPathComponent(".local/share/OmertaMesh/identities.json")
+            #endif
 
             // Read existing identities, add ours (if not already present), save
             var identities: [String: [String: String]] = [:]

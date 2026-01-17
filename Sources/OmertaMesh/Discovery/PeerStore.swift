@@ -2,6 +2,7 @@
 
 import Foundation
 import Logging
+import OmertaCore
 
 /// Persists peer announcements to disk for recovery after restart
 public actor PeerStore {
@@ -170,15 +171,16 @@ public actor PeerStore {
 
 extension PeerStore {
     /// Create a peer store in the default location
+    /// Uses getRealUserHome() to handle sudo correctly
     public static func defaultStore() -> PeerStore {
-        let documentsPath = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? URL(fileURLWithPath: "/tmp")
-
-        let storePath = documentsPath
-            .appendingPathComponent("OmertaMesh")
-            .appendingPathComponent("peers.json")
+        let homeDir = OmertaConfig.getRealUserHome()
+        #if os(macOS)
+        let storePath = URL(fileURLWithPath: homeDir)
+            .appendingPathComponent("Library/Application Support/OmertaMesh/peers.json")
+        #else
+        let storePath = URL(fileURLWithPath: homeDir)
+            .appendingPathComponent(".local/share/OmertaMesh/peers.json")
+        #endif
 
         return PeerStore(storePath: storePath)
     }

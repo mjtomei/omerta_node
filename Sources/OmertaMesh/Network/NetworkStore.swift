@@ -2,6 +2,7 @@
 
 import Foundation
 import Logging
+import OmertaCore
 
 /// Persists network memberships to disk for recovery after restart
 public actor NetworkStore {
@@ -193,15 +194,16 @@ public actor NetworkStore {
 
 extension NetworkStore {
     /// Create a network store in the default location
+    /// Uses getRealUserHome() to handle sudo correctly
     public static func defaultStore() -> NetworkStore {
-        let documentsPath = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? URL(fileURLWithPath: "/tmp")
-
-        let storePath = documentsPath
-            .appendingPathComponent("OmertaMesh")
-            .appendingPathComponent("networks.json")
+        let homeDir = OmertaConfig.getRealUserHome()
+        #if os(macOS)
+        let storePath = URL(fileURLWithPath: homeDir)
+            .appendingPathComponent("Library/Application Support/OmertaMesh/networks.json")
+        #else
+        let storePath = URL(fileURLWithPath: homeDir)
+            .appendingPathComponent(".local/share/OmertaMesh/networks.json")
+        #endif
 
         return NetworkStore(storePath: storePath)
     }

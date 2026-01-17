@@ -322,14 +322,16 @@ struct Start: AsyncParsableCommand {
         print("Network: \(storedNetwork.name) (\(networkId))")
 
         // Load identity for this network
+        // Use getRealUserHome() to handle sudo correctly
         let identity: OmertaMesh.IdentityKeypair
-        let identityStorePath = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? URL(fileURLWithPath: "/tmp")
-        let identitiesPath = identityStorePath
-            .appendingPathComponent("OmertaMesh")
-            .appendingPathComponent("identities.json")
+        let homeDir = OmertaConfig.getRealUserHome()
+        #if os(macOS)
+        let identitiesPath = URL(fileURLWithPath: homeDir)
+            .appendingPathComponent("Library/Application Support/OmertaMesh/identities.json")
+        #else
+        let identitiesPath = URL(fileURLWithPath: homeDir)
+            .appendingPathComponent(".local/share/OmertaMesh/identities.json")
+        #endif
 
         if FileManager.default.fileExists(atPath: identitiesPath.path),
            let data = try? Data(contentsOf: identitiesPath),

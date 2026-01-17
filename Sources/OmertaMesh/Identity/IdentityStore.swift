@@ -2,6 +2,7 @@
 
 import Foundation
 import Logging
+import OmertaCore
 
 /// Persists mesh node identities to disk
 /// Each network can have its own identity, or a default identity can be used
@@ -115,15 +116,16 @@ public actor IdentityStore {
 
 extension IdentityStore {
     /// Create an identity store in the default location
+    /// Uses getRealUserHome() to handle sudo correctly
     public static func defaultStore() -> IdentityStore {
-        let documentsPath = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? URL(fileURLWithPath: "/tmp")
-
-        let storePath = documentsPath
-            .appendingPathComponent("OmertaMesh")
-            .appendingPathComponent("identities.json")
+        let homeDir = OmertaConfig.getRealUserHome()
+        #if os(macOS)
+        let storePath = URL(fileURLWithPath: homeDir)
+            .appendingPathComponent("Library/Application Support/OmertaMesh/identities.json")
+        #else
+        let storePath = URL(fileURLWithPath: homeDir)
+            .appendingPathComponent(".local/share/OmertaMesh/identities.json")
+        #endif
 
         return IdentityStore(storePath: storePath)
     }
