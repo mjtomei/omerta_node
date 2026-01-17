@@ -13,9 +13,6 @@ While there are still legitimate security concerns like VM escapes and malicious
 TODOs
 CORE
 - set up public bootstrap and stun servers
-  - clean up activity logging
-  - pull out hard coded values into config file
-- debug vm release
 - get usermode consumer working on linux and mac
 - separate out OmertaMesh into its own repo and establish API
 - implement multi-interface support for control plane
