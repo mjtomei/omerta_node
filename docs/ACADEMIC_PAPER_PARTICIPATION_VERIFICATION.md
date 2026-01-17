@@ -18,29 +18,45 @@ header-includes:
 
 # Abstract
 
-Decentralized compute sharing faces a fundamental challenge: how can strangers cooperate without a trusted central authority? Blockchain-based systems address this through proof-of-work or proof-of-stake consensus, achieving Byzantine fault tolerance at the cost of significant resource overhead and limited throughput. We present Omerta, an alternative architecture that sidesteps Byzantine consensus entirely by embracing subjective trust computed locally from verifiable on-chain data.
+Decentralized compute sharing faces a fundamental challenge: how can strangers cooperate without a trusted central authority? Blockchain-based systems address this through proof-of-work or proof-of-stake consensus, achieving Byzantine fault tolerance at the cost of significant resource overhead and limited throughput. We present Omerta, a practical implementation that synthesizes decades of research on trust, reputation, and mechanism design into a working system for decentralized compute markets.
 
-The key insight underlying Omerta is that compute markets do not require global agreement—a consumer only needs to know whether a specific provider will deliver to *them*. By computing trust relative to the observer's position in the transaction graph, Omerta limits the impact of reputation attacks and enables natural scaling without the coordination overhead of global consensus.
+Omerta builds on established foundations—EigenTrust's iterative aggregation [3], FIRE's multi-source trust integration [35], Subjective Logic's uncertainty formalism [36], and transaction cost economics [34]—while making specific design choices suited to compute markets. The key architectural decision is computing trust *locally* relative to each observer, rather than maintaining global scores. This differs from EigenTrust's global PageRank-style computation and enables natural scaling without global consensus overhead.
 
-This paper presents the complete Omerta system design, including: (1) a trust accumulation model based on verified transactions rather than subjective ratings; (2) local trust computation that prevents cross-community trust arbitrage; (3) an on-chain order book for price discovery; (4) identity-bound VM access that makes credential theft useless; (5) detection mechanisms for Sybil clusters, collusion rings, and trust manipulation; (6) automated monetary policy that adjusts economic parameters in response to detected threats; (7) economic analysis demonstrating that unreliable home compute creates genuine value when demand exceeds datacenter capacity; and (8) double-spend resolution strategies where currency "weight" scales with network performance.
+This paper presents: (1) a trust model derived from verified transactions rather than subjective ratings, building on insights from feedback mechanism design [18, 19]; (2) local trust computation with path decay, extending graph-based trust propagation [3, 37]; (3) automated monetary policy that adjusts parameters in response to detected threats—a novel integration not present in prior reputation systems; (4) economic analysis demonstrating when unreliable home compute creates genuine value, informed by Budish's analysis of blockchain attack economics [38]; and (5) double-spend resolution where currency "weight" scales with network performance, providing a practical alternative to global consensus for bilateral transactions.
 
-We draw on the observation that human societies have always traded freedom for trust—villages had high trust precisely because they had low privacy. Omerta recreates village-level visibility at global scale, enabling lightweight trust mechanisms to work among strangers. However, unlike villages with their arbitrary social punishment and hidden power structures, Omerta aims to maximize freedom within the trust constraint: only provably anti-social behavior affects trust scores, all mechanisms are transparent and debatable, and participants retain freedom for any behavior that doesn't demonstrably harm others.
+We draw on the observation that human societies have always traded privacy for trust—villages had high trust precisely because everyone knew everyone's business. Omerta recreates this visibility at global scale through on-chain transparency. Unlike villages with their arbitrary social punishment, we aim to maximize freedom within the trust constraint: only provably anti-social behavior (failed deliveries, double-spends) affects trust scores, and all mechanisms are documented for scrutiny.
 
-Critically, we argue that such fair trust systems at scale were computationally intractable until now. Modeling, tracking, and adjusting parameters that sufficiently cover human behavior requires enormous reasoning capacity—capacity that machine intelligence now provides. The relationship is recursive: machine intelligence both demands the compute that Omerta provides and enables the trust system that makes Omerta work.
+We argue that implementing fair trust systems at scale was computationally intractable until machine intelligence provided the reasoning capacity to model behavior, tune parameters, and explain decisions. This paper itself was developed through human-AI collaboration, demonstrating the thesis: AI both demands the compute that systems like Omerta could provide and enables the trust mechanisms that make such systems work.
 
-We argue that the claimed "trustlessness" of blockchain systems is largely illusory—social consensus underlies all distributed systems and emerges when sufficient value is at stake. Omerta makes this social layer explicit, providing transparent mechanisms to track and verify trust relationships. The result is a system that mirrors how human trust networks actually function: imperfect rules made workable through aligned incentives and gradual reputation building.
+Omerta is not presented as theoretically superior to prior work, but as a practical synthesis bringing established ideas into implementation. Where prior work offers better solutions, we aim to adopt them. The contribution is the integration itself—a working system rather than isolated mechanisms.
 
 \newpage
 
 # 1. Introduction
 
-The vision of decentralized computing—where anyone can contribute resources and anyone can consume them, without intermediaries extracting rents—has motivated decades of research. From early peer-to-peer file sharing networks through blockchain-based systems to contemporary distributed computing initiatives, the core challenge remains: how do strangers cooperate when each has incentive to defect?
+The vision of decentralized computing—where anyone can contribute resources and anyone can consume them, without intermediaries extracting rents—has motivated decades of research. The core challenge remains constant: how do strangers cooperate when each has incentive to defect?
+
+## 1.0 A Brief History of Trust Systems
+
+The question of computational trust saw intensive research in the early 2000s, driven by the rise of peer-to-peer file sharing networks and online marketplaces. EigenTrust [3] adapted PageRank to compute global reputation scores in P2P networks. PeerTrust [4] incorporated transaction context and feedback credibility. FIRE [35] integrated multiple information sources—direct experience, role-based trust, witness reports, and certified reputation. Subjective Logic [36] provided mathematical foundations for reasoning under trust uncertainty. PowerTrust [37] leveraged power-law distributions in feedback patterns for faster convergence.
+
+This body of work established core insights that remain valid: trust propagates through networks with decay; local computation can substitute for global consensus; time and history provide unforgeable credentials; and detection of manipulation patterns enables defensive responses.
+
+Then came Bitcoin (2008) and blockchain, which appeared to solve the trust problem through cryptographic consensus. Research attention shifted. Why model trust computationally when proof-of-work could enforce cooperation mathematically? The reputation systems literature quieted.
+
+A decade later, we understand blockchain's limitations more clearly. Budish [38] demonstrated that blockchain security has inherent economic limits—the recurring costs of running a secure blockchain must be large relative to the value at stake, making it expensive for high-value applications. Proof-of-stake faces similar constraints [39]. Existing decentralized compute networks built on blockchain (Golem [15], iExec [16]) have struggled with adoption despite years of operation. The costs of global consensus may exceed what many applications require.
+
+Meanwhile, machine intelligence has advanced dramatically. Tasks that seemed intractable—modeling complex behavior, tuning parameters across high-dimensional spaces, generating explanations for decisions—are now feasible. This creates an opportunity: **the trust systems research of 2000-2010 may be ready for practical implementation, enabled by AI capabilities that didn't exist when the theory was developed.**
+
+Omerta represents an attempt at this synthesis. We return to the trust-based approaches developed before blockchain's dominance, informed by what we've learned since, and enabled by machine intelligence to handle the complexity that made pure implementation difficult.
+
+## 1.1 Three Paths
 
 Traditional approaches fall into two categories. **Trusted intermediary** models, exemplified by cloud computing providers, centralize authority in organizations that can enforce contracts and punish misbehavior. This works but introduces single points of failure, censorship risk, and rent extraction. **Blockchain-based** models, exemplified by Ethereum and its descendants, replace trusted intermediaries with cryptographic consensus protocols that theoretically eliminate the need for trust. This also works but imposes significant costs: massive energy expenditure (proof-of-work), capital lockup requirements (proof-of-stake), limited transaction throughput, and delayed finality.
 
-We propose a third path. Omerta is a trust-based distributed compute network that neither centralizes authority nor attempts to eliminate trust. Instead, it makes trust *subjective*, *local*, and *earned*—computed by each participant from their own position in the network, based on verifiable on-chain data accumulated over time.
+We propose a third path—or rather, we return to one that was overshadowed. Omerta is a trust-based distributed compute network that neither centralizes authority nor attempts to eliminate trust. Instead, it makes trust *subjective*, *local*, and *earned*—computed by each participant from their own position in the network, based on verifiable on-chain data accumulated over time. This approach builds directly on EigenTrust, FIRE, and related work, while making specific adaptations for compute markets and leveraging machine intelligence for implementation.
 
-## 1.1 The Trust Spectrum
+## 1.2 The Trust Spectrum
 
 Trustlessness is not binary—it exists on a spectrum. Proof-of-work and proof-of-stake mechanisms genuinely increase trustlessness compared to centralized alternatives. They represent real achievements in distributed systems research. However, historical episodes demonstrate that no system achieves absolute trustlessness:
 
@@ -60,31 +76,37 @@ Omerta applies this spectrum thinking to consensus itself. Blockchain consensus 
 
 Our hypothesis is yes. Compute markets do not require global agreement—they require pairwise trust between specific buyers and sellers. By computing trust locally rather than achieving global consensus, Omerta aims to capture most of the practical benefit of decentralization at dramatically lower cost, making trustworthy compute sharing accessible to more people.
 
-## 1.2 Our Contribution
+## 1.3 Our Contribution
 
-This paper makes the following contributions:
+This paper's primary contribution is a **practical synthesis**—bringing established trust system research into implementation for compute markets. We distinguish between mechanisms adapted from prior work and novel contributions:
 
-1. **A subjective trust model** where each participant computes trust locally based on their own transaction history and the assessments of parties they themselves trust, rather than relying on global consensus.
+**Adapted from prior work (with modifications):**
 
-2. **Local trust computation** that propagates trust through the transaction graph with decay, limiting the impact of attacks that exploit trust earned in distant communities.
+1. **Local trust computation** extending EigenTrust [3] and path-based approaches [4, 37]. Where EigenTrust computes global scores, Omerta computes trust relative to each observer—a design choice explored in the literature but not widely implemented.
 
-3. **Verified trust accumulation** where trust derives from on-chain transaction records rather than subjective ratings, eliminating the attack surface of fake feedback.
+2. **Trust propagation with decay**, a standard technique in graph-based trust systems [3, 35, 37], applied here to transaction histories rather than explicit ratings.
 
-4. **Age as unforgeable credential**: Identity age—time since creation—is the one credential that cannot be purchased or manufactured, providing a temporal Sybil defense.
+3. **Age-based Sybil resistance**, building on temporal defense mechanisms discussed since Douceur's original Sybil attack paper [6]. We note that this defense has known limitations (Section 8.9).
 
-5. **Automated monetary policy** that adjusts economic parameters (payment curves, transfer burns, detection thresholds) in response to observed network metrics.
+4. **Cluster detection for Sybil defense**, applying standard anomaly detection techniques [9, 10] to transaction graph analysis.
 
-6. **Explicit security analysis** distinguishing protections that must be absolute (UBI distribution, trust from activity) from those where some adversarial advantage may be tolerated (risk diversification, community separation).
+**Novel contributions:**
 
-7. **Double-spend resolution** where currency "weight" scales with network performance—better connectivity enables lighter trust mechanisms, degrading gracefully to heavier mechanisms (blockchain bridges) for poorly-connected networks.
+5. **Trust from verified transactions only**. Unlike EigenTrust, FIRE, or PeerTrust which incorporate subjective ratings or witness reports, Omerta derives trust exclusively from on-chain transaction records. This eliminates the attack surface of fake feedback but limits the information available for trust computation.
 
-8. **Village-to-global trust scaling**: We show that on-chain visibility provides the "everyone knows" property of villages at global scale, enabling lightweight trust mechanisms to work among strangers.
+6. **Automated monetary policy** that adjusts economic parameters (payment curves, transfer burns, detection thresholds) in response to observed network metrics. This integration of trust and monetary mechanisms is not present in prior reputation systems.
 
-9. **Fair surveillance design**: Unlike villages with arbitrary social punishment, Omerta aims to maximize freedom within the trust constraint—penalizing only provably anti-social behavior through transparent, debatable mechanisms.
+7. **Double-spend resolution via currency weight**. We show how trust-based systems can handle double-spending without global consensus by scaling finality requirements to network connectivity—a practical alternative for bilateral transactions.
 
-10. **Machine intelligence as enabler**: We argue that fair trust systems at scale were computationally intractable until machine intelligence provided the reasoning capacity to model, track, and adjust behavioral parameters. The relationship is recursive: AI demands compute and enables the trust system that provides it.
+8. **Application to compute markets**. The specific integration of trust, payment, and verification mechanisms for decentralized compute is novel, though individual components draw on established work.
 
-The remainder of this paper is organized as follows. Section 2 reviews related work on reputation systems, Sybil resistance, blockchain consensus, and computational economics methodology. Section 3 presents the system architecture. Section 4 details the trust model. Section 5 describes the economic mechanisms. Section 6 analyzes attack vectors and defenses. Section 7 presents simulation results, including reliability market economics, the machine intelligence demand thesis, and double-spend resolution validation. Section 8 discusses the trust-cost spectrum, village-to-global scaling, machine intelligence as enabler, methodological notes on AI-assisted design (including this paper's own development process), and limitations. Section 9 concludes.
+**Framing contributions (not technical novelty):**
+
+9. **The "resurgence" thesis**: We argue that trust systems research from 2000-2010 is ready for practical implementation, enabled by machine intelligence capabilities that didn't exist then.
+
+10. **AI-assisted design methodology**: This paper itself demonstrates the approach, developed through human-AI collaboration with explicit acknowledgment of that process.
+
+The remainder of this paper is organized as follows. Section 2 reviews related work, explicitly acknowledging the foundations we build on. Section 3 presents system architecture. Section 4 details the trust model. Section 5 describes economic mechanisms. Section 6 analyzes attack vectors and defenses. Section 7 presents simulation results. Section 8 discusses the trust-cost spectrum, limitations, and methodological notes on AI-assisted design. Section 9 concludes.
 
 \newpage
 
@@ -94,31 +116,51 @@ The remainder of this paper is organized as follows. Section 2 reviews related w
 
 The challenge of establishing trust among strangers online has motivated extensive research on reputation systems. Resnick et al. [1] identified the core requirements: long-lived identities, captured feedback, and feedback-guided decisions. The eBay feedback mechanism demonstrated these principles at scale, though its binary ratings created opportunities for manipulation [2].
 
-More sophisticated approaches emerged from peer-to-peer networks. **EigenTrust** [3] computed global trust through iterative aggregation similar to PageRank, but remained vulnerable to strategic manipulation by colluding peers. **PeerTrust** [4] incorporated transaction context but required honest reporting. **Credence** [5] enabled subjective reputation evaluation but focused on content authenticity rather than service quality.
+More sophisticated approaches emerged from peer-to-peer networks in the early 2000s:
 
-Omerta builds on these foundations while addressing key limitations. Unlike EigenTrust's global scores, Omerta computes trust relative to the observer. Unlike systems treating ratings as exogenous, Omerta derives trust from transaction records. Unlike systems assuming honest reporting, Omerta makes trust computable from verifiable on-chain facts.
+**EigenTrust** [3] computed global trust through iterative aggregation similar to PageRank. Its key insight—that trust can be aggregated through matrix operations—remains foundational. However, it produces global scores rather than observer-relative trust, and relies on explicit transaction ratings.
+
+**PeerTrust** [4] incorporated transaction context, feedback scope, and community context factors. It recognized that trust depends on more than simple rating counts. Omerta adopts this insight but derives context from transaction records rather than explicit metadata.
+
+**FIRE** [35] integrated four trust sources: interaction trust (direct experience), role-based trust (position in organization), witness reputation (third-party reports), and certified reputation (references from trustees). This multi-source approach influenced Omerta's design, though we deliberately exclude witness and certified reputation to eliminate subjective input vectors.
+
+**Subjective Logic** [36] provided mathematical foundations for reasoning under trust uncertainty, modeling opinions as probability distributions with explicit uncertainty parameters. Jøsang's framework for trust transitivity and fusion operations could strengthen Omerta's formal foundations; we note this as future work.
+
+**PowerTrust** [37] discovered power-law distributions in user feedback patterns and leveraged this for faster convergence through "power nodes." While Omerta doesn't use power nodes, understanding feedback distribution patterns informs our detection of anomalous behavior.
+
+**What Omerta borrows**: Trust propagation with decay, local computation principles, transaction context sensitivity, and the recognition that different trust components require different handling.
+
+**What Omerta changes**: We derive trust exclusively from verified on-chain transactions, eliminating subjective ratings entirely. This is a deliberate trade-off: we lose information richness in exchange for removing the fake feedback attack surface. Whether this trade-off is correct depends on the application domain; for compute markets where delivery is verifiable, we believe it is.
 
 ## 2.2 Sybil Resistance
 
 Douceur [6] proved that without a trusted central authority, a single adversary can present arbitrarily many identities indistinguishable from honest participants. This "Sybil attack" undermines any reputation system where influence scales with identity count.
 
+**This is a fundamental impossibility result that Omerta does not overcome.** We can make Sybil attacks expensive, but not impossible. Honesty requires acknowledging this limitation.
+
 Defenses fall into three categories:
 
-**Resource-based**: Require each identity to demonstrate control of scarce resources—computational power [7], financial stake [8], or hardware attestation. Effective but expensive.
+**Resource-based**: Require each identity to demonstrate control of scarce resources—computational power [7], financial stake [8], or hardware attestation. Effective but expensive, and doesn't prevent well-resourced attackers.
 
-**Social-based**: Leverage trust graph structure, noting that Sybil identities have sparse connections to honest nodes [9, 10]. Effective when social graph is meaningful.
+**Social-based**: Leverage trust graph structure, noting that Sybil identities have sparse connections to honest nodes [9, 10]. SybilGuard [9] and SybilInfer [10] showed that social graph analysis can detect clusters of fake identities. Effective when the social graph reflects real relationships.
 
-**Temporal**: Require identities to exist over time before gaining influence. Attackers can still create identities in advance, but cannot accelerate trust accumulation.
+**Temporal**: Require identities to exist over time before gaining influence. This defense, explored in various systems including Freenet's Web of Trust, cannot prevent patient attackers who pre-create identities years in advance.
 
-Omerta employs a hybrid approach: economic penalties (transfer burns), social detection (cluster analysis), and most importantly, temporal constraints. Identity age—time since on-chain creation—cannot be forged, purchased, or accelerated. This makes Sybil attacks expensive in the dimension attackers cannot optimize: time.
+Omerta employs a hybrid approach: economic penalties (transfer burns), social detection (cluster analysis), and temporal constraints. Identity age—time since on-chain creation—cannot be forged, purchased, or accelerated.
 
-## 2.3 Blockchain Consensus
+**Limitations we acknowledge**: A well-resourced attacker who creates thousands of identities today and waits five years will have thousands of mature identities. Omerta's defenses make this expensive in time and capital, but do not make it impossible. We discuss residual attack surfaces in Section 8.9.
+
+## 2.3 Blockchain Consensus and Its Limits
 
 Bitcoin [7] introduced proof-of-work consensus, achieving Byzantine fault tolerance through computational cost. Subsequent systems explored alternatives: proof-of-stake [8], delegated proof-of-stake [11], practical Byzantine fault tolerance [12], and various hybrid approaches.
 
 All these mechanisms solve the Byzantine Generals Problem: achieving agreement among distributed parties despite malicious actors. This requires $n \geq 3f+1$ nodes to tolerate $f$ failures, with significant coordination overhead.
 
-Omerta sidesteps this problem entirely. Compute markets do not require global consensus—they require pairwise trust between specific buyers and sellers. By computing trust locally, Omerta eliminates the coordination overhead of global agreement while providing the security properties actually needed for compute rental.
+**Budish [38] demonstrated fundamental economic limits** of blockchain security: the recurring flow payments to miners must be large relative to the one-time stock benefits of attacking the system. This makes high-value applications expensive to secure. Gans and Gandal [39] extended this analysis to proof-of-stake, showing similar cost structures manifest as illiquid capital requirements. These analyses suggest blockchain may be over-engineered for applications that don't require global consensus.
+
+**Federated approaches** occupy a middle ground. Stellar's Federated Byzantine Agreement and Ripple's trust lines allow nodes to choose which other nodes they trust for consensus, rather than trusting the entire network. These systems influenced Omerta's design—the local trust computation is conceptually similar to choosing trusted validators, though Omerta applies this to reputation rather than consensus.
+
+Omerta sidesteps global consensus entirely. Compute markets do not require global agreement—they require pairwise trust between specific buyers and sellers. By computing trust locally, Omerta eliminates the coordination overhead of global agreement while providing the security properties actually needed for compute rental. This is not superior to blockchain for applications requiring global consensus; it is a different trade-off appropriate for different applications.
 
 ## 2.4 Secure Computation Approaches
 
@@ -464,6 +506,8 @@ Unlike blockchain where double-spending is mathematically prevented by consensus
 
 *Finding*: In gossip networks, double-spends are always eventually detected because conflicting transactions propagate to common nodes. Connectivity affects detection speed, not completeness.
 
+**Important clarification**: Detection is not prevention. A 100% detection rate means the double-spend is always discovered—but only *after* the conflicting transactions have propagated. During the detection window, both recipients may believe they have valid payments. The economic defense (trust penalties, Section 7.6.2) makes attacks unprofitable but does not prevent the temporary confusion. For high-value transactions where even temporary double-spend would be harmful, use the "wait for agreement" protocol (Section 7.6.3) which provides prevention through delayed finality.
+
 **7.6.2 Economic Stability**
 
 The "both keep coins" strategy (accept inflation, penalize attacker) shows:
@@ -718,6 +762,14 @@ This methodology is itself subject to the freedom-trust tradeoff we describe: by
 
 **AI-Assisted Design Uncertainty**: As discussed in Section 8.8, AI-assisted analysis carries risks of hallucination and training data limitations. While we have attempted to mitigate these through executable simulations and adversarial review, some errors may remain undetected.
 
+**Fundamental Sybil Limits**: Douceur [6] proved that Sybil attacks are fundamentally unsolvable without trusted identity verification. Omerta's defenses (age, cluster detection, economic penalties) make Sybil attacks expensive but not impossible. A patient, well-resourced adversary who pre-creates identities years in advance can eventually attack with mature identities. We mitigate this through continuous behavioral monitoring, but acknowledge the theoretical limitation.
+
+**Existing Compute Market Struggles**: Decentralized compute platforms built on blockchain (Golem [15], iExec [16], Render Network) have operated for years but struggled with utilization and adoption. This suggests challenges beyond trust mechanisms—possibly network effects, user experience, or fundamental market structure issues. Omerta may face similar challenges regardless of its trust system design. We cannot assume that better trust mechanisms alone will solve adoption problems.
+
+**AI Demand Thesis is Speculative**: Our argument that machine intelligence creates unbounded compute demand (Section 7.5) is forward-looking and unproven. Current AI demand is large but not literally unbounded. The thesis depends on assumptions about AI capability trajectories that may not hold. If AI development stalls or compute efficiency improves faster than demand grows, the perpetual undersupply assumption fails, and with it the economic model for home provider value creation.
+
+**Detection vs. Prevention**: As clarified in Section 7.6.1, Omerta detects double-spends but does not prevent them. The system relies on economic penalties making attacks unprofitable, not on making attacks impossible. This is a weaker guarantee than blockchain consensus provides. For applications requiring absolute prevention of double-spending, blockchain remains more appropriate.
+
 \newpage
 
 # 9. Conclusion
@@ -813,6 +865,20 @@ Omerta is an experiment in finding that region. The question is not whether unre
 [33] C. Dellarocas, "Reputation mechanism design in online trading environments with pure moral hazard," *Information Systems Research*, vol. 16, no. 2, pp. 209-230, 2005.
 
 [34] O. E. Williamson, "Transaction cost economics: How it works; where it is headed," *De Economist*, vol. 146, no. 1, pp. 23-58, 1998.
+
+[35] T. D. Huynh, N. R. Jennings, and N. R. Shadbolt, "An integrated trust and reputation model for open multi-agent systems," *Autonomous Agents and Multi-Agent Systems*, vol. 13, no. 2, pp. 119-154, 2006.
+
+[36] A. Jøsang, *Subjective Logic: A Formalism for Reasoning Under Uncertainty*. Springer, 2016.
+
+[37] R. Zhou and K. Hwang, "PowerTrust: A robust and scalable reputation system for trusted peer-to-peer computing," *IEEE Trans. Parallel and Distributed Systems*, vol. 18, no. 4, pp. 460-473, 2007.
+
+[38] E. Budish, "The economic limits of Bitcoin and the blockchain," *Quarterly Journal of Economics*, 2024. (Originally NBER Working Paper 24717, 2018.)
+
+[39] J. S. Gans and N. Gandal, "More (or less) economic limits of the blockchain," *CEPR Discussion Paper*, 2019.
+
+[40] S. Seuken and D. C. Parkes, "On the limitations of reputation systems," in *Proc. EC*, 2014.
+
+[41] M. O. Jackson, *Social and Economic Networks*. Princeton University Press, 2008.
 
 \newpage
 
