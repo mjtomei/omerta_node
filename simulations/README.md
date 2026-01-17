@@ -146,7 +146,7 @@ This proves home providers create **real economic value**:
 
 ### Machine Intelligence and Perpetual Undersupply
 
-See [ECONOMIC_ANALYSIS.md](./ECONOMIC_ANALYSIS.md) for the full analysis.
+See [/docs/economy/ECONOMIC_ANALYSIS.md](/docs/economy/ECONOMIC_ANALYSIS.md) for the full analysis.
 
 **Key thesis**: Machine intelligence transforms compute markets into perpetually undersupplied markets because machines can always find productive uses for additional compute at any quality level.
 
@@ -162,6 +162,74 @@ See [ECONOMIC_ANALYSIS.md](./ECONOMIC_ANALYSIS.md) for the full analysis.
 3. All providers can coexist (datacenters serve premium tier, home providers serve elastic demand)
 
 The question is not whether unreliable compute will displace datacenters. The question is whether we can deploy enough compute of any quality to satisfy the exponentially growing demand of machine intelligence.
+
+### Double-Spend Resolution Simulation
+
+| File | Description |
+|------|-------------|
+| `double_spend_simulation.py` | Network model, detection, economics, finality, partitions |
+
+**Key findings:**
+
+1. **Detection Rate (Simulation 1)**
+
+| Connectivity | Detection Rate | Avg Detection Time | Spread |
+|--------------|----------------|-------------------|--------|
+| 0.1 | 100% | 0.046s | 97.6% |
+| 0.5 | 100% | 0.042s | 98.0% |
+| 1.0 | 100% | 0.042s | 98.0% |
+
+**Key insight**: In a gossip network, double-spends are always detected because conflicting transactions eventually propagate to nodes that have seen the other version. Higher connectivity only speeds detection.
+
+2. **"Both Keep Coins" Economics (Simulation 2)**
+
+| Detection | Penalty | Inflation | Attacker Profit | Stable? |
+|-----------|---------|-----------|-----------------|---------|
+| 50% | 1x | 11.2% | -$802 | NO |
+| 50% | 5x | 1.9% | -$985 | YES |
+| 90% | 1x | 5.5% | -$925 | NO |
+| 90% | 5x | 1.1% | -$1000 | YES |
+| 99% | 1x | 4.7% | -$943 | YES |
+
+**Key insight**: Attackers always lose money (negative profit) because trust penalties outweigh gains. Economy is stable when inflation < 5%. Even 50% detection is sufficient with 5x penalty multiplier.
+
+3. **"Wait for Agreement" Finality (Simulation 3)**
+
+| Threshold | Connectivity | Median Latency | P95 Latency | Success Rate |
+|-----------|--------------|----------------|-------------|--------------|
+| 50% | 0.3 | 0.14s | 0.15s | 100% |
+| 70% | 0.5 | 0.14s | 0.14s | 100% |
+| 90% | 0.7 | 0.14s | 0.15s | 100% |
+
+**Key insight**: Sub-200ms confirmation times achievable across all threshold/connectivity combinations. Higher thresholds don't significantly increase latency because peer confirmations arrive in parallel.
+
+4. **Network Partition Behavior (Simulation 4)**
+
+| Duration | Split | Attempts | Accepted During | Detected After | At Risk |
+|----------|-------|----------|-----------------|----------------|---------|
+| 1s | 50% | 3 | 0 | 3 | $0 |
+| 10s | 50% | 5 | 2 | 5 | $100 |
+| 10s | 30% | 3 | 1 | 3 | $50 |
+
+**Key insight**: During partitions, double-spend attacks can temporarily succeed (both victims accept). After healing, ALL conflicts are detected retroactively. This creates a "damage window" equal to partition duration—victims may have delivered goods before detection. Solution: use "wait for agreement" for high-value transactions.
+
+5. **Currency Weight Spectrum (Simulation 5)**
+
+| Connectivity | Detection | Threshold | Latency | Weight | Category |
+|--------------|-----------|-----------|---------|--------|----------|
+| 0.9 | 99% | 50% | 0.1s | 0.14 | Lightest (village-level) |
+| 0.7 | 95% | 60% | 0.5s | 0.24 | Light (town-level) |
+| 0.5 | 90% | 70% | 1.0s | 0.34 | Light (town-level) |
+| 0.3 | 70% | 80% | 3.0s | 0.52 | Medium (city-level) |
+| 0.1 | 50% | 90% | 10.0s | 0.80 | Heaviest (blockchain bridge) |
+
+**Key insight**: Currency weight is proportional to network performance. Better connectivity enables lighter trust mechanisms—the digital equivalent of physical proximity enabling village-level trust.
+
+**The freedom-trust tradeoff**:
+- Lighter currency = more freedom, more fraud tolerance, faster transactions
+- Heavier currency = less freedom, less fraud tolerance, slower transactions
+
+See [/docs/economy/double_spend_simulation_plan.md](/docs/economy/double_spend_simulation_plan.md) for the original simulation plan.
 
 ## References
 

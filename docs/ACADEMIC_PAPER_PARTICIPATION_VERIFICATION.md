@@ -22,7 +22,11 @@ Decentralized compute sharing faces a fundamental challenge: how can strangers c
 
 The key insight underlying Omerta is that compute markets do not require global agreement—a consumer only needs to know whether a specific provider will deliver to *them*. By computing trust relative to the observer's position in the transaction graph, Omerta limits the impact of reputation attacks and enables natural scaling without the coordination overhead of global consensus.
 
-This paper presents the complete Omerta system design, including: (1) a trust accumulation model based on verified transactions rather than subjective ratings; (2) local trust computation that prevents cross-community trust arbitrage; (3) an on-chain order book for price discovery; (4) identity-bound VM access that makes credential theft useless; (5) detection mechanisms for Sybil clusters, collusion rings, and trust manipulation; (6) automated monetary policy that adjusts economic parameters in response to detected threats; and (7) economic analysis demonstrating that unreliable home compute creates genuine value when demand exceeds datacenter capacity.
+This paper presents the complete Omerta system design, including: (1) a trust accumulation model based on verified transactions rather than subjective ratings; (2) local trust computation that prevents cross-community trust arbitrage; (3) an on-chain order book for price discovery; (4) identity-bound VM access that makes credential theft useless; (5) detection mechanisms for Sybil clusters, collusion rings, and trust manipulation; (6) automated monetary policy that adjusts economic parameters in response to detected threats; (7) economic analysis demonstrating that unreliable home compute creates genuine value when demand exceeds datacenter capacity; and (8) double-spend resolution strategies where currency "weight" scales with network performance.
+
+We draw on the observation that human societies have always traded freedom for trust—villages had high trust precisely because they had low privacy. Omerta recreates village-level visibility at global scale, enabling lightweight trust mechanisms to work among strangers. However, unlike villages with their arbitrary social punishment and hidden power structures, Omerta aims to maximize freedom within the trust constraint: only provably anti-social behavior affects trust scores, all mechanisms are transparent and debatable, and participants retain freedom for any behavior that doesn't demonstrably harm others.
+
+Critically, we argue that such fair trust systems at scale were computationally intractable until now. Modeling, tracking, and adjusting parameters that sufficiently cover human behavior requires enormous reasoning capacity—capacity that machine intelligence now provides. The relationship is recursive: machine intelligence both demands the compute that Omerta provides and enables the trust system that makes Omerta work.
 
 We argue that the claimed "trustlessness" of blockchain systems is largely illusory—social consensus underlies all distributed systems and emerges when sufficient value is at stake. Omerta makes this social layer explicit, providing transparent mechanisms to track and verify trust relationships. The result is a system that mirrors how human trust networks actually function: imperfect rules made workable through aligned incentives and gradual reputation building.
 
@@ -72,7 +76,15 @@ This paper makes the following contributions:
 
 6. **Explicit security analysis** distinguishing protections that must be absolute (UBI distribution, trust from activity) from those where some adversarial advantage may be tolerated (risk diversification, community separation).
 
-The remainder of this paper is organized as follows. Section 2 reviews related work on reputation systems, Sybil resistance, and blockchain consensus. Section 3 presents the system architecture. Section 4 details the trust model. Section 5 describes the economic mechanisms. Section 6 analyzes attack vectors and defenses. Section 7 presents simulation results, including reliability market economics and the machine intelligence demand thesis. Section 8 discusses limitations, interoperability, and future work. Section 9 concludes.
+7. **Double-spend resolution** where currency "weight" scales with network performance—better connectivity enables lighter trust mechanisms, degrading gracefully to heavier mechanisms (blockchain bridges) for poorly-connected networks.
+
+8. **Village-to-global trust scaling**: We show that on-chain visibility provides the "everyone knows" property of villages at global scale, enabling lightweight trust mechanisms to work among strangers.
+
+9. **Fair surveillance design**: Unlike villages with arbitrary social punishment, Omerta aims to maximize freedom within the trust constraint—penalizing only provably anti-social behavior through transparent, debatable mechanisms.
+
+10. **Machine intelligence as enabler**: We argue that fair trust systems at scale were computationally intractable until machine intelligence provided the reasoning capacity to model, track, and adjust behavioral parameters. The relationship is recursive: AI demands compute and enables the trust system that provides it.
+
+The remainder of this paper is organized as follows. Section 2 reviews related work on reputation systems, Sybil resistance, blockchain consensus, and computational economics methodology. Section 3 presents the system architecture. Section 4 details the trust model. Section 5 describes the economic mechanisms. Section 6 analyzes attack vectors and defenses. Section 7 presents simulation results, including reliability market economics, the machine intelligence demand thesis, and double-spend resolution validation. Section 8 discusses the trust-cost spectrum, village-to-global scaling, machine intelligence as enabler, methodological notes on AI-assisted design (including this paper's own development process), and limitations. Section 9 concludes.
 
 \newpage
 
@@ -121,6 +133,16 @@ These approaches represent one end of the trust spectrum: maximum guarantees at 
 Distributed computing projects like BOINC [13], Folding@home [14], and SETI@home demonstrated that volunteers would contribute compute resources for scientific research. Commercial successors like Golem [15] and iExec [16] built on blockchain platforms to enable paid compute sharing.
 
 These systems face common challenges: verifying that claimed work was actually performed, preventing providers from delivering inferior resources, and detecting collusion. Omerta addresses these through continuous verification, trust-based payment splits, and statistical detection of manipulation patterns.
+
+## 2.6 Computational Economics and Mechanism Design
+
+The design and validation of economic mechanisms increasingly relies on computational methods. Agent-based computational economics [26, 27] provides tools for studying emergent phenomena in complex markets where analytical solutions are intractable [28]. This approach has proven particularly valuable for mechanism design [29], where simulating agent behavior under proposed rules reveals edge cases and failure modes before deployment.
+
+Validation of agent-based models follows established practices [30]: parameter sensitivity analysis, comparison against theoretical predictions where available, and testing under adversarial conditions. These methods inform our simulation methodology in Section 7.
+
+The market design draws on auction theory [31] and matching market literature [32]. The trust propagation model relates to work on reputation mechanism design [33], particularly the challenge of eliciting honest feedback in the presence of moral hazard. The concept that trust mechanism overhead should scale with network uncertainty echoes transaction cost economics [34], which analyzes how institutions emerge to reduce uncertainty in exchange.
+
+Omerta's economic simulations build on these foundations while extending them to a novel domain: trust-based compute markets where machine intelligence both creates demand and enables the trust mechanisms that make supply possible.
 
 \newpage
 
@@ -428,6 +450,58 @@ At the limit, superintelligent systems have unlimited demand for compute of any 
 
 The economic viability of Omerta depends on perpetual undersupply. Human demand alone cannot guarantee this. But machine intelligence—which can always find productive uses for marginal compute—transforms the market structure fundamentally. In a world of AI agents, the question is not whether unreliable compute will displace datacenters, but whether we can deploy enough compute of any quality to satisfy exponentially growing machine demand.
 
+## 7.6 Double-Spend Resolution
+
+Unlike blockchain where double-spending is mathematically prevented by consensus, Omerta's trust-based currency can only detect and penalize double-spends after the fact. This raises questions about economic stability. We simulated five scenarios to validate the design.
+
+**7.6.1 Detection Rate**
+
+| Connectivity | Detection Rate | Avg Time | Network Spread |
+|--------------|----------------|----------|----------------|
+| 0.1 | 100% | 0.046s | 97.6% |
+| 0.5 | 100% | 0.042s | 98.0% |
+| 1.0 | 100% | 0.042s | 98.0% |
+
+*Finding*: In gossip networks, double-spends are always eventually detected because conflicting transactions propagate to common nodes. Connectivity affects detection speed, not completeness.
+
+**7.6.2 Economic Stability**
+
+The "both keep coins" strategy (accept inflation, penalize attacker) shows:
+
+| Detection | Penalty | Inflation | Attacker Profit | Stable? |
+|-----------|---------|-----------|-----------------|---------|
+| 50% | 5x | 1.9% | -$985 | YES |
+| 90% | 5x | 1.1% | -$1000 | YES |
+| 99% | 1x | 4.7% | -$943 | YES |
+
+*Finding*: Attackers always lose money because trust penalties outweigh gains. Economy is stable (inflation < 5%) with 5x penalty multiplier even at 50% detection.
+
+**7.6.3 Finality Latency**
+
+| Threshold | Connectivity | Median Latency | Success Rate |
+|-----------|--------------|----------------|--------------|
+| 50% | 0.3 | 0.14s | 100% |
+| 70% | 0.5 | 0.14s | 100% |
+| 90% | 0.7 | 0.14s | 100% |
+
+*Finding*: Sub-200ms finality achievable. Higher thresholds don't proportionally increase latency because confirmations arrive in parallel through gossip.
+
+**7.6.4 Partition Behavior**
+
+During network partitions, double-spends can temporarily succeed (both victims accept). After healing, all conflicts are detected. This creates a "damage window" equal to partition duration.
+
+*Mitigation*: Use "wait for agreement" protocol for high-value transactions during suspected partition conditions.
+
+**7.6.5 Currency Weight Spectrum**
+
+| Connectivity | Weight | Category |
+|--------------|--------|----------|
+| 0.9 | 0.14 | Lightest (village-level trust) |
+| 0.5 | 0.34 | Light (town-level) |
+| 0.1 | 0.80 | Heaviest (needs blockchain bridge) |
+
+*Conclusion*: Currency weight is proportional to network performance. Better connectivity enables lighter trust mechanisms—the digital equivalent of physical proximity enabling village-level trust at global scale.
+
 \newpage
 
 # 8. Discussion
@@ -531,7 +605,108 @@ Rather than one network attempting to serve all use cases at one trust level, th
 
 This is analogous to how the internet layers protocols: TCP provides reliable delivery at some cost, UDP provides speed without guarantees, and applications choose based on their needs. Similarly, a trust-stratified compute ecosystem would let applications choose their trust level, paying only for the guarantees they actually require.
 
-## 8.7 Limitations
+## 8.7 Scaling Trust: From Villages to Global Networks
+
+The trust-cost tradeoff mirrors how human societies have always operated:
+
+| Society Scale | Trust Mechanism | Overhead |
+|--------------|-----------------|----------|
+| Village (50) | Everyone knows everyone; gossip spreads instantly | Minimal |
+| Town (5,000) | Reputation networks; friends-of-friends | Low |
+| City (500,000) | Institutions track reputation; courts enforce | Medium |
+| Nation (50M+) | Anonymous transactions; verification required | High |
+| Global | No shared context | Highest |
+
+As communities grew beyond the scale where everyone could know everyone, **visibility decreased** and **trust costs increased**. The lightweight mechanisms that worked in villages—verbal agreements, handshakes, reputation by gossip—don't scale to cities. Heavier mechanisms emerged: contracts, courts, banks, regulations.
+
+**The core problem**: Traditional high-trust solutions required physical proximity and small scale. You could trust your neighbor because you'd see them tomorrow and everyone would know if they cheated you.
+
+**What Omerta provides**:
+
+1. **Visibility at scale**: On-chain records make transaction history visible to anyone, replicating the "everyone knows" property of villages at global scale.
+
+2. **Gossip with perfect memory**: In villages, reputation spreads by word of mouth but decays over time. Omerta makes reputation computable from permanent records.
+
+3. **Investment and lock-in**: Building trust over time creates "skin in the game." Defection costs accumulated reputation, making honest behavior rational even among strangers.
+
+4. **Graduated entry**: New participants start with nothing, exactly like newcomers to a village. Trust is earned through demonstrated behavior.
+
+The key insight: **network performance is the digital analog of physical proximity**. Nodes that communicate quickly and reliably can use lighter trust mechanisms, just as neighbors who see each other daily can trust more easily than strangers across the world.
+
+Omerta asks: if we provide village-level visibility at global scale, can we use village-weight trust mechanisms for global transactions? The answer appears to be yes—to the extent that network performance allows. Currency weight becomes proportional to the proximity (physical or digital) between participants.
+
+**The freedom-trust tradeoff**: This visibility comes at a cost. Villages had high trust precisely because they had low freedom—everyone knew your business, you couldn't easily leave, your reputation followed you everywhere. Omerta recreates these properties digitally: transactions are visible, identities are persistent, exit costs are high, and deviation is penalized.
+
+This is not a bug—it is the mechanism by which trust scales. The system explicitly trades freedom for trust. Users who value anonymity, disposable identities, or the ability to "start fresh" should use different systems. Users who value counterparty trust, long-term reputation, and cooperation among strangers may find this tradeoff worthwhile.
+
+The honest framing: Omerta is not a privacy technology. It is an anti-privacy technology that trades surveillance for trust. The design should be chosen knowingly, when that tradeoff serves the application's needs.
+
+**Avoiding village pathologies**: While drawing on village-level trust mechanisms, Omerta explicitly aims to avoid the well-known pathologies of small communities: arbitrary social punishment, gossip and rumor, in-group favoritism, and hidden power structures. The goal is to **maximize freedom within the trust constraint**:
+
+1. *Only penalize provable misbehavior*: Trust scores decrease only for objectively measurable, demonstrably harmful actions (failed delivery, double-spend attempts). Subjective judgments have no mechanism to affect scores.
+
+2. *Measure in the open*: All data used to compute trust scores is on-chain and visible. No hidden inputs, no secret algorithms.
+
+3. *Keep mechanisms debatable*: Because everything is transparent, the community can debate fairness. Governance adjusts parameters based on observed results.
+
+4. *Preserve freedom for non-harmful behavior*: No constraints on what compute is used for, who you transact with, or how you operate—only on whether you fulfill commitments.
+
+This distinguishes Omerta from both the capricious social control of villages and the opaque algorithmic control of centralized platforms. It aims to be a *fair* surveillance system: comprehensive but explicit, uniform, and challengeable.
+
+**Why now: Machine intelligence as enabler**
+
+The reason fair, transparent trust systems at scale weren't possible before is computational: **modeling, tracking, and adjusting parameters that sufficiently cover human behavior requires enormous reasoning capacity**.
+
+Villages could be fair because scope was small—a few hundred relationships, elders who remembered everything. Scaling that to millions of participants with complex, evolving behavior was computationally intractable. Machine intelligence changes this:
+
+| Challenge | Traditional | With AI |
+|-----------|-------------|---------|
+| Defining "anti-social" | Static rules, courts | Dynamic models learning edge cases |
+| Detecting misbehavior | Manual review | Continuous automated analysis |
+| Explaining decisions | Impenetrable legalese | Natural language on demand |
+| Adjusting parameters | Years of committee debate | Rapid simulation-validated iteration |
+
+Machine intelligence enables: (1) behavioral modeling at scale, distinguishing honest mistakes from malice; (2) continuous parameter tuning through simulation; (3) explanation generation for trust score decisions; (4) adversarial reasoning against novel attacks; (5) governance support with AI-generated outcome analysis.
+
+The relationship is recursive: **machine intelligence both demands the compute that Omerta provides and enables the trust system that makes Omerta work**. AI needs distributed compute; distributed compute needs trust mechanisms; trust mechanisms at scale need AI to operate fairly. This virtuous cycle suggests the timing is not coincidental—the technologies arrive together because each enables the others.
+
+## 8.8 Methodological Notes: AI-Assisted System Design
+
+**This paper as demonstration**: This paper and its accompanying simulations were developed with substantial assistance from large language models (specifically Claude). This is not incidental—it is a direct demonstration of the thesis that machine intelligence enables system design that was previously intractable. The economic models, attack analyses, parameter explorations, and simulation code were developed iteratively through human-AI collaboration, with the AI providing rapid prototyping, edge case identification, and documentation while the human provided direction, validation, and domain judgment.
+
+We acknowledge this explicitly because intellectual honesty demands it, and because it illustrates both the strengths and weaknesses of AI-assisted design.
+
+**Connection to computational economics literature**: The simulation methodology draws on established traditions in agent-based computational economics [26, 27]. Agent-based models have proven valuable for studying emergent phenomena in markets [28] and mechanism design [29], particularly when analytical solutions are intractable. Our approach follows the validation practices recommended by Windrum et al. [30]: parameter sweeps, sensitivity analysis, and comparison against theoretical predictions where available.
+
+The market mechanism design builds on auction theory [31] and matching market literature [32], while the trust propagation model relates to work on network effects in reputation systems [33]. The "currency weight" concept—that trust mechanism overhead should scale with network uncertainty—echoes insights from transaction cost economics [34].
+
+**Strengths of AI-assisted analysis**:
+
+1. *Rapid iteration*: Parameter spaces that would take months to explore manually can be swept in hours, enabling broader coverage of edge cases.
+
+2. *Consistency*: AI maintains consistent reasoning across long documents, catching contradictions between sections that human authors might miss.
+
+3. *Adversarial thinking*: AI can systematically enumerate attack vectors, reducing the risk of overlooking obvious vulnerabilities.
+
+4. *Documentation*: AI excels at explaining reasoning, making the logic auditable in ways that purely human intuition is not.
+
+**Weaknesses and mitigations**:
+
+1. *Hallucination risk*: AI may generate plausible-sounding but incorrect analysis. **Mitigation**: All simulation code is executable and produces verifiable outputs. Claims are grounded in simulation results, not AI assertions. Key findings were validated against analytical intuition.
+
+2. *Training data limitations*: AI knowledge has a cutoff date and may miss recent developments. **Mitigation**: Human collaborators review for currency and supplement with recent literature.
+
+3. *Sycophancy bias*: AI may agree with human suggestions rather than pushing back on flawed reasoning. **Mitigation**: Explicitly adversarial prompting ("what's wrong with this?", "how would an attacker exploit this?") and independent verification of key claims.
+
+4. *Lack of true understanding*: AI manipulates symbols without grounded understanding of what they mean. **Mitigation**: Simulation provides empirical grounding. If the model is wrong, the simulation results will be wrong in detectable ways.
+
+5. *The bootstrapping problem*: We are using AI to design systems that will be operated by AI, creating a potential circularity in trust. **Mitigation**: The system is designed to be transparent and auditable. All mechanisms are documented such that humans can verify the logic. The AI does not operate autonomously—it assists human designers who retain judgment and accountability.
+
+**The honest position**: AI-assisted system design is powerful but not infallible. This paper represents our best current understanding, developed through human-AI collaboration. We expect some aspects to be wrong and invite scrutiny. The simulations, code, and reasoning are published precisely so that others—human and AI alike—can verify, critique, and improve upon this work.
+
+This methodology is itself subject to the freedom-trust tradeoff we describe: by making our process transparent (including AI involvement), we sacrifice some authorial mystique in exchange for verifiability. We believe this tradeoff is worthwhile.
+
+## 8.9 Limitations
 
 **Bootstrap Problem**: The network requires initial trusted participants to establish the trust graph. Genesis block contents define starting conditions.
 
@@ -540,6 +715,8 @@ This is analogous to how the internet layers protocols: TCP provides reliable de
 **Parameter Sensitivity**: Optimal parameter values require empirical tuning and may vary across network conditions.
 
 **Verification Overhead**: Random audits impose costs on honest participants. The verification rate must balance security against efficiency.
+
+**AI-Assisted Design Uncertainty**: As discussed in Section 8.8, AI-assisted analysis carries risks of hallucination and training data limitations. While we have attempted to mitigate these through executable simulations and adversarial review, some errors may remain undetected.
 
 \newpage
 
@@ -551,15 +728,19 @@ Omerta explores a different point on this spectrum. Rather than paying for globa
 
 This parallels the choice between fully homomorphic encryption and ephemeral compute. FHE provides the ultimate guarantee but at 1000x+ overhead, restricting practical use. Ephemeral compute accepts some trust requirements in exchange for serving far more use cases. Similarly, blockchain consensus provides strong guarantees but at costs (energy, capital, throughput) that may exceed what compute markets require.
 
-Our simulation studies validate that automated policy mechanisms respond appropriately to detected threats, while revealing that parameter adjustment alone cannot counter structural attacks. This suggests that effective systems need architectural defenses that make attacks infeasible by design, complemented by policy mechanisms for fine-tuning.
+Our simulation studies validate several key claims. Automated policy mechanisms respond appropriately to detected threats, though parameter adjustment alone cannot counter structural attacks—effective systems need architectural defenses complemented by policy fine-tuning. Double-spend resolution simulations confirm that currency "weight" scales with network performance: well-connected networks achieve 100% detection with sub-200ms finality, while poorly-connected networks require heavier mechanisms. The system degrades gracefully across this spectrum.
 
-Critically, our economic simulations demonstrate that unreliable home compute creates genuine value—not merely redistributes it—when demand exceeds datacenter capacity. In undersupplied markets, home providers serve consumers that datacenters cannot reach, increasing total compute delivered by 200% while datacenter profits remain largely intact. The viability of this model depends on perpetual undersupply.
+Our economic simulations demonstrate that unreliable home compute creates genuine value—not merely redistributes it—when demand exceeds datacenter capacity. In undersupplied markets, home providers serve consumers that datacenters cannot reach, increasing total compute delivered by 200% while datacenter profits remain largely intact. The viability of this model depends on perpetual undersupply.
 
 We argue that machine intelligence guarantees this undersupply. Unlike human demand, which is bounded and tends toward equilibrium, machine intelligence creates unbounded demand for compute at any quality level. There is always a next-best task—a machine that cannot profitably do a $50/hr task can still generate value doing a $5/hr task. As AI systems improve, this demand curve extends to arbitrarily low prices, ensuring that any compute capacity finds productive use.
 
+But machine intelligence plays a deeper role than just creating demand. Fair trust systems at scale—systems that penalize only provable misbehavior through transparent, debatable mechanisms—were computationally intractable until now. Modeling human behavior, detecting novel attacks, explaining decisions, and tuning parameters requires enormous reasoning capacity. Machine intelligence provides this capacity for the first time. The relationship is recursive: AI demands the compute that Omerta provides, and AI enables the trust system that makes Omerta work. This virtuous cycle suggests the technologies arrive together because each enables the others.
+
+This framing illuminates what Omerta attempts: extending village-level trust to global scale. Villages had high trust because they had high visibility—everyone knew everyone's business, reputation spread by gossip, misbehavior had lasting consequences. Omerta recreates these properties digitally through on-chain transparency. But unlike villages with their arbitrary social punishment, gossip, and hidden power structures, Omerta aims to maximize freedom within the trust constraint. Only provably anti-social behavior affects trust scores. All mechanisms are documented and debatable. Participants retain freedom for any behavior that doesn't demonstrably harm others.
+
 The goal is not to replace blockchain systems—they serve real purposes and represent genuine advances. The goal is to expand the design space, recognizing that different applications may have different optimal points on the trust-cost spectrum. For compute markets specifically—especially those serving machine intelligence workloads—we believe there is an underexplored region that could make trustworthy compute sharing accessible to more people at practical cost.
 
-Omerta is an experiment in finding that region. The question is not whether unreliable compute will displace datacenters, but whether we can deploy enough compute of any quality to satisfy the exponentially growing demand of machine intelligence.
+Omerta is an experiment in finding that region. The question is not whether unreliable compute will displace datacenters, but whether we can deploy enough compute of any quality to satisfy the exponentially growing demand of machine intelligence—and whether machine intelligence can, in turn, help us build the fair trust systems needed to make that deployment work.
 
 \newpage
 
@@ -614,6 +795,24 @@ Omerta is an experiment in finding that region. The question is not whether unre
 [24] J. Van Bulck et al., "Foreshadow: Extracting the keys to the Intel SGX kingdom," in *Proc. USENIX Security*, 2018.
 
 [25] A. C. Yao, "How to generate and exchange secrets," in *Proc. FOCS*, 1986.
+
+[26] L. Tesfatsion and K. L. Judd, Eds., *Handbook of Computational Economics, Vol. 2: Agent-Based Computational Economics*. North-Holland, 2006.
+
+[27] J. D. Farmer and D. Foley, "The economy needs agent-based modelling," *Nature*, vol. 460, no. 7256, pp. 685-686, 2009.
+
+[28] W. B. Arthur, "Complexity and the economy," *Science*, vol. 284, no. 5411, pp. 107-109, 1999.
+
+[29] N. Nisan, T. Roughgarden, E. Tardos, and V. V. Vazirani, Eds., *Algorithmic Game Theory*. Cambridge University Press, 2007.
+
+[30] P. Windrum, G. Fagiolo, and A. Moneta, "Empirical validation of agent-based models: Alternatives and prospects," *Journal of Artificial Societies and Social Simulation*, vol. 10, no. 2, 2007.
+
+[31] P. Klemperer, "Auction theory: A guide to the literature," *Journal of Economic Surveys*, vol. 13, no. 3, pp. 227-286, 1999.
+
+[32] A. E. Roth, "The economics of matching: Stability and incentives," *Mathematics of Operations Research*, vol. 7, no. 4, pp. 617-628, 1982.
+
+[33] C. Dellarocas, "Reputation mechanism design in online trading environments with pure moral hazard," *Information Systems Research*, vol. 16, no. 2, pp. 209-230, 2005.
+
+[34] O. E. Williamson, "Transaction cost economics: How it works; where it is headed," *De Economist*, vol. 146, no. 1, pp. 23-58, 1998.
 
 \newpage
 
