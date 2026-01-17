@@ -98,6 +98,37 @@ public struct NetworkKey: Sendable, Codable, Equatable {
         let hash = SHA256.hash(data: networkKey)
         return hash.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
+
+    // MARK: - Bootstrap Peer Management
+
+    /// Create a copy with different bootstrap peers
+    /// - Parameter peers: New list of bootstrap peers (format: "peerId@host:port")
+    /// - Returns: New NetworkKey with same encryption key but different bootstrap peers
+    public func withBootstrapPeers(_ peers: [String]) -> NetworkKey {
+        NetworkKey(
+            networkKey: networkKey,
+            networkName: networkName,
+            bootstrapPeers: peers,
+            createdAt: createdAt
+        )
+    }
+
+    /// Create a copy with an additional bootstrap peer
+    /// - Parameter peer: Bootstrap peer to add (format: "peerId@host:port")
+    /// - Returns: New NetworkKey with the peer added (if not already present)
+    public func addingBootstrapPeer(_ peer: String) -> NetworkKey {
+        if bootstrapPeers.contains(peer) {
+            return self
+        }
+        return withBootstrapPeers(bootstrapPeers + [peer])
+    }
+
+    /// Create a copy with a bootstrap peer removed
+    /// - Parameter peer: Bootstrap peer to remove
+    /// - Returns: New NetworkKey with the peer removed
+    public func removingBootstrapPeer(_ peer: String) -> NetworkKey {
+        withBootstrapPeers(bootstrapPeers.filter { $0 != peer })
+    }
 }
 
 // MARK: - Errors

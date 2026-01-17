@@ -89,6 +89,63 @@ public actor NetworkStore {
         networks.count
     }
 
+    // MARK: - Bootstrap Peer Management
+
+    /// Get bootstrap peers for a network
+    public func bootstrapPeers(forNetwork networkId: String) -> [String]? {
+        networks[networkId]?.key.bootstrapPeers
+    }
+
+    /// Update bootstrap peers for a network
+    public func updateBootstrapPeers(_ networkId: String, peers: [String]) async throws {
+        guard var network = networks[networkId] else {
+            throw NetworkStoreError.notFound
+        }
+
+        network.key = network.key.withBootstrapPeers(peers)
+        networks[networkId] = network
+
+        logger.info("Updated bootstrap peers for network \(networkId): \(peers.count) peer(s)")
+
+        try await save()
+    }
+
+    /// Add a bootstrap peer to a network
+    public func addBootstrapPeer(_ networkId: String, peer: String) async throws {
+        guard var network = networks[networkId] else {
+            throw NetworkStoreError.notFound
+        }
+
+        let oldCount = network.key.bootstrapPeers.count
+        network.key = network.key.addingBootstrapPeer(peer)
+        networks[networkId] = network
+
+        if network.key.bootstrapPeers.count > oldCount {
+            logger.info("Added bootstrap peer to network \(networkId): \(peer)")
+            try await save()
+        } else {
+            logger.debug("Bootstrap peer already exists in network \(networkId): \(peer)")
+        }
+    }
+
+    /// Remove a bootstrap peer from a network
+    public func removeBootstrapPeer(_ networkId: String, peer: String) async throws {
+        guard var network = networks[networkId] else {
+            throw NetworkStoreError.notFound
+        }
+
+        let oldCount = network.key.bootstrapPeers.count
+        network.key = network.key.removingBootstrapPeer(peer)
+        networks[networkId] = network
+
+        if network.key.bootstrapPeers.count < oldCount {
+            logger.info("Removed bootstrap peer from network \(networkId): \(peer)")
+            try await save()
+        } else {
+            logger.debug("Bootstrap peer not found in network \(networkId): \(peer)")
+        }
+    }
+
     // MARK: - Persistence
 
     /// Load networks from disk

@@ -538,7 +538,9 @@ struct Network: AsyncParsableCommand {
             NetworkJoin.self,
             NetworkList.self,
             NetworkLeave.self,
-            NetworkShow.self
+            NetworkShow.self,
+            NetworkBootstrap.self,
+            NetworkInvite.self
         ]
     )
 }
@@ -886,6 +888,205 @@ struct NetworkShow: AsyncParsableCommand {
         }
 
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    }
+}
+
+// MARK: - Network Bootstrap Command
+struct NetworkBootstrap: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "bootstrap",
+        abstract: "Manage bootstrap peers for a network",
+        subcommands: [
+            NetworkBootstrapList.self,
+            NetworkBootstrapAdd.self,
+            NetworkBootstrapRemove.self
+        ],
+        defaultSubcommand: NetworkBootstrapList.self
+    )
+}
+
+struct NetworkBootstrapList: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "list",
+        abstract: "List bootstrap peers for a network"
+    )
+
+    @Option(name: .long, help: "Network ID or prefix")
+    var network: String?
+
+    mutating func run() async throws {
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+
+        let networkId: String
+        if let specifiedNetwork = network {
+            let (resolved, error) = await resolveNetwork(specifiedNetwork, store: networkStore)
+            guard let net = resolved else {
+                print(error ?? "Network not found")
+                throw ExitCode.failure
+            }
+            networkId = net.id
+        } else {
+            let networks = await networkStore.allNetworks()
+            guard let firstNetwork = networks.first else {
+                print("Error: No networks found. Join a network first with 'omerta network join'")
+                throw ExitCode.failure
+            }
+            networkId = firstNetwork.id
+        }
+
+        guard let peers = await networkStore.bootstrapPeers(forNetwork: networkId) else {
+            print("Error: Network not found")
+            throw ExitCode.failure
+        }
+
+        print("Bootstrap peers for network \(networkId):")
+        print("")
+        if peers.isEmpty {
+            print("  (none)")
+        } else {
+            for (index, peer) in peers.enumerated() {
+                print("  \(index + 1). \(peer)")
+            }
+        }
+        print("")
+    }
+}
+
+struct NetworkBootstrapAdd: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "add",
+        abstract: "Add a bootstrap peer to a network"
+    )
+
+    @Argument(help: "Bootstrap peer (format: peerId@host:port)")
+    var peer: String
+
+    @Option(name: .long, help: "Network ID or prefix")
+    var network: String?
+
+    mutating func run() async throws {
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+
+        let networkId: String
+        if let specifiedNetwork = network {
+            let (resolved, error) = await resolveNetwork(specifiedNetwork, store: networkStore)
+            guard let net = resolved else {
+                print(error ?? "Network not found")
+                throw ExitCode.failure
+            }
+            networkId = net.id
+        } else {
+            let networks = await networkStore.allNetworks()
+            guard let firstNetwork = networks.first else {
+                print("Error: No networks found. Join a network first with 'omerta network join'")
+                throw ExitCode.failure
+            }
+            networkId = firstNetwork.id
+        }
+
+        try await networkStore.addBootstrapPeer(networkId, peer: peer)
+        print("Added bootstrap peer: \(peer)")
+    }
+}
+
+struct NetworkBootstrapRemove: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "remove",
+        abstract: "Remove a bootstrap peer from a network"
+    )
+
+    @Argument(help: "Bootstrap peer (format: peerId@host:port)")
+    var peer: String
+
+    @Option(name: .long, help: "Network ID or prefix")
+    var network: String?
+
+    mutating func run() async throws {
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+
+        let networkId: String
+        if let specifiedNetwork = network {
+            let (resolved, error) = await resolveNetwork(specifiedNetwork, store: networkStore)
+            guard let net = resolved else {
+                print(error ?? "Network not found")
+                throw ExitCode.failure
+            }
+            networkId = net.id
+        } else {
+            let networks = await networkStore.allNetworks()
+            guard let firstNetwork = networks.first else {
+                print("Error: No networks found. Join a network first with 'omerta network join'")
+                throw ExitCode.failure
+            }
+            networkId = firstNetwork.id
+        }
+
+        try await networkStore.removeBootstrapPeer(networkId, peer: peer)
+        print("Removed bootstrap peer: \(peer)")
+    }
+}
+
+// MARK: - Network Invite Command
+struct NetworkInvite: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "invite",
+        abstract: "Generate an invite link for a network"
+    )
+
+    @Option(name: .long, help: "Network ID or prefix")
+    var network: String?
+
+    @Option(name: .long, parsing: .upToNextOption, help: "Override bootstrap peers (can specify multiple)")
+    var bootstrap: [String] = []
+
+    mutating func run() async throws {
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+
+        let resolvedNetwork: OmertaMesh.Network
+        if let specifiedNetwork = network {
+            let (resolved, error) = await resolveNetwork(specifiedNetwork, store: networkStore)
+            guard let net = resolved else {
+                print(error ?? "Network not found")
+                throw ExitCode.failure
+            }
+            resolvedNetwork = net
+        } else {
+            let networks = await networkStore.allNetworks()
+            guard let firstNetwork = networks.first else {
+                print("Error: No networks found. Join a network first with 'omerta network join'")
+                throw ExitCode.failure
+            }
+            resolvedNetwork = firstNetwork
+        }
+
+        // Use specified bootstrap peers or the stored ones
+        let keyToEncode: NetworkKey
+        if !bootstrap.isEmpty {
+            keyToEncode = resolvedNetwork.key.withBootstrapPeers(bootstrap)
+        } else {
+            keyToEncode = resolvedNetwork.key
+        }
+
+        do {
+            let encodedKey = try keyToEncode.encode()
+            print("Invite link for network '\(resolvedNetwork.name)':")
+            print("")
+            print("Bootstrap peers:")
+            for peer in keyToEncode.bootstrapPeers {
+                print("  - \(peer)")
+            }
+            print("")
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            print(encodedKey)
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        } catch {
+            print("Error encoding invite link: \(error)")
+            throw ExitCode.failure
+        }
     }
 }
 

@@ -6,7 +6,7 @@ import Foundation
 public struct Network: Identifiable, Sendable, Codable {
     public let id: String  // Derived from network key hash
     public let name: String
-    public let key: NetworkKey
+    public var key: NetworkKey  // Mutable to allow bootstrap peer updates
     public let joinedAt: Date
     public var isActive: Bool
 
