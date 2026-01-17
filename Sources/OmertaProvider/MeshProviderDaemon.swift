@@ -634,6 +634,11 @@ public actor MeshProviderDaemon {
         await mesh.ping(peerId, timeout: timeout)
     }
 
+    /// Connect to a peer through the mesh network
+    public func connect(to peerId: String) async throws -> DirectConnection {
+        try await mesh.connect(to: peerId)
+    }
+
     /// Set a handler for consumer-side messages (e.g., incoming heartbeat requests)
     /// This handler is called for messages the provider daemon doesn't handle
     public func setConsumerMessageHandler(_ handler: @escaping (String, Data) async -> Void) {

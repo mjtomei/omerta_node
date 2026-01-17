@@ -584,6 +584,32 @@ struct Start: AsyncParsableCommand {
                 return .pingResult(nil)
             }
 
+        case .connect(let peerId, _):
+            // Connect through the daemon's mesh network
+            // Note: timeout parameter reserved for future use
+            do {
+                let connection = try await daemon.connect(to: peerId)
+                return .connectResult(ControlResponse.ConnectResultData(
+                    success: true,
+                    peerId: connection.peerId,
+                    endpoint: connection.endpoint,
+                    isDirect: connection.isDirect,
+                    method: connection.method.rawValue,
+                    rttMs: connection.rttMs,
+                    error: nil
+                ))
+            } catch {
+                return .connectResult(ControlResponse.ConnectResultData(
+                    success: false,
+                    peerId: peerId,
+                    endpoint: nil,
+                    isDirect: false,
+                    method: "",
+                    rttMs: nil,
+                    error: error.localizedDescription
+                ))
+            }
+
         case .status:
             let status = await daemon.getStatus()
             return .status(ControlResponse.StatusData(
