@@ -197,13 +197,8 @@ extension NetworkStore {
     /// Uses getRealUserHome() to handle sudo correctly
     public static func defaultStore() -> NetworkStore {
         let homeDir = OmertaConfig.getRealUserHome()
-        #if os(macOS)
         let storePath = URL(fileURLWithPath: homeDir)
-            .appendingPathComponent("Library/Application Support/OmertaMesh/networks.json")
-        #else
-        let storePath = URL(fileURLWithPath: homeDir)
-            .appendingPathComponent(".local/share/OmertaMesh/networks.json")
-        #endif
+            .appendingPathComponent(".omerta/mesh/networks.json")
 
         return NetworkStore(storePath: storePath)
     }

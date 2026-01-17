@@ -10,7 +10,7 @@ public typealias MachineId = String
 /// Get the storage path for machine ID (handles sudo correctly)
 private func getMachineIdPath() -> URL {
     URL(fileURLWithPath: OmertaConfig.getRealUserHome())
-        .appendingPathComponent(".config/OmertaMesh/machine_id")
+        .appendingPathComponent(".omerta/mesh/machine_id")
 }
 
 /// Load or generate a persistent machine ID.

@@ -174,13 +174,8 @@ extension PeerStore {
     /// Uses getRealUserHome() to handle sudo correctly
     public static func defaultStore() -> PeerStore {
         let homeDir = OmertaConfig.getRealUserHome()
-        #if os(macOS)
         let storePath = URL(fileURLWithPath: homeDir)
-            .appendingPathComponent("Library/Application Support/OmertaMesh/peers.json")
-        #else
-        let storePath = URL(fileURLWithPath: homeDir)
-            .appendingPathComponent(".local/share/OmertaMesh/peers.json")
-        #endif
+            .appendingPathComponent(".omerta/mesh/peers.json")
 
         return PeerStore(storePath: storePath)
     }

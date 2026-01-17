@@ -605,13 +605,8 @@ struct NetworkCreate: AsyncParsableCommand {
         // Store the identity we generated (not a new one from getOrCreate)
         // Use getRealUserHome() to handle sudo correctly
         let homeDir = OmertaConfig.getRealUserHome()
-        #if os(macOS)
         let identitiesPath = URL(fileURLWithPath: homeDir)
-            .appendingPathComponent("Library/Application Support/OmertaMesh/identities.json")
-        #else
-        let identitiesPath = URL(fileURLWithPath: homeDir)
-            .appendingPathComponent(".local/share/OmertaMesh/identities.json")
-        #endif
+            .appendingPathComponent(".omerta/mesh/identities.json")
 
         // Read existing identities, add ours, save
         var identities: [String: [String: String]] = [:]
@@ -691,13 +686,8 @@ struct NetworkJoin: AsyncParsableCommand {
             // Save identity for this network
             // Use getRealUserHome() to handle sudo correctly
             let homeDir = OmertaConfig.getRealUserHome()
-            #if os(macOS)
             let identitiesPath = URL(fileURLWithPath: homeDir)
-                .appendingPathComponent("Library/Application Support/OmertaMesh/identities.json")
-            #else
-            let identitiesPath = URL(fileURLWithPath: homeDir)
-                .appendingPathComponent(".local/share/OmertaMesh/identities.json")
-            #endif
+                .appendingPathComponent(".omerta/mesh/identities.json")
 
             // Read existing identities, add ours (if not already present), save
             var identities: [String: [String: String]] = [:]

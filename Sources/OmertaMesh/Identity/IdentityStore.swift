@@ -119,13 +119,8 @@ extension IdentityStore {
     /// Uses getRealUserHome() to handle sudo correctly
     public static func defaultStore() -> IdentityStore {
         let homeDir = OmertaConfig.getRealUserHome()
-        #if os(macOS)
         let storePath = URL(fileURLWithPath: homeDir)
-            .appendingPathComponent("Library/Application Support/OmertaMesh/identities.json")
-        #else
-        let storePath = URL(fileURLWithPath: homeDir)
-            .appendingPathComponent(".local/share/OmertaMesh/identities.json")
-        #endif
+            .appendingPathComponent(".omerta/mesh/identities.json")
 
         return IdentityStore(storePath: storePath)
     }

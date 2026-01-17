@@ -45,7 +45,7 @@ public actor MeshEventLogger {
     // MARK: - Initialization
 
     /// Initialize the event logger with logs at the specified directory
-    /// - Parameter logDir: Directory for log files (default: ~/.config/OmertaMesh/logs)
+    /// - Parameter logDir: Directory for log files (default: ~/.omerta/logs/mesh)
     public init(logDir: String? = nil) throws {
         var log = Logger(label: "io.omerta.mesh.eventlogger")
         log.logLevel = .info
@@ -92,7 +92,7 @@ public actor MeshEventLogger {
     // MARK: - Default Path
 
     private static func defaultLogDir() -> String {
-        "\(OmertaConfig.getRealUserHome())/.config/OmertaMesh/logs"
+        "\(OmertaConfig.getRealUserHome())/.omerta/logs/mesh"
     }
 
     // MARK: - File Management

@@ -42,7 +42,7 @@ public actor DaemonEventLogger {
     }
 
     private static func defaultLogDir() -> String {
-        "\(OmertaConfig.getRealUserHome())/.config/OmertaDaemon/logs"
+        "\(OmertaConfig.getRealUserHome())/.omerta/logs/daemon"
     }
 
     // MARK: - File Management

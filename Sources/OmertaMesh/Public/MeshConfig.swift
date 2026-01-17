@@ -13,7 +13,7 @@ public struct MeshConfig: Sendable {
     // MARK: - Storage Settings
 
     /// Directory for persistent storage (peers, networks)
-    /// Defaults to Application Support/OmertaMesh/
+    /// Defaults to ~/.omerta/mesh/
     public var storageDirectory: URL?
 
     // MARK: - Network Settings
@@ -90,7 +90,7 @@ public struct MeshConfig: Sendable {
     /// Whether to enable persistent event logging (default: false)
     public var enableEventLogging: Bool
 
-    /// Custom directory for event logs (default: ~/.config/OmertaMesh/logs)
+    /// Custom directory for event logs (default: ~/.omerta/logs/mesh)
     public var eventLogDir: String?
 
     // MARK: - Initialization

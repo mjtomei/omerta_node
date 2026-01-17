@@ -12,7 +12,11 @@ While there are still legitimate security concerns like VM escapes and malicious
 
 TODOs
 CORE
-- set up public bootstrap and stun servers
+- consolidate local storage all to one place instead of using .config/OmertaMesh directory
+- make sure vms get released when either consumer or producer omertad is killed 
+- make sure you can run omerta with sudo even while omertad is running as user and root has not used omerta
+- debug messy peer lists, messy peer endpoint lists which include localhost, leaking of endpoints between networks during pings
+- test stun server and NAT hole punching functionality, make sure LAN connections work
 - get usermode consumer working on linux and mac
 - separate out OmertaMesh into its own repo and establish API
 - implement multi-interface support for control plane
@@ -29,6 +33,7 @@ CORE
 
 COMPUTE ECONOMY
 - review omc PDFs
+- write up double spending as a mechanism for trading trust for coins
 
 NETWORK BOOTSTRAPPING
 - add a demo mode to omertad that only allows short small VM leases to guarantee availability 
@@ -52,3 +57,23 @@ MACHINE ASSISTED MONITORING
   - allows creation of a mechanism for trust and ranking of users
   - allows maintenance of free networks for good causes as decided by the provider
   - might need to be run and maintain by dedicated, more tech-savy participants who understand false positives
+
+Automated review prompt
+The automated reviewer should asking the following questions: How is this work novel compared to previous work in
+  the field or similar fields? What are the weakest contributions, and what makes them so weak? What additional simulation work should be done to make this work more relevant and robust? What
+  citations are missing, and how do they factor into the key points and simulation results? What logical jumps are there in the paper that make up the weakest links in the chain, and how can they
+  be strengthened? What existing work is not receiving the credit it is due, and how is that bias influencing the writing or results? What are the methodological flaws in the simulations, missing
+  parameters or unrealistic assumptions, and how should they be addressed? How are the mathematical models lacking in rigor, and what should be done to improve them in general or in relation to
+  previous work? What kind of mathematical proofs or assertions that are otherwise provable in simulation or with empirical data are missing that would strengthen the work or hurt the key points?
+  What empirical data contradicts the key points of the work and how are those contradictions addressed? 
+
+  What ideas in the paper are not completely clear? What sections or sentences seem overly verbose relative to the points they are getting across and value to the paper? What content is being repeated that shouldn't be and what points aren't being repeated that deserve more emphasis? What structural changes could improve readability and the probability of readers continuing to read after they start? Do the sections and subsections properly flow into each other in a way that is not too abrupt? What hooks or punchy lines would best get your main points across and where should you add them? What figures or tables could be addded that would be most valuable for demonstrating the core ideas of the paper?
+
+Please save the reviews somewhere in case we want to revisit them. Respond to the reviews with a separate review response file before making changes directly to the text. While addressing the reviews, if there are any changes or decisions you aren't completely sure about, please include those concerns in the review response so I can review those with you later. While creating your response, please fetch all works referenced, verify the reviewers claims, and ask the same questsions asked of the reviewer to yourself. 
+
+Increase thoroughness of literature and related work search. Please present the questions in a way where the reviewer does not know what reviews have already taken place.
+
+Walk citation graphs for most relevant works in reviews and in base work. Use Google Scholar for walking citations.
+
+If you can't find the PDF of a work online, remove it from the citations. Add it to an appendix of works that you think should be cited but you don't have access to. Add a bit of detail on what impact it would have on the work. See if you can find another format of the work, reporting on the work, or derivative work to replace the paper that is open instead.
+

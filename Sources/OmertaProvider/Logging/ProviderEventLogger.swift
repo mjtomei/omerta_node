@@ -42,7 +42,7 @@ public actor ProviderEventLogger {
     }
 
     private static func defaultLogDir() -> String {
-        "\(OmertaConfig.getRealUserHome())/.config/OmertaProvider/logs"
+        "\(OmertaConfig.getRealUserHome())/.omerta/logs/provider"
     }
 
     // MARK: - File Management

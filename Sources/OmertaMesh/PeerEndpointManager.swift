@@ -55,7 +55,7 @@ public actor PeerEndpointManager {
 
     public init(storagePath: URL? = nil, logger: Logger? = nil) {
         self.storagePath = storagePath ?? URL(fileURLWithPath: OmertaConfig.getRealUserHome())
-            .appendingPathComponent(".config/OmertaMesh/peer_endpoints.json")
+            .appendingPathComponent(".omerta/mesh/peer_endpoints.json")
         self.logger = logger ?? Logger(label: "omerta.mesh.endpoints")
     }
 
