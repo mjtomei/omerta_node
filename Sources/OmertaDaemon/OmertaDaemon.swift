@@ -33,6 +33,7 @@ struct DaemonConfig {
     var timeout: Int?
     var canRelay: Bool = true
     var canCoordinateHolePunch: Bool = true
+    var enableEventLogging: Bool = false
 
     /// Default config file path
     static var defaultPath: String {
@@ -88,6 +89,8 @@ struct DaemonConfig {
                 config.canRelay = cleanValue.lowercased() == "true" || cleanValue == "1"
             case "can-coordinate-hole-punch", "cancoordinateholepunch", "can_coordinate_hole_punch", "hole-punch", "holepunch":
                 config.canCoordinateHolePunch = cleanValue.lowercased() == "true" || cleanValue == "1"
+            case "enable-event-logging", "enableeventlogging", "enable_event_logging", "event-logging", "eventlogging":
+                config.enableEventLogging = cleanValue.lowercased() == "true" || cleanValue == "1"
             default:
                 // Unknown key, ignore
                 break
@@ -124,6 +127,10 @@ struct DaemonConfig {
         # Hole punch coordination - help other peers establish direct connections (default: true)
         # Disable if you want to minimize participation in the mesh
         can-coordinate-hole-punch=true
+
+        # Enable persistent event logging for debugging (default: false)
+        # Logs are written to ~/.config/Omerta*/logs/ in JSONL format
+        enable-event-logging=false
 
         # Auto-shutdown after N seconds (optional, for testing)
         # timeout=3600
@@ -262,6 +269,7 @@ struct Start: AsyncParsableCommand {
         let effectiveTimeout = timeout ?? fileConfig.timeout
         let effectiveCanRelay = !noRelay && fileConfig.canRelay
         let effectiveCanHolePunch = !noHolePunch && fileConfig.canCoordinateHolePunch
+        let effectiveEventLogging = enableEventLogging || fileConfig.enableEventLogging
 
         print("Starting Omerta Provider Daemon...")
         if effectiveDryRun {
@@ -370,7 +378,7 @@ struct Start: AsyncParsableCommand {
             timeout: effectiveTimeout,
             canRelay: effectiveCanRelay,
             canHolePunch: effectiveCanHolePunch,
-            enableEventLogging: enableEventLogging,
+            enableEventLogging: effectiveEventLogging,
             shutdownCoordinator: shutdownCoordinator
         )
     }
