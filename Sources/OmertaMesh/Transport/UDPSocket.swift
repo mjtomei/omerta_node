@@ -71,13 +71,16 @@ public actor UDPSocket {
     /// Send data to a specific address
     public func send(_ data: Data, to address: SocketAddress) async throws {
         guard let channel = channel, isRunning else {
+            logger.warning("UDP send failed: socket not running")
             throw UDPSocketError.notRunning
         }
 
         let buffer = channel.allocator.buffer(bytes: data)
         let envelope = AddressedEnvelope(remoteAddress: address, data: buffer)
 
+        logger.info("UDP sending \(data.count) bytes to \(address)")
         try await channel.writeAndFlush(envelope)
+        logger.info("UDP sent \(data.count) bytes to \(address)")
     }
 
     /// Send data to a host:port string

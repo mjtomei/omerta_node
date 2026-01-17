@@ -189,13 +189,18 @@ public actor TestNode {
         switch message {
         case .ping(_):
             // Respond with pong including recent peers with endpoints
-            var peerEndpoints: [String: String] = [:]
+            var peerEndpointInfoList: [PeerEndpointInfo] = []
             for (peerId, contact) in recentContacts {
                 if case .direct(let endpoint) = contact.reachability {
-                    peerEndpoints[peerId] = endpoint
+                    // Use peerId as machineId placeholder in tests
+                    peerEndpointInfoList.append(PeerEndpointInfo(
+                        peerId: peerId,
+                        machineId: "test-machine-\(peerId.prefix(8))",
+                        endpoint: endpoint
+                    ))
                 }
             }
-            await send(.pong(recentPeers: peerEndpoints), to: senderId)
+            await send(.pong(recentPeers: peerEndpointInfoList), to: senderId)
 
         case .findPeer(let peerId):
             // Check cache and respond

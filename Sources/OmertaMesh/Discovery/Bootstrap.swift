@@ -150,7 +150,7 @@ public actor Bootstrap {
     private func bootstrapFromNode(_ endpoint: String) async throws -> [PeerAnnouncement] {
         // Send ping to discover the node
         let response = try await node.sendAndReceive(
-            .ping(recentPeers: [:]),
+            .ping(recentPeers: []),
             to: endpoint,
             timeout: config.timeout
         )
@@ -241,7 +241,7 @@ extension Bootstrap {
 
             do {
                 let response = try await node.sendAndReceive(
-                    .ping(recentPeers: [:]),
+                    .ping(recentPeers: []),
                     to: endpoint,
                     timeout: 5.0
                 )

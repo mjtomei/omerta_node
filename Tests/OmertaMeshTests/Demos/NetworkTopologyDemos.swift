@@ -44,7 +44,7 @@ final class NetworkTopologyDemos: XCTestCase {
         for (from, to) in pairs {
             do {
                 let response = try await network.node(from).sendAndReceive(
-                    .ping(recentPeers: [:] as [String: String]),
+                    .ping(recentPeers: []),
                     to: to,
                     timeout: 2.0
                 )
@@ -102,7 +102,7 @@ final class NetworkTopologyDemos: XCTestCase {
             let relay = client == "Client-C" ? "Relay-2" : "Relay-1"
             do {
                 let response = try await network.node(client).sendAndReceive(
-                    .ping(recentPeers: [:] as [String: String]),
+                    .ping(recentPeers: []),
                     to: relay,
                     timeout: 2.0
                 )
@@ -119,8 +119,8 @@ final class NetworkTopologyDemos: XCTestCase {
         print("  Full Cone NAT allows any source once mapping exists")
 
         // First, clients send to relay to create NAT mappings
-        await network.node("Client-A").send(.ping(recentPeers: [:] as [String: String]), to: "Relay-1")
-        await network.node("Client-B").send(.ping(recentPeers: [:] as [String: String]), to: "Relay-1")
+        await network.node("Client-A").send(.ping(recentPeers: []), to: "Relay-1")
+        await network.node("Client-B").send(.ping(recentPeers: []), to: "Relay-1")
         try await Task.sleep(nanoseconds: 100_000_000)
 
         // Now Client-A and Client-B should be able to communicate
@@ -423,7 +423,7 @@ final class NetworkTopologyDemos: XCTestCase {
             let relay = client == "Client-3" ? "Relay-B" : "Relay-A"
             do {
                 _ = try await network.node(client).sendAndReceive(
-                    .ping(recentPeers: [:] as [String: String]),
+                    .ping(recentPeers: []),
                     to: relay,
                     timeout: 2.0
                 )
@@ -449,7 +449,7 @@ final class NetworkTopologyDemos: XCTestCase {
         for client in ["Client-1", "Client-2"] {
             do {
                 _ = try await network.node(client).sendAndReceive(
-                    .ping(recentPeers: [:] as [String: String]),
+                    .ping(recentPeers: []),
                     to: "Relay-A",
                     timeout: 5.0
                 )
@@ -484,7 +484,7 @@ final class NetworkTopologyDemos: XCTestCase {
             let relay = client == "Client-3" ? "Relay-B" : "Relay-A"
             do {
                 _ = try await network.node(client).sendAndReceive(
-                    .ping(recentPeers: [:] as [String: String]),
+                    .ping(recentPeers: []),
                     to: relay,
                     timeout: 2.0
                 )

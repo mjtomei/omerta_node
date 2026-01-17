@@ -69,7 +69,7 @@ final class PerformanceBenchmarks: XCTestCase {
 
             do {
                 _ = try await network.node("A").sendAndReceive(
-                    .ping(recentPeers: [:] as [String: String]),
+                    .ping(recentPeers: []),
                     to: "B",
                     timeout: 1.0
                 )
@@ -138,7 +138,7 @@ final class PerformanceBenchmarks: XCTestCase {
             // Measure message broadcast time
             let msgStart = Date()
             for i in 0..<min(count, 10) {
-                await network.node("node0").send(.ping(recentPeers: [:] as [String: String]), to: "node\(i)")
+                await network.node("node0").send(.ping(recentPeers: []), to: "node\(i)")
             }
             try await Task.sleep(nanoseconds: 100_000_000) // Allow delivery
             let msgTime = Date().timeIntervalSince(msgStart)
@@ -344,7 +344,9 @@ final class PerformanceBenchmarks: XCTestCase {
             for leafId in ["leaf1", "leaf2", "leaf3", "leaf4"] {
                 group.addTask {
                     for i in 0..<messagesPerLeaf {
-                        await network.node(leafId).send(.ping(recentPeers: ["msg\(i)": "endpoint"]), to: "center")
+                        await network.node(leafId).send(.ping(recentPeers: [
+                            PeerEndpointInfo(peerId: "msg\(i)", machineId: "machine", endpoint: "endpoint")
+                        ]), to: "center")
                     }
                 }
             }

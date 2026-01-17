@@ -132,7 +132,7 @@ final class MultiEndpointTests: XCTestCase {
 
         // A sends ping to B - B should record A's endpoint
         _ = try await nodeA.sendAndReceive(
-            .ping(recentPeers: [:]),
+            .ping(recentPeers: []),
             to: "127.0.0.1:\(portB)",
             timeout: 5.0
         )
@@ -171,7 +171,7 @@ final class MultiEndpointTests: XCTestCase {
 
         // Send with fallback - should try bad endpoint first, fail, then succeed with good endpoint
         let response = try await nodeA.sendToPeerWithFallback(
-            .ping(recentPeers: [:]),
+            .ping(recentPeers: []),
             peerId: peerIdB,
             machineId: machineIdB,
             timeout: 1.0
@@ -220,7 +220,7 @@ final class MultiEndpointTests: XCTestCase {
         // Send should fail after trying all endpoints
         do {
             _ = try await nodeA.sendToPeerWithFallback(
-                .ping(recentPeers: [:]),
+                .ping(recentPeers: []),
                 peerId: peerId,
                 machineId: machineId,
                 timeout: 0.5
@@ -245,7 +245,7 @@ final class MultiEndpointTests: XCTestCase {
         // No endpoints registered for this peer
         do {
             _ = try await nodeA.sendToPeerWithFallback(
-                .ping(recentPeers: [:]),
+                .ping(recentPeers: []),
                 peerId: "unknown-peer",
                 machineId: "unknown-machine",
                 timeout: 1.0

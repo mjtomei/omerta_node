@@ -117,9 +117,6 @@ public actor MeshNode {
     /// Endpoint manager for multi-endpoint tracking by (peerId, machineId)
     public let endpointManager: PeerEndpointManager
 
-    /// Cached peer info
-    private var peerCache: [PeerId: CachedPeerInfo] = [:]
-
     /// Connected relay peer IDs
     private var connectedRelays: Set<PeerId> = []
 
@@ -134,9 +131,6 @@ public actor MeshNode {
 
     /// Known peer connections
     private var peers: [PeerId: PeerConnection] = [:]
-
-    /// Peer endpoints for broadcasting
-    private var peerEndpoints: [PeerId: String] = [:]
 
     /// Message IDs we've seen (for deduplication)
     private var seenMessageIds: Set<String> = []
@@ -165,9 +159,6 @@ public actor MeshNode {
 
     /// Connection keepalive manager for maintaining NAT mappings
     public let connectionKeepalive: ConnectionKeepalive
-
-    /// Background task for cache cleanup
-    private var cacheCleanupTask: Task<Void, Never>?
 
     /// The port we're listening on
     public var port: Int? {
@@ -230,7 +221,7 @@ public actor MeshNode {
                 // Return first known public peer as coordinator
                 // In production, this would use a smarter selection
                 guard let self = self else { return nil }
-                return await self.peerEndpoints.keys.first
+                return await self.endpointManager.allPeerIds.first
             }
         )
     }
@@ -275,12 +266,8 @@ public actor MeshNode {
 
     /// Handle a keepalive failure for a peer
     private func handleKeepaliveFailure(peerId: PeerId, endpoint: String) async {
-        // Remove from peer endpoints if still pointing to the failed endpoint
-        if peerEndpoints[peerId] == endpoint {
-            logger.info("Removing stale endpoint for \(peerId) due to keepalive failure")
-            // Don't remove the endpoint entirely - just mark as potentially stale
-            // Higher layers can decide whether to try relay or re-punch
-        }
+        // Log the failure - endpointManager handles endpoint lifecycle via activity tracking
+        logger.info("Keepalive failure for \(peerId) at \(endpoint)")
 
         // Notify freshness manager about the failure
         let _ = await freshnessManager.pathFailureReporter.reportFailure(
@@ -289,15 +276,20 @@ public actor MeshNode {
         )
     }
 
-    /// Get endpoint for a peer
-    private func getEndpoint(for peerId: PeerId) -> String? {
-        peerEndpoints[peerId]
+    /// Get endpoint for a peer (returns best endpoint from any machine)
+    private func getEndpoint(for peerId: PeerId) async -> String? {
+        await endpointManager.getAllEndpoints(peerId: peerId).first
     }
 
     /// Broadcast a message to all known peers with hop count tracking
     public func broadcast(_ message: MeshMessage, maxHops: Int) async {
-        for (peerId, endpoint) in peerEndpoints {
+        // Get all known peer IDs and their best endpoints
+        for peerId in await endpointManager.allPeerIds {
             guard peerId != self.peerId else { continue }
+
+            guard let endpoint = await endpointManager.getAllEndpoints(peerId: peerId).first else {
+                continue
+            }
 
             do {
                 let envelope = try MeshEnvelope.signed(
@@ -364,8 +356,7 @@ public actor MeshNode {
         // Start connection keepalive
         await connectionKeepalive.start()
 
-        // Start cache cleanup
-        startCacheCleanup()
+        // Note: Cache cleanup is now handled by endpointManager
 
         logger.info("Mesh node started on port \(boundPort)")
     }
@@ -390,9 +381,7 @@ public actor MeshNode {
         // Stop connection keepalive
         await connectionKeepalive.stop()
 
-        // Stop cache cleanup
-        cacheCleanupTask?.cancel()
-        cacheCleanupTask = nil
+        // Note: Cache cleanup is now handled by endpointManager (stopped above)
 
         // Cancel all pending responses
         for (_, pending) in pendingResponses {
@@ -454,9 +443,10 @@ public actor MeshNode {
 
         // Update peer info and track endpoint
         let endpointString = formatEndpoint(address)
-        await updatePeerEndpointFromMessage(peerId: envelope.fromPeerId, endpoint: endpointString)
+        await updatePeerConnectionFromMessage(peerId: envelope.fromPeerId, endpoint: endpointString)
 
         // Record in endpoint manager for multi-endpoint tracking
+        logger.info("Recording endpoint for peer \(envelope.fromPeerId.prefix(16))... machine \(envelope.machineId.prefix(16))... at \(endpointString)")
         await endpointManager.recordMessageReceived(
             from: envelope.fromPeerId,
             machineId: envelope.machineId,
@@ -513,48 +503,42 @@ public actor MeshNode {
                 connectionType: .inboundDirect
             )
 
-            // Also update our peer endpoint cache
-            peerEndpoints[peerId] = endpoint
-            peerCache[peerId] = CachedPeerInfo(peerId: peerId, endpoint: endpoint)
+            // Build response with our known peers INCLUDING machineId
+            let myPeers = await buildPeerEndpointInfoList()
+            await send(.pong(recentPeers: myPeers), to: endpoint)
 
-            // Respond with pong including our recent peers with endpoints
-            var myRecentPeers = await freshnessManager.recentPeersWithEndpoints
-            // Also include peers from our cache that may not be in freshness yet
-            for (id, ep) in peerEndpoints where id != self.peerId {
-                if myRecentPeers[id] == nil {
-                    myRecentPeers[id] = ep
+            // Learn about new peers from the ping WITH machineId
+            for peerInfo in recentPeers where peerInfo.peerId != self.peerId {
+                // Check if we already know about this peer's endpoint
+                let existingEndpoints = await endpointManager.getAllEndpoints(peerId: peerInfo.peerId)
+                if !existingEndpoints.contains(peerInfo.endpoint) {
+                    logger.info("Learned about peer \(peerInfo.peerId.prefix(16))... at \(peerInfo.endpoint) from gossip")
                 }
-            }
-            // Limit to 10 peers
-            var limitedPeers: [String: String] = [:]
-            for (id, ep) in myRecentPeers {
-                limitedPeers[id] = ep
-                if limitedPeers.count >= 10 { break }
-            }
-            await send(.pong(recentPeers: limitedPeers), to: endpoint)
-
-            // Learn about new peers from the ping
-            for (peerIdFromPing, peerEndpoint) in recentPeers {
-                if peerIdFromPing != self.peerId && peerEndpoints[peerIdFromPing] == nil {
-                    logger.info("Learned about peer \(peerIdFromPing) at \(peerEndpoint) from \(peerId)")
-                    peerEndpoints[peerIdFromPing] = peerEndpoint
-                    peerCache[peerIdFromPing] = CachedPeerInfo(peerId: peerIdFromPing, endpoint: peerEndpoint)
-                }
+                // Record in endpointManager (handles deduplication and priority)
+                await endpointManager.recordMessageReceived(
+                    from: peerInfo.peerId,
+                    machineId: peerInfo.machineId,
+                    endpoint: peerInfo.endpoint
+                )
             }
 
         case .pong(let recentPeers):
-            // Cache the pong sender's endpoint - CRITICAL for connect() to work
-            peerEndpoints[peerId] = endpoint
-            peerCache[peerId] = CachedPeerInfo(peerId: peerId, endpoint: endpoint)
-            logger.info("Cached pong sender: \(peerId.prefix(8))... at \(endpoint)")
+            // Pong sender is already recorded in handleIncomingData via endpointManager.recordMessageReceived
+            logger.info("Received pong from: \(peerId.prefix(8))... at \(endpoint)")
 
-            // Learn about new peers from the pong
-            for (peerIdFromPong, peerEndpoint) in recentPeers {
-                if peerIdFromPong != self.peerId && peerEndpoints[peerIdFromPong] == nil {
-                    logger.info("Learned about peer \(peerIdFromPong) at \(peerEndpoint) from pong")
-                    peerEndpoints[peerIdFromPong] = peerEndpoint
-                    peerCache[peerIdFromPong] = CachedPeerInfo(peerId: peerIdFromPong, endpoint: peerEndpoint)
+            // Learn about new peers from the pong WITH machineId
+            for peerInfo in recentPeers where peerInfo.peerId != self.peerId {
+                // Check if we already know about this peer's endpoint
+                let existingEndpoints = await endpointManager.getAllEndpoints(peerId: peerInfo.peerId)
+                if !existingEndpoints.contains(peerInfo.endpoint) {
+                    logger.info("Learned about peer \(peerInfo.peerId.prefix(16))... at \(peerInfo.endpoint) from pong")
                 }
+                // Record in endpointManager (handles deduplication and priority)
+                await endpointManager.recordMessageReceived(
+                    from: peerInfo.peerId,
+                    machineId: peerInfo.machineId,
+                    endpoint: peerInfo.endpoint
+                )
             }
 
             // Record this as a recent contact
@@ -597,7 +581,10 @@ public actor MeshNode {
         case .data(let payload):
             // Pass application data to the handler
             if let handler = applicationMessageHandler {
+                logger.info("Passing .data(\(payload.count) bytes) to application handler from \(peerId.prefix(16))...")
                 await handler(.data(payload), peerId)
+            } else {
+                logger.warning("No applicationMessageHandler set for .data message from \(peerId.prefix(16))...")
             }
 
         case .peerInfo:
@@ -608,11 +595,8 @@ public actor MeshNode {
                 latencyMs: 0,
                 connectionType: .inboundDirect
             )
-
-            // Update our peer endpoint cache - CRITICAL for connect() to work
-            peerEndpoints[peerId] = endpoint
-            peerCache[peerId] = CachedPeerInfo(peerId: peerId, endpoint: endpoint)
-            logger.info("Cached peer endpoint: \(peerId.prefix(8))... at \(endpoint)")
+            // Note: endpoint is already recorded in handleIncomingData via endpointManager.recordMessageReceived
+            logger.info("Received peer announcement: \(peerId.prefix(8))... at \(endpoint)")
 
         default:
             break
@@ -621,9 +605,13 @@ public actor MeshNode {
 
     /// Forward a message to other peers (for gossip propagation)
     private func forwardMessage(_ message: MeshMessage, from originalSender: PeerId, hopCount: Int) async {
-        for (peerId, endpoint) in peerEndpoints {
+        for peerId in await endpointManager.allPeerIds {
             // Don't forward back to sender or to ourselves
             guard peerId != originalSender && peerId != self.peerId else { continue }
+
+            guard let endpoint = await endpointManager.getAllEndpoints(peerId: peerId).first else {
+                continue
+            }
 
             do {
                 let envelope = try MeshEnvelope.signed(
@@ -657,9 +645,10 @@ public actor MeshNode {
             // Encode to JSON then encrypt
             let jsonData = try JSONEncoder().encode(envelope)
             let encryptedData = try MessageEncryption.encrypt(jsonData, key: config.encryptionKey)
+            logger.info("Sending \(encryptedData.count) bytes to \(endpoint)")
             try await socket.send(encryptedData, to: endpoint)
 
-            logger.debug("Sent \(type(of: message)) to \(endpoint)")
+            logger.info("Sent \(type(of: message)) (\(encryptedData.count) bytes) to \(endpoint)")
         } catch {
             logger.error("Failed to send message: \(error)")
         }
@@ -703,17 +692,14 @@ public actor MeshNode {
 
     // MARK: - Peer Management
 
-    /// Update a peer's endpoint
-    private func updatePeerEndpointFromMessage(peerId: PeerId, endpoint: String) async {
+    /// Update a peer's endpoint from incoming message
+    /// Note: endpointManager is updated separately in handleIncomingData
+    private func updatePeerConnectionFromMessage(peerId: PeerId, endpoint: String) async {
         // Update PeerConnection if we have one
         if let peer = peers[peerId] {
             await peer.setActiveEndpoint(endpoint)
             await peer.updateLastSeen()
         }
-
-        // Always update the endpoint cache so getCachedPeer works
-        peerEndpoints[peerId] = endpoint
-        peerCache[peerId] = CachedPeerInfo(peerId: peerId, endpoint: endpoint)
     }
 
     /// Add a peer with known public key
@@ -727,21 +713,36 @@ public actor MeshNode {
         Array(peers.keys)
     }
 
-    /// Get all tracked peer endpoints
+    /// Get all tracked peer endpoints (best endpoint for each peer)
     public var trackedEndpoints: [PeerId: String] {
-        peerEndpoints
+        get async {
+            var result: [PeerId: String] = [:]
+            for peerId in await endpointManager.allPeerIds {
+                if let endpoint = await endpointManager.getAllEndpoints(peerId: peerId).first {
+                    result[peerId] = endpoint
+                }
+            }
+            return result
+        }
     }
 
     // MARK: - MeshNetwork API Methods
 
     /// Get cached peer info
     public func getCachedPeer(_ peerId: PeerId) async -> CachedPeerInfo? {
-        peerCache[peerId]
+        // Build CachedPeerInfo from endpointManager
+        guard let endpoint = await endpointManager.getAllEndpoints(peerId: peerId).first else {
+            return nil
+        }
+        // Get last seen from the machine endpoints
+        let machines = await endpointManager.getAllMachines(peerId: peerId)
+        let lastSeen = machines.map { $0.lastActivity }.max() ?? Date()
+        return CachedPeerInfo(peerId: peerId, endpoint: endpoint, natType: .unknown, lastSeen: lastSeen)
     }
 
     /// Get list of cached peer IDs
     public func getCachedPeerIds() async -> [PeerId] {
-        Array(peerCache.keys) + Array(peerEndpoints.keys)
+        await endpointManager.allPeerIds
     }
 
     /// Get connected relay peer IDs
@@ -750,24 +751,26 @@ public actor MeshNode {
     }
 
     /// Update a peer's endpoint (public API for MeshNetwork)
+    /// Note: Uses a generated machineId since we don't know the actual machineId yet
     public func updatePeerEndpoint(_ peerId: PeerId, endpoint: Endpoint) async {
         // Don't add ourselves as a peer
         guard peerId != self.peerId else { return }
-        peerEndpoints[peerId] = endpoint
-        peerCache[peerId] = CachedPeerInfo(peerId: peerId, endpoint: endpoint)
+        // Use a placeholder machineId - will be updated when we receive a message from them
+        let placeholderMachineId = "bootstrap-\(peerId.prefix(16))"
+        await endpointManager.recordMessageReceived(from: peerId, machineId: placeholderMachineId, endpoint: endpoint)
     }
 
     /// Request peer list from known peers
     public func requestPeers() async {
-        // Build our peer list to share
-        var myPeers: [String: String] = [:]
-        for (id, ep) in peerEndpoints where id != self.peerId {
-            myPeers[id] = ep
-            if myPeers.count >= 10 { break }
-        }
+        // Build our peer list to share (with machineId)
+        let myPeers = await buildPeerEndpointInfoList()
 
-        for (peerId, endpoint) in peerEndpoints {
+        // Send ping to all known peers
+        for peerId in await endpointManager.allPeerIds {
             guard peerId != self.peerId else { continue }
+            guard let endpoint = await endpointManager.getAllEndpoints(peerId: peerId).first else {
+                continue
+            }
             await send(.ping(recentPeers: myPeers), to: endpoint)
         }
     }
@@ -802,18 +805,27 @@ public actor MeshNode {
 
     /// Announce to all known peers (bootstrap introduction)
     public func announceToAllPeers() async {
-        for (peerId, endpoint) in peerEndpoints {
+        for peerId in await endpointManager.allPeerIds {
             guard peerId != self.peerId else { continue }
+            guard let endpoint = await endpointManager.getAllEndpoints(peerId: peerId).first else {
+                continue
+            }
             await announceTo(endpoint: endpoint)
         }
     }
 
-    /// Send a message to a peer by ID
+    /// Send a message to a peer by ID (tries all endpoints with fallback)
     public func sendToPeer(_ message: MeshMessage, peerId: PeerId) async throws {
-        guard let endpoint = peerEndpoints[peerId] else {
+        let endpoints = await endpointManager.getAllEndpoints(peerId: peerId)
+        guard !endpoints.isEmpty else {
+            logger.warning("sendToPeer: No endpoints found for peer \(peerId.prefix(16))...")
             throw MeshNodeError.peerNotFound
         }
-        await send(message, to: endpoint)
+
+        logger.info("sendToPeer: Sending to \(peerId.prefix(16))... via \(endpoints[0])")
+        // For fire-and-forget sends, try the best endpoint only
+        // Use sendToPeerWithFallback for request-response patterns
+        await send(message, to: endpoints[0])
     }
 
     /// Send to peer with fallback through multiple endpoints
@@ -915,18 +927,15 @@ public actor MeshNode {
     /// Returns nil if timeout or error
     public func sendPingWithDetails(to targetPeerId: PeerId, timeout: TimeInterval = 3.0) async -> PingResult? {
         // Get the endpoint for this peer
-        guard let endpoint = peerEndpoints[targetPeerId] else {
+        guard let endpoint = await endpointManager.getAllEndpoints(peerId: targetPeerId).first else {
             logger.debug("sendPing: No endpoint for peer \(targetPeerId)")
             return nil
         }
 
-        // Build our recentPeers to send
-        let recentPeers = await freshnessManager.recentPeersWithEndpoints
-        var sentPeers: [String: String] = [:]
-        for (id, ep) in recentPeers.prefix(5) {
-            sentPeers[id] = ep
-        }
-        let ping = MeshMessage.ping(recentPeers: sentPeers)
+        // Build our recentPeers to send (with machineId)
+        let peerInfoList = await buildPeerEndpointInfoList()
+        let sentPeers = Dictionary(uniqueKeysWithValues: peerInfoList.prefix(5).map { ($0.peerId, $0.endpoint) })
+        let ping = MeshMessage.ping(recentPeers: Array(peerInfoList.prefix(5)))
 
         let startTime = Date()
         do {
@@ -937,11 +946,15 @@ public actor MeshNode {
 
                 // Find new peers (ones we didn't know about)
                 var newPeers: [String: String] = [:]
-                for (peerId, peerEndpoint) in receivedPeers {
-                    if peerEndpoints[peerId] == nil && peerId != identity.peerId {
-                        newPeers[peerId] = peerEndpoint
+                for peerInfo in receivedPeers {
+                    let existingEndpoints = await endpointManager.getAllEndpoints(peerId: peerInfo.peerId)
+                    if !existingEndpoints.contains(peerInfo.endpoint) && peerInfo.peerId != identity.peerId {
+                        newPeers[peerInfo.peerId] = peerInfo.endpoint
                     }
                 }
+
+                // Convert received peers to dictionary for result
+                let receivedPeersDict = Dictionary(uniqueKeysWithValues: receivedPeers.map { ($0.peerId, $0.endpoint) })
 
                 // Record this as a recent contact
                 await freshnessManager.recordContact(
@@ -966,7 +979,7 @@ public actor MeshNode {
                     endpoint: endpoint,
                     latencyMs: latencyMs,
                     sentPeers: sentPeers,
-                    receivedPeers: receivedPeers,
+                    receivedPeers: receivedPeersDict,
                     newPeers: newPeers
                 )
             }
@@ -1008,63 +1021,25 @@ public actor MeshNode {
         await connectionKeepalive.monitoredConnections
     }
 
-    // MARK: - Cache Cleanup
+    // MARK: - Helpers
 
-    /// Start the periodic cache cleanup task
-    private func startCacheCleanup() {
-        guard cacheCleanupTask == nil else { return }
-
-        cacheCleanupTask = Task {
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(nanoseconds: UInt64(config.cacheCleanupInterval * 1_000_000_000))
-                    cleanupExpiredPeers()
-                } catch {
-                    // Task cancelled
-                    break
+    /// Build a list of peer endpoint info for gossip (includes machineId)
+    private func buildPeerEndpointInfoList() async -> [PeerEndpointInfo] {
+        var result: [PeerEndpointInfo] = []
+        for peerId in await endpointManager.allPeerIds {
+            guard peerId != self.peerId else { continue }
+            for machine in await endpointManager.getAllMachines(peerId: peerId) {
+                if let endpoint = machine.bestEndpoint {
+                    result.append(PeerEndpointInfo(
+                        peerId: machine.peerId,
+                        machineId: machine.machineId,
+                        endpoint: endpoint
+                    ))
                 }
             }
+            if result.count >= 10 { break }
         }
-
-        logger.debug("Cache cleanup started with interval \(config.cacheCleanupInterval)s, TTL \(config.peerCacheTTL)s")
-    }
-
-    /// Remove peers that haven't been seen within the TTL
-    private func cleanupExpiredPeers() {
-        let now = Date()
-        let ttl = config.peerCacheTTL
-        var expiredPeers: [PeerId] = []
-
-        for (peerId, info) in peerCache {
-            let age = now.timeIntervalSince(info.lastSeen)
-            if age > ttl {
-                expiredPeers.append(peerId)
-            }
-        }
-
-        // Remove expired peers from cache and endpoints
-        for peerId in expiredPeers {
-            peerCache.removeValue(forKey: peerId)
-            peerEndpoints.removeValue(forKey: peerId)
-        }
-
-        if !expiredPeers.isEmpty {
-            logger.debug("Cleaned up \(expiredPeers.count) expired peers from cache")
-        }
-
-        // Also enforce maxCachedPeers limit
-        if peerCache.count > config.maxCachedPeers {
-            // Sort by lastSeen and remove oldest
-            let sortedPeers = peerCache.sorted { $0.value.lastSeen < $1.value.lastSeen }
-            let toRemove = sortedPeers.prefix(peerCache.count - config.maxCachedPeers)
-            for (peerId, _) in toRemove {
-                peerCache.removeValue(forKey: peerId)
-                peerEndpoints.removeValue(forKey: peerId)
-            }
-            if toRemove.count > 0 {
-                logger.debug("Evicted \(toRemove.count) oldest peers to enforce max cache size")
-            }
-        }
+        return result
     }
 
     // MARK: - Message Deduplication

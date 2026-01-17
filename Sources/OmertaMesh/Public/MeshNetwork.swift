@@ -592,18 +592,12 @@ public actor MeshNetwork {
     /// - Parameters:
     ///   - data: Data to send
     ///   - peerId: Target peer ID
-    ///   - retryConfig: Optional custom retry configuration
+    ///   - retryConfig: Optional custom retry configuration (ignored - endpoint fallback is used instead)
+    /// - Note: Time-based retry is deprecated. Endpoint fallback is now built into send().
+    ///   This method is kept for API compatibility but simply calls send().
+    @available(*, deprecated, message: "Use send() instead - endpoint fallback is built-in")
     public func sendWithRetry(_ data: Data, to targetPeerId: PeerId, retryConfig: RetryConfig? = nil) async throws {
-        try await withRetry(
-            config: retryConfig ?? self.retryConfig,
-            operation: "send to \(targetPeerId.prefix(8))...",
-            shouldRetry: { error in
-                guard let meshError = error as? MeshError else { return false }
-                return meshError.shouldRetry
-            }
-        ) {
-            try await self.send(data, to: targetPeerId)
-        }
+        try await send(data, to: targetPeerId)
     }
 
     /// Attempt hole punch with automatic retry

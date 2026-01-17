@@ -11,26 +11,43 @@ While there are still legitimate security concerns like VM escapes and malicious
 - support for checkpoint and restart of VMs
 
 TODOs
+CORE
 - set up public bootstrap and stun servers
+  - clean up activity logging
+  - pull out hard coded values into config file
+- debug vm release
 - get usermode consumer working on linux and mac
-- separate out OmertaMesh into its own repo
+- separate out OmertaMesh into its own repo and establish API
+- implement multi-interface support for control plane
+- add support for simple messaging through OmertaMesh
+- add support for prioritizing VM requests by network
 - test relay mode for control and data planes in OmertaMesh, implement multicast
-- implement and test wireguard connection migration
-- review omc PDFs
 - implement compute capability and utilization monitoring
 - implement mac gui
-- review code
-
-
-- add user warnings about threat model to onboarding with links to more detailed documentation
-- add statistics tracking and querying support to mesh nodes, provide link to explain what is done with data and corresponding dashboards, attack and mitigation demos
-- add paranoid mode to OmertaMesh that requires all traffic go through wireguard to a home server as the exit point
-- add multi-radio support and connection prioritization
-- quality of life improvements
   - measure and limit VM energy consumption, use lower power CPU states where useful
   - automatically disable sleep while plugged in
   - automate killing or migration of VMs when user is at keyboard
-- add support for prioritizing different networks
+- review code
+- implement and test wireguard connection migration
+
+COMPUTE ECONOMY
+- review omc PDFs
+
+NETWORK BOOTSTRAPPING
+- add a demo mode to omertad that only allows short small VM leases to guarantee availability 
+- implement SSO and identity management
+- add user warnings about threat model to onboarding with links to more detailed documentation
+- add statistics tracking and querying support to mesh nodes, provide link to explain what is done with data and corresponding dashboards, attack and mitigation demos
+- create app and standalone device with bootstrapping/disaster recovery mode that onboards people through a captive portal on an open SSID
+
+VPN and MESH HARDENING
+- write macos, ios, and linux VPN client and linux server apps that share network with omertad
+  - add paranoid mode to OmertaMesh that requires all traffic go through wireguard to a home server as the exit point
+- add multi-radio support and connection prioritization
+  - add support for traffic shaping and bandwidth splitting
+  - add support for a lora iPhone case
+
+MACHINE ASSISTED MONITORING
 - add support for explicitly exposing access to guest from host so isolation can't be assumed
 - add a feature or separate tool for LLM assisted spot checking of shared compute and credit assignment
   - possibly use a blockchain for maintaining history as well as assigning coins based on contributions

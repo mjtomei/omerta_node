@@ -8,15 +8,28 @@ public typealias PeerId = String
 /// Network endpoint (IP:port)
 public typealias Endpoint = String
 
+/// Peer endpoint info shared in gossip (includes machineId for proper tracking)
+public struct PeerEndpointInfo: Codable, Sendable, Equatable {
+    public let peerId: PeerId
+    public let machineId: MachineId
+    public let endpoint: String
+
+    public init(peerId: PeerId, machineId: MachineId, endpoint: String) {
+        self.peerId = peerId
+        self.machineId = machineId
+        self.endpoint = endpoint
+    }
+}
+
 /// All messages in the mesh protocol
 public enum MeshMessage: Codable, Sendable, Equatable {
     // MARK: - Keepalive
 
-    /// Heartbeat with list of recently contacted peers (ID -> Endpoint)
-    case ping(recentPeers: [String: String])
+    /// Heartbeat with list of recently contacted peers (includes machineId)
+    case ping(recentPeers: [PeerEndpointInfo])
 
-    /// Heartbeat response
-    case pong(recentPeers: [String: String])
+    /// Heartbeat response (includes machineId)
+    case pong(recentPeers: [PeerEndpointInfo])
 
     // MARK: - Discovery
 

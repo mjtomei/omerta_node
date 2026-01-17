@@ -23,12 +23,12 @@ final class Phase0Tests: XCTestCase {
         var receivedMessage: MeshMessage? = nil
         await nodeB.onMessage { message, from in
             receivedMessage = message
-            return .pong(recentPeers: [:] as [String: String])
+            return .pong(recentPeers: [])
         }
 
         // Send from A to B
         let response = try await nodeA.sendAndReceive(
-            .ping(recentPeers: [:] as [String: String]),
+            .ping(recentPeers: []),
             to: "B",
             timeout: 5.0
         )
@@ -62,7 +62,7 @@ final class Phase0Tests: XCTestCase {
         // Try to send - should timeout
         do {
             _ = try await nodeA.sendAndReceive(
-                .ping(recentPeers: [:] as [String: String]),
+                .ping(recentPeers: []),
                 to: "B",
                 timeout: 0.5
             )
@@ -85,7 +85,7 @@ final class Phase0Tests: XCTestCase {
 
         // A can reach B
         let responseAB = try await network.node("A").sendAndReceive(
-            .ping(recentPeers: [:] as [String: String]),
+            .ping(recentPeers: []),
             to: "B",
             timeout: 1.0
         )
@@ -97,7 +97,7 @@ final class Phase0Tests: XCTestCase {
 
         // B can reach C
         let responseBC = try await network.node("B").sendAndReceive(
-            .ping(recentPeers: [:] as [String: String]),
+            .ping(recentPeers: []),
             to: "C",
             timeout: 1.0
         )
@@ -110,7 +110,7 @@ final class Phase0Tests: XCTestCase {
         // A cannot directly reach C (no link)
         do {
             _ = try await network.node("A").sendAndReceive(
-                .ping(recentPeers: [:] as [String: String]),
+                .ping(recentPeers: []),
                 to: "C",
                 timeout: 0.5
             )
@@ -136,7 +136,7 @@ final class Phase0Tests: XCTestCase {
 
         // Initially A can reach C
         let response1 = try await network.node("A").sendAndReceive(
-            .ping(recentPeers: [:] as [String: String]),
+            .ping(recentPeers: []),
             to: "C",
             timeout: 1.0
         )
@@ -152,7 +152,7 @@ final class Phase0Tests: XCTestCase {
         // Now A cannot reach C
         do {
             _ = try await network.node("A").sendAndReceive(
-                .ping(recentPeers: [:] as [String: String]),
+                .ping(recentPeers: []),
                 to: "C",
                 timeout: 0.5
             )
@@ -163,7 +163,7 @@ final class Phase0Tests: XCTestCase {
 
         // B can still reach C (same partition)
         let response2 = try await network.node("B").sendAndReceive(
-            .ping(recentPeers: [:] as [String: String]),
+            .ping(recentPeers: []),
             to: "C",
             timeout: 1.0
         )
@@ -178,7 +178,7 @@ final class Phase0Tests: XCTestCase {
 
         // A can reach C again
         let response3 = try await network.node("A").sendAndReceive(
-            .ping(recentPeers: [:] as [String: String]),
+            .ping(recentPeers: []),
             to: "C",
             timeout: 1.0
         )
@@ -335,7 +335,7 @@ final class Phase0Tests: XCTestCase {
 
         // node0 can reach node1
         let response = try await network.node("node0").sendAndReceive(
-            .ping(recentPeers: [:] as [String: String]),
+            .ping(recentPeers: []),
             to: "node1",
             timeout: 1.0
         )
@@ -359,7 +359,7 @@ final class Phase0Tests: XCTestCase {
         // All leaves can reach hub
         for i in 0..<3 {
             let response = try await network.node("leaf\(i)").sendAndReceive(
-                .ping(recentPeers: [:] as [String: String]),
+                .ping(recentPeers: []),
                 to: "hub",
                 timeout: 1.0
             )
@@ -410,14 +410,17 @@ final class Phase0Tests: XCTestCase {
 
         // No custom handler set - should use default
         let response = try await network.node("A").sendAndReceive(
-            .ping(recentPeers: ["X": "endpoint1", "Y": "endpoint2"]),
+            .ping(recentPeers: [
+                PeerEndpointInfo(peerId: "X", machineId: "machine-X", endpoint: "endpoint1"),
+                PeerEndpointInfo(peerId: "Y", machineId: "machine-Y", endpoint: "endpoint2")
+            ]),
             to: "B",
             timeout: 1.0
         )
 
         if case .pong(let recentPeers) = response {
             // B should respond with its recent peers (empty initially)
-            XCTAssertTrue(recentPeers.isEmpty || recentPeers.keys.contains("A"))
+            XCTAssertTrue(recentPeers.isEmpty || recentPeers.contains { $0.peerId == "A" })
         } else {
             XCTFail("Expected pong response")
         }
