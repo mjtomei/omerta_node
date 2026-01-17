@@ -232,7 +232,8 @@ public actor MeshProviderDaemon {
         ])
 
         // Try to decode as heartbeat response
-        if let response = try? JSONDecoder().decode(MeshVMHeartbeatResponse.self, from: data) {
+        if let response = try? JSONDecoder().decode(MeshVMHeartbeatResponse.self, from: data),
+           response.type == "vm_heartbeat_response" {
             // Remove from pending and get the VMs we asked about
             if pendingHeartbeats.removeValue(forKey: peerId) != nil {
                 let consumerVMs = activeVMs.filter { $0.value.consumerPeerId == peerId }
@@ -243,25 +244,31 @@ public actor MeshProviderDaemon {
         }
 
         // Try to decode as VM ACK
-        if let ack = try? JSONDecoder().decode(MeshVMAck.self, from: data) {
+        if let ack = try? JSONDecoder().decode(MeshVMAck.self, from: data),
+           ack.type == "vm_ack" {
             handleVMAck(ack)
             return
         }
 
         // Try to decode as VM release ACK
-        if let ack = try? JSONDecoder().decode(MeshVMReleaseAck.self, from: data) {
+        if let ack = try? JSONDecoder().decode(MeshVMReleaseAck.self, from: data),
+           ack.type == "vm_release_ack" {
             handleVMReleaseAck(ack)
             return
         }
 
         // Try to decode as VM request
-        if let request = try? JSONDecoder().decode(MeshVMRequest.self, from: data) {
+        if let request = try? JSONDecoder().decode(MeshVMRequest.self, from: data),
+           request.type == "vm_request" {
             await handleVMRequest(request, from: peerId)
             return
         }
 
         // Try to decode as VM release request
-        if let request = try? JSONDecoder().decode(MeshVMReleaseRequest.self, from: data) {
+        // IMPORTANT: Must check type to avoid confusing with MeshVMReleaseResponse
+        // which has the same structure (type + vmId) but type="vm_released"
+        if let request = try? JSONDecoder().decode(MeshVMReleaseRequest.self, from: data),
+           request.type == "vm_release" {
             await handleVMRelease(request, from: peerId)
             return
         }

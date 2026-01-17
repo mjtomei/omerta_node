@@ -791,7 +791,9 @@ struct Start: AsyncParsableCommand {
         vmTracker: VMTracker
     ) async {
         // Try to decode as heartbeat request from a provider
-        guard let heartbeat = try? JSONDecoder().decode(MeshVMHeartbeat.self, from: data) else {
+        // Must validate type field to avoid confusing with other message types
+        guard let heartbeat = try? JSONDecoder().decode(MeshVMHeartbeat.self, from: data),
+              heartbeat.type == "vm_heartbeat" else {
             // Not a heartbeat, ignore (could be other message types in the future)
             return
         }
