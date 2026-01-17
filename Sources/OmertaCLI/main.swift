@@ -1596,14 +1596,47 @@ struct VMRequest: AsyncParsableCommand {
         print("Network: \(storedNetwork.name) (\(networkId))")
         print("Provider: \(providerPeerId)")
 
-        // Load config for SSH key
+        // Get SSH key - try config first, fall back to default location, auto-generate if needed
+        let sshPrivateKeyPath: String
+        let sshPublicKey: String
+        let sshUser: String
+
         let configManager = ConfigManager()
-        let config: OmertaConfig
-        do {
-            config = try await configManager.load()
-        } catch ConfigError.notInitialized {
-            print("Error: Omerta not initialized. Run 'omerta init' first.")
-            throw ExitCode.failure
+        if let config = try? await configManager.load(),
+           let pubKey = config.ssh.publicKey {
+            // Use config if available
+            sshPrivateKeyPath = config.ssh.expandedPrivateKeyPath()
+            sshPublicKey = pubKey
+            sshUser = config.ssh.defaultUser
+        } else {
+            // Fall back to default SSH key location, auto-generate if needed
+            let homeDir = OmertaConfig.getRealUserHome()
+            let defaultPrivateKeyPath = "\(homeDir)/.omerta/ssh/id_ed25519"
+            let defaultPublicKeyPath = "\(homeDir)/.omerta/ssh/id_ed25519.pub"
+
+            if SSHKeyGenerator.keyPairExists(privateKeyPath: defaultPrivateKeyPath, publicKeyPath: defaultPublicKeyPath) {
+                sshPrivateKeyPath = defaultPrivateKeyPath
+                sshPublicKey = try SSHKeyGenerator.readPublicKey(path: defaultPublicKeyPath)
+                sshUser = "omerta"
+            } else {
+                // Auto-generate SSH keypair
+                print("No SSH key found, generating one...")
+                let hostname = ProcessInfo.processInfo.hostName
+                let username = ProcessInfo.processInfo.environment["SUDO_USER"]
+                    ?? ProcessInfo.processInfo.environment["USER"]
+                    ?? "user"
+                let comment = "\(username)@\(hostname)-omerta"
+
+                let (_, pubKey) = try SSHKeyGenerator.generateKeyPair(
+                    privateKeyPath: defaultPrivateKeyPath,
+                    publicKeyPath: defaultPublicKeyPath,
+                    comment: comment
+                )
+                sshPrivateKeyPath = defaultPrivateKeyPath
+                sshPublicKey = pubKey
+                sshUser = "omerta"
+                print("SSH keypair generated at \(defaultPrivateKeyPath)")
+            }
         }
 
         // Build requirements
@@ -1649,13 +1682,7 @@ struct VMRequest: AsyncParsableCommand {
             print("[DRY RUN] Skipping VPN setup")
         }
 
-        guard let sshPublicKey = config.ssh.publicKey else {
-            print("")
-            print("Error: SSH public key not found in config. Run 'omerta init' to regenerate.")
-            throw ExitCode.failure
-        }
-
-        print("Using SSH key: \(config.ssh.expandedPrivateKeyPath())")
+        print("Using SSH key: \(sshPrivateKeyPath)")
 
         // Encode requirements for IPC
         guard let requirementsData = try? JSONEncoder().encode(requirements) else {
@@ -1672,7 +1699,7 @@ struct VMRequest: AsyncParsableCommand {
                 peerId: providerPeerId,
                 requirements: requirementsData,
                 sshPublicKey: sshPublicKey,
-                sshUser: config.ssh.defaultUser,
+                sshUser: sshUser,
                 timeoutMinutes: timeout
             ),
             timeout: 120  // Allow 2 minutes for the request to complete
@@ -1701,7 +1728,7 @@ struct VMRequest: AsyncParsableCommand {
         if let sshCommand = result.sshCommand {
             print("SSH: \(sshCommand)")
         } else {
-            print("SSH: ssh -i \(config.ssh.expandedPrivateKeyPath()) \(config.ssh.defaultUser)@\(vmIP)")
+            print("SSH: ssh -i \(sshPrivateKeyPath) \(sshUser)@\(vmIP)")
         }
         print("VPN Interface: wg\(vmIdPrefix)")
         print("Heartbeat Timeout: \(timeout) minutes")
