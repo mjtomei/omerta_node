@@ -86,6 +86,26 @@ func resolveNetwork(_ idOrPrefix: String, store: NetworkStore) async -> (OmertaM
     }
 }
 
+/// Get the real user's home directory, even when running under sudo
+func getRealUserHome() -> String {
+    // Check SUDO_USER first (set when running under sudo)
+    if let sudoUser = ProcessInfo.processInfo.environment["SUDO_USER"] {
+        #if os(macOS)
+        return "/Users/\(sudoUser)"
+        #else
+        return "/home/\(sudoUser)"
+        #endif
+    }
+
+    // Fall back to HOME environment variable
+    if let home = ProcessInfo.processInfo.environment["HOME"] {
+        return home
+    }
+
+    // Last resort
+    return NSHomeDirectory()
+}
+
 @main
 struct OmertaCLI: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
@@ -1858,19 +1878,30 @@ struct VMConnect: AsyncParsableCommand {
         }
 
         print("Connecting to VM \(selectedVM.vmId.uuidString.prefix(8))... at \(selectedVM.vmIP)")
+
+        // Get the real user's home directory (handles sudo correctly)
+        let realHome = getRealUserHome()
+
+        // Execute SSH with proper options for ephemeral VMs
+        // Expand ~ to real user's home, not root's home when running under sudo
+        let expandedKeyPath = selectedVM.sshKeyPath.hasPrefix("~/")
+            ? realHome + String(selectedVM.sshKeyPath.dropFirst(1))
+            : selectedVM.sshKeyPath
+        let expandedKnownHostsPath = VMConnection.knownHostsPath.hasPrefix("~/")
+            ? realHome + String(VMConnection.knownHostsPath.dropFirst(1))
+            : VMConnection.knownHostsPath
+
+        // Debug: show paths being used
+        print("Key path: \(expandedKeyPath)")
         print("")
         // Flush stdout before execing SSH
         fflush(stdout)
-
-        // Execute SSH with proper options for ephemeral VMs
-        let expandedKeyPath = NSString(string: selectedVM.sshKeyPath).expandingTildeInPath
-        let knownHostsPath = NSString(string: VMConnection.knownHostsPath).expandingTildeInPath
 
         // Use execvp to replace this process with SSH
         // This gives SSH direct access to the terminal for proper interactive use
         let args = [
             "ssh",
-            "-o", "UserKnownHostsFile=\(knownHostsPath)",
+            "-o", "UserKnownHostsFile=\(expandedKnownHostsPath)",
             "-o", "StrictHostKeyChecking=accept-new",
             "-i", expandedKeyPath,
             "\(selectedVM.sshUser)@\(selectedVM.vmIP)"
@@ -2652,7 +2683,9 @@ struct VMCleanup: AsyncParsableCommand {
         // Clean up Omerta known_hosts file (if --all)
         var knownHostsCleared = false
         if all {
-            let knownHostsPath = NSString(string: VMConnection.knownHostsPath).expandingTildeInPath
+            let knownHostsPath = VMConnection.knownHostsPath.hasPrefix("~/")
+                ? getRealUserHome() + String(VMConnection.knownHostsPath.dropFirst(1))
+                : VMConnection.knownHostsPath
             if FileManager.default.fileExists(atPath: knownHostsPath) {
                 print("")
                 print("Clearing Omerta known_hosts...")
@@ -3547,8 +3580,8 @@ struct MeshPing: AsyncParsableCommand {
                             if result.sentPeers.isEmpty {
                                 print("  (none)")
                             } else {
-                                for (id, endpoint) in result.sentPeers {
-                                    print("  \(id.prefix(16))... @ \(endpoint)")
+                                for peer in result.sentPeers {
+                                    print("  \(peer.peerId.prefix(16))... [\(peer.machineId.prefix(8))...] @ \(peer.endpoint)")
                                 }
                             }
                             print("")
@@ -3556,10 +3589,11 @@ struct MeshPing: AsyncParsableCommand {
                             if result.receivedPeers.isEmpty {
                                 print("  (none)")
                             } else {
-                                for (id, endpoint) in result.receivedPeers {
-                                    let isNew = result.newPeers[id] != nil
+                                let newPeerIds = Set(result.newPeers.map { $0.peerId })
+                                for peer in result.receivedPeers {
+                                    let isNew = newPeerIds.contains(peer.peerId)
                                     let marker = isNew ? " [NEW]" : ""
-                                    print("  \(id.prefix(16))... @ \(endpoint)\(marker)")
+                                    print("  \(peer.peerId.prefix(16))... [\(peer.machineId.prefix(8))...] @ \(peer.endpoint)\(marker)")
                                 }
                             }
                             if !result.newPeers.isEmpty {

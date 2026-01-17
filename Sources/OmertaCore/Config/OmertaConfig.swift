@@ -63,7 +63,7 @@ public struct OmertaConfig: Codable, Sendable {
     }
 
     /// Get the real user's home directory, even when running under sudo
-    private static func getRealUserHome() -> String {
+    public static func getRealUserHome() -> String {
         if let sudoUser = ProcessInfo.processInfo.environment["SUDO_USER"] {
             #if os(macOS)
             return "/Users/\(sudoUser)"

@@ -38,6 +38,9 @@ public actor MeshConsumerClient {
     /// Network key for encryption
     private let networkKey: Data
 
+    /// Network ID for tracking
+    private let networkId: String
+
     /// Provider peer ID
     private let providerPeerId: String
 
@@ -62,6 +65,7 @@ public actor MeshConsumerClient {
     /// - Parameters:
     ///   - identity: Our cryptographic identity for signing
     ///   - networkKey: 32-byte network key for encryption
+    ///   - networkId: Network ID for VM tracking
     ///   - providerPeerId: The provider's peer ID
     ///   - providerEndpoint: The provider's endpoint (ip:port)
     ///   - persistencePath: Path to persist active VM info
@@ -69,6 +73,7 @@ public actor MeshConsumerClient {
     public init(
         identity: OmertaMesh.IdentityKeypair,
         networkKey: Data,
+        networkId: String,
         providerPeerId: String,
         providerEndpoint: String,
         persistencePath: String = "~/.omerta/vms/active.json",
@@ -77,6 +82,7 @@ public actor MeshConsumerClient {
         self.identity = identity
         self.machineId = try OmertaMesh.getOrCreateMachineId()
         self.networkKey = networkKey
+        self.networkId = networkId
         self.providerPeerId = providerPeerId
         self.providerEndpoint = providerEndpoint
         self.ephemeralVPN = EphemeralVPN(dryRun: dryRun)
@@ -177,7 +183,7 @@ public actor MeshConsumerClient {
                 sshUser: sshUser,
                 vpnInterface: "wg\(vmId.uuidString.prefix(8))",
                 createdAt: Date(),
-                networkId: "mesh"
+                networkId: networkId
             )
 
             // 6. Track VM

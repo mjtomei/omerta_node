@@ -2,6 +2,7 @@
 
 import Foundation
 import Logging
+import OmertaCore
 
 /// Endpoints tracked for a specific machine
 public struct MachineEndpoints: Codable, Sendable {
@@ -53,7 +54,7 @@ public actor PeerEndpointManager {
     private let storagePath: URL
 
     public init(storagePath: URL? = nil, logger: Logger? = nil) {
-        self.storagePath = storagePath ?? FileManager.default.homeDirectoryForCurrentUser
+        self.storagePath = storagePath ?? URL(fileURLWithPath: OmertaConfig.getRealUserHome())
             .appendingPathComponent(".config/OmertaMesh/peer_endpoints.json")
         self.logger = logger ?? Logger(label: "omerta.mesh.endpoints")
     }

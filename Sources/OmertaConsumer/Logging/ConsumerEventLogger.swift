@@ -2,6 +2,7 @@
 
 import Foundation
 import Logging
+import OmertaCore
 
 /// Actor responsible for logging consumer events to JSON Lines files
 public actor ConsumerEventLogger {
@@ -41,8 +42,7 @@ public actor ConsumerEventLogger {
     }
 
     private static func defaultLogDir() -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return "\(home)/.config/OmertaConsumer/logs"
+        "\(OmertaConfig.getRealUserHome())/.config/OmertaConsumer/logs"
     }
 
     // MARK: - File Management

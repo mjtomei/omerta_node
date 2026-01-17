@@ -98,6 +98,7 @@ final class MeshConsumerClientTests: XCTestCase {
         let client = try MeshConsumerClient(
             identity: identity,
             networkKey: networkKey,
+            networkId: "test-network-id",
             providerPeerId: "testprovider1234",
             providerEndpoint: "192.168.1.100:9999",
             persistencePath: tempPath,

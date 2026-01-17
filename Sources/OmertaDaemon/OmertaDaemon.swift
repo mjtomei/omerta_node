@@ -7,6 +7,19 @@ import OmertaVPN
 import OmertaProvider
 import OmertaConsumer
 import OmertaMesh
+import Dispatch
+
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+
+/// Expand tilde in path using real user's home (sudo-aware)
+private func expandTilde(_ path: String) -> String {
+    guard path.hasPrefix("~/") else { return path }
+    return OmertaConfig.getRealUserHome() + String(path.dropFirst(1))
+}
 
 // MARK: - Daemon Configuration
 
@@ -23,15 +36,16 @@ struct DaemonConfig {
 
     /// Default config file path
     static var defaultPath: String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return "\(home)/.omerta/omertad.conf"
+        "\(OmertaConfig.getRealUserHome())/.omerta/omertad.conf"
     }
 
     /// Load config from a file
     /// - Parameter path: Path to config file
     /// - Returns: Parsed config
     static func load(from path: String) throws -> DaemonConfig {
-        let expandedPath = (path as NSString).expandingTildeInPath
+        let expandedPath = path.hasPrefix("~/")
+            ? OmertaConfig.getRealUserHome() + String(path.dropFirst(1))
+            : path
         let contents = try String(contentsOfFile: expandedPath, encoding: .utf8)
         return try parse(contents)
     }
@@ -221,7 +235,7 @@ struct Start: AsyncParsableCommand {
         // Load config file (if specified or exists at default path)
         var fileConfig = DaemonConfig()
         let configPath = config ?? DaemonConfig.defaultPath
-        let configPathExpanded = (configPath as NSString).expandingTildeInPath
+        let configPathExpanded = expandTilde(configPath)
 
         if FileManager.default.fileExists(atPath: configPathExpanded) {
             do {
@@ -464,6 +478,32 @@ struct Start: AsyncParsableCommand {
             }
             print("")
 
+            // Set up signal handlers for graceful shutdown on Ctrl+C
+            let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+            let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+            signal(SIGINT, SIG_IGN)
+            signal(SIGTERM, SIG_IGN)
+
+            sigintSource.setEventHandler {
+                print("\nReceived SIGINT, initiating graceful shutdown...")
+                Task {
+                    _ = await shutdownCoordinator.requestShutdown()
+                }
+            }
+            sigtermSource.setEventHandler {
+                print("\nReceived SIGTERM, initiating graceful shutdown...")
+                Task {
+                    _ = await shutdownCoordinator.requestShutdown()
+                }
+            }
+            sigintSource.resume()
+            sigtermSource.resume()
+
+            defer {
+                sigintSource.cancel()
+                sigtermSource.cancel()
+            }
+
             // Wait for shutdown signal or timeout
             if let timeout = timeout {
                 // Race between timeout and shutdown signal
@@ -651,6 +691,7 @@ struct Start: AsyncParsableCommand {
             client = try MeshConsumerClient(
                 identity: identity,
                 networkKey: networkKey,
+                networkId: networkId,
                 providerPeerId: providerPeerId,
                 providerEndpoint: providerEndpoint,
                 dryRun: dryRun
@@ -711,6 +752,7 @@ struct Start: AsyncParsableCommand {
             client = try MeshConsumerClient(
                 identity: identity,
                 networkKey: networkKey,
+                networkId: vm.networkId,
                 providerPeerId: vm.provider.peerId,
                 providerEndpoint: vm.provider.endpoint,
                 dryRun: false
@@ -1097,7 +1139,7 @@ struct ConfigGenerate: AsyncParsableCommand {
         }
 
         let outputPath = output ?? DaemonConfig.defaultPath
-        let expandedPath = (outputPath as NSString).expandingTildeInPath
+        let expandedPath = expandTilde(outputPath)
 
         // Check if file exists
         if FileManager.default.fileExists(atPath: expandedPath) && !force {
@@ -1130,7 +1172,7 @@ struct ConfigShow: AsyncParsableCommand {
 
     mutating func run() async throws {
         let configPath = config ?? DaemonConfig.defaultPath
-        let expandedPath = (configPath as NSString).expandingTildeInPath
+        let expandedPath = expandTilde(configPath)
 
         print("Provider Daemon Configuration")
         print("=============================")

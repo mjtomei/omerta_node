@@ -1,19 +1,23 @@
 // MachineId.swift - Persistent machine identifier for mesh networking
 
 import Foundation
+import OmertaCore
 
 /// Machine ID uniquely identifies a physical machine, separate from peerId (identity).
 /// Multiple machines can share the same peerId if they have the same identity keypair.
 public typealias MachineId = String
 
-/// Storage path for machine ID
-private let machineIdPath = FileManager.default.homeDirectoryForCurrentUser
-    .appendingPathComponent(".config/OmertaMesh/machine_id")
+/// Get the storage path for machine ID (handles sudo correctly)
+private func getMachineIdPath() -> URL {
+    URL(fileURLWithPath: OmertaConfig.getRealUserHome())
+        .appendingPathComponent(".config/OmertaMesh/machine_id")
+}
 
 /// Load or generate a persistent machine ID.
 /// The machine ID is generated once and persists forever on this machine.
 public func getOrCreateMachineId() throws -> MachineId {
     let fileManager = FileManager.default
+    let machineIdPath = getMachineIdPath()
 
     // Try to load existing machine ID
     if fileManager.fileExists(atPath: machineIdPath.path) {
@@ -39,6 +43,7 @@ public func getOrCreateMachineId() throws -> MachineId {
 
 /// Get the machine ID if it exists, without creating one.
 public func getMachineId() -> MachineId? {
+    let machineIdPath = getMachineIdPath()
     guard FileManager.default.fileExists(atPath: machineIdPath.path) else {
         return nil
     }

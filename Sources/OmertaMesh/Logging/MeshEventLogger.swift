@@ -6,6 +6,7 @@
 
 import Foundation
 import Logging
+import OmertaCore
 
 /// Actor responsible for logging mesh events to JSON Lines files
 public actor MeshEventLogger {
@@ -91,8 +92,7 @@ public actor MeshEventLogger {
     // MARK: - Default Path
 
     private static func defaultLogDir() -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return "\(home)/.config/OmertaMesh/logs"
+        "\(OmertaConfig.getRealUserHome())/.config/OmertaMesh/logs"
     }
 
     // MARK: - File Management

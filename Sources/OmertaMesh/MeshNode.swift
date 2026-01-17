@@ -90,12 +90,12 @@ public actor MeshNode {
         public let endpoint: String
         /// Round-trip latency in milliseconds
         public let latencyMs: Int
-        /// Peers we shared (peerId -> endpoint)
-        public let sentPeers: [String: String]
-        /// Peers they shared (peerId -> endpoint)
-        public let receivedPeers: [String: String]
-        /// Peers that were new to us
-        public let newPeers: [String: String]
+        /// Peers we shared (includes machineId for proper tracking)
+        public let sentPeers: [PeerEndpointInfo]
+        /// Peers they shared (includes machineId for proper tracking)
+        public let receivedPeers: [PeerEndpointInfo]
+        /// Peers that were new to us (includes machineId)
+        public let newPeers: [PeerEndpointInfo]
     }
 
     // MARK: - Properties
@@ -713,18 +713,6 @@ public actor MeshNode {
         Array(peers.keys)
     }
 
-    /// Get all tracked peer endpoints (best endpoint for each peer)
-    public var trackedEndpoints: [PeerId: String] {
-        get async {
-            var result: [PeerId: String] = [:]
-            for peerId in await endpointManager.allPeerIds {
-                if let endpoint = await endpointManager.getAllEndpoints(peerId: peerId).first {
-                    result[peerId] = endpoint
-                }
-            }
-            return result
-        }
-    }
 
     // MARK: - MeshNetwork API Methods
 
@@ -934,9 +922,8 @@ public actor MeshNode {
 
         // Build our recentPeers to send (with machineId)
         let peerInfoList = await buildPeerEndpointInfoList()
-        // Use uniquingKeysWith to handle duplicate peerIds (same peer, different machines)
-        let sentPeers = Dictionary(peerInfoList.prefix(5).map { ($0.peerId, $0.endpoint) }, uniquingKeysWith: { first, _ in first })
-        let ping = MeshMessage.ping(recentPeers: Array(peerInfoList.prefix(5)))
+        let sentPeers = Array(peerInfoList.prefix(5))
+        let ping = MeshMessage.ping(recentPeers: sentPeers)
 
         let startTime = Date()
         do {
@@ -946,16 +933,13 @@ public actor MeshNode {
                 logger.debug("sendPing: Got pong from \(targetPeerId) in \(latencyMs)ms")
 
                 // Find new peers (ones we didn't know about)
-                var newPeers: [String: String] = [:]
+                var newPeers: [PeerEndpointInfo] = []
                 for peerInfo in receivedPeers {
                     let existingEndpoints = await endpointManager.getAllEndpoints(peerId: peerInfo.peerId)
                     if !existingEndpoints.contains(peerInfo.endpoint) && peerInfo.peerId != identity.peerId {
-                        newPeers[peerInfo.peerId] = peerInfo.endpoint
+                        newPeers.append(peerInfo)
                     }
                 }
-
-                // Convert received peers to dictionary for result (use first endpoint for each peer)
-                let receivedPeersDict = Dictionary(receivedPeers.map { ($0.peerId, $0.endpoint) }, uniquingKeysWith: { first, _ in first })
 
                 // Record this as a recent contact
                 await freshnessManager.recordContact(
@@ -980,7 +964,7 @@ public actor MeshNode {
                     endpoint: endpoint,
                     latencyMs: latencyMs,
                     sentPeers: sentPeers,
-                    receivedPeers: receivedPeersDict,
+                    receivedPeers: receivedPeers,
                     newPeers: newPeers
                 )
             }

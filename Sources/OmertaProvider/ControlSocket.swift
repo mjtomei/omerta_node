@@ -44,11 +44,11 @@ public enum ControlResponse: Codable {
         public let peerId: String
         public let endpoint: String
         public let latencyMs: Int
-        public let sentPeers: [String: String]
-        public let receivedPeers: [String: String]
-        public let newPeers: [String: String]
+        public let sentPeers: [PeerEndpointInfo]
+        public let receivedPeers: [PeerEndpointInfo]
+        public let newPeers: [PeerEndpointInfo]
 
-        public init(peerId: String, endpoint: String, latencyMs: Int, sentPeers: [String: String], receivedPeers: [String: String], newPeers: [String: String]) {
+        public init(peerId: String, endpoint: String, latencyMs: Int, sentPeers: [PeerEndpointInfo], receivedPeers: [PeerEndpointInfo], newPeers: [PeerEndpointInfo]) {
             self.peerId = peerId
             self.endpoint = endpoint
             self.latencyMs = latencyMs
