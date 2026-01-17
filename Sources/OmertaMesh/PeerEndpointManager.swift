@@ -47,13 +47,14 @@ public actor PeerEndpointManager {
     private var cleanupTask: Task<Void, Never>?
     private var saveTask: Task<Void, Never>?
     private let logger: Logger
-    private let maxEndpointsPerMachine = 10
+    private let maxEndpointsPerMachine = 1000
 
     /// Storage path for peer endpoints
-    private let storagePath = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".config/OmertaMesh/peer_endpoints.json")
+    private let storagePath: URL
 
-    public init(logger: Logger? = nil) {
+    public init(storagePath: URL? = nil, logger: Logger? = nil) {
+        self.storagePath = storagePath ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/OmertaMesh/peer_endpoints.json")
         self.logger = logger ?? Logger(label: "omerta.mesh.endpoints")
     }
 

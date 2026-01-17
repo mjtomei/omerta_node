@@ -191,7 +191,7 @@ public actor MeshNode {
         self.socket = UDPSocket(eventLoopGroup: self.eventLoopGroup)
         self.logger = Logger(label: "io.omerta.mesh.node.\(identity.peerId.prefix(8))")
         self.eventLogger = eventLogger
-        self.endpointManager = PeerEndpointManager(logger: Logger(label: "io.omerta.mesh.endpoints"))
+        self.endpointManager = PeerEndpointManager(storagePath: nil, logger: Logger(label: "io.omerta.mesh.endpoints"))
         self.freshnessManager = FreshnessManager()
         self.holePunchManager = HolePunchManager(
             peerId: identity.peerId,
@@ -814,6 +814,46 @@ public actor MeshNode {
             throw MeshNodeError.peerNotFound
         }
         await send(message, to: endpoint)
+    }
+
+    /// Send to peer with fallback through multiple endpoints
+    ///
+    /// Tries endpoints in priority order (best first) until one succeeds.
+    /// On success, promotes the working endpoint to highest priority.
+    ///
+    /// - Parameters:
+    ///   - message: The message to send
+    ///   - peerId: Target peer ID
+    ///   - machineId: Target machine ID
+    ///   - timeout: Timeout per endpoint attempt
+    /// - Returns: The response message
+    /// - Throws: MeshNodeError.peerNotFound if no endpoints, last error if all fail
+    public func sendToPeerWithFallback(
+        _ message: MeshMessage,
+        peerId: PeerId,
+        machineId: MachineId,
+        timeout: TimeInterval = 5.0
+    ) async throws -> MeshMessage {
+        let endpoints = await endpointManager.getEndpoints(peerId: peerId, machineId: machineId)
+        guard !endpoints.isEmpty else {
+            throw MeshNodeError.peerNotFound
+        }
+
+        var lastError: Error = MeshNodeError.peerNotFound
+
+        for endpoint in endpoints {
+            do {
+                let response = try await sendAndReceive(message, to: endpoint, timeout: timeout)
+                // Success - promote this endpoint to highest priority
+                await endpointManager.recordSendSuccess(to: peerId, machineId: machineId, endpoint: endpoint)
+                return response
+            } catch {
+                lastError = error
+                logger.debug("Send to \(endpoint) failed, trying next: \(error)")
+            }
+        }
+
+        throw lastError
     }
 
     /// Set the application message handler
