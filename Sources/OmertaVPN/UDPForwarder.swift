@@ -247,8 +247,8 @@ private func fdSet(_ fd: Int32, _ set: inout fd_set) {
     let intOffset = Int(fd) / 32
     let bitOffset = Int(fd) % 32
     withUnsafeMutableBytes(of: &set.fds_bits) { ptr in
-        let ints = ptr.bindMemory(to: Int32.self)
-        ints[intOffset] |= Int32(1 << bitOffset)
+        let ints = ptr.bindMemory(to: UInt32.self)
+        ints[intOffset] |= UInt32(1) << bitOffset
     }
     #else
     // Linux implementation
