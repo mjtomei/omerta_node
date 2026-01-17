@@ -32,10 +32,10 @@ public struct STUNBindingResult: Sendable {
 public actor STUNClient {
     private let logger: Logger
 
-    /// Default STUN servers (public STUN servers for NAT detection)
+    /// Default STUN servers (Omerta STUN servers for NAT detection)
     public static let defaultServers: [String] = [
-        "stun.l.google.com:19302",
-        "stun1.l.google.com:19302"
+        "52.27.78.210:3478",
+        "52.88.62.29:3478"
     ]
 
     public init() {
@@ -44,7 +44,7 @@ public actor STUNClient {
 
     /// Discover our public endpoint using a single STUN server
     public func discoverEndpoint(
-        server: String = "stun.l.google.com:19302",
+        server: String = "52.27.78.210:3478",
         localPort: UInt16 = 0,
         timeout: TimeInterval = 5.0
     ) async throws -> STUNBindingResult {
