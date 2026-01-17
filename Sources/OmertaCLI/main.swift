@@ -132,6 +132,29 @@ struct OmertaCLI: AsyncParsableCommand {
         ],
         defaultSubcommand: Status.self
     )
+
+    /// Custom main to support "help" at end of command (e.g., "omerta network help")
+    static func main() async {
+        var args = Array(CommandLine.arguments.dropFirst())
+
+        // Transform trailing "help" to --help
+        // e.g., "omerta network help" -> "omerta network --help"
+        if let lastArg = args.last, lastArg == "help" {
+            args.removeLast()
+            args.append("--help")
+        }
+
+        do {
+            var command = try parseAsRoot(args)
+            if var asyncCommand = command as? AsyncParsableCommand {
+                try await asyncCommand.run()
+            } else {
+                try command.run()
+            }
+        } catch {
+            exit(withError: error)
+        }
+    }
 }
 
 // MARK: - Init Command
@@ -900,8 +923,7 @@ struct NetworkBootstrap: AsyncParsableCommand {
             NetworkBootstrapList.self,
             NetworkBootstrapAdd.self,
             NetworkBootstrapRemove.self
-        ],
-        defaultSubcommand: NetworkBootstrapList.self
+        ]
     )
 }
 
