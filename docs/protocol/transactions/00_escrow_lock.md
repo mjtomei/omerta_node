@@ -1,25 +1,36 @@
-# Transaction 00: Escrow Lock
+# Transaction 00: Escrow Lock / Top-up
 
-Lock funds with distributed witness consensus for a compute session.
+Lock funds with distributed witness consensus for a compute session. Also handles mid-session top-ups using the same mechanism.
 
 **See also:** [Protocol Format](../FORMAT.md) for primitive operations and state machine semantics.
 
 ## Overview
 
-Consumer wants to pay Provider for a service. This transaction locks the funds by distributed witness consensus. Settlement (releasing the funds) is handled by a separate transaction.
+Consumer wants to pay Provider for a service. This transaction locks the funds by distributed witness consensus. Settlement (releasing the funds) is handled by [Transaction 02](02_escrow_settle.md).
+
+**This transaction handles two cases:**
+1. **Initial Lock** - No existing escrow for this session
+2. **Top-up** - Adding funds to an existing active escrow
 
 **Actors:**
 - **Consumer** - party paying for service
 - **Provider** - party providing service, selects witnesses
-- **Witnesses** - verify consumer has sufficient balance, reach consensus on lock
+- **Witnesses (Cabal)** - verify consumer has sufficient balance, reach consensus on lock
 
-**Flow:**
+**Flow (Initial Lock):**
 1. Consumer sends LOCK_INTENT to Provider with checkpoint reference
 2. Provider selects witnesses deterministically, sends commitment to Consumer
 3. Consumer verifies witness selection, sends WITNESS_REQUEST to witnesses
 4. Witnesses check consumer's balance, deliberate, vote
 5. Witnesses multi-sign result, send to Consumer for counter-signature
 6. Consumer counter-signs, lock is finalized and broadcast
+
+**Flow (Top-up):**
+1. Consumer sends TOPUP_INTENT to existing Cabal with additional amount
+2. Cabal verifies consumer has sufficient *additional* balance (not counting already-locked funds)
+3. Cabal multi-signs top-up result
+4. Consumer counter-signs, top-up is finalized
+5. Total escrow = previous amount + top-up amount
 
 ---
 
@@ -92,6 +103,15 @@ BALANCE_LOCK {
   session_id: hash
   amount: uint
   lock_result_hash: hash
+  timestamp: uint
+}
+
+BALANCE_TOPUP {
+  session_id: hash
+  previous_total: uint          # amount locked before this top-up
+  topup_amount: uint            # additional amount being locked
+  new_total: uint               # previous_total + topup_amount
+  topup_result_hash: hash
   timestamp: uint
 }
 ```
@@ -210,6 +230,41 @@ LOCK_RESULT_FOR_CONSUMER_SIGNATURE {
 }
 
 CONSUMER_SIGNED_LOCK {
+  session_id: hash
+  consumer_signature: signature
+  timestamp: uint
+}
+
+# --- Top-up Messages (for mid-session additional funding) ---
+
+TOPUP_INTENT {
+  session_id: hash              # existing session
+  consumer: peer_id
+  additional_amount: uint       # how much MORE to lock
+  current_lock_result_hash: hash  # hash of existing LOCK_RESULT
+  timestamp: uint
+  signature: bytes
+}
+
+TOPUP_RESULT {
+  session_id: hash
+  consumer: peer_id
+  provider: peer_id
+  previous_total: uint          # amount locked before
+  additional_amount: uint       # amount being added
+  new_total: uint               # total now locked
+  observed_balance: uint        # consumer's balance after this lock
+  witnesses: [peer_id]          # same cabal as original lock
+  witness_signatures: [signature]
+  consumer_signature: signature
+  timestamp: uint
+}
+
+TOPUP_RESULT_FOR_CONSUMER_SIGNATURE {
+  result: TOPUP_RESULT          # without consumer_signature filled in yet
+}
+
+CONSUMER_SIGNED_TOPUP {
   session_id: hash
   consumer_signature: signature
   timestamp: uint
@@ -1488,6 +1543,137 @@ SELECT_WITNESSES(seed, chain_state, criteria):
 3. **Selection recomputable** - Same inputs → same witnesses
 4. **Minimum criteria met** - MIN_HIGH_TRUST_WITNESSES, diversity requirements
 5. **Checkpoint is old enough** - From before provider could have anticipated this transaction
+
+---
+
+## Top-up Flow
+
+Top-up uses the same escrow lock mechanism for mid-session additional funding. This is needed when:
+- Session duration exceeds initial deposit
+- Consumer wants to extend session
+- Provider requires additional collateral
+
+### Why Same Transaction Works
+
+1. **Same cabal**: Top-up uses the existing witness set (cabal) from the session, no need for new witness selection
+2. **Same verification**: Witnesses verify consumer has sufficient *additional* balance
+3. **Additive escrow**: New total = previous locked + additional amount
+4. **Same counter-signature**: Consumer must still counter-sign to authorize
+
+### Top-up Differences from Initial Lock
+
+| Aspect | Initial Lock | Top-up |
+|--------|--------------|--------|
+| Witness selection | Deterministic from seed | Use existing cabal |
+| Balance check | Total balance ≥ amount | Free balance ≥ additional |
+| Provider involvement | Selects witnesses | Just receives notification |
+| Session ID | Generated new | Existing session |
+| Result record | LOCK_RESULT | TOPUP_RESULT |
+
+### Top-up State Machine (Consumer)
+
+```
+STATES: [ACTIVE_SESSION, SENDING_TOPUP, WAITING_FOR_TOPUP_RESULT, SIGNING_TOPUP, TOPUP_COMPLETE]
+
+STATE ACTIVE_SESSION:
+  # Consumer has locked funds, session is running
+
+  on NEED_TOPUP { additional_amount }:
+    - STORE("additional_amount", additional_amount)
+    - STORE("current_lock_hash", HASH(current_lock_result))
+    → next_state: SENDING_TOPUP
+
+STATE SENDING_TOPUP:
+  actions:
+    - intent = TOPUP_INTENT {
+        session_id: LOAD("session_id"),
+        consumer: my_id,
+        additional_amount: LOAD("additional_amount"),
+        current_lock_result_hash: LOAD("current_lock_hash"),
+        timestamp: NOW()
+      }
+    - intent.signature = SIGN(intent)
+    - witnesses = LOAD("witnesses")
+    - BROADCAST(witnesses, intent)
+  → next_state: WAITING_FOR_TOPUP_RESULT
+
+STATE WAITING_FOR_TOPUP_RESULT:
+  on TOPUP_RESULT_FOR_CONSUMER_SIGNATURE from Witness:
+    - STORE("pending_topup_result", message.result)
+    → next_state: SIGNING_TOPUP
+
+  after(CONSENSUS_TIMEOUT):
+    - # Top-up failed, session continues with current escrow
+    → next_state: ACTIVE_SESSION
+
+STATE SIGNING_TOPUP:
+  actions:
+    - result = LOAD("pending_topup_result")
+    - # Verify result matches what we requested
+    - IF(result.additional_amount != LOAD("additional_amount")) THEN
+        → next_state: ACTIVE_SESSION  # Reject
+    - result.consumer_signature = SIGN(result)
+    - APPEND(my_chain, BALANCE_TOPUP from result)
+    - BROADCAST(witnesses, CONSUMER_SIGNED_TOPUP)
+  → next_state: TOPUP_COMPLETE
+
+STATE TOPUP_COMPLETE:
+  actions:
+    - # Update local tracking of total escrowed
+    - new_total = LOAD("total_escrowed") + LOAD("additional_amount")
+    - STORE("total_escrowed", new_total)
+  → next_state: ACTIVE_SESSION
+```
+
+### Top-up State Machine (Witness)
+
+```
+STATES: [ESCROW_ACTIVE, CHECKING_TOPUP_BALANCE, VOTING_TOPUP, PROPAGATING_TOPUP]
+
+STATE ESCROW_ACTIVE:
+  # Witness has active escrow commitment
+
+  on TOPUP_INTENT from Consumer:
+    - STORE("topup_intent", message)
+    → next_state: CHECKING_TOPUP_BALANCE
+
+STATE CHECKING_TOPUP_BALANCE:
+  actions:
+    - consumer = LOAD("consumer")
+    - additional = LOAD("topup_intent").additional_amount
+    - current_locked = LOAD("total_escrowed")
+
+    - # Check consumer has sufficient FREE balance (not counting locked)
+    - balance = READ(consumer_chain_cache, "balance")
+    - free_balance = balance - current_locked
+    - IF(free_balance < additional) THEN
+        - STORE("topup_verdict", REJECT)
+    - ELSE
+        - STORE("topup_verdict", ACCEPT)
+        - STORE("observed_balance", balance)
+
+  → next_state: VOTING_TOPUP
+
+STATE VOTING_TOPUP:
+  actions:
+    - # Similar to initial lock voting
+    - # Exchange votes with other witnesses
+    - # Reach consensus
+  → next_state: PROPAGATING_TOPUP
+
+STATE PROPAGATING_TOPUP:
+  actions:
+    - # Create TOPUP_RESULT with multi-sig
+    - # Send to consumer for counter-signature
+  → next_state: ESCROW_ACTIVE
+```
+
+### Top-up Failure Handling
+
+If top-up fails (insufficient balance, witness unavailable, etc.):
+- Session continues with existing escrow
+- Provider may choose to terminate if insufficient funds
+- No penalty for failed top-up attempt
 
 ---
 

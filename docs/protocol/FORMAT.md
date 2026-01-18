@@ -166,5 +166,68 @@ These protocols provide **eventual consistency** with **economic enforcement**, 
 
 | ID | Name | Description | Status |
 |----|------|-------------|--------|
-| 00 | [Escrow Lock](transactions/00_escrow_lock.md) | Lock funds with distributed witness consensus | Spec complete |
-| 01 | Escrow Settle | Settle escrowed funds after service | Not started |
+| 00 | [Escrow Lock](transactions/00_escrow_lock.md) | Lock/top-up funds with distributed witness consensus | Spec complete |
+| 01 | [Cabal Attestation](transactions/01_cabal_attestation.md) | Verify VM allocation and monitor session | Stub |
+| 02 | [Escrow Settle](transactions/02_escrow_settle.md) | Distribute escrowed funds after session ends | Stub |
+
+---
+
+## Settlement Economics
+
+### Payment Formula
+
+The provider's share of payment depends on their trust level:
+
+```
+provider_share = 1 - 1/(1 + K_PAYMENT × T)
+burn = total_payment / (1 + K_PAYMENT × T)
+```
+
+Where:
+- **T** = provider's trust level
+- **K_PAYMENT** = curve scaling constant (network parameter)
+- Higher trust → more payment to provider, less burned
+
+**Examples (assuming K_PAYMENT = 0.01):**
+
+| Provider Trust | Provider Share | Burn Rate |
+|----------------|----------------|-----------|
+| 0 (new) | 0% | 100% |
+| 100 | 50% | 50% |
+| 500 | 83% | 17% |
+| 1000 | 91% | 9% |
+| 2000 | 95% | 5% |
+
+### Settlement Conditions
+
+| Condition | Escrow Action | Trust Signal |
+|-----------|---------------|--------------|
+| **COMPLETED_NORMAL** | Full release per burn formula | Trust credit for provider |
+| **CONSUMER_TERMINATED_EARLY** | Pro-rated partial release | Neutral (consumer's choice) |
+| **PROVIDER_TERMINATED** | No release for remaining time | Reliability signal (tracked) |
+| **SESSION_FAILED** | Investigate if pattern emerges | No automatic penalty |
+
+### Burn Rate Calculation
+
+Burn rate must be **deterministically verifiable** by any observer:
+
+1. **Inputs** (all on-chain or in signed messages):
+   - Provider's trust T (computed from their chain history)
+   - K_PAYMENT constant (network parameter)
+   - Session duration (from cabal attestation)
+   - Hourly rate (from session terms)
+
+2. **Formula**:
+   ```
+   total_payment = duration_hours × hourly_rate
+   provider_payment = total_payment × provider_share
+   burn = total_payment - provider_payment
+   consumer_refund = escrowed_amount - total_payment
+   ```
+
+3. **Verification**: Any peer can recompute by:
+   - Reading provider's chain to compute trust
+   - Checking session terms and attestation
+   - Applying the formula
+
+This follows the same pattern as witness selection: deterministic computation from verifiable inputs.
