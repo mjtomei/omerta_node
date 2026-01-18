@@ -35,12 +35,13 @@ Each piece of new information propagates to N peers, then stops.
 
 ```
 receive(info):
-  hash = HASH(info)
+  key = hash1(info)
+  value = hash2(info)
 
-  if seen_table.contains(hash):
+  if seen_table.get(key) == value:
     return  # Already processed, drop
 
-  seen_table.add(hash)
+  seen_table[key] = value
   store(info)
   propagation_queue.add(info, count=N)
 ```
@@ -72,40 +73,41 @@ keepalive(peer):
 
 ## Deduplication
 
-### Simple Hash Table Approach
+### Dual-Hash Table Approach
 
-Use a hash table to track seen items:
+Use two independent hash functions to eliminate false positives:
 
 ```
-seen_table: Map<Hash, bool>
+seen_table: Map<hash1(data), hash2(data)>
 
-contains(hash):
-  return hash in seen_table
+check_seen(data):
+  key = hash1(data)
+  expected = hash2(data)
+  return seen_table.get(key) == expected
 
-add(hash):
-  seen_table[hash] = true
+mark_seen(data):
+  seen_table[hash1(data)] = hash2(data)
   if len(seen_table) > MAX_SIZE:
     evict_oldest()
 ```
 
 **Properties:**
-- False positives possible (hash collision → drop unseen item)
-- False negatives possible if evicted (old item returns → re-propagate)
-- Both error modes are acceptable:
-  - False positive: item doesn't spread as far (minor)
-  - False negative: redundant propagation (harmless)
+- No false positives (negligible probability)
+  - Would require `hash1(A) == hash1(B)` AND `hash2(A) == hash2(B)` for different A, B
+  - Probability is product of two independent collision probabilities
+- False negatives possible only from eviction
+  - Old entry evicted, item returns, we've forgotten
+  - Results in redundant propagation (harmless for gossip)
 
-### Hash Function
+### Why This Works
 
-Use different hash algorithms for the info identifier vs dedup check to reduce correlated collisions:
+| Scenario | hash1 | hash2 | Result |
+|----------|-------|-------|--------|
+| Same data, seen before | matches key | matches value | Correctly identified as seen |
+| Different data, hash1 collision | matches key | different value | Correctly identified as new |
+| Same data, was evicted | key not present | n/a | False negative, re-propagate (ok) |
 
-```
-# When receiving info
-info_id = HASH_A(info)        # For storage/reference
-dedup_key = HASH_B(info)      # For seen_table lookup
-```
-
-This isn't strictly necessary but provides defense against adversarial collision attacks.
+The dual-hash approach converts hash1 collisions from false positives into correct rejections, at the cost of storing one hash value per entry.
 
 ---
 
