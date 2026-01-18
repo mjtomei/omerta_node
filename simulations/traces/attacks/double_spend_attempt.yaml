@@ -1,0 +1,193 @@
+# Double Spend Attempt Trace
+# Consumer locks funds with one provider, then tries to lock the same funds again.
+# Expected: Second lock should be rejected (balance already committed).
+
+name: "double_spend_attempt"
+description: "Consumer attempts to double-spend by locking same funds twice"
+
+network:
+  seed: 42
+  nodes:
+    - id: consumer
+      region: north_america
+      connection: cable
+    - id: provider_1
+      region: north_america
+      connection: datacenter
+    - id: provider_2
+      region: europe
+      connection: datacenter
+    - id: witness_0
+      region: north_america
+      connection: fiber
+    - id: witness_1
+      region: europe
+      connection: fiber
+    - id: witness_2
+      region: europe
+      connection: datacenter
+    - id: witness_3
+      region: asia
+      connection: fiber
+    - id: witness_4
+      region: asia
+      connection: cable
+
+setup:
+  chains:
+    consumer:
+      balance: 100.0
+      trust: 1.0
+    provider_1:
+      balance: 50.0
+      trust: 2.0
+    provider_2:
+      balance: 50.0
+      trust: 2.0
+    witness_0:
+      trust: 2.0
+    witness_1:
+      trust: 2.0
+    witness_2:
+      trust: 2.5
+    witness_3:
+      trust: 1.5
+    witness_4:
+      trust: 2.0
+
+  relationships:
+    - peers: [consumer, provider_1, provider_2]
+      age_days: 30
+    - peers: [witness_0, witness_1, witness_2, witness_3, witness_4, provider_1, provider_2]
+      age_days: 100
+
+actions:
+  # === FIRST LOCK (should succeed) ===
+
+  - time: 0.0
+    actor: consumer
+    action: initiate_lock
+    params:
+      provider: provider_1
+      amount: 80.0  # Lock 80 of 100 units
+      session_id: "session_first"
+
+  - time: 0.1
+    actor: provider_1
+    action: select_witnesses
+    params:
+      session_id: "session_first"
+      witnesses: [witness_0, witness_1, witness_2]
+
+  - time: 0.2
+    actor: provider_1
+    action: send_witness_commitment
+    params:
+      session_id: "session_first"
+      consumer: consumer
+
+  - time: 0.5
+    actor: consumer
+    action: send_witness_requests
+    params:
+      session_id: "session_first"
+      witnesses: [witness_0, witness_1, witness_2]
+
+  - time: 1.0
+    actor: witness_0
+    action: vote
+    params:
+      session_id: "session_first"
+      verdict: accept
+
+  - time: 1.1
+    actor: witness_1
+    action: vote
+    params:
+      session_id: "session_first"
+      verdict: accept
+
+  - time: 1.2
+    actor: witness_2
+    action: vote
+    params:
+      session_id: "session_first"
+      verdict: accept
+
+  - time: 2.0
+    actor: consumer
+    action: sign_lock
+    params:
+      session_id: "session_first"
+
+  - time: 2.5
+    actor: provider_1
+    action: finalize_lock
+    params:
+      session_id: "session_first"
+
+  # === SECOND LOCK ATTEMPT (should fail - funds already locked) ===
+  # Consumer tries to lock another 80 units with provider_2
+  # But only has 20 unlocked units remaining
+
+  - time: 5.0
+    actor: consumer
+    action: initiate_lock
+    params:
+      provider: provider_2
+      amount: 80.0  # Trying to lock 80 more, but only 20 free
+      session_id: "session_double"
+
+  - time: 5.1
+    actor: provider_2
+    action: select_witnesses
+    params:
+      session_id: "session_double"
+      witnesses: [witness_3, witness_4, witness_0]
+
+  - time: 5.2
+    actor: provider_2
+    action: send_witness_commitment
+    params:
+      session_id: "session_double"
+      consumer: consumer
+
+  - time: 5.5
+    actor: consumer
+    action: send_witness_requests
+    params:
+      session_id: "session_double"
+      witnesses: [witness_3, witness_4, witness_0]
+
+  # Witnesses should reject because balance is already locked
+  - time: 6.0
+    actor: witness_3
+    action: vote
+    params:
+      session_id: "session_double"
+      verdict: reject  # Should see that funds are locked
+
+  - time: 6.1
+    actor: witness_4
+    action: vote
+    params:
+      session_id: "session_double"
+      verdict: reject
+
+  - time: 6.2
+    actor: witness_0
+    action: vote
+    params:
+      session_id: "session_double"
+      verdict: reject
+
+assertions:
+  # First lock should succeed
+  - type: lock_succeeded
+    description: "First lock should succeed"
+    session_id: "session_first"
+
+  # Second lock should fail
+  - type: lock_failed
+    description: "Second lock should fail (double spend prevention)"
+    session_id: "session_double"

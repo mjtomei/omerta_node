@@ -1,0 +1,141 @@
+# Witness Partition Attack Trace
+# Network partition isolates some witnesses from each other.
+# Expected: Protocol should either reach consensus or fail gracefully.
+
+name: "witness_partition"
+description: "Network partition divides witnesses into two isolated groups"
+
+network:
+  seed: 42
+  nodes:
+    - id: consumer
+      region: north_america
+      connection: cable
+    - id: provider
+      region: north_america
+      connection: datacenter
+    - id: witness_0
+      region: north_america
+      connection: fiber
+    - id: witness_1
+      region: north_america
+      connection: fiber
+    - id: witness_2
+      region: europe
+      connection: datacenter
+    - id: witness_3
+      region: europe
+      connection: fiber
+    - id: witness_4
+      region: europe
+      connection: cable
+
+  # Network partition: NA witnesses can't talk to EU witnesses
+  partitions:
+    - groups: [[witness_0, witness_1, consumer, provider], [witness_2, witness_3, witness_4]]
+      start_time: 0.5
+      duration: 10.0
+
+setup:
+  chains:
+    consumer:
+      balance: 100.0
+      trust: 1.0
+    provider:
+      balance: 50.0
+      trust: 2.0
+    witness_0:
+      trust: 2.0
+    witness_1:
+      trust: 2.0
+    witness_2:
+      trust: 2.5
+    witness_3:
+      trust: 1.5
+    witness_4:
+      trust: 2.0
+
+  relationships:
+    - peers: [consumer, provider]
+      age_days: 30
+    - peers: [witness_0, witness_1, witness_2, witness_3, witness_4, provider]
+      age_days: 100
+
+actions:
+  # Consumer initiates lock
+  - time: 0.0
+    actor: consumer
+    action: initiate_lock
+    params:
+      provider: provider
+      amount: 10.0
+      session_id: "session_partition"
+
+  - time: 0.1
+    actor: provider
+    action: select_witnesses
+    params:
+      session_id: "session_partition"
+      witnesses: [witness_0, witness_1, witness_2, witness_3, witness_4]
+
+  - time: 0.2
+    actor: provider
+    action: send_witness_commitment
+    params:
+      session_id: "session_partition"
+      consumer: consumer
+
+  # Consumer sends witness requests - at time 0.5 partition starts
+  - time: 0.5
+    actor: consumer
+    action: send_witness_requests
+    params:
+      session_id: "session_partition"
+      witnesses: [witness_0, witness_1, witness_2, witness_3, witness_4]
+
+  # NA witnesses vote (can reach each other but not EU witnesses)
+  - time: 1.0
+    actor: witness_0
+    action: vote
+    params:
+      session_id: "session_partition"
+      verdict: accept
+
+  - time: 1.1
+    actor: witness_1
+    action: vote
+    params:
+      session_id: "session_partition"
+      verdict: accept
+
+  # EU witnesses try to vote but can't reach NA partition
+  - time: 1.2
+    actor: witness_2
+    action: vote
+    params:
+      session_id: "session_partition"
+      verdict: accept
+
+  - time: 1.3
+    actor: witness_3
+    action: vote
+    params:
+      session_id: "session_partition"
+      verdict: accept
+
+  - time: 1.4
+    actor: witness_4
+    action: vote
+    params:
+      session_id: "session_partition"
+      verdict: accept
+
+assertions:
+  # With partition, we may not reach consensus (only 2 witnesses in consumer's partition)
+  - type: witness_threshold_met
+    description: "Need at least 3 accept votes in same partition"
+    session_id: "session_partition"
+    min_accepts: 3
+
+  - type: no_messages_dropped
+    description: "Messages within partitions should be delivered (cross-partition dropped)"

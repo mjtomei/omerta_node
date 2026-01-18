@@ -204,18 +204,36 @@ def create_network(
 
 
 def create_specific_network(
-    nodes: List[Tuple[str, Region, str]],
+    nodes_or_spec,
     seed: int = 42,
 ) -> NetworkModel:
-    """Create a network with specific node configurations."""
+    """
+    Create a network with specific node configurations.
+
+    Can accept either:
+    - List of tuples: [(node_id, Region, conn_type), ...]
+    - TraceNetworkSpec object
+    """
     network = NetworkModel(seed=seed)
 
-    for node_id, region, conn_type in nodes:
-        node = NetworkNode(
-            node_id=node_id,
-            region=region,
-            connection_type=conn_type,
-        )
-        network.add_node(node)
+    # Check if it's a TraceNetworkSpec
+    if hasattr(nodes_or_spec, 'nodes') and hasattr(nodes_or_spec, 'seed'):
+        # It's a TraceNetworkSpec
+        for node_spec in nodes_or_spec.nodes:
+            node = NetworkNode(
+                node_id=node_spec.id,
+                region=node_spec.region,
+                connection_type=node_spec.connection,
+            )
+            network.add_node(node)
+    else:
+        # It's a list of tuples
+        for node_id, region, conn_type in nodes_or_spec:
+            node = NetworkNode(
+                node_id=node_id,
+                region=region,
+                connection_type=conn_type,
+            )
+            network.add_node(node)
 
     return network

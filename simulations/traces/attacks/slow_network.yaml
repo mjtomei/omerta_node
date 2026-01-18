@@ -1,0 +1,145 @@
+# Slow Network Trace
+# All nodes have poor connections (satellite, DSL), testing timeout handling.
+# Expected: Protocol should handle high latency gracefully.
+
+name: "slow_network"
+description: "Lock attempt over slow satellite connections with high latency"
+
+network:
+  seed: 42
+  nodes:
+    - id: consumer
+      region: north_america
+      connection: satellite_geo  # ~600ms latency
+    - id: provider
+      region: europe
+      connection: satellite_geo
+    - id: witness_0
+      region: asia
+      connection: satellite_leo  # ~50ms latency
+    - id: witness_1
+      region: australia
+      connection: dsl
+    - id: witness_2
+      region: south_america
+      connection: satellite_geo
+    - id: witness_3
+      region: europe
+      connection: dsl
+    - id: witness_4
+      region: asia
+      connection: 4g_lte
+
+setup:
+  chains:
+    consumer:
+      balance: 100.0
+      trust: 1.0
+    provider:
+      balance: 50.0
+      trust: 2.0
+    witness_0:
+      trust: 2.0
+    witness_1:
+      trust: 2.0
+    witness_2:
+      trust: 2.5
+    witness_3:
+      trust: 1.5
+    witness_4:
+      trust: 2.0
+
+  relationships:
+    - peers: [consumer, provider]
+      age_days: 30
+    - peers: [witness_0, witness_1, witness_2, witness_3, witness_4, provider]
+      age_days: 100
+
+actions:
+  # Standard lock flow but with slow network
+  - time: 0.0
+    actor: consumer
+    action: initiate_lock
+    params:
+      provider: provider
+      amount: 10.0
+      session_id: "session_slow"
+
+  - time: 2.0  # Allow more time for message delivery
+    actor: provider
+    action: select_witnesses
+    params:
+      session_id: "session_slow"
+      witnesses: [witness_0, witness_1, witness_2, witness_3, witness_4]
+
+  - time: 4.0
+    actor: provider
+    action: send_witness_commitment
+    params:
+      session_id: "session_slow"
+      consumer: consumer
+
+  - time: 8.0  # Allow time for commitment to arrive
+    actor: consumer
+    action: send_witness_requests
+    params:
+      session_id: "session_slow"
+      witnesses: [witness_0, witness_1, witness_2, witness_3, witness_4]
+
+  # Witnesses vote with delays for network latency
+  - time: 12.0
+    actor: witness_0
+    action: vote
+    params:
+      session_id: "session_slow"
+      verdict: accept
+
+  - time: 14.0
+    actor: witness_1
+    action: vote
+    params:
+      session_id: "session_slow"
+      verdict: accept
+
+  - time: 16.0
+    actor: witness_2
+    action: vote
+    params:
+      session_id: "session_slow"
+      verdict: accept
+
+  - time: 18.0
+    actor: witness_3
+    action: vote
+    params:
+      session_id: "session_slow"
+      verdict: accept
+
+  - time: 20.0
+    actor: witness_4
+    action: vote
+    params:
+      session_id: "session_slow"
+      verdict: accept
+
+  - time: 30.0  # Much later due to slow network
+    actor: consumer
+    action: sign_lock
+    params:
+      session_id: "session_slow"
+
+  - time: 35.0
+    actor: provider
+    action: finalize_lock
+    params:
+      session_id: "session_slow"
+
+assertions:
+  - type: lock_succeeded
+    description: "Lock should eventually succeed despite slow network"
+    session_id: "session_slow"
+
+  - type: consumer_state
+    description: "Consumer should reach LOCKED state"
+    consumer: consumer
+    expected_state: LOCKED
