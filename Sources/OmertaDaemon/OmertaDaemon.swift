@@ -546,6 +546,15 @@ struct Start: AsyncParsableCommand {
                 print("Warning: \(remaining) request(s) still in progress, forcing shutdown")
             }
 
+            // Release consumer VMs (notify providers, tear down VPNs)
+            print("Releasing consumer VMs...")
+            await self.releaseAllConsumerVMs(
+                vmTracker: vmTracker,
+                identity: identity,
+                networkKey: keyData,
+                networkId: networkId
+            )
+
             print("Stopping control socket...")
             await controlSocket.stop()
 
@@ -820,6 +829,45 @@ struct Start: AsyncParsableCommand {
         }
     }
 
+    /// Release all consumer VMs during shutdown
+    /// This notifies providers and tears down VPN interfaces
+    private func releaseAllConsumerVMs(
+        vmTracker: VMTracker,
+        identity: OmertaMesh.IdentityKeypair,
+        networkKey: Data,
+        networkId: String
+    ) async {
+        let vms = await vmTracker.getActiveVMs()
+        guard !vms.isEmpty else {
+            print("  No consumer VMs to release")
+            return
+        }
+
+        print("  Releasing \(vms.count) consumer VM(s)...")
+
+        for vm in vms {
+            do {
+                let client = try MeshConsumerClient(
+                    identity: identity,
+                    networkKey: networkKey,
+                    networkId: vm.networkId,
+                    providerPeerId: vm.provider.peerId,
+                    providerEndpoint: vm.provider.endpoint,
+                    dryRun: false
+                )
+                // Use forceLocalCleanup=true so we still clean up even if provider is unreachable
+                try await client.releaseVM(vm, forceLocalCleanup: true)
+                print("  Released VM \(vm.vmId.uuidString.prefix(8))")
+            } catch {
+                print("  Warning: Failed to release VM \(vm.vmId.uuidString.prefix(8)): \(error)")
+                // Still try to clean up VPN locally
+                let ephemeralVPN = EphemeralVPN()
+                try? await ephemeralVPN.destroyVPN(for: vm.vmId)
+                try? await vmTracker.removeVM(vm.vmId)
+            }
+        }
+    }
+
     // MARK: - Consumer Message Handling
 
     private func handleConsumerMessage(
@@ -828,11 +876,22 @@ struct Start: AsyncParsableCommand {
         daemon: MeshProviderDaemon,
         vmTracker: VMTracker
     ) async {
+        // Try to decode as provider shutdown notification first
+        if let notification = try? JSONDecoder().decode(MeshProviderShutdownNotification.self, from: data),
+           notification.type == "provider_shutdown" {
+            await handleProviderShutdown(
+                from: providerPeerId,
+                notification: notification,
+                vmTracker: vmTracker
+            )
+            return
+        }
+
         // Try to decode as heartbeat request from a provider
         // Must validate type field to avoid confusing with other message types
         guard let heartbeat = try? JSONDecoder().decode(MeshVMHeartbeat.self, from: data),
               heartbeat.type == "vm_heartbeat" else {
-            // Not a heartbeat, ignore (could be other message types in the future)
+            // Not a heartbeat or shutdown, ignore (could be other message types in the future)
             return
         }
 
@@ -917,6 +976,60 @@ struct Start: AsyncParsableCommand {
                     logger.info("Orphaned VM cleaned up", metadata: ["vmId": "\(vmId.uuidString.prefix(8))..."])
                 }
             }
+        }
+    }
+
+    /// Handle provider shutdown notification
+    /// Cleans up VPN tunnels for VMs from the shutting-down provider
+    private func handleProviderShutdown(
+        from providerPeerId: String,
+        notification: MeshProviderShutdownNotification,
+        vmTracker: VMTracker
+    ) async {
+        var logger = Logger(label: "io.omerta.consumer.shutdown")
+        logger.logLevel = .info
+
+        logger.info("Provider shutting down", metadata: [
+            "provider": "\(providerPeerId.prefix(16))...",
+            "vmCount": "\(notification.vmIds.count)",
+            "reason": "\(notification.reason)"
+        ])
+
+        // Get VMs we're tracking from this provider
+        guard let allVMs = try? await vmTracker.loadPersistedVMs() else {
+            logger.warning("Failed to load VMs from tracker")
+            return
+        }
+
+        let vmsFromProvider = allVMs.filter { $0.provider.peerId == providerPeerId }
+        let affectedVMs = vmsFromProvider.filter { notification.vmIds.contains($0.vmId) }
+
+        guard !affectedVMs.isEmpty else {
+            logger.debug("No tracked VMs affected by provider shutdown")
+            return
+        }
+
+        logger.info("Cleaning up \(affectedVMs.count) VM(s) from shutting-down provider")
+
+        let ephemeralVPN = EphemeralVPN()
+
+        for vm in affectedVMs {
+            // Tear down VPN
+            do {
+                try await ephemeralVPN.destroyVPN(for: vm.vmId)
+                logger.info("VPN torn down", metadata: ["vmId": "\(vm.vmId.uuidString.prefix(8))..."])
+            } catch {
+                logger.warning("Failed to tear down VPN", metadata: [
+                    "vmId": "\(vm.vmId.uuidString.prefix(8))...",
+                    "error": "\(error)"
+                ])
+            }
+
+            // Remove from tracker
+            try? await vmTracker.removeVM(vm.vmId)
+            logger.info("VM cleaned up due to provider shutdown", metadata: [
+                "vmId": "\(vm.vmId.uuidString.prefix(8))..."
+            ])
         }
     }
 }

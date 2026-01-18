@@ -147,3 +147,19 @@ public struct MeshVMReleaseAck: Codable, Sendable {
         self.success = success
     }
 }
+
+// MARK: - Provider Shutdown Notification
+
+/// Notification sent by provider to consumers when shutting down
+/// Consumer should clean up VPN tunnels for listed VMs
+public struct MeshProviderShutdownNotification: Codable, Sendable {
+    public let type: String
+    public let vmIds: [UUID]  // VMs being released due to shutdown
+    public let reason: String
+
+    public init(vmIds: [UUID], reason: String = "provider_shutdown") {
+        self.type = "provider_shutdown"
+        self.vmIds = vmIds
+        self.reason = reason
+    }
+}

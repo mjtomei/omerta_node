@@ -215,6 +215,9 @@ public actor MeshProviderDaemon {
         heartbeatTask?.cancel()
         heartbeatTask = nil
 
+        // Notify consumers before stopping VMs
+        await notifyConsumersOfShutdown()
+
         // Stop all active VMs
         for (vmId, _) in activeVMs {
             do {
@@ -236,6 +239,48 @@ public actor MeshProviderDaemon {
         startedAt = nil
 
         logger.info("Mesh provider daemon stopped")
+    }
+
+    /// Notify all consumers that their VMs are being released due to shutdown
+    private func notifyConsumersOfShutdown() async {
+        // Group VMs by consumer
+        var vmsByConsumer: [String: [UUID]] = [:]
+        for (vmId, vmInfo) in activeVMs {
+            vmsByConsumer[vmInfo.consumerPeerId, default: []].append(vmId)
+        }
+
+        guard !vmsByConsumer.isEmpty else {
+            logger.debug("No consumers to notify of shutdown")
+            return
+        }
+
+        logger.info("Notifying \(vmsByConsumer.count) consumer(s) of shutdown")
+
+        // Send notification to each consumer
+        for (consumerPeerId, vmIds) in vmsByConsumer {
+            let notification = MeshProviderShutdownNotification(vmIds: vmIds)
+
+            guard let notificationData = try? JSONEncoder().encode(notification) else {
+                logger.error("Failed to encode shutdown notification")
+                continue
+            }
+
+            do {
+                try await mesh.send(notificationData, to: consumerPeerId)
+                logger.info("Sent shutdown notification", metadata: [
+                    "consumer": "\(consumerPeerId.prefix(16))...",
+                    "vmCount": "\(vmIds.count)"
+                ])
+            } catch {
+                logger.warning("Failed to send shutdown notification", metadata: [
+                    "consumer": "\(consumerPeerId.prefix(16))...",
+                    "error": "\(error)"
+                ])
+            }
+        }
+
+        // Give consumers a moment to process
+        try? await Task.sleep(for: .milliseconds(500))
     }
 
     // MARK: - Message Handling
