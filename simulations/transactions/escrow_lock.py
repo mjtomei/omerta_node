@@ -83,6 +83,12 @@ class MessageType(Enum):
     LIVENESS_PING = auto()
     LIVENESS_PONG = auto()
 
+    # Top-up messages (mid-session additional funding)
+    TOPUP_INTENT = auto()                      # Consumer -> Witnesses
+    TOPUP_RESULT_FOR_SIGNATURE = auto()        # Witness -> Consumer
+    CONSUMER_SIGNED_TOPUP = auto()             # Consumer -> Witnesses
+    TOPUP_VOTE = auto()                        # Witness <-> Witness
+
 
 @dataclass
 class Message:
@@ -181,6 +187,11 @@ class ConsumerState(ActorState):
     SIGNING_RESULT = auto()
     LOCKED = auto()
     FAILED = auto()
+    # Top-up states (mid-session additional funding)
+    SENDING_TOPUP = auto()
+    WAITING_FOR_TOPUP_RESULT = auto()
+    REVIEWING_TOPUP_RESULT = auto()
+    SIGNING_TOPUP = auto()
 
 
 @dataclass
@@ -210,6 +221,39 @@ class Consumer(Actor):
         self.store("provider_checkpoint", checkpoint_block.payload["hash"])
         self.store("checkpoint_timestamp", checkpoint_block.timestamp)
         self.transition_to(ConsumerState.SENDING_LOCK_INTENT)
+
+    def initiate_topup(self, additional_amount: float):
+        """
+        Initiate a top-up request for an active escrow.
+
+        Must be called when consumer is in LOCKED state.
+        """
+        if self.state != ConsumerState.LOCKED:
+            raise ValueError("Can only top-up when in LOCKED state")
+
+        lock_result = self.load("lock_result")
+        if not lock_result:
+            raise ValueError("No active lock result to top-up")
+
+        self.store("additional_amount", additional_amount)
+        self.store("current_lock_hash", hash_data(lock_result))
+        self.store("topup_sent_at", self.current_time)
+        self.transition_to(ConsumerState.SENDING_TOPUP)
+
+    @property
+    def is_locked(self) -> bool:
+        """Check if consumer has active escrow."""
+        return self.state == ConsumerState.LOCKED
+
+    @property
+    def is_failed(self) -> bool:
+        """Check if consumer is in failed state."""
+        return self.state == ConsumerState.FAILED
+
+    @property
+    def total_escrowed(self) -> float:
+        """Get total amount currently escrowed."""
+        return self.load("total_escrowed", 0.0)
 
     def tick(self, current_time: float) -> List[Message]:
         """Process one tick of the consumer state machine."""
@@ -401,6 +445,8 @@ class Consumer(Actor):
                     timestamp=current_time,
                 ))
 
+            # Track total escrowed amount
+            self.store("total_escrowed", result["amount"])
             self.transition_to(ConsumerState.LOCKED)
 
         elif self.state == ConsumerState.LOCKED:
@@ -420,6 +466,110 @@ class Consumer(Actor):
                     timestamp=current_time,
                 ))
             self.clear_messages(MessageType.LIVENESS_PING)
+            # Note: initiate_topup() can transition out of LOCKED state
+
+        elif self.state == ConsumerState.SENDING_TOPUP:
+            # Send TOPUP_INTENT to existing witnesses
+            witnesses = self.load("witnesses")
+            intent = {
+                "session_id": self.load("session_id"),
+                "consumer": self.peer_id,
+                "additional_amount": self.load("additional_amount"),
+                "current_lock_result_hash": self.load("current_lock_hash"),
+                "timestamp": current_time,
+            }
+            intent["signature"] = sign(self.chain.private_key, hash_data(intent))
+
+            for witness in witnesses:
+                outgoing.append(Message(
+                    msg_type=MessageType.TOPUP_INTENT,
+                    sender=self.peer_id,
+                    payload=intent,
+                    timestamp=current_time,
+                ))
+
+            self.store("topup_sent_at", current_time)
+            self.transition_to(ConsumerState.WAITING_FOR_TOPUP_RESULT)
+
+        elif self.state == ConsumerState.WAITING_FOR_TOPUP_RESULT:
+            # Wait for TOPUP_RESULT_FOR_SIGNATURE from witnesses
+            results = self.get_messages(MessageType.TOPUP_RESULT_FOR_SIGNATURE)
+
+            if results:
+                msg = results[0]
+                self.store("pending_topup_result", msg.payload["result"])
+                self.clear_messages(MessageType.TOPUP_RESULT_FOR_SIGNATURE)
+                self.transition_to(ConsumerState.REVIEWING_TOPUP_RESULT)
+
+            elif current_time - self.load("topup_sent_at", 0) > CONSENSUS_TIMEOUT:
+                # Top-up failed, return to LOCKED state with existing escrow
+                self.store("topup_failed_reason", "timeout")
+                self.transition_to(ConsumerState.LOCKED)
+
+        elif self.state == ConsumerState.REVIEWING_TOPUP_RESULT:
+            # Verify the top-up result matches what we requested
+            result = self.load("pending_topup_result")
+
+            if result["session_id"] != self.load("session_id"):
+                self.store("topup_failed_reason", "session_id_mismatch")
+                self.transition_to(ConsumerState.LOCKED)
+            elif result["consumer"] != self.peer_id:
+                self.store("topup_failed_reason", "consumer_mismatch")
+                self.transition_to(ConsumerState.LOCKED)
+            elif result["additional_amount"] != self.load("additional_amount"):
+                self.store("topup_failed_reason", "amount_mismatch")
+                self.transition_to(ConsumerState.LOCKED)
+            elif result.get("status") == "rejected":
+                self.store("topup_failed_reason", "witnesses_rejected")
+                self.transition_to(ConsumerState.LOCKED)
+            else:
+                # Verify witness signatures (simplified)
+                valid_sigs = len(result.get("witness_signatures", []))
+                if valid_sigs < WITNESS_THRESHOLD:
+                    self.store("topup_failed_reason", "insufficient_witness_signatures")
+                    self.transition_to(ConsumerState.LOCKED)
+                else:
+                    self.transition_to(ConsumerState.SIGNING_TOPUP)
+
+        elif self.state == ConsumerState.SIGNING_TOPUP:
+            # Counter-sign the top-up result
+            result = self.load("pending_topup_result")
+            consumer_sig = sign(self.chain.private_key, hash_data(result))
+            result["consumer_signature"] = consumer_sig
+            self.store("topup_result", result)
+
+            # Record on our chain
+            self.chain.append(
+                BlockType.BALANCE_TOPUP,
+                {
+                    "session_id": result["session_id"],
+                    "previous_total": result["previous_total"],
+                    "topup_amount": result["additional_amount"],
+                    "new_total": result["new_total"],
+                    "topup_result_hash": hash_data(result),
+                    "timestamp": current_time,
+                },
+                current_time,
+            )
+
+            # Send signed result back to witnesses
+            signed_msg = {
+                "session_id": result["session_id"],
+                "consumer_signature": consumer_sig,
+                "timestamp": current_time,
+            }
+
+            for witness in self.load("witnesses"):
+                outgoing.append(Message(
+                    msg_type=MessageType.CONSUMER_SIGNED_TOPUP,
+                    sender=self.peer_id,
+                    payload=signed_msg,
+                    timestamp=current_time,
+                ))
+
+            # Update total escrowed
+            self.store("total_escrowed", result["new_total"])
+            self.transition_to(ConsumerState.LOCKED)
 
         elif self.state == ConsumerState.FAILED:
             # Terminal state - clean up
@@ -611,6 +761,14 @@ class WitnessState(ActorState):
     ESCROW_ACTIVE = auto()
     DONE = auto()
     REJECTED = auto()
+    # Top-up states (mid-session additional funding)
+    CHECKING_TOPUP_BALANCE = auto()
+    VOTING_TOPUP = auto()
+    COLLECTING_TOPUP_VOTES = auto()
+    SIGNING_TOPUP_RESULT = auto()
+    COLLECTING_TOPUP_SIGNATURES = auto()
+    PROPAGATING_TOPUP = auto()
+    WAITING_FOR_CONSUMER_TOPUP_SIGNATURE = auto()
 
 
 @dataclass
@@ -1013,10 +1171,12 @@ class Witness(Actor):
                 timestamp=current_time,
             ))
 
+            # Track total escrowed for this session
+            self.store("total_escrowed", result["amount"])
             self.transition_to(WitnessState.ESCROW_ACTIVE)
 
         elif self.state == WitnessState.ESCROW_ACTIVE:
-            # Escrow is locked, maintain liveness
+            # Escrow is locked, maintain liveness and handle top-ups
             # Respond to liveness pings
             pings = self.get_messages(MessageType.LIVENESS_PING)
             for ping in pings:
@@ -1033,6 +1193,208 @@ class Witness(Actor):
                     timestamp=current_time,
                 ))
             self.clear_messages(MessageType.LIVENESS_PING)
+
+            # Check for top-up requests
+            topup_intents = self.get_messages(MessageType.TOPUP_INTENT)
+            if topup_intents:
+                msg = topup_intents[0]
+                self.store("topup_intent", msg.payload)
+                self.clear_messages(MessageType.TOPUP_INTENT)
+                self.transition_to(WitnessState.CHECKING_TOPUP_BALANCE)
+
+        elif self.state == WitnessState.CHECKING_TOPUP_BALANCE:
+            # Verify consumer has sufficient additional balance
+            consumer = self.load("consumer")
+            intent = self.load("topup_intent")
+            additional = intent["additional_amount"]
+            current_locked = self.load("total_escrowed", 0.0)
+
+            # Get balance from cached chain data
+            balance = self.cached_chains.get(consumer, {}).get("balance", 0.0)
+            free_balance = balance - current_locked
+
+            self.store("topup_observed_balance", balance)
+            self.store("topup_free_balance", free_balance)
+
+            if free_balance < additional:
+                self.store("topup_verdict", "reject")
+                self.store("topup_reject_reason", "insufficient_free_balance")
+            else:
+                self.store("topup_verdict", "accept")
+                self.store("topup_reject_reason", None)
+
+            self.transition_to(WitnessState.VOTING_TOPUP)
+
+        elif self.state == WitnessState.VOTING_TOPUP:
+            # Share top-up vote with other witnesses
+            intent = self.load("topup_intent")
+            other_witnesses = self.load("other_witnesses")
+
+            vote = {
+                "session_id": intent["session_id"],
+                "witness": self.peer_id,
+                "vote": self.load("topup_verdict"),
+                "additional_amount": intent["additional_amount"],
+                "observed_balance": self.load("topup_observed_balance"),
+                "timestamp": current_time,
+            }
+            vote["signature"] = sign(self.chain.private_key, hash_data(vote))
+
+            for witness in other_witnesses:
+                outgoing.append(Message(
+                    msg_type=MessageType.TOPUP_VOTE,
+                    sender=self.peer_id,
+                    payload=vote,
+                    timestamp=current_time,
+                ))
+
+            self.store("topup_votes", [vote])
+            self.store("topup_votes_sent_at", current_time)
+            self.transition_to(WitnessState.COLLECTING_TOPUP_VOTES)
+
+        elif self.state == WitnessState.COLLECTING_TOPUP_VOTES:
+            # Collect votes from other witnesses
+            vote_msgs = self.get_messages(MessageType.TOPUP_VOTE)
+            votes = self.load("topup_votes")
+            for msg in vote_msgs:
+                votes.append(msg.payload)
+            self.store("topup_votes", votes)
+            self.clear_messages(MessageType.TOPUP_VOTE)
+
+            other_witnesses = self.load("other_witnesses")
+            if len(votes) >= len(other_witnesses) + 1:
+                # Evaluate votes
+                accept_count = sum(1 for v in votes if v["vote"] == "accept")
+                total = len(votes)
+                if accept_count >= WITNESS_THRESHOLD and accept_count / total >= CONSENSUS_THRESHOLD:
+                    self.store("topup_final_result", "accepted")
+                else:
+                    self.store("topup_final_result", "rejected")
+                self.transition_to(WitnessState.SIGNING_TOPUP_RESULT)
+            elif current_time - self.load("topup_votes_sent_at", 0) > CONSENSUS_TIMEOUT:
+                # Timeout - evaluate what we have
+                accept_count = sum(1 for v in votes if v["vote"] == "accept")
+                total = len(votes)
+                if accept_count >= WITNESS_THRESHOLD and total > 0 and accept_count / total >= CONSENSUS_THRESHOLD:
+                    self.store("topup_final_result", "accepted")
+                else:
+                    self.store("topup_final_result", "rejected")
+                self.transition_to(WitnessState.SIGNING_TOPUP_RESULT)
+
+        elif self.state == WitnessState.SIGNING_TOPUP_RESULT:
+            # Create and sign top-up result
+            intent = self.load("topup_intent")
+            votes = self.load("topup_votes")
+            result = self.load("result")  # Original lock result
+            current_locked = self.load("total_escrowed", result.get("amount", 0.0))
+
+            topup_result = {
+                "session_id": intent["session_id"],
+                "consumer": self.load("consumer"),
+                "provider": result["provider"],
+                "previous_total": current_locked,
+                "additional_amount": intent["additional_amount"],
+                "new_total": current_locked + intent["additional_amount"],
+                "observed_balance": self.load("topup_observed_balance"),
+                "status": self.load("topup_final_result"),
+                "witnesses": [v["witness"] for v in votes],
+                "witness_signatures": [],
+                "consumer_signature": "",
+                "timestamp": current_time,
+            }
+
+            my_sig = sign(self.chain.private_key, hash_data(topup_result))
+            topup_result["witness_signatures"] = [my_sig]
+            self.store("topup_result", topup_result)
+            self.store("topup_signatures", [{"witness": self.peer_id, "signature": my_sig}])
+
+            # Share with other witnesses
+            other_witnesses = self.load("other_witnesses")
+            for witness in other_witnesses:
+                outgoing.append(Message(
+                    msg_type=MessageType.TOPUP_RESULT_FOR_SIGNATURE,
+                    sender=self.peer_id,
+                    payload={"result": topup_result},
+                    timestamp=current_time,
+                ))
+
+            self.store("topup_signatures_sent_at", current_time)
+            self.transition_to(WitnessState.COLLECTING_TOPUP_SIGNATURES)
+
+        elif self.state == WitnessState.COLLECTING_TOPUP_SIGNATURES:
+            # Collect signatures from other witnesses
+            sig_msgs = self.get_messages(MessageType.TOPUP_RESULT_FOR_SIGNATURE)
+            sigs = self.load("topup_signatures")
+
+            for msg in sig_msgs:
+                result = msg.payload.get("result", {})
+                if result.get("witness_signatures"):
+                    sigs.append({
+                        "witness": msg.sender,
+                        "signature": result["witness_signatures"][-1]
+                    })
+            self.store("topup_signatures", sigs)
+            self.clear_messages(MessageType.TOPUP_RESULT_FOR_SIGNATURE)
+
+            if len(sigs) >= WITNESS_THRESHOLD:
+                self.transition_to(WitnessState.PROPAGATING_TOPUP)
+            elif current_time - self.load("topup_signatures_sent_at", 0) > CONSENSUS_TIMEOUT:
+                if len(sigs) >= WITNESS_THRESHOLD:
+                    self.transition_to(WitnessState.PROPAGATING_TOPUP)
+                else:
+                    # Not enough signatures, return to active escrow
+                    self.transition_to(WitnessState.ESCROW_ACTIVE)
+
+        elif self.state == WitnessState.PROPAGATING_TOPUP:
+            # Send top-up result to consumer for counter-signature
+            topup_result = self.load("topup_result")
+            sigs = self.load("topup_signatures")
+            topup_result["witness_signatures"] = [s["signature"] for s in sigs]
+            self.store("topup_result", topup_result)
+
+            consumer = self.load("consumer")
+            outgoing.append(Message(
+                msg_type=MessageType.TOPUP_RESULT_FOR_SIGNATURE,
+                sender=self.peer_id,
+                payload={"result": topup_result},
+                timestamp=current_time,
+            ))
+
+            self.store("topup_propagated_at", current_time)
+            self.transition_to(WitnessState.WAITING_FOR_CONSUMER_TOPUP_SIGNATURE)
+
+        elif self.state == WitnessState.WAITING_FOR_CONSUMER_TOPUP_SIGNATURE:
+            # Wait for consumer to counter-sign top-up
+            signed_msgs = self.get_messages(MessageType.CONSUMER_SIGNED_TOPUP)
+
+            if signed_msgs:
+                msg = signed_msgs[0]
+                topup_result = self.load("topup_result")
+                topup_result["consumer_signature"] = msg.payload["consumer_signature"]
+                self.store("topup_result", topup_result)
+                self.clear_messages(MessageType.CONSUMER_SIGNED_TOPUP)
+
+                # Record top-up on our chain
+                self.chain.append(
+                    BlockType.BALANCE_TOPUP,
+                    {
+                        "session_id": topup_result["session_id"],
+                        "consumer": topup_result["consumer"],
+                        "previous_total": topup_result["previous_total"],
+                        "additional_amount": topup_result["additional_amount"],
+                        "new_total": topup_result["new_total"],
+                        "timestamp": current_time,
+                    },
+                    current_time,
+                )
+
+                # Update total escrowed
+                self.store("total_escrowed", topup_result["new_total"])
+                self.transition_to(WitnessState.ESCROW_ACTIVE)
+
+            elif current_time - self.load("topup_propagated_at", 0) > CONSUMER_SIGNATURE_TIMEOUT:
+                # Consumer didn't sign, return to active escrow
+                self.transition_to(WitnessState.ESCROW_ACTIVE)
 
         elif self.state == WitnessState.DONE:
             # Clean up

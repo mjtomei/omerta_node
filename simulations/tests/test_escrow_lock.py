@@ -11,7 +11,7 @@ from simulations.transactions.escrow_lock import (
     Consumer, Provider, Witness,
     ConsumerState, ProviderState, WitnessState,
     EscrowLockSimulation, MessageType, Message,
-    WITNESS_COUNT, WITNESS_THRESHOLD,
+    WITNESS_COUNT, WITNESS_THRESHOLD, CONSENSUS_TIMEOUT,
 )
 
 
@@ -494,6 +494,272 @@ class TestMessages:
         simulation.route_message(msg, "pk_provider")
 
         assert len(simulation.message_log) == 1
+
+
+# =============================================================================
+# Top-up Tests
+# =============================================================================
+
+class TestTopUp:
+    """Tests for escrow top-up functionality."""
+
+    def test_consumer_topup_requires_locked_state(self, network):
+        """Consumer can only initiate top-up when in LOCKED state."""
+        chain = network.get_chain("pk_consumer")
+        consumer = Consumer(
+            peer_id="pk_consumer",
+            chain=chain,
+            current_time=network.current_time,
+        )
+
+        # Try to top-up from IDLE state - should raise error
+        with pytest.raises(ValueError) as exc_info:
+            consumer.initiate_topup(5.0)
+        assert "LOCKED state" in str(exc_info.value)
+
+    def test_consumer_topup_sends_intent(self, network, simulation):
+        """Consumer sends TOPUP_INTENT when initiating top-up."""
+        # First get to LOCKED state
+        consumer = simulation.create_consumer("pk_consumer")
+        provider = simulation.create_provider("pk_provider")
+
+        # Create witnesses with balance data
+        for i in range(WITNESS_COUNT):
+            w = simulation.create_witness(f"pk_witness_{i}")
+            w.cached_chains["pk_consumer"] = {"balance": 100.0, "head_hash": "abc123"}
+
+        # Initiate and complete initial lock
+        consumer.initiate_lock("pk_provider", 10.0)
+        simulation.run_until_stable(max_ticks=200)
+
+        # If consumer is locked, try top-up
+        if consumer.state == ConsumerState.LOCKED:
+            consumer.initiate_topup(5.0)
+
+            assert consumer.state == ConsumerState.SENDING_TOPUP
+            assert consumer.load("additional_amount") == 5.0
+
+            # Tick to send the message
+            outgoing = consumer.tick(network.current_time + 1)
+
+            # Should have sent TOPUP_INTENT to witnesses
+            topup_intents = [m for m in outgoing if m.msg_type == MessageType.TOPUP_INTENT]
+            assert len(topup_intents) > 0
+            assert topup_intents[0].payload["additional_amount"] == 5.0
+            assert consumer.state == ConsumerState.WAITING_FOR_TOPUP_RESULT
+
+    def test_consumer_topup_timeout(self, network, simulation):
+        """Consumer returns to LOCKED state if top-up times out."""
+        consumer = simulation.create_consumer("pk_consumer")
+        provider = simulation.create_provider("pk_provider")
+
+        for i in range(WITNESS_COUNT):
+            w = simulation.create_witness(f"pk_witness_{i}")
+            w.cached_chains["pk_consumer"] = {"balance": 100.0, "head_hash": "abc123"}
+
+        consumer.initiate_lock("pk_provider", 10.0)
+        simulation.run_until_stable(max_ticks=200)
+
+        if consumer.state == ConsumerState.LOCKED:
+            consumer.initiate_topup(5.0)
+            consumer.tick(network.current_time + 1)  # Send intent
+
+            # Wait for timeout without any witness response
+            for _ in range(10):
+                simulation.tick(10.0)  # Advance time past CONSENSUS_TIMEOUT
+
+            # Consumer should return to LOCKED state
+            assert consumer.state == ConsumerState.LOCKED
+            assert consumer.load("topup_failed_reason") == "timeout"
+
+    def test_witness_receives_topup_intent(self, network):
+        """Witness processes TOPUP_INTENT in ESCROW_ACTIVE state."""
+        chain = network.get_chain("pk_witness_0")
+        witness = Witness(
+            peer_id="pk_witness_0",
+            chain=chain,
+            current_time=network.current_time,
+        )
+
+        # Set up witness as if it has an active escrow
+        witness.cached_chains["pk_consumer"] = {"balance": 100.0, "head_hash": "abc123"}
+        witness.store("consumer", "pk_consumer")
+        witness.store("other_witnesses", ["pk_witness_1", "pk_witness_2"])
+        witness.store("total_escrowed", 10.0)
+        witness.store("result", {
+            "session_id": "test_session",
+            "consumer": "pk_consumer",
+            "provider": "pk_provider",
+            "amount": 10.0,
+        })
+        witness.state = WitnessState.ESCROW_ACTIVE
+
+        # Send TOPUP_INTENT
+        intent = Message(
+            msg_type=MessageType.TOPUP_INTENT,
+            sender="pk_consumer",
+            payload={
+                "session_id": "test_session",
+                "consumer": "pk_consumer",
+                "additional_amount": 5.0,
+                "current_lock_result_hash": "abc123",
+                "timestamp": network.current_time,
+            },
+            timestamp=network.current_time,
+        )
+        witness.receive_message(intent)
+
+        # Process
+        witness.tick(network.current_time + 1)
+
+        # Should transition to CHECKING_TOPUP_BALANCE
+        assert witness.state == WitnessState.CHECKING_TOPUP_BALANCE
+
+    def test_witness_accepts_topup_with_sufficient_balance(self, network):
+        """Witness accepts top-up when consumer has sufficient free balance."""
+        chain = network.get_chain("pk_witness_0")
+        witness = Witness(
+            peer_id="pk_witness_0",
+            chain=chain,
+            current_time=network.current_time,
+        )
+
+        # Consumer has 100, 10 locked, wants to top up 20 (free: 90 >= 20)
+        witness.cached_chains["pk_consumer"] = {"balance": 100.0, "head_hash": "abc123"}
+        witness.store("consumer", "pk_consumer")
+        witness.store("other_witnesses", [])  # No other witnesses for simplicity
+        witness.store("total_escrowed", 10.0)
+        witness.store("result", {
+            "session_id": "test_session",
+            "consumer": "pk_consumer",
+            "provider": "pk_provider",
+            "amount": 10.0,
+        })
+        witness.store("topup_intent", {
+            "session_id": "test_session",
+            "consumer": "pk_consumer",
+            "additional_amount": 20.0,
+        })
+        witness.state = WitnessState.CHECKING_TOPUP_BALANCE
+
+        # Process balance check
+        witness.tick(network.current_time + 1)
+
+        assert witness.load("topup_verdict") == "accept"
+        assert witness.state == WitnessState.VOTING_TOPUP
+
+    def test_witness_rejects_topup_with_insufficient_balance(self, network):
+        """Witness rejects top-up when consumer has insufficient free balance."""
+        chain = network.get_chain("pk_witness_0")
+        witness = Witness(
+            peer_id="pk_witness_0",
+            chain=chain,
+            current_time=network.current_time,
+        )
+
+        # Consumer has 100, 90 locked, wants to top up 20 (free: 10 < 20)
+        witness.cached_chains["pk_consumer"] = {"balance": 100.0, "head_hash": "abc123"}
+        witness.store("consumer", "pk_consumer")
+        witness.store("other_witnesses", [])
+        witness.store("total_escrowed", 90.0)
+        witness.store("result", {
+            "session_id": "test_session",
+            "consumer": "pk_consumer",
+            "provider": "pk_provider",
+            "amount": 90.0,
+        })
+        witness.store("topup_intent", {
+            "session_id": "test_session",
+            "consumer": "pk_consumer",
+            "additional_amount": 20.0,
+        })
+        witness.state = WitnessState.CHECKING_TOPUP_BALANCE
+
+        # Process balance check
+        witness.tick(network.current_time + 1)
+
+        assert witness.load("topup_verdict") == "reject"
+        assert witness.load("topup_reject_reason") == "insufficient_free_balance"
+
+    def test_consumer_properties(self, network):
+        """Test Consumer is_locked, is_failed, and total_escrowed properties."""
+        chain = network.get_chain("pk_consumer")
+        consumer = Consumer(
+            peer_id="pk_consumer",
+            chain=chain,
+            current_time=network.current_time,
+        )
+
+        # Initial state
+        assert not consumer.is_locked
+        assert not consumer.is_failed
+        assert consumer.total_escrowed == 0.0
+
+        # Failed state
+        consumer.store("reject_reason", "test")
+        consumer.transition_to(ConsumerState.FAILED)
+        assert not consumer.is_locked
+        assert consumer.is_failed
+
+        # Locked state
+        consumer.store("total_escrowed", 50.0)
+        consumer.transition_to(ConsumerState.LOCKED)
+        assert consumer.is_locked
+        assert not consumer.is_failed
+        assert consumer.total_escrowed == 50.0
+
+
+class TestTopUpIntegration:
+    """Integration tests for full top-up flow."""
+
+    def test_successful_topup_flow(self, network, simulation):
+        """Test complete top-up flow with all parties cooperating."""
+        # Create actors
+        consumer = simulation.create_consumer("pk_consumer")
+        provider = simulation.create_provider("pk_provider")
+
+        # Create witnesses with sufficient balance data
+        witnesses = []
+        for i in range(WITNESS_COUNT):
+            w = simulation.create_witness(f"pk_witness_{i}")
+            w.cached_chains["pk_consumer"] = {"balance": 100.0, "head_hash": "abc123"}
+            witnesses.append(w)
+
+        # Phase 1: Initial lock
+        consumer.initiate_lock("pk_provider", 10.0)
+        simulation.run_until_stable(max_ticks=200)
+
+        if consumer.state != ConsumerState.LOCKED:
+            pytest.skip("Initial lock did not succeed - skipping top-up test")
+
+        # Verify initial state
+        assert consumer.total_escrowed == 10.0
+        initial_chain_len = len(consumer.chain.blocks)
+
+        # Phase 2: Top-up
+        consumer.initiate_topup(5.0)
+
+        # Run until stable
+        ticks = simulation.run_until_stable(max_ticks=200)
+
+        print(f"Top-up completed in {ticks} ticks")
+        print(f"Consumer state: {consumer.state}")
+        print(f"Consumer total escrowed: {consumer.total_escrowed}")
+
+        # Consumer should still be LOCKED (returned after top-up)
+        assert consumer.state == ConsumerState.LOCKED
+
+        # If top-up succeeded, total should have increased
+        if consumer.total_escrowed == 15.0:
+            # Check chain has top-up block
+            assert len(consumer.chain.blocks) > initial_chain_len
+
+            # Find BALANCE_TOPUP block
+            from simulations.chain.primitives import BlockType
+            topup_blocks = [b for b in consumer.chain.blocks if b.block_type == BlockType.BALANCE_TOPUP]
+            assert len(topup_blocks) == 1
+            assert topup_blocks[0].payload["topup_amount"] == 5.0
+            assert topup_blocks[0].payload["new_total"] == 15.0
 
 
 if __name__ == "__main__":

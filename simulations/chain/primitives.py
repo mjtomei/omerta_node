@@ -53,8 +53,9 @@ class BlockType(Enum):
     SESSION_END = "session_end"       # Provider signals completion
     ATTESTATION = "attestation"       # Cabal member records verification result
 
-    # Escrow-related (new)
+    # Escrow-related
     BALANCE_LOCK = "balance_lock"     # Consumer locks funds
+    BALANCE_TOPUP = "balance_topup"   # Consumer adds funds to existing escrow
     WITNESS_COMMITMENT = "witness_commitment"  # Witness records lock commitment
     WITNESS_REPLACEMENT = "witness_replacement"  # Witness was replaced
 
