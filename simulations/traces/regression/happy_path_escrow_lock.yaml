@@ -1,0 +1,157 @@
+# Happy Path Escrow Lock
+# A consumer successfully locks funds with a provider through witness consensus.
+
+name: "happy_path_escrow_lock"
+description: "Consumer locks funds with provider, witnesses verify, lock succeeds"
+
+network:
+  seed: 42
+  nodes:
+    - id: consumer
+      region: north_america
+      connection: cable
+    - id: provider
+      region: north_america
+      connection: datacenter
+    - id: witness_0
+      region: north_america
+      connection: fiber
+    - id: witness_1
+      region: europe
+      connection: fiber
+    - id: witness_2
+      region: europe
+      connection: datacenter
+    - id: witness_3
+      region: asia
+      connection: fiber
+    - id: witness_4
+      region: asia
+      connection: cable
+
+setup:
+  chains:
+    consumer:
+      balance: 100.0
+      trust: 1.0
+    provider:
+      balance: 50.0
+      trust: 2.0
+    witness_0:
+      trust: 2.0
+    witness_1:
+      trust: 2.0
+    witness_2:
+      trust: 2.5
+    witness_3:
+      trust: 1.5
+    witness_4:
+      trust: 2.0
+
+  relationships:
+    - peers: [consumer, provider]
+      age_days: 30
+    - peers: [witness_0, witness_1, witness_2, witness_3, witness_4, provider]
+      age_days: 100
+
+actions:
+  # Consumer initiates lock
+  - time: 0.0
+    actor: consumer
+    action: initiate_lock
+    params:
+      provider: provider
+      amount: 10.0
+      session_id: "session_001"
+
+  # Provider receives lock intent and selects witnesses
+  - time: 0.1
+    actor: provider
+    action: select_witnesses
+    params:
+      session_id: "session_001"
+      witnesses: [witness_0, witness_1, witness_2, witness_3, witness_4]
+
+  # Provider sends witness commitment to consumer
+  - time: 0.2
+    actor: provider
+    action: send_witness_commitment
+    params:
+      session_id: "session_001"
+      consumer: consumer
+
+  # Consumer verifies and sends witness requests
+  - time: 0.5
+    actor: consumer
+    action: send_witness_requests
+    params:
+      session_id: "session_001"
+      witnesses: [witness_0, witness_1, witness_2, witness_3, witness_4]
+
+  # Witnesses vote (all accept since balance is sufficient)
+  - time: 1.0
+    actor: witness_0
+    action: vote
+    params:
+      session_id: "session_001"
+      verdict: accept
+
+  - time: 1.1
+    actor: witness_1
+    action: vote
+    params:
+      session_id: "session_001"
+      verdict: accept
+
+  - time: 1.2
+    actor: witness_2
+    action: vote
+    params:
+      session_id: "session_001"
+      verdict: accept
+
+  - time: 1.3
+    actor: witness_3
+    action: vote
+    params:
+      session_id: "session_001"
+      verdict: accept
+
+  - time: 1.4
+    actor: witness_4
+    action: vote
+    params:
+      session_id: "session_001"
+      verdict: accept
+
+  # Consumer receives enough votes and signs lock
+  - time: 2.0
+    actor: consumer
+    action: sign_lock
+    params:
+      session_id: "session_001"
+
+  # Provider receives signed lock and finalizes
+  - time: 2.5
+    actor: provider
+    action: finalize_lock
+    params:
+      session_id: "session_001"
+
+assertions:
+  - type: lock_succeeded
+    description: "Lock should succeed"
+    session_id: "session_001"
+
+  - type: consumer_state
+    description: "Consumer should be in LOCKED state"
+    consumer: consumer
+    expected_state: LOCKED
+
+  - type: witness_threshold_met
+    description: "At least 3 witnesses should have voted accept"
+    session_id: "session_001"
+    min_accepts: 3
+
+  - type: no_messages_dropped
+    description: "All messages should be delivered"

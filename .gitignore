@@ -35,7 +35,13 @@ Package.resolved
 # Vim
 *.swp
 *.swo
+*.swn
 *~
+
+# Python
+.venv/
+__pycache__/
+*.pyc
 
 # Protocol Buffer generated files
 Sources/OmertaNetwork/Protocol/Generated/
