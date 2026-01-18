@@ -145,4 +145,81 @@ final class MeshConsumerClientTests: XCTestCase {
             "Provider error: VM limit reached"
         )
     }
+
+    // MARK: - VM Protocol Message Tests
+
+    func testMeshProviderShutdownNotificationEncoding() throws {
+        let vmId1 = UUID()
+        let vmId2 = UUID()
+        let notification = MeshProviderShutdownNotification(vmIds: [vmId1, vmId2])
+
+        XCTAssertEqual(notification.type, "provider_shutdown")
+        XCTAssertEqual(notification.reason, "provider_shutdown")
+        XCTAssertEqual(notification.vmIds.count, 2)
+
+        // Test encoding/decoding
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(notification)
+
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode(MeshProviderShutdownNotification.self, from: data)
+
+        XCTAssertEqual(decoded.type, "provider_shutdown")
+        XCTAssertEqual(decoded.reason, "provider_shutdown")
+        XCTAssertEqual(decoded.vmIds.count, 2)
+        XCTAssertTrue(decoded.vmIds.contains(vmId1))
+        XCTAssertTrue(decoded.vmIds.contains(vmId2))
+    }
+
+    func testMeshProviderShutdownNotificationCustomReason() throws {
+        let vmId = UUID()
+        let notification = MeshProviderShutdownNotification(vmIds: [vmId], reason: "maintenance")
+
+        XCTAssertEqual(notification.type, "provider_shutdown")
+        XCTAssertEqual(notification.reason, "maintenance")
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(notification)
+
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode(MeshProviderShutdownNotification.self, from: data)
+
+        XCTAssertEqual(decoded.reason, "maintenance")
+    }
+
+    func testMeshVMHeartbeatEncoding() throws {
+        let vmId1 = UUID()
+        let vmId2 = UUID()
+        let heartbeat = MeshVMHeartbeat(vmIds: [vmId1, vmId2])
+
+        XCTAssertEqual(heartbeat.type, "vm_heartbeat")
+        XCTAssertEqual(heartbeat.vmIds.count, 2)
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(heartbeat)
+
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode(MeshVMHeartbeat.self, from: data)
+
+        XCTAssertEqual(decoded.type, "vm_heartbeat")
+        XCTAssertTrue(decoded.vmIds.contains(vmId1))
+        XCTAssertTrue(decoded.vmIds.contains(vmId2))
+    }
+
+    func testMeshVMHeartbeatResponseEncoding() throws {
+        let vmId = UUID()
+        let response = MeshVMHeartbeatResponse(activeVmIds: [vmId])
+
+        XCTAssertEqual(response.type, "vm_heartbeat_response")
+        XCTAssertEqual(response.activeVmIds.count, 1)
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(response)
+
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode(MeshVMHeartbeatResponse.self, from: data)
+
+        XCTAssertEqual(decoded.type, "vm_heartbeat_response")
+        XCTAssertTrue(decoded.activeVmIds.contains(vmId))
+    }
 }
