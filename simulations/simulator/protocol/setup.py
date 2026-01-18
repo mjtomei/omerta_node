@@ -51,16 +51,20 @@ def setup_relationships(
     Each relationship specifies peers that know each other and
     how long they've known each other (in days).
 
+    We do two passes:
+    1. First pass: everyone records everyone else's genesis hash (establishes links)
+    2. Second pass: everyone updates their view with current chain heads
+       (so checkpoints include all peer knowledge)
+
     Args:
         chains: Map of peer_id to Chain
         relationships: List of (peer_list, age_days) tuples
         current_time: Current simulation time
     """
+    # First pass: record initial relationships (at historical time)
     for peers, age_days in relationships:
-        # Calculate when these peers first saw each other
         first_seen_time = current_time - (age_days * 86400)
 
-        # Each peer records hashes of the others
         for peer_id in peers:
             if peer_id not in chains:
                 continue
@@ -73,11 +77,39 @@ def setup_relationships(
                     continue
 
                 other_chain = chains[other_id]
-                # Record the other peer's genesis hash
                 chain.record_peer_hash(
                     peer_key=other_id,
                     peer_hash=other_chain.head_hash,
                     timestamp=first_seen_time,
+                )
+
+    # Second pass: update with current chain heads (at simulation start time)
+    # This ensures checkpoints reference chains that include peer knowledge
+    all_peers = set()
+    for peers, _ in relationships:
+        all_peers.update(peers)
+
+    for peer_id in all_peers:
+        if peer_id not in chains:
+            continue
+        chain = chains[peer_id]
+        for other_id in all_peers:
+            if other_id == peer_id:
+                continue
+            if other_id not in chains:
+                continue
+            # Only update if they're in a relationship together
+            in_relationship = False
+            for peers, _ in relationships:
+                if peer_id in peers and other_id in peers:
+                    in_relationship = True
+                    break
+            if in_relationship:
+                other_chain = chains[other_id]
+                chain.record_peer_hash(
+                    peer_key=other_id,
+                    peer_hash=other_chain.head_hash,
+                    timestamp=current_time,  # At simulation start
                 )
 
 

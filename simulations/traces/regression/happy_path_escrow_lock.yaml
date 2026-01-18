@@ -51,7 +51,7 @@ setup:
   relationships:
     - peers: [consumer, provider]
       age_days: 30
-    - peers: [witness_0, witness_1, witness_2, witness_3, witness_4, provider]
+    - peers: [witness_0, witness_1, witness_2, witness_3, witness_4, provider, consumer]
       age_days: 100
 
 actions:

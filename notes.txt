@@ -12,9 +12,6 @@ While there are still legitimate security concerns like VM escapes and malicious
 
 TODOs
 CORE
-- consolidate local storage all to one place instead of using .config/OmertaMesh directory
-- make sure vms get released when either consumer or producer omertad is killed 
-- make sure you can run omerta with sudo even while omertad is running as user and root has not used omerta
 - debug messy peer lists, messy peer endpoint lists which include localhost, leaking of endpoints between networks during pings
 - test stun server and NAT hole punching functionality, make sure LAN connections work
 - get usermode consumer working on linux and mac
@@ -26,13 +23,15 @@ CORE
 - implement compute capability and utilization monitoring
 - implement mac gui
   - measure and limit VM energy consumption, use lower power CPU states where useful
+  - try to predict whether user has bandwidth consumption constraints and use for VM request routing
+  - measure aggregate bandwidth consumption and warn if it is getting high
   - automatically disable sleep while plugged in
   - automate killing or migration of VMs when user is at keyboard
 - review code
 - implement and test wireguard connection migration
 
 COMPUTE ECONOMY
-- review omc PDFs
+- go line-by-line through review of early sections of doc
 - write up double spending as a mechanism for trading trust for coins
 
 NETWORK BOOTSTRAPPING
@@ -76,4 +75,22 @@ Increase thoroughness of literature and related work search. Please present the 
 Walk citation graphs for most relevant works in reviews and in base work. Use Google Scholar for walking citations.
 
 If you can't find the PDF of a work online, remove it from the citations. Add it to an appendix of works that you think should be cited but you don't have access to. Add a bit of detail on what impact it would have on the work. See if you can find another format of the work, reporting on the work, or derivative work to replace the paper that is open instead.
+
+
+I was just thinking about the protocol for updating the oldest date a peer existed in the network. There would be some scenario where someone told you that they or someone else was older than you thought. Then you would have to ask around. There are a couple avenues for misconduct in that sequence. One is that the peer lied about their age. The other is that a peer is ignoring too many requests for help with verfiication. In both cases, you need some formalized process of generating an accusation and a formalized trial process that checks which claim is more consistent with the network state. This is a more general description of what we are already doing with compute verification failures. The failure can be thought of separately. Instead of a cabal taking a vote, it is a cabal watching passively and stewarding the transaction. In the case of a failed check, an accusation is triggered and then a subsequent trial which may or may not include only cabal members. 
+
+
+Protocol for recording VM rentals on chain is
+- consumer makes request
+- provider agrees and starts gathering witnesses
+- once witnesses are gathered, local trust levels of consumer and provider relative to each other are verified
+- witnesses compute burn rate for payment
+- initial deposit from consumer is made to virtual escrow
+- provider allocates VM
+- provider tells witnesses when VM is allocated and connected to consumer and witness wireguards
+- witnesses verify the VM connection, are able to vote to end transaction and return deposit here
+- provider is allowed to accuse consumer of misuse and call for trial where others observe connection to consumer from inside VM, i.e., ssh over wireguard
+- further use beyond what is secured by the deposit must be paid for in advance by securing more payment with witnesses, otherwise provider kills the VM
+- provider tells witnesses when VM was cancelled which may have been done by either party or by a fault
+- witnesses return any unused funds to consumer and deliver payment to provider
 

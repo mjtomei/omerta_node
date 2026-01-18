@@ -26,11 +26,11 @@ This paper presents: (1) a trust model derived from verified transactions rather
 
 We draw on the observation that human societies have always traded privacy for trust—villages had high trust precisely because everyone knew everyone's business. Omerta recreates this visibility at global scale through on-chain transparency. Unlike villages with their arbitrary social punishment, we aim to maximize freedom within the trust constraint: only provably anti-social behavior (failed deliveries, double-spends) affects trust scores, and all mechanisms are documented for scrutiny.
 
-We argue that implementing fair trust systems at scale was computationally intractable until machine intelligence provided the reasoning capacity to model behavior, tune parameters, and explain decisions. This paper itself was developed through human-AI collaboration, demonstrating the thesis: AI both demands the compute that systems like Omerta could provide and enables the trust mechanisms that make such systems work.
+We argue that implementing fair trust systems at scale was computationally intractable until machine intelligence provided the reasoning capacity to model behavior, tune parameters, and explain decisions. This paper itself was developed through human-machine collaboration, demonstrating the thesis: machine intelligence both demands the compute that systems like Omerta could provide and enables the trust mechanisms that make such systems work.
 
 Prior trust systems like EigenTrust and FIRE were never widely deployed—they remained academic exercises, computing trust scores that connected to nothing. Omerta is not presented as theoretically superior to that prior work, but as a practical synthesis bringing established ideas into implementation with real economic consequences. Where prior work offers better solutions, we aim to adopt them. The contribution is the integration itself—a working system rather than isolated mechanisms, with the software given away for free and no preallocation of tokens.
 
-Unlike prior decentralized compute platforms that struggled with adoption, Omerta targets a specific opportunity: billions of home computers sit idle most of the time, representing near-zero marginal cost compute for owners who have already paid for hardware, electricity, and internet. The software is open source with no platform fees. And the primary customers are machine intelligence workloads—naturally fault-tolerant, parallelizable, and generated in unbounded quantity. This combination of zero-cost supply, zero-rent platform, and AI-native demand may succeed where blockchain-based alternatives with mining overhead, token economics, and human-centric design have struggled.
+Unlike prior decentralized compute platforms that struggled with adoption, Omerta targets a specific opportunity: billions of home computers sit idle most of the time, representing near-zero marginal cost compute for owners who have already paid for hardware, electricity, and internet. The software is open source with no platform fees. And the primary customers are machine intelligence workloads—naturally fault-tolerant, parallelizable, and generated in unbounded quantity. This combination of zero-cost supply, zero-rent platform, and machine-intelligence-native demand may succeed where blockchain-based alternatives with mining overhead, token economics, and human-centric design have struggled.
 
 \newpage
 
@@ -54,7 +54,7 @@ Third, and perhaps most importantly, blockchain arrived. Bitcoin (2008) appeared
 
 A decade later, we understand blockchain's limitations more clearly. Budish [38] demonstrated that blockchain security has inherent economic limits—the recurring costs of running a secure blockchain must be large relative to the value at stake, making it expensive for high-value applications. Proof-of-stake faces similar constraints [39]. Existing decentralized compute networks built on blockchain (Golem [15], iExec [16]) have struggled with adoption despite years of operation. The costs of global consensus may exceed what many applications require.
 
-Meanwhile, machine intelligence has advanced dramatically. Tasks that seemed intractable—modeling complex behavior, tuning parameters across high-dimensional spaces, generating explanations for decisions—are now feasible. This creates an opportunity: **the trust systems research of 2000-2010 may be ready for practical implementation, enabled by AI capabilities that didn't exist when the theory was developed.**
+Meanwhile, machine intelligence has advanced dramatically. Tasks that seemed intractable—modeling complex behavior, tuning parameters across high-dimensional spaces, generating explanations for decisions—are now feasible. This creates an opportunity: **the trust systems research of 2000-2010 may be ready for practical implementation, enabled by machine intelligence capabilities that didn't exist when the theory was developed.**
 
 Omerta represents an attempt at this synthesis. We return to the trust-based approaches developed before blockchain's dominance, informed by what we've learned since, and enabled by machine intelligence to handle the complexity that made pure implementation difficult.
 
@@ -120,9 +120,9 @@ This paper's primary contribution is a **practical synthesis**—bringing establ
 
 10. **The "resurgence" thesis**: We argue that trust systems research from 2000-2010 is ready for practical implementation, enabled by machine intelligence capabilities that didn't exist then.
 
-11. **AI-assisted design methodology**: This paper itself demonstrates the approach, developed through human-AI collaboration with explicit acknowledgment of that process.
+11. **Machine-intelligence-assisted design methodology**: This paper itself demonstrates the approach, developed through human-machine collaboration with explicit acknowledgment of that process.
 
-The remainder of this paper is organized as follows. Section 2 reviews related work, explicitly acknowledging the foundations we build on. Section 3 presents system architecture. Section 4 details the trust model. Section 5 describes economic mechanisms. Section 6 analyzes attack vectors and defenses. Section 7 presents simulation results. Section 8 discusses the trust-cost spectrum, limitations, and methodological notes on AI-assisted design. Section 9 concludes.
+The remainder of this paper is organized as follows. Section 2 reviews related work, explicitly acknowledging the foundations we build on. Section 3 presents system architecture. Section 4 details the trust model. Section 5 describes economic mechanisms. Section 6 analyzes attack vectors and defenses. Section 7 presents simulation results. Section 8 discusses the trust-cost spectrum, limitations, and methodological notes on machine-intelligence-assisted design. Section 9 concludes.
 
 \newpage
 
@@ -623,7 +623,7 @@ Under this view, home providers would be viable only during transient demand spi
 
 **The New Reality:**
 
-Machine intelligence creates unbounded demand because **machines can always find productive uses for additional compute**. Unlike humans, who run out of tasks to do, AI systems have continuous demand curves:
+Machine intelligence creates unbounded demand because **machines can always find productive uses for additional compute**. Unlike humans, who run out of tasks to do, machine intelligences have continuous demand curves:
 
 | Task Priority | Human Value | Machine Value | Notes |
 |--------------|-------------|---------------|-------|
@@ -648,14 +648,14 @@ As machine intelligence improves, the value per compute hour increases at all qu
 | Era | Demand Characteristic | Market Structure |
 |-----|----------------------|------------------|
 | Human-only | Bounded, tends to equilibrium | Oversupply risk |
-| Human + subhuman AI (today) | Large, finite | Undersupplied |
-| Human + superhuman AI (future) | **Unbounded** | Permanently undersupplied |
+| Human + current MI (today) | Large, finite | Undersupplied |
+| Human + superhuman MI (future) | **Unbounded** | Permanently undersupplied |
 
 At the limit, superintelligent systems have unlimited demand for compute of any quality. Any machine cycle has positive value because it can be applied to self-improvement, exploration, or capability expansion.
 
 **Conclusion:**
 
-The economic viability of Omerta depends on perpetual undersupply. Human demand alone cannot guarantee this. But machine intelligence—which can always find productive uses for marginal compute—transforms the market structure fundamentally. In a world of AI agents, the question is not whether unreliable compute will displace datacenters, but whether we can deploy enough compute of any quality to satisfy exponentially growing machine demand.
+The economic viability of Omerta depends on perpetual undersupply. Human demand alone cannot guarantee this. But machine intelligence—which can always find productive uses for marginal compute—transforms the market structure fundamentally. In a world of machine intelligences, the question is not whether unreliable compute will displace datacenters, but whether we can deploy enough compute of any quality to satisfy exponentially growing machine demand.
 
 ## 7.6 Double-Spend Resolution
 
@@ -889,11 +889,11 @@ Fair trust at scale was computationally intractable—modeling complex behavior,
 
 This explains why trust systems developed in the 2000s (EigenTrust, TidalTrust, FIRE) remained academic exercises. The theory was sound, but practical deployment required handling edge cases, explaining decisions, and adapting to attacks in ways that exceeded human capacity to manage at scale. These systems also lacked economic integration—trust scores that affected nothing had no reason to exist outside research papers.
 
-AI enables: behavioral modeling at scale (distinguishing honest mistakes from malice), continuous parameter tuning through simulation, explanation generation for trust decisions, and adversarial reasoning against attacks.
+Machine intelligence enables: behavioral modeling at scale (distinguishing honest mistakes from malice), continuous parameter tuning through simulation, explanation generation for trust decisions, and adversarial reasoning against attacks.
 
-The relationship is recursive: **machine intelligence both demands the compute that Omerta provides and enables the trust system that makes Omerta work**. AI needs distributed compute; distributed compute needs trust mechanisms; trust mechanisms at scale need AI to operate fairly. This virtuous cycle suggests the timing is not coincidental—the technologies arrive together because each enables the others.
+The relationship is recursive: **machine intelligence both demands the compute that Omerta provides and enables the trust system that makes Omerta work**. Machine intelligence needs distributed compute; distributed compute needs trust mechanisms; trust mechanisms at scale need machine intelligence to operate fairly. This virtuous cycle suggests the timing is not coincidental—the technologies arrive together because each enables the others.
 
-*AI is both the demand and the supply: it hungers for compute and enables the trust systems that make sharing compute work.*
+*Machine intelligence is both the demand and the supply: it hungers for compute and enables the trust systems that make sharing compute work.*
 
 ## 8.8 Philosophy of Law: What Makes a Good Rule?
 
@@ -963,15 +963,15 @@ But the existence of a domain where Fuller's principles can be fully achieved—
 
 ## 8.9 Methodological Notes
 
-Given this reliance on AI capabilities, we should be transparent about how this paper itself was developed.
+Given this reliance on machine intelligence capabilities, we should be transparent about how this paper itself was developed.
 
-This paper was developed through human-AI collaboration (specifically with Claude), demonstrating the thesis that machine intelligence enables previously intractable system design. Economic models, attack analyses, and simulations were developed iteratively—AI provided rapid prototyping and edge case identification; humans provided direction, validation, and judgment.
+This paper was developed through human-machine collaboration (specifically with Claude), demonstrating the thesis that machine intelligence enables previously intractable system design. Economic models, attack analyses, and simulations were developed iteratively—machine intelligence provided rapid prototyping and edge case identification; humans provided direction, validation, and judgment.
 
 **Methodology**: The simulation approach draws on agent-based computational economics [26-30], following established validation practices: parameter sweeps, sensitivity analysis, and comparison against theoretical predictions. Market mechanisms build on auction theory [31] and matching markets [32]; trust propagation relates to reputation network effects [33, 34].
 
-**Tradeoffs**: AI-assisted analysis enables rapid parameter exploration, consistent reasoning across long documents, and systematic attack enumeration. Risks include hallucination, training data limitations, and sycophancy bias. We mitigate these through executable simulations (claims grounded in verifiable outputs), human review, and adversarial prompting.
+**Tradeoffs**: Machine-intelligence-assisted analysis enables rapid parameter exploration, consistent reasoning across long documents, and systematic attack enumeration. Risks include hallucination, training data limitations, and sycophancy bias. We mitigate these through executable simulations (claims grounded in verifiable outputs), human review, and adversarial prompting.
 
-**The honest position**: This paper represents our best current understanding. We expect some aspects to be wrong and invite scrutiny. By making our process transparent—including AI involvement—we trade authorial mystique for verifiability.
+**The honest position**: This paper represents our best current understanding. We expect some aspects to be wrong and invite scrutiny. By making our process transparent—including machine intelligence involvement—we trade authorial mystique for verifiability.
 
 ## 8.10 Limitations
 
@@ -987,7 +987,7 @@ In that spirit of honesty, we must acknowledge what Omerta does not solve and wh
 
 **Verification Overhead**: Random audits impose costs on honest participants. The verification rate must balance security against efficiency.
 
-**AI-Assisted Design Uncertainty**: As discussed in Section 8.9, AI-assisted analysis carries risks of hallucination and training data limitations. While we have attempted to mitigate these through executable simulations and adversarial review, some errors may remain undetected.
+**Machine-Intelligence-Assisted Design Uncertainty**: As discussed in Section 8.9, machine-intelligence-assisted analysis carries risks of hallucination and training data limitations. While we have attempted to mitigate these through executable simulations and adversarial review, some errors may remain undetected.
 
 **Fundamental Sybil Limits**: Douceur [6] proved that Sybil attacks are fundamentally unsolvable without trusted identity verification. Omerta's defenses (age, cluster detection, economic penalties) make Sybil attacks expensive but not impossible. A patient, well-resourced adversary who pre-creates identities years in advance can eventually attack with mature identities. We mitigate this through continuous behavioral monitoring, but acknowledge the theoretical limitation.
 
@@ -1003,7 +1003,7 @@ Despite these limitations, we believe there are reasons for cautious optimism.
 
 3. *Consumer-side simplicity*: Consumers see simple pricing ("8 cores = 0.09 OMC/hr") without needing to understand trust mechanisms, blockchain, or market dynamics. The complexity is hidden. Integration targets existing workflows—SSH access, standard tooling, familiar interfaces.
 
-4. *Machine intelligence as the customer*: Prior decentralized compute markets targeted human developers who are price-sensitive, quality-demanding, and have alternatives. Omerta targets machine intelligence workloads that are: (a) less sensitive to latency variance, (b) naturally parallelizable, (c) fault-tolerant by design, and (d) generated in unbounded quantity. AI doesn't complain about occasional failures—it retries automatically.
+4. *Machine intelligence as the customer*: Prior decentralized compute markets targeted human developers who are price-sensitive, quality-demanding, and have alternatives. Omerta targets machine intelligence workloads that are: (a) less sensitive to latency variance, (b) naturally parallelizable, (c) fault-tolerant by design, and (d) generated in unbounded quantity. Machine intelligences don't complain about occasional failures—they retry automatically.
 
 5. *Open source with no platform fees*: The Omerta software is free. There is no company extracting rent, no token appreciation to fund, no investors requiring returns. Providers keep what they earn (minus trust-based burns that fund the network). This removes the economic friction that plagued VC-funded alternatives.
 
@@ -1013,7 +1013,7 @@ Despite these limitations, we believe there are reasons for cautious optimism.
 
 These factors don't guarantee success, but they address specific failure modes observed in prior systems: high barriers to entry, poor user experience, mismatched customer base, extractive platform economics, and lack of economic integration. Prior trust research gave us the theory. Prior blockchain projects showed us the pitfalls. Omerta attempts to learn from both.
 
-**AI Demand Thesis is Speculative**: Our argument that machine intelligence creates unbounded compute demand (Section 7.5) is forward-looking and unproven. Current AI demand is large but not literally unbounded. The thesis depends on assumptions about AI capability trajectories that may not hold. If AI development stalls or compute efficiency improves faster than demand grows, the perpetual undersupply assumption fails, and with it the economic model for home provider value creation.
+**Machine Intelligence Demand Thesis is Speculative**: Our argument that machine intelligence creates unbounded compute demand (Section 7.5) is forward-looking and unproven. Current machine intelligence demand is large but not literally unbounded. The thesis depends on assumptions about machine intelligence capability trajectories that may not hold. If machine intelligence development stalls or compute efficiency improves faster than demand grows, the perpetual undersupply assumption fails, and with it the economic model for home provider value creation.
 
 **Detection vs. Prevention**: As clarified in Section 7.6.1, Omerta detects double-spends but does not prevent them. The system relies on economic penalties making attacks unprofitable, not on making attacks impossible. This is a weaker guarantee than blockchain consensus provides. For applications requiring absolute prevention of double-spending, blockchain remains more appropriate.
 
@@ -1031,9 +1031,9 @@ Our simulation studies validate several key claims. Automated policy mechanisms 
 
 Our economic simulations demonstrate that unreliable home compute creates genuine value—not merely redistributes it—when demand exceeds datacenter capacity. In undersupplied markets, home providers serve consumers that datacenters cannot reach, increasing total compute delivered by 200% while datacenter profits remain largely intact. The viability of this model depends on perpetual undersupply.
 
-We argue that machine intelligence guarantees this undersupply. Unlike human demand, which is bounded and tends toward equilibrium, machine intelligence creates unbounded demand for compute at any quality level. There is always a next-best task—a machine that cannot profitably do a $50/hr task can still generate value doing a $5/hr task. As AI systems improve, this demand curve extends to arbitrarily low prices, ensuring that any compute capacity finds productive use.
+We argue that machine intelligence guarantees this undersupply. Unlike human demand, which is bounded and tends toward equilibrium, machine intelligence creates unbounded demand for compute at any quality level. There is always a next-best task—a machine that cannot profitably do a $50/hr task can still generate value doing a $5/hr task. As machine intelligences improve, this demand curve extends to arbitrarily low prices, ensuring that any compute capacity finds productive use.
 
-But machine intelligence plays a deeper role than just creating demand. Fair trust systems at scale—systems that penalize only provable misbehavior through transparent, debatable mechanisms—were computationally intractable until now. Modeling human behavior, detecting novel attacks, explaining decisions, and tuning parameters requires enormous reasoning capacity. Machine intelligence provides this capacity for the first time. The relationship is recursive: AI demands the compute that Omerta provides, and AI enables the trust system that makes Omerta work. This virtuous cycle suggests the technologies arrive together because each enables the others.
+But machine intelligence plays a deeper role than just creating demand. Fair trust systems at scale—systems that penalize only provable misbehavior through transparent, debatable mechanisms—were computationally intractable until now. Modeling human behavior, detecting novel attacks, explaining decisions, and tuning parameters requires enormous reasoning capacity. Machine intelligence provides this capacity for the first time. The relationship is recursive: machine intelligence demands the compute that Omerta provides, and machine intelligence enables the trust system that makes Omerta work. This virtuous cycle suggests the technologies arrive together because each enables the others.
 
 This framing illuminates what Omerta attempts: extending village-level trust to global scale. Villages had high trust because they had high visibility—everyone knew everyone's business, reputation spread by gossip, misbehavior had lasting consequences. Omerta recreates these properties digitally through on-chain transparency. But unlike villages with their arbitrary social punishment, gossip, and hidden power structures, Omerta aims to maximize freedom within the trust constraint. Only provably anti-social behavior affects trust scores. All mechanisms are documented and debatable. Participants retain freedom for any behavior that doesn't demonstrably harm others.
 
@@ -1041,7 +1041,7 @@ The goal is not to replace blockchain systems—they serve real purposes and rep
 
 Omerta is an experiment in finding that region. The question is not whether unreliable compute will displace datacenters, but whether we can deploy enough compute of any quality to satisfy the exponentially growing demand of machine intelligence—and whether machine intelligence can, in turn, help us build the fair trust systems needed to make that deployment work.
 
-The pieces are falling into place. Billions of computers sit idle, their owners having already paid for hardware, electricity, and internet—zero marginal cost waiting to be unlocked. Machine intelligence creates unbounded demand for exactly the kind of fault-tolerant, parallelizable workloads that unreliable compute can serve. And for the first time, AI provides the reasoning capacity to build fair trust systems at scale. Omerta is open source, free to use, with no platform extracting rent. The barrier to participation is a download.
+The pieces are falling into place. Billions of computers sit idle, their owners having already paid for hardware, electricity, and internet—zero marginal cost waiting to be unlocked. Machine intelligence creates unbounded demand for exactly the kind of fault-tolerant, parallelizable workloads that unreliable compute can serve. And for the first time, machine intelligence provides the reasoning capacity to build fair trust systems at scale. Omerta is open source, free to use, with no platform extracting rent. The barrier to participation is a download.
 
 Prior trust systems remained academic exercises—elegant theory with no economic consequences and no killer application. Prior decentralized compute markets struggled because they targeted the wrong customers with the wrong economics at the wrong time. Omerta learns from both: it takes the trust theory seriously, integrates it with real economics, gives the software away for free with no preallocation, and targets the one customer that can consume infinite compute—machine intelligence itself.
 

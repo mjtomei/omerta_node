@@ -296,10 +296,31 @@ class TraceRunner:
 
         elif msg.msg_type == ProtocolMessageType.LOCK_RESULT_FOR_SIGNATURE:
             # Could be witness -> consumer or witness -> other witnesses
-            # Send to consumer and all other witnesses
-            for aid, agent in self.agents.items():
-                if aid != sender_id:
-                    recipients.append(aid)
+            # Check sender's state to determine routing
+            from ..transactions.escrow_lock import WitnessState
+            sender_agent = self.agents.get(sender_id)
+            if isinstance(sender_agent, WitnessAgent):
+                sender_state = sender_agent.state
+                if sender_state in (WitnessState.SIGNING_RESULT, WitnessState.COLLECTING_SIGNATURES):
+                    # During signature collection, only send to other witnesses
+                    for aid, agent in self.agents.items():
+                        if isinstance(agent, WitnessAgent) and aid != sender_id:
+                            recipients.append(aid)
+                elif sender_state == WitnessState.PROPAGATING:
+                    # After collecting signatures, send to consumer
+                    consumer = self._find_consumer()
+                    if consumer:
+                        recipients = [consumer]
+                else:
+                    # Default: send to all non-senders
+                    for aid in self.agents:
+                        if aid != sender_id:
+                            recipients.append(aid)
+            else:
+                # Non-witness sender, send to all
+                for aid in self.agents:
+                    if aid != sender_id:
+                        recipients.append(aid)
 
         elif msg.msg_type == ProtocolMessageType.CONSUMER_SIGNED_LOCK:
             # To witnesses
