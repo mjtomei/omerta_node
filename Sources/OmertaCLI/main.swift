@@ -1534,13 +1534,8 @@ struct VMRequest: AsyncParsableCommand {
     var timeout: Int = 10
 
     mutating func run() async throws {
-        // Check for root/sudo (required for WireGuard)
-        if !dryRun && getuid() != 0 {
-            print("Error: This command requires sudo to create WireGuard tunnels.")
-            print("Run with: sudo omerta vm request ...")
-            print("Or use --dry-run to skip VPN setup (for testing)")
-            throw ExitCode.failure
-        }
+        // Note: Root is NOT required for vm request when omertad is running.
+        // The CLI delegates VPN operations to omertad (which runs as root) via IPC.
 
         // Validate inputs
         guard let networkId = network else {
