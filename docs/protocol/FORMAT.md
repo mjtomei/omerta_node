@@ -171,6 +171,7 @@ These protocols provide **eventual consistency** with **economic enforcement**, 
 | 02 | [Escrow Settle](transactions/02_escrow_settle.md) | Distribute escrowed funds after session ends | Stub |
 | 03 | [State Query](transactions/03_state_query.md) | Request cabal-attested state (balance, age, trust) | Stub |
 | 04 | [State Audit](transactions/04_state_audit.md) | Full history reconstruction and verification | Stub |
+| 05 | [Health Check](transactions/05_health_check.md) | Decentralized monitoring with verifiable triggers | Stub |
 
 ---
 
