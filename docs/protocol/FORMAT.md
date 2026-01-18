@@ -169,6 +169,8 @@ These protocols provide **eventual consistency** with **economic enforcement**, 
 | 00 | [Escrow Lock](transactions/00_escrow_lock.md) | Lock/top-up funds with distributed witness consensus | Spec complete |
 | 01 | [Cabal Attestation](transactions/01_cabal_attestation.md) | Verify VM allocation and monitor session | Stub |
 | 02 | [Escrow Settle](transactions/02_escrow_settle.md) | Distribute escrowed funds after session ends | Stub |
+| 03 | [State Query](transactions/03_state_query.md) | Request cabal-attested state (balance, age, trust) | Stub |
+| 04 | [State Audit](transactions/04_state_audit.md) | Full history reconstruction and verification | Stub |
 
 ---
 
