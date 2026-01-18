@@ -2,7 +2,9 @@
 
 This document defines the format and primitives used for specifying distributed transaction protocols.
 
-**See also:** [Design Philosophy](DESIGN_PHILOSOPHY.md) for comparison to other systems and our consistency model.
+**See also:**
+- [Design Philosophy](DESIGN_PHILOSOPHY.md) for comparison to other systems and our consistency model
+- [Gossip Protocol](GOSSIP.md) for how information propagates through the network
 
 ## Actor Definition
 
