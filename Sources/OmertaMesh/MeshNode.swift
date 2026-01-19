@@ -523,8 +523,12 @@ public actor MeshNode {
     private func handleDefaultMessage(_ message: MeshMessage, from peerId: PeerId, endpoint: String, hopCount: Int = 0) async {
         switch message {
         case .ping(let recentPeers):
-            // Check if this is a NEW peer (not previously known) BEFORE recording
-            let isNewPeer = await endpointManager.getAllEndpoints(peerId: peerId).isEmpty
+            // Check if this is a NEW or RECONNECTING peer BEFORE recording
+            // A peer is considered "reconnecting" if we haven't heard from them in 60+ seconds
+            // (4 missed keepalives at 15s interval)
+            let hasEndpoints = !(await endpointManager.getAllEndpoints(peerId: peerId).isEmpty)
+            let hasRecentContact = await freshnessManager.hasRecentContact(peerId, maxAgeSeconds: 60)
+            let isNewOrReconnecting = !hasEndpoints || !hasRecentContact
 
             // Record this contact first so we're included in the response
             await freshnessManager.recordContact(
@@ -534,12 +538,16 @@ public actor MeshNode {
                 connectionType: .inboundDirect
             )
 
-            // Build response - if NEW peer, send ALL known peers; otherwise send recent subset
+            // Build response - if NEW or RECONNECTING peer, send ALL known peers; otherwise send recent subset
             let myPeers: [PeerEndpointInfo]
-            if isNewPeer {
-                // New peer gets full peer list to bootstrap their view of the network
+            if isNewOrReconnecting {
+                // New/reconnecting peer gets full peer list to bootstrap their view of the network
                 myPeers = await buildPeerEndpointInfoList()
-                logger.info("New peer \(peerId.prefix(8))... contacted us - sending \(myPeers.count) known peers")
+                if hasEndpoints {
+                    logger.info("Reconnecting peer \(peerId.prefix(8))... - sending \(myPeers.count) known peers")
+                } else {
+                    logger.info("New peer \(peerId.prefix(8))... contacted us - sending \(myPeers.count) known peers")
+                }
             } else {
                 // Known peer gets recent peers + propagation queue items
                 myPeers = await buildPeerEndpointInfoListWithPropagation(excluding: peerId)
@@ -569,8 +577,8 @@ public actor MeshNode {
                 }
             }
 
-            // GOSSIP: If the sender is a new peer, add them to propagation queue
-            if isNewPeer {
+            // GOSSIP: If the sender is a new or reconnecting peer, add them to propagation queue
+            if isNewOrReconnecting {
                 // Get the sender's machineId from endpointManager (was just recorded in handleIncomingData)
                 let senderMachines = await endpointManager.getAllMachines(peerId: peerId)
                 if let senderMachine = senderMachines.first(where: { $0.bestEndpoint == endpoint }) {
