@@ -86,6 +86,59 @@ func resolveNetwork(_ idOrPrefix: String, store: NetworkStore) async -> (OmertaM
     }
 }
 
+/// Resolve network ID for daemon commands, supporting prefix matching
+/// Takes optional positional arg and --network flag, returns resolved network ID or throws
+func resolveNetworkForDaemon(
+    positionalArg: String?,
+    networkFlag: String?,
+    store: NetworkStore
+) async throws -> String {
+    // Prefer positional arg, fall back to --network flag, then first available
+    let specifiedNetwork = positionalArg ?? networkFlag
+
+    if let specified = specifiedNetwork {
+        let (resolved, error) = await resolveNetwork(specified, store: store)
+        guard let net = resolved else {
+            print(error ?? "Network not found")
+            throw ExitCode.failure
+        }
+        return net.id
+    } else {
+        let networks = await store.allNetworks()
+        guard let firstNetwork = networks.first else {
+            print("Error: No networks found. Join a network first with 'omerta network join'")
+            throw ExitCode.failure
+        }
+        return firstNetwork.id
+    }
+}
+
+/// Resolve a peer ID or prefix to a full peer ID
+/// Returns: (peerId, nil) on exact match, (peerId, nil) on unique prefix match,
+/// (nil, error message) on no match or ambiguous match
+func resolvePeerId(_ idOrPrefix: String, knownPeers: [ControlResponse.PeerData]) -> (String?, String?) {
+    // If it looks like a full peer ID (64 hex chars), return as-is
+    if idOrPrefix.count == 64 {
+        return (idOrPrefix, nil)
+    }
+
+    // Try prefix match
+    let matches = knownPeers.filter { $0.peerId.lowercased().hasPrefix(idOrPrefix.lowercased()) }
+
+    switch matches.count {
+    case 0:
+        return (nil, "Peer not found: \(idOrPrefix)")
+    case 1:
+        return (matches[0].peerId, nil)
+    default:
+        var msg = "Ambiguous peer ID prefix '\(idOrPrefix)'. Did you mean:\n"
+        for peer in matches.prefix(5) {
+            msg += "  \(peer.peerId.prefix(16))... @ \(peer.endpoint)\n"
+        }
+        return (nil, msg)
+    }
+}
+
 /// Get the real user's home directory, even when running under sudo
 func getRealUserHome() -> String {
     // Check SUDO_USER first (set when running under sudo)
@@ -3461,29 +3514,21 @@ struct MeshStatus: AsyncParsableCommand {
         abstract: "Show mesh network status (requires omertad to be running)"
     )
 
-    @Option(name: .long, help: "Network ID (default: first available)")
+    @Argument(help: "Network ID or prefix (default: first available)")
+    var networkArg: String?
+
+    @Option(name: .long, help: "Network ID or prefix (default: first available)")
     var network: String?
 
     mutating func run() async throws {
-        // Find network ID
         let networkStore = NetworkStore.defaultStore()
         try await networkStore.load()
 
-        let networkId: String
-        if let specifiedNetwork = network {
-            guard await networkStore.network(id: specifiedNetwork) != nil else {
-                print("Error: Network '\(specifiedNetwork)' not found")
-                throw ExitCode.failure
-            }
-            networkId = specifiedNetwork
-        } else {
-            let networks = await networkStore.allNetworks()
-            guard let firstNetwork = networks.first else {
-                print("Error: No networks found. Join a network first with 'omerta network join'")
-                throw ExitCode.failure
-            }
-            networkId = firstNetwork.id
-        }
+        let networkId = try await resolveNetworkForDaemon(
+            positionalArg: networkArg,
+            networkFlag: network,
+            store: networkStore
+        )
 
         // Connect to daemon via control socket
         let client = ControlSocketClient(networkId: networkId)
@@ -3531,29 +3576,21 @@ struct MeshPeers: AsyncParsableCommand {
         abstract: "List discovered mesh peers (requires omertad to be running)"
     )
 
-    @Option(name: .long, help: "Network ID (default: first available)")
+    @Argument(help: "Network ID or prefix (default: first available)")
+    var networkArg: String?
+
+    @Option(name: .long, help: "Network ID or prefix (default: first available)")
     var network: String?
 
     mutating func run() async throws {
-        // Find network ID
         let networkStore = NetworkStore.defaultStore()
         try await networkStore.load()
 
-        let networkId: String
-        if let specifiedNetwork = network {
-            guard await networkStore.network(id: specifiedNetwork) != nil else {
-                print("Error: Network '\(specifiedNetwork)' not found")
-                throw ExitCode.failure
-            }
-            networkId = specifiedNetwork
-        } else {
-            let networks = await networkStore.allNetworks()
-            guard let firstNetwork = networks.first else {
-                print("Error: No networks found. Join a network first with 'omerta network join'")
-                throw ExitCode.failure
-            }
-            networkId = firstNetwork.id
-        }
+        let networkId = try await resolveNetworkForDaemon(
+            positionalArg: networkArg,
+            networkFlag: network,
+            store: networkStore
+        )
 
         // Connect to daemon via control socket
         let client = ControlSocketClient(networkId: networkId)
@@ -3608,35 +3645,24 @@ struct MeshConnect: AsyncParsableCommand {
         abstract: "Connect to a mesh peer (requires omertad to be running)"
     )
 
-    @Argument(help: "Peer ID to connect to")
+    @Argument(help: "Peer ID or prefix to connect to")
     var peerId: String
 
-    @Option(name: .long, help: "Network ID (default: first available)")
+    @Option(name: .long, help: "Network ID or prefix (default: first available)")
     var network: String?
 
     @Option(name: .long, help: "Connection timeout in seconds")
     var timeout: Int = 30
 
     mutating func run() async throws {
-        // Find network ID
         let networkStore = NetworkStore.defaultStore()
         try await networkStore.load()
 
-        let networkId: String
-        if let specifiedNetwork = network {
-            guard await networkStore.network(id: specifiedNetwork) != nil else {
-                print("Error: Network '\(specifiedNetwork)' not found")
-                throw ExitCode.failure
-            }
-            networkId = specifiedNetwork
-        } else {
-            let networks = await networkStore.allNetworks()
-            guard let firstNetwork = networks.first else {
-                print("Error: No networks found. Join a network first with 'omerta network join'")
-                throw ExitCode.failure
-            }
-            networkId = firstNetwork.id
-        }
+        let networkId = try await resolveNetworkForDaemon(
+            positionalArg: nil,
+            networkFlag: network,
+            store: networkStore
+        )
 
         // Connect to daemon via control socket
         let client = ControlSocketClient(networkId: networkId)
@@ -3648,10 +3674,24 @@ struct MeshConnect: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        print("Connecting to \(peerId) via omertad...")
+        // Resolve peer ID prefix
+        var resolvedPeerId = peerId
+        if peerId.count < 64 {
+            let peersResponse = try await client.send(.peers)
+            if case .peers(let knownPeers) = peersResponse {
+                let (resolved, error) = resolvePeerId(peerId, knownPeers: knownPeers)
+                guard let id = resolved else {
+                    print(error ?? "Peer not found")
+                    throw ExitCode.failure
+                }
+                resolvedPeerId = id
+            }
+        }
+
+        print("Connecting to \(resolvedPeerId.prefix(16))... via omertad...")
 
         // Connect through daemon
-        let response = try await client.send(.connect(peerId: peerId, timeout: timeout))
+        let response = try await client.send(.connect(peerId: resolvedPeerId, timeout: timeout))
 
         switch response {
         case .connectResult(let result):
@@ -3687,13 +3727,13 @@ struct MeshPing: AsyncParsableCommand {
         abstract: "Ping a mesh peer and show gossip info (requires omertad to be running)"
     )
 
-    @Argument(help: "Peer ID to ping")
+    @Argument(help: "Peer ID or prefix to ping")
     var peerIdArg: String?
 
-    @Option(name: .long, help: "Peer ID to ping")
+    @Option(name: .long, help: "Peer ID or prefix to ping")
     var peer: String?
 
-    @Option(name: .long, help: "Network ID (default: first available)")
+    @Option(name: .long, help: "Network ID or prefix (default: first available)")
     var network: String?
 
     @Option(name: .long, help: "Ping timeout in seconds")
@@ -3718,25 +3758,14 @@ struct MeshPing: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        // Find network ID
         let networkStore = NetworkStore.defaultStore()
         try await networkStore.load()
 
-        let networkId: String
-        if let specifiedNetwork = network {
-            guard await networkStore.network(id: specifiedNetwork) != nil else {
-                print("Error: Network '\(specifiedNetwork)' not found")
-                throw ExitCode.failure
-            }
-            networkId = specifiedNetwork
-        } else {
-            let networks = await networkStore.allNetworks()
-            guard let firstNetwork = networks.first else {
-                print("Error: No networks found. Join a network first with 'omerta network join'")
-                throw ExitCode.failure
-            }
-            networkId = firstNetwork.id
-        }
+        let networkId = try await resolveNetworkForDaemon(
+            positionalArg: nil,
+            networkFlag: network,
+            store: networkStore
+        )
 
         // Connect to daemon via control socket
         let client = ControlSocketClient(networkId: networkId)
@@ -3751,20 +3780,16 @@ struct MeshPing: AsyncParsableCommand {
         // Resolve peer ID prefix
         var resolvedPeerId = peerId
         if peerId.count < 64 {
-            // Likely a prefix, try to resolve
             let peersResponse = try await client.send(.peers)
             if case .peers(let knownPeers) = peersResponse {
-                let matches = knownPeers.filter { $0.peerId.hasPrefix(peerId) }
-                if matches.count == 1 {
-                    resolvedPeerId = matches[0].peerId
-                } else if matches.count > 1 {
-                    print("Ambiguous peer ID prefix '\(peerId)'. Did you mean:")
-                    for peer in matches.prefix(5) {
-                        print("  \(peer.peerId.prefix(16))...")
-                    }
+                let (resolved, error) = resolvePeerId(peerId, knownPeers: knownPeers)
+                if let id = resolved {
+                    resolvedPeerId = id
+                } else if let err = error, !err.contains("not found") {
+                    // Show ambiguous error, but allow "not found" to try anyway
+                    print(err)
                     throw ExitCode.failure
                 }
-                // If no matches, continue with original (will fail at ping time with better error)
             }
         }
 
