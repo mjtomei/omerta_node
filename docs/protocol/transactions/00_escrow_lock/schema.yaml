@@ -1,0 +1,1223 @@
+# Transaction 00: Escrow Lock / Top-up
+# SINGLE SOURCE OF TRUTH
+#
+# This file defines all parameters, messages, and state machines for the
+# escrow lock transaction. Both documentation and Python code are generated
+# from this schema.
+
+imports:
+  - shared/common.yaml
+
+transaction:
+  id: "00"
+  name: "Escrow Lock / Top-up"
+  description: "Lock funds with distributed witness consensus for a compute session"
+
+# =============================================================================
+# PARAMETERS
+# =============================================================================
+
+parameters:
+  # Witness counts
+  WITNESS_COUNT:
+    value: 5
+    type: count
+    description: "Initial witnesses to recruit"
+
+  WITNESS_THRESHOLD:
+    value: 3
+    type: count
+    description: "Minimum for consensus"
+
+  # Timeouts (seconds)
+  WITNESS_COMMITMENT_TIMEOUT:
+    value: 30
+    unit: seconds
+    description: "Seconds for provider to respond with witnesses"
+
+  LOCK_TIMEOUT:
+    value: 300
+    unit: seconds
+    description: "Seconds for consumer to complete lock (provider waiting)"
+
+  PRELIMINARY_TIMEOUT:
+    value: 30
+    unit: seconds
+    description: "Seconds to collect preliminaries"
+
+  CONSENSUS_TIMEOUT:
+    value: 60
+    unit: seconds
+    description: "Seconds to reach consensus"
+
+  RECRUITMENT_TIMEOUT:
+    value: 180
+    unit: seconds
+    description: "Seconds for full recruitment"
+
+  CONSUMER_SIGNATURE_TIMEOUT:
+    value: 60
+    unit: seconds
+    description: "Seconds for consumer to counter-sign"
+
+  LIVENESS_CHECK_INTERVAL:
+    value: 300
+    unit: seconds
+    description: "Seconds between liveness checks"
+
+  LIVENESS_RESPONSE_TIMEOUT:
+    value: 30
+    unit: seconds
+    description: "Seconds to respond to ping"
+
+  REPLACEMENT_TIMEOUT:
+    value: 120
+    unit: seconds
+    description: "Seconds to get replacement witness ack"
+
+  MAX_CHAIN_AGE:
+    value: 3600
+    unit: seconds
+    description: "Max age of chain knowledge"
+
+  # Thresholds
+  CONSENSUS_THRESHOLD:
+    value: 0.67
+    type: fraction
+    description: "Fraction needed to decide"
+
+  # Limits
+  MAX_RECRUITMENT_ROUNDS:
+    value: 3
+    type: count
+    description: "Max times to recruit more witnesses"
+
+  MIN_HIGH_TRUST_WITNESSES:
+    value: 2
+    type: count
+    description: "Minimum high-trust witnesses for fairness"
+
+  MAX_PRIOR_INTERACTIONS:
+    value: 5
+    type: count
+    description: "Max prior interactions with consumer for fairness"
+
+# =============================================================================
+# ENUMS
+# =============================================================================
+
+enums:
+  WitnessVerdict:
+    description: "Witness verdict on lock request"
+    values:
+      - ACCEPT
+      - REJECT
+      - NEED_MORE_INFO
+
+  LockStatus:
+    description: "Final status of lock attempt"
+    values:
+      - ACCEPTED
+      - REJECTED
+      - CONSUMER_ABANDONED
+
+# =============================================================================
+# TYPES (Struct Definitions)
+# =============================================================================
+
+types:
+  # Note: ChainState, ChainRecord, SelectionInputs imported from shared/common.yaml
+
+  # Lock result structure
+  LockResult:
+    description: "Final lock result with witness attestations"
+    fields:
+      session_id: { type: hash }
+      consumer: { type: peer_id }
+      provider: { type: peer_id }
+      amount: { type: uint }
+      status: { type: LockStatus }
+      observed_balance: { type: uint }
+      witnesses: { type: "list[peer_id]" }
+      witness_signatures: { type: "list[signature]" }
+      consumer_signature: { type: signature }
+      timestamp: { type: timestamp }
+
+  # Top-up result structure
+  TopUpResult:
+    description: "Top-up result with witness attestations"
+    fields:
+      session_id: { type: hash }
+      consumer: { type: peer_id }
+      provider: { type: peer_id }
+      previous_total: { type: uint }
+      additional_amount: { type: uint }
+      new_total: { type: uint }
+      observed_balance: { type: uint }
+      witnesses: { type: "list[peer_id]" }
+      witness_signatures: { type: "list[signature]" }
+      consumer_signature: { type: signature }
+      timestamp: { type: timestamp }
+
+  # Witness preliminary verdict (matches WITNESS_PRELIMINARY message)
+  WitnessPreliminary:
+    description: "Preliminary verdict from a witness"
+    fields:
+      session_id: { type: hash }
+      witness: { type: peer_id }
+      verdict: { type: WitnessVerdict }
+      observed_balance: { type: uint }
+      observed_chain_head: { type: hash }
+      reject_reason: { type: string }
+      timestamp: { type: timestamp }
+      signature: { type: signature }
+
+  # Witness final vote (matches WITNESS_FINAL_VOTE message)
+  WitnessFinalVote:
+    description: "Final vote from a witness"
+    fields:
+      session_id: { type: hash }
+      witness: { type: peer_id }
+      vote: { type: WitnessVerdict }
+      observed_balance: { type: uint }
+      timestamp: { type: timestamp }
+      signature: { type: signature }
+
+  # Top-up intent (for storing incoming top-up request)
+  TopUpIntent:
+    description: "Top-up request from consumer"
+    fields:
+      session_id: { type: hash }
+      consumer: { type: peer_id }
+      additional_amount: { type: uint }
+      current_lock_result_hash: { type: hash }
+      timestamp: { type: timestamp }
+
+  # Top-up vote (matches TOPUP_VOTE message)
+  TopUpVote:
+    description: "Vote on top-up request from a witness"
+    fields:
+      session_id: { type: hash }
+      witness: { type: peer_id }
+      vote: { type: WitnessVerdict }
+      additional_amount: { type: uint }
+      observed_balance: { type: uint }
+      timestamp: { type: timestamp }
+      signature: { type: signature }
+
+  # Witness request (matches WITNESS_REQUEST message)
+  WitnessRequest:
+    description: "Request for witness participation"
+    fields:
+      consumer: { type: peer_id }
+      provider: { type: peer_id }
+      amount: { type: uint }
+      session_id: { type: hash }
+      my_chain_head: { type: hash }
+      witnesses: { type: "list[peer_id]" }
+      timestamp: { type: timestamp }
+      signature: { type: signature }
+
+# =============================================================================
+# FUNCTIONS (Transaction-specific)
+# =============================================================================
+
+functions:
+  # Build lock result from collected votes
+  BUILD_LOCK_RESULT:
+    description: "Build final lock result structure from collected votes"
+    params: []
+    returns: LockResult
+    body: |
+      consensus = LOAD(consensus_direction)
+      status = IF consensus == "ACCEPT" THEN LockStatus.ACCEPTED ELSE LockStatus.REJECTED
+      votes = LOAD(votes)
+      signatures = MAP(votes, v => v.signature)
+      RETURN {
+        session_id: LOAD(session_id),
+        consumer: LOAD(consumer),
+        provider: LOAD(provider),
+        amount: LOAD(amount),
+        status: status,
+        observed_balance: LOAD(observed_balance),
+        witnesses: LOAD(witnesses),
+        witness_signatures: signatures,
+        consumer_signature: null,
+        timestamp: NOW()
+      }
+
+  # Build top-up result from collected votes
+  BUILD_TOPUP_RESULT:
+    description: "Build final top-up result structure from collected votes"
+    params: []
+    returns: TopUpResult
+    body: |
+      consensus = LOAD(topup_consensus_direction)
+      status = IF consensus == "ACCEPT" THEN LockStatus.ACCEPTED ELSE LockStatus.REJECTED
+      votes = LOAD(topup_votes)
+      signatures = MAP(votes, v => v.signature)
+      RETURN {
+        session_id: LOAD(session_id),
+        consumer: LOAD(consumer),
+        provider: LOAD(provider),
+        previous_total: LOAD(total_escrowed),
+        additional_amount: LOAD(topup_intent).additional_amount,
+        new_total: LOAD(total_escrowed) + LOAD(topup_intent).additional_amount,
+        observed_balance: LOAD(topup_observed_balance),
+        witnesses: LOAD(witnesses),
+        witness_signatures: signatures,
+        consumer_signature: null,
+        timestamp: NOW()
+      }
+
+# =============================================================================
+# BLOCK TYPES (written to chain)
+# =============================================================================
+
+blocks:
+  BALANCE_LOCK:
+    description: "Recorded when consumer locks funds"
+    appended_by: [Consumer, Witness]
+    fields:
+      session_id: { type: hash, required: true }
+      amount: { type: uint, required: true }
+      lock_result_hash: { type: hash, required: true }
+      timestamp: { type: timestamp, required: true }
+
+  BALANCE_TOPUP:
+    description: "Recorded when consumer adds to existing escrow"
+    appended_by: [Consumer, Witness]
+    fields:
+      session_id: { type: hash, required: true }
+      previous_total: { type: uint, required: true }
+      topup_amount: { type: uint, required: true }
+      new_total: { type: uint, required: true }
+      topup_result_hash: { type: hash, required: true }
+      timestamp: { type: timestamp, required: true }
+
+  WITNESS_COMMITMENT:
+    description: "Recorded by witness when lock is finalized"
+    appended_by: [Witness]
+    fields:
+      session_id: { type: hash, required: true }
+      consumer: { type: peer_id, required: true }
+      provider: { type: peer_id, required: true }
+      amount: { type: uint, required: true }
+      observed_balance: { type: uint, required: true }
+      witnesses: { type: "list[peer_id]", required: true }
+      timestamp: { type: timestamp, required: true }
+
+  WITNESS_REPLACEMENT:
+    description: "Recorded when a witness is replaced"
+    appended_by: [Witness]
+    fields:
+      session_id: { type: hash, required: true }
+      old_witness: { type: peer_id, required: true }
+      new_witness: { type: peer_id, required: true }
+      reason: { type: string, required: true }
+      remaining_witnesses: { type: "list[peer_id]", required: true }
+      timestamp: { type: timestamp, required: true }
+
+# =============================================================================
+# MESSAGES
+# =============================================================================
+
+messages:
+  # --- Consumer -> Provider ---
+  LOCK_INTENT:
+    sender: Consumer
+    recipients: [Provider]
+    description: "Consumer initiates escrow lock"
+    fields:
+      consumer: { type: peer_id, required: true }
+      provider: { type: peer_id, required: true }
+      amount: { type: uint, required: true }
+      session_id: { type: hash, required: true }
+      consumer_nonce: { type: bytes, required: true }
+      provider_chain_checkpoint: { type: hash, required: true }
+      checkpoint_timestamp: { type: timestamp, required: true }
+      timestamp: { type: timestamp, required: true }
+    signed_by: consumer
+
+  # --- Provider -> Consumer ---
+  WITNESS_SELECTION_COMMITMENT:
+    sender: Provider
+    recipients: [Consumer]
+    description: "Provider commits to witness selection"
+    fields:
+      session_id: { type: hash, required: true }
+      provider: { type: peer_id, required: true }
+      provider_nonce: { type: bytes, required: true }
+      provider_chain_segment: { type: bytes, required: true }
+      selection_inputs: { type: SelectionInputs, required: true }
+      witnesses: { type: "list[peer_id]", required: true }
+      timestamp: { type: timestamp, required: true }
+    signed_by: provider
+
+  LOCK_REJECTED:
+    sender: Provider
+    recipients: [Consumer]
+    description: "Provider rejects lock request"
+    fields:
+      session_id: { type: hash, required: true }
+      reason: { type: string, required: true }
+      timestamp: { type: timestamp, required: true }
+    signed_by: provider
+
+  # --- Consumer -> Witnesses ---
+  WITNESS_REQUEST:
+    sender: Consumer
+    recipients: [Witness]
+    description: "Consumer requests witness participation"
+    fields:
+      consumer: { type: peer_id, required: true }
+      provider: { type: peer_id, required: true }
+      amount: { type: uint, required: true }
+      session_id: { type: hash, required: true }
+      my_chain_head: { type: hash, required: true }
+      witnesses: { type: "list[peer_id]", required: true }
+      timestamp: { type: timestamp, required: true }
+    signed_by: consumer
+
+  CONSUMER_SIGNED_LOCK:
+    sender: Consumer
+    recipients: [Witness]
+    description: "Consumer counter-signs the lock result"
+    fields:
+      session_id: { type: hash, required: true }
+      consumer_signature: { type: signature, required: true }
+      timestamp: { type: timestamp, required: true }
+
+  # --- Witness <-> Witness ---
+  WITNESS_PRELIMINARY:
+    sender: Witness
+    recipients: [Witness]
+    description: "Witness shares preliminary verdict"
+    fields:
+      session_id: { type: hash, required: true }
+      witness: { type: peer_id, required: true }
+      verdict: { type: WitnessVerdict, required: true }
+      observed_balance: { type: uint, required: true }
+      observed_chain_head: { type: hash, required: true }
+      reject_reason: { type: string, required: false }
+      timestamp: { type: timestamp, required: true }
+    signed_by: witness
+
+  WITNESS_CHAIN_SYNC_REQUEST:
+    sender: Witness
+    recipients: [Witness]
+    description: "Witness requests chain data from peer"
+    fields:
+      session_id: { type: hash, required: true }
+      consumer: { type: peer_id, required: true }
+      requesting_witness: { type: peer_id, required: true }
+      timestamp: { type: timestamp, required: true }
+    signed_by: requesting_witness
+
+  WITNESS_CHAIN_SYNC_RESPONSE:
+    sender: Witness
+    recipients: [Witness]
+    description: "Witness provides chain data"
+    fields:
+      session_id: { type: hash, required: true }
+      consumer: { type: peer_id, required: true }
+      chain_data: { type: bytes, required: true }
+      chain_head: { type: hash, required: true }
+      timestamp: { type: timestamp, required: true }
+    signed_by: sender
+
+  WITNESS_FINAL_VOTE:
+    sender: Witness
+    recipients: [Witness]
+    description: "Witness casts final vote"
+    fields:
+      session_id: { type: hash, required: true }
+      witness: { type: peer_id, required: true }
+      vote: { type: WitnessVerdict, required: true }
+      observed_balance: { type: uint, required: true }
+      timestamp: { type: timestamp, required: true }
+    signed_by: witness
+
+  WITNESS_RECRUIT_REQUEST:
+    sender: Witness
+    recipients: [Witness]
+    description: "Request additional witness participation"
+    fields:
+      session_id: { type: hash, required: true }
+      consumer: { type: peer_id, required: true }
+      provider: { type: peer_id, required: true }
+      amount: { type: uint, required: true }
+      existing_witnesses: { type: "list[peer_id]", required: true }
+      existing_votes: { type: "list[WITNESS_FINAL_VOTE]", required: true }
+      reason: { type: string, required: true }
+      timestamp: { type: timestamp, required: true }
+    signed_by: sender
+
+  # --- Witness -> Consumer ---
+  LOCK_RESULT_FOR_SIGNATURE:
+    sender: Witness
+    recipients: [Consumer]
+    description: "Witness sends result for consumer counter-signature"
+    fields:
+      result: { type: LockResult, required: true }
+
+  # --- Witness -> Network ---
+  BALANCE_UPDATE_BROADCAST:
+    sender: Witness
+    recipients: ["*"]  # broadcast
+    description: "Announce locked balance to network"
+    fields:
+      consumer: { type: peer_id, required: true }
+      lock_result: { type: LockResult, required: true }
+      timestamp: { type: timestamp, required: true }
+
+  # --- Liveness ---
+  LIVENESS_PING:
+    sender: Witness
+    recipients: [Witness, Consumer]
+    description: "Check if peer is alive"
+    fields:
+      session_id: { type: hash, required: true }
+      from_witness: { type: peer_id, required: true }
+      timestamp: { type: timestamp, required: true }
+    signed_by: from_witness
+
+  LIVENESS_PONG:
+    sender: [Witness, Consumer]
+    recipients: [Witness]
+    description: "Response to liveness check"
+    fields:
+      session_id: { type: hash, required: true }
+      from_witness: { type: peer_id, required: true }
+      timestamp: { type: timestamp, required: true }
+    signed_by: from_witness
+
+  # --- Top-up ---
+  TOPUP_INTENT:
+    sender: Consumer
+    recipients: [Witness]
+    description: "Consumer requests additional escrow"
+    fields:
+      session_id: { type: hash, required: true }
+      consumer: { type: peer_id, required: true }
+      additional_amount: { type: uint, required: true }
+      current_lock_result_hash: { type: hash, required: true }
+      timestamp: { type: timestamp, required: true }
+    signed_by: consumer
+
+  TOPUP_RESULT_FOR_SIGNATURE:
+    sender: Witness
+    recipients: [Consumer]
+    description: "Witnesses send top-up result for signature"
+    fields:
+      result: { type: TopUpResult, required: true }
+
+  CONSUMER_SIGNED_TOPUP:
+    sender: Consumer
+    recipients: [Witness]
+    description: "Consumer counter-signs top-up"
+    fields:
+      session_id: { type: hash, required: true }
+      consumer_signature: { type: signature, required: true }
+      timestamp: { type: timestamp, required: true }
+
+  TOPUP_VOTE:
+    sender: Witness
+    recipients: [Witness]
+    description: "Witness vote on top-up"
+    fields:
+      session_id: { type: hash, required: true }
+      witness: { type: peer_id, required: true }
+      vote: { type: WitnessVerdict, required: true }
+      additional_amount: { type: uint, required: true }
+      observed_balance: { type: uint, required: true }
+      timestamp: { type: timestamp, required: true }
+    signed_by: witness
+
+# =============================================================================
+# ACTORS
+# =============================================================================
+
+actors:
+  Consumer:
+    description: "Party paying for service"
+
+    store_schema:
+      provider: peer_id
+      amount: uint
+      session_id: hash
+      consumer_nonce: bytes
+      provider_chain_checkpoint: hash
+      checkpoint_timestamp: timestamp
+      provider_nonce: bytes
+      provider_chain_segment: bytes
+      selection_inputs: SelectionInputs
+      proposed_witnesses: "list[peer_id]"
+      verified_chain_state: ChainState
+      witnesses: "list[peer_id]"
+      intent_sent_at: timestamp
+      requests_sent_at: timestamp
+      pending_result: LockResult
+      result_sender: peer_id
+      lock_result: LockResult
+      reject_reason: string
+      total_escrowed: uint
+      # Top-up
+      additional_amount: uint
+      current_lock_hash: hash
+      topup_sent_at: timestamp
+      pending_topup_result: TopUpResult
+      topup_result: TopUpResult
+      topup_failed_reason: string
+
+    external_triggers:
+      initiate_lock:
+        description: "Start a new escrow lock"
+        params:
+          provider: peer_id
+          amount: uint
+        allowed_in: [IDLE]
+
+      initiate_topup:
+        description: "Add funds to existing escrow"
+        params:
+          additional_amount: uint
+        allowed_in: [LOCKED]
+
+    initial_state: IDLE
+
+    states:
+      IDLE:
+        description: "Waiting to initiate lock"
+
+      SENDING_LOCK_INTENT:
+        description: "Sending lock intent to provider"
+
+      WAITING_FOR_WITNESS_COMMITMENT:
+        description: "Waiting for provider witness selection"
+
+      VERIFYING_PROVIDER_CHAIN:
+        description: "Verifying provider's chain segment"
+
+      VERIFYING_WITNESSES:
+        description: "Verifying witness selection is correct"
+
+      SENDING_REQUESTS:
+        description: "Sending requests to witnesses"
+
+      WAITING_FOR_RESULT:
+        description: "Waiting for witness consensus"
+
+      REVIEWING_RESULT:
+        description: "Reviewing lock result"
+
+      SIGNING_RESULT:
+        description: "Counter-signing the lock"
+
+      LOCKED:
+        description: "Funds successfully locked"
+        terminal: false  # can transition to top-up
+
+      FAILED:
+        description: "Lock failed"
+        terminal: true
+
+      # Top-up states
+      SENDING_TOPUP:
+        description: "Sending top-up request"
+
+      WAITING_FOR_TOPUP_RESULT:
+        description: "Waiting for cabal top-up consensus"
+
+      REVIEWING_TOPUP_RESULT:
+        description: "Reviewing top-up result"
+
+      SIGNING_TOPUP:
+        description: "Counter-signing top-up"
+
+    transitions:
+      # Initial lock flow
+      - from: IDLE
+        trigger: initiate_lock
+        to: SENDING_LOCK_INTENT
+        guard: has_provider_checkpoint
+        actions:
+          - { store: [provider, amount] }
+          - { compute: session_id, from: "HASH(peer_id + provider + current_time)" }
+          - { compute: consumer_nonce, from: "RANDOM_BYTES(32)" }
+          - { lookup: provider_chain_checkpoint, from: "chain.get_peer_hash(provider)" }
+        on_guard_fail:
+          store: { reject_reason: "no_prior_provider_checkpoint" }
+          target: FAILED
+
+      - from: SENDING_LOCK_INTENT
+        trigger: auto
+        to: WAITING_FOR_WITNESS_COMMITMENT
+        actions:
+          - send:
+              message: LOCK_INTENT
+              to: provider
+          - { store: { intent_sent_at: current_time } }
+
+      - from: WAITING_FOR_WITNESS_COMMITMENT
+        trigger: WITNESS_SELECTION_COMMITMENT
+        to: VERIFYING_PROVIDER_CHAIN
+        actions:
+          - { store_from_message: [provider_nonce, provider_chain_segment, selection_inputs] }
+          - { store_from_message: { proposed_witnesses: witnesses } }
+
+      - from: WAITING_FOR_WITNESS_COMMITMENT
+        trigger: LOCK_REJECTED
+        to: FAILED
+        actions:
+          - { store_from_message: { reject_reason: reason } }
+
+      - from: WAITING_FOR_WITNESS_COMMITMENT
+        trigger: timeout(WITNESS_COMMITMENT_TIMEOUT)
+        to: FAILED
+        actions:
+          - { store: { reject_reason: "provider_timeout" } }
+
+      - from: VERIFYING_PROVIDER_CHAIN
+        trigger: auto
+        to: VERIFYING_WITNESSES
+        guard: chain_segment_valid_and_contains_checkpoint
+        actions:
+          - { compute: verified_chain_state, from: "CHAIN_STATE_AT(provider_chain_segment, provider_chain_checkpoint)" }
+        on_guard_fail:
+          store: { reject_reason: "invalid_chain_segment" }
+          target: FAILED
+
+      - from: VERIFYING_WITNESSES
+        trigger: auto
+        to: SENDING_REQUESTS
+        guard: witness_selection_valid
+        actions:
+          - { store: { witnesses: proposed_witnesses } }
+        on_guard_fail:
+          store: { reject_reason: "witness_selection_mismatch" }
+          target: FAILED
+
+      - from: SENDING_REQUESTS
+        trigger: auto
+        to: WAITING_FOR_RESULT
+        actions:
+          - send:
+              message: WITNESS_REQUEST
+              to: each(witnesses)
+          - { store: { requests_sent_at: current_time } }
+
+      - from: WAITING_FOR_RESULT
+        trigger: LOCK_RESULT_FOR_SIGNATURE
+        to: REVIEWING_RESULT
+        actions:
+          - { store_from_message: { pending_result: result } }
+          - { store: { result_sender: message.sender } }
+
+      - from: WAITING_FOR_RESULT
+        trigger: timeout(RECRUITMENT_TIMEOUT)
+        to: FAILED
+        actions:
+          - { store: { reject_reason: "witness_timeout" } }
+
+      - from: REVIEWING_RESULT
+        trigger: auto
+        to: SIGNING_RESULT
+        guard: result_valid_and_accepted
+        on_guard_fail:
+          store: { reject_reason: "result_invalid" }
+          target: FAILED
+
+      - from: SIGNING_RESULT
+        trigger: auto
+        to: LOCKED
+        actions:
+          - { compute: consumer_signature, from: "SIGN(pending_result)" }
+          - { store: { lock_result: pending_result_with_signature } }
+          - append_block:
+              type: BALANCE_LOCK
+              fields:
+                session_id: { from: store.session_id }
+                amount: { from: store.amount }
+                lock_result_hash: { compute: "HASH(lock_result)" }
+          - send:
+              message: CONSUMER_SIGNED_LOCK
+              to: each(witnesses)
+          - { store: { total_escrowed: amount } }
+
+      # Locked state transitions
+      - from: LOCKED
+        trigger: LIVENESS_PING
+        to: LOCKED
+        actions:
+          - send:
+              message: LIVENESS_PONG
+              to: message.sender
+
+      - from: LOCKED
+        trigger: initiate_topup
+        to: SENDING_TOPUP
+        actions:
+          - { store: [additional_amount] }
+          - { compute: current_lock_hash, from: "HASH(lock_result)" }
+
+      # Top-up flow
+      - from: SENDING_TOPUP
+        trigger: auto
+        to: WAITING_FOR_TOPUP_RESULT
+        actions:
+          - send:
+              message: TOPUP_INTENT
+              to: each(witnesses)
+          - { store: { topup_sent_at: current_time } }
+
+      - from: WAITING_FOR_TOPUP_RESULT
+        trigger: TOPUP_RESULT_FOR_SIGNATURE
+        to: REVIEWING_TOPUP_RESULT
+        actions:
+          - { store_from_message: { pending_topup_result: result } }
+
+      - from: WAITING_FOR_TOPUP_RESULT
+        trigger: timeout(CONSENSUS_TIMEOUT)
+        to: LOCKED
+        actions:
+          - { store: { topup_failed_reason: "timeout" } }
+
+      - from: REVIEWING_TOPUP_RESULT
+        trigger: auto
+        to: SIGNING_TOPUP
+        guard: topup_result_valid
+        on_guard_fail:
+          store: { topup_failed_reason: "result_invalid" }
+          target: LOCKED
+
+      - from: SIGNING_TOPUP
+        trigger: auto
+        to: LOCKED
+        actions:
+          - { compute: consumer_signature, from: "SIGN(pending_topup_result)" }
+          - { store: { topup_result: pending_topup_result_with_signature } }
+          - append_block:
+              type: BALANCE_TOPUP
+              fields:
+                session_id: { from: store.session_id }
+                previous_total: { from: store.total_escrowed }
+                topup_amount: { from: store.additional_amount }
+                new_total: { compute: "total_escrowed + additional_amount" }
+          - send:
+              message: CONSUMER_SIGNED_TOPUP
+              to: each(witnesses)
+          - { store: { total_escrowed: "total_escrowed + additional_amount" } }
+
+      # Failure cleanup
+      - from: FAILED
+        trigger: auto
+        to: IDLE
+        actions:
+          - { store: { witnesses: [], pending_result: null } }
+
+    guards:
+      has_provider_checkpoint:
+        description: "Consumer has prior record of provider's chain"
+        expression: "chain.get_peer_hash(provider) != null"
+
+      chain_segment_valid_and_contains_checkpoint:
+        description: "Provider's chain segment is valid and contains our checkpoint"
+        expression: |
+          VERIFY_CHAIN_SEGMENT(provider_chain_segment) &&
+          CHAIN_CONTAINS_HASH(provider_chain_segment, provider_chain_checkpoint)
+
+      witness_selection_valid:
+        description: "Recomputed witness selection matches provider's proposal"
+        expression: |
+          SELECT_WITNESSES(HASH(session_id + provider_nonce + consumer_nonce), verified_chain_state)
+          == proposed_witnesses &&
+          LENGTH(proposed_witnesses) >= WITNESS_THRESHOLD
+
+      result_valid_and_accepted:
+        description: "Lock result matches request and has sufficient signatures"
+        expression: |
+          pending_result != null &&
+          pending_result.session_id == session_id &&
+          pending_result.consumer == peer_id &&
+          pending_result.amount == amount &&
+          pending_result.status == "ACCEPTED" &&
+          LENGTH(pending_result.witness_signatures) >= WITNESS_THRESHOLD
+
+      topup_result_valid:
+        description: "Top-up result matches request and has sufficient signatures"
+        expression: |
+          pending_topup_result != null &&
+          pending_topup_result.session_id == session_id &&
+          pending_topup_result.consumer == peer_id &&
+          pending_topup_result.additional_amount == additional_amount &&
+          LENGTH(pending_topup_result.witness_signatures) >= WITNESS_THRESHOLD
+
+  # Provider actor (abbreviated - handles witness selection phase only)
+  Provider:
+    description: "Party providing service, selects witnesses"
+
+    store_schema:
+      consumer: peer_id
+      amount: uint
+      session_id: hash
+      consumer_nonce: bytes
+      provider_nonce: bytes
+      requested_checkpoint: hash
+      checkpoint_timestamp: timestamp
+      chain_state_at_checkpoint: ChainState
+      provider_chain_segment: bytes
+      witnesses: "list[peer_id]"
+      selection_inputs: SelectionInputs
+      commitment_sent_at: timestamp
+      lock_result: LockResult
+
+    initial_state: IDLE
+
+    states:
+      IDLE:
+        description: "Waiting for lock request"
+
+      VALIDATING_CHECKPOINT:
+        description: "Validating consumer's checkpoint reference"
+
+      SELECTING_WITNESSES:
+        description: "Computing deterministic witness selection"
+
+      SENDING_COMMITMENT:
+        description: "Sending witness selection to consumer"
+
+      WAITING_FOR_LOCK:
+        description: "Waiting for lock to complete"
+
+      SERVICE_PHASE:
+        description: "Lock complete, providing service"
+        terminal: false  # continues to attestation
+
+    transitions:
+      - from: IDLE
+        trigger: LOCK_INTENT
+        to: VALIDATING_CHECKPOINT
+        actions:
+          - { store_from_message: [consumer, amount, session_id, consumer_nonce] }
+          - { store_from_message: { requested_checkpoint: provider_chain_checkpoint } }
+          - { compute: provider_nonce, from: "RANDOM_BYTES(32)" }
+
+      - from: VALIDATING_CHECKPOINT
+        trigger: auto
+        to: SELECTING_WITNESSES
+        guard: checkpoint_exists_in_chain
+        actions:
+          - { compute: chain_state_at_checkpoint, from: "chain.get_state_at(requested_checkpoint)" }
+          - { compute: provider_chain_segment, from: "chain.to_segment(to_hash=requested_checkpoint)" }
+        on_guard_fail:
+          actions:
+            - send:
+                message: LOCK_REJECTED
+                to: consumer
+                fields: { reason: "unknown_checkpoint" }
+          target: IDLE
+
+      - from: SELECTING_WITNESSES
+        trigger: auto
+        to: SENDING_COMMITMENT
+        actions:
+          - compute:
+              witnesses:
+              from: "SELECT_WITNESSES(HASH(session_id + provider_nonce + consumer_nonce), chain_state_at_checkpoint)"
+          - store: { selection_inputs: "{ known_peers, trust_scores, interaction_counts }" }
+
+      - from: SENDING_COMMITMENT
+        trigger: auto
+        to: WAITING_FOR_LOCK
+        actions:
+          - send:
+              message: WITNESS_SELECTION_COMMITMENT
+              to: consumer
+          - { store: { commitment_sent_at: current_time } }
+
+      - from: WAITING_FOR_LOCK
+        trigger: BALANCE_UPDATE_BROADCAST
+        to: SERVICE_PHASE
+        guard: "message.lock_result.session_id == session_id && message.lock_result.status == ACCEPTED"
+        actions:
+          - { store_from_message: { lock_result: lock_result } }
+
+      - from: WAITING_FOR_LOCK
+        trigger: timeout(LOCK_TIMEOUT)
+        to: IDLE
+        actions:
+          - { store: { session_id: null } }
+
+    guards:
+      checkpoint_exists_in_chain:
+        expression: "chain.contains_hash(requested_checkpoint)"
+
+  # Witness actor (abbreviated structure - full state machine is large)
+  Witness:
+    description: "Verifies consumer balance, participates in consensus"
+
+    store_schema:
+      request: WitnessRequest
+      consumer: peer_id
+      provider: peer_id
+      amount: uint
+      session_id: hash
+      my_chain_head: hash
+      witnesses: "list[peer_id]"
+      other_witnesses: "list[peer_id]"
+      last_seen_record: ChainRecord
+      peer_balances: "map[peer_id, uint]"  # Populated by gossip layer or test setup
+      observed_balance: uint
+      observed_chain_head: hash
+      reject_reason: string
+      verdict: WitnessVerdict
+      preliminaries: "list[WitnessPreliminary]"
+      votes: "list[WitnessFinalVote]"
+      signatures: "list[signature]"
+      recruitment_round: uint
+      consensus_direction: string
+      final_result: LockStatus
+      result: LockResult
+      total_escrowed: uint
+      # Top-up
+      topup_intent: TopUpIntent
+      topup_observed_balance: uint
+      topup_free_balance: uint
+      topup_verdict: WitnessVerdict
+      topup_votes: "list[TopUpVote]"
+      topup_signatures: "list[signature]"
+      topup_final_result: LockStatus
+      topup_result: TopUpResult
+
+    initial_state: IDLE
+
+    states:
+      # Initial lock states
+      IDLE:
+        description: "Waiting for witness request"
+
+      CHECKING_CHAIN_KNOWLEDGE:
+        description: "Checking if we have recent consumer chain data"
+
+      REQUESTING_CHAIN_SYNC:
+        description: "Requesting chain data from peers"
+
+      WAITING_FOR_CHAIN_SYNC:
+        description: "Waiting for chain sync response"
+
+      CHECKING_BALANCE:
+        description: "Verifying consumer has sufficient balance"
+
+      CHECKING_EXISTING_LOCKS:
+        description: "Checking for existing locks on balance"
+
+      SHARING_PRELIMINARY:
+        description: "Sharing preliminary verdict with peers"
+
+      COLLECTING_PRELIMINARIES:
+        description: "Collecting preliminary verdicts"
+
+      EVALUATING_PRELIMINARIES:
+        description: "Evaluating preliminary consensus"
+
+      VOTING:
+        description: "Casting final vote"
+
+      COLLECTING_VOTES:
+        description: "Collecting final votes"
+
+      EVALUATING_VOTES:
+        description: "Evaluating vote consensus"
+
+      BUILDING_RESULT:
+        description: "Building final lock result"
+
+      RECRUITING_MORE:
+        description: "Recruiting additional witnesses"
+
+      WAITING_FOR_RECRUITS:
+        description: "Waiting for recruit responses"
+
+      SIGNING_RESULT:
+        description: "Signing the lock result"
+
+      COLLECTING_SIGNATURES:
+        description: "Collecting peer signatures"
+
+      PROPAGATING_RESULT:
+        description: "Sending result to consumer"
+
+      WAITING_FOR_CONSUMER_SIGNATURE:
+        description: "Waiting for consumer counter-signature"
+
+      FINALIZING:
+        description: "Recording lock on chain and broadcasting"
+
+      ESCROW_ACTIVE:
+        description: "Escrow locked, monitoring liveness"
+
+      DONE:
+        description: "Lock process complete"
+
+      REJECTED:
+        description: "Witness declined to participate"
+
+      # Top-up states
+      CHECKING_TOPUP_BALANCE:
+        description: "Verifying consumer has additional free balance"
+
+      VOTING_TOPUP:
+        description: "Voting on top-up request"
+
+      COLLECTING_TOPUP_VOTES:
+        description: "Collecting top-up votes"
+
+      SIGNING_TOPUP_RESULT:
+        description: "Signing top-up result"
+
+      COLLECTING_TOPUP_SIGNATURES:
+        description: "Collecting top-up signatures"
+
+      PROPAGATING_TOPUP:
+        description: "Sending top-up result to consumer"
+
+      WAITING_FOR_CONSUMER_TOPUP_SIGNATURE:
+        description: "Waiting for consumer top-up signature"
+
+    # Note: Full transitions for Witness are extensive - see Python implementation
+    # This schema captures the state structure; full transitions would follow same pattern
+
+    transitions:
+      # Key transitions (abbreviated)
+      - from: IDLE
+        trigger: WITNESS_REQUEST
+        to: CHECKING_CHAIN_KNOWLEDGE
+        actions:
+          - { store_from_message: [consumer, provider, amount, session_id, my_chain_head, witnesses] }
+          - { store: { consumer: message.sender } }
+          - { compute: other_witnesses, from: "REMOVE(witnesses, peer_id)" }
+          - { store: { preliminaries: [], votes: [], signatures: [], recruitment_round: 0 } }
+
+      # For now, assume gossip layer has populated peer_balances in our store
+      # TODO: Add chain sync flow when we implement gossip transactions
+      - from: CHECKING_CHAIN_KNOWLEDGE
+        trigger: auto
+        to: CHECKING_BALANCE
+        actions:
+          # Look up this consumer's balance from peer-indexed store
+          - { compute: observed_balance, from: "peer_balances[consumer]" }
+
+      - from: CHECKING_BALANCE
+        trigger: auto
+        to: CHECKING_EXISTING_LOCKS
+        guard: "observed_balance >= amount"
+
+      - from: CHECKING_BALANCE
+        trigger: auto
+        to: SHARING_PRELIMINARY
+        guard: "observed_balance < amount"
+        actions:
+          - { store: { verdict: REJECT, reject_reason: "insufficient_balance" } }
+
+      - from: CHECKING_EXISTING_LOCKS
+        trigger: auto
+        to: SHARING_PRELIMINARY
+        actions:
+          - { store: { verdict: ACCEPT } }
+
+      - from: SHARING_PRELIMINARY
+        trigger: auto
+        to: COLLECTING_PRELIMINARIES
+        actions:
+          - send:
+              message: WITNESS_PRELIMINARY
+              to: each(other_witnesses)
+          - { store: { preliminary_sent_at: current_time } }
+
+      - from: COLLECTING_PRELIMINARIES
+        trigger: WITNESS_PRELIMINARY
+        to: COLLECTING_PRELIMINARIES
+        actions:
+          - { append: { preliminaries: message.payload } }
+
+      - from: COLLECTING_PRELIMINARIES
+        trigger: timeout(PRELIMINARY_TIMEOUT)
+        to: VOTING
+        actions:
+          - { compute: consensus_direction, from: "compute_consensus(preliminaries)" }
+
+      - from: VOTING
+        trigger: auto
+        to: COLLECTING_VOTES
+        actions:
+          - send:
+              message: WITNESS_FINAL_VOTE
+              to: each(other_witnesses)
+
+      - from: COLLECTING_VOTES
+        trigger: WITNESS_FINAL_VOTE
+        to: COLLECTING_VOTES
+        actions:
+          - { append: { votes: message.payload } }
+
+      - from: COLLECTING_VOTES
+        trigger: timeout(CONSENSUS_TIMEOUT)
+        to: BUILDING_RESULT
+        guard: "LENGTH(votes) >= WITNESS_THRESHOLD"
+
+      - from: BUILDING_RESULT
+        trigger: auto
+        to: SIGNING_RESULT
+        actions:
+          - { compute: result, from: "build_lock_result()" }
+
+      - from: SIGNING_RESULT
+        trigger: auto
+        to: PROPAGATING_RESULT
+        actions:
+          - send:
+              message: LOCK_RESULT_FOR_SIGNATURE
+              to: consumer
+          - { store: { propagated_at: current_time } }
+
+      - from: PROPAGATING_RESULT
+        trigger: CONSUMER_SIGNED_LOCK
+        to: ESCROW_ACTIVE
+        actions:
+          - { store_from_message: { consumer_signature: signature } }
+          - { store: { total_escrowed: amount } }
+          - append_block:
+              type: WITNESS_COMMITMENT
+
+      - from: ESCROW_ACTIVE
+        trigger: TOPUP_INTENT
+        to: CHECKING_TOPUP_BALANCE
+        actions:
+          - { store_from_message: { topup_intent: message } }
+          # Look up this consumer's balance from peer-indexed store
+          - { compute: topup_observed_balance, from: "peer_balances[consumer]" }
+
+      # Top-up balance check - accept if sufficient free balance
+      - from: CHECKING_TOPUP_BALANCE
+        trigger: auto
+        to: VOTING_TOPUP
+        guard: "topup_observed_balance - total_escrowed >= topup_intent.additional_amount"
+        actions:
+          - { store: { topup_verdict: "accept" } }
+
+      # Top-up balance check - reject if insufficient
+      - from: CHECKING_TOPUP_BALANCE
+        trigger: auto
+        to: ESCROW_ACTIVE
+        guard: "topup_observed_balance - total_escrowed < topup_intent.additional_amount"
+        actions:
+          - { store: { topup_verdict: "reject", topup_reject_reason: "insufficient_free_balance" } }
+
+      - from: ESCROW_ACTIVE
+        trigger: LIVENESS_PING
+        to: ESCROW_ACTIVE
+        actions:
+          - send:
+              message: LIVENESS_PONG
+              to: message.sender

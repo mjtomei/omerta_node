@@ -153,6 +153,10 @@ class Chain:
         self.private_key = private_key
         self.blocks: List[Block] = []
 
+        # Peer chain cache - for testing and gossip-received data
+        # Maps peer_id -> {"data": chain_data, "head": head_hash, "state": state_dict}
+        self._peer_cache: Dict[str, dict] = {}
+
         # Create genesis
         genesis = Block(
             owner=public_key,
@@ -306,3 +310,74 @@ class Chain:
                     break
 
         return [b.to_dict() for b in self.blocks[start_idx:end_idx]]
+
+    # =========================================================================
+    # Peer Chain Cache - for testing and gossip-received data
+    # =========================================================================
+
+    def seed_peer_chain(
+        self,
+        peer_id: str,
+        balance: float,
+        head_hash: Optional[str] = None,
+        chain_data: Optional[bytes] = None,
+        locked_amount: float = 0.0,
+        trust_score: float = 0.0,
+    ) -> None:
+        """
+        Seed the peer chain cache with data for testing.
+
+        This simulates having received gossip data about a peer's chain state.
+        In production, this would be populated via chain sync messages.
+
+        Args:
+            peer_id: The peer's identifier
+            balance: The peer's current balance
+            head_hash: The hash of their chain head (auto-generated if None)
+            chain_data: Serialized chain data (placeholder if None)
+            locked_amount: Amount currently locked in escrow
+            trust_score: The peer's trust score
+        """
+        if head_hash is None:
+            head_hash = hash_data(f"{peer_id}:{balance}:{locked_amount}")
+
+        if chain_data is None:
+            chain_data = b"placeholder_chain_data"
+
+        self._peer_cache[peer_id] = {
+            "data": chain_data,
+            "head": head_hash,
+            "state": {
+                "block_hash": head_hash,
+                "balance": balance,
+                "locked_amount": locked_amount,
+                "trust_score": trust_score,
+                "block_height": 1,
+            },
+        }
+
+    def has_peer_data(self, peer_id: str) -> bool:
+        """Check if we have cached chain data for a peer."""
+        return peer_id in self._peer_cache
+
+    def get_peer_data(self, peer_id: str) -> Optional[bytes]:
+        """Get cached chain data for a peer."""
+        if peer_id in self._peer_cache:
+            return self._peer_cache[peer_id]["data"]
+        return None
+
+    def get_peer_head(self, peer_id: str) -> Optional[str]:
+        """Get cached chain head hash for a peer."""
+        if peer_id in self._peer_cache:
+            return self._peer_cache[peer_id]["head"]
+        return None
+
+    def get_peer_state(self, peer_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get cached chain state for a peer.
+
+        Returns a dict with: balance, locked_amount, trust_score, block_height, block_hash
+        """
+        if peer_id in self._peer_cache:
+            return self._peer_cache[peer_id]["state"]
+        return None

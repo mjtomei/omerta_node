@@ -94,6 +94,59 @@ STATE S0:
 - `REMOVE(list, item) → list` - remove item from list
 - `SORT(list, by) → list` - sort list by key
 
+### List operations
+- `APPEND(list, item) → list` - append item to list (returns new list)
+- `FILTER(list, predicate) → list` - keep items matching predicate
+- `MAP(list, transform) → list` - apply transform to each item
+
+**Lambda syntax for predicates and transforms:**
+```
+FILTER(votes, v => v.verdict == ACCEPT)   # keep votes where verdict is ACCEPT
+MAP(votes, v => v.signature)               # extract signature from each vote
+```
+
+### Struct literals
+Create structured records inline:
+```
+result = {
+  session_id: LOAD(session_id),
+  status: LockStatus.ACCEPTED,
+  amount: 1000,
+  witnesses: LOAD(witnesses)
+}
+```
+
+Fields are evaluated in order. Can reference variables, call functions, or use literals.
+
+### Message access
+When handling incoming messages:
+- `MESSAGE.sender` - peer_id of the message sender
+- `MESSAGE.payload` - the full message payload as a struct
+- `MESSAGE.field` - access a specific field from the message payload
+
+### Guards and conditional transitions
+Guards are boolean expressions that must be true for a transition to occur:
+```
+STATE WAITING:
+  on RESPONSE from peer:
+    guard: RESPONSE.status == "OK" && LENGTH(RESPONSE.data) > 0
+    → next_state: PROCESSING
+
+  on RESPONSE from peer:
+    guard: RESPONSE.status == "ERROR"
+    → next_state: FAILED
+```
+
+### Auto-transitions
+Transitions that occur immediately without waiting for a message:
+```
+STATE COMPUTING:
+  auto:
+    actions:
+      - result = COMPUTE_SOMETHING()
+    → next_state: SENDING_RESULT
+```
+
 ### Selection
 - `SELECT_WITNESSES(seed, chain_state, criteria) → peer_list` - deterministic witness selection
 - `SEEDED_RNG(seed) → rng` - create seeded random number generator
