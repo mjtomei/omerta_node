@@ -1,0 +1,19 @@
+digraph {
+    rankdir=TB;
+    node [shape=box, style=rounded];
+    edge [fontsize=10];
+
+    __start__ [shape=point, width=0.2];
+    __start__ -> WAITING_FOR_VM;
+
+    SESSION_ENDED [shape=box, style="rounded,bold"];
+
+    WAITING_FOR_VM -> WAITING_FOR_VM [label="setup_session"];
+    WAITING_FOR_VM -> CONNECTING [label="VM_READY"];
+    CONNECTING -> CONNECTED [label="auto"];
+    CONNECTED -> SESSION_ENDED [label="SESSION_TERMINATED"];
+    CONNECTED -> CONNECTED [label="ATTESTATION_RESULT"];
+    CONNECTED -> REQUESTING_CANCEL [label="request_cancel"];
+    REQUESTING_CANCEL -> CONNECTED [label="auto"];
+    SESSION_ENDED -> SESSION_ENDED [label="ATTESTATION_RESULT"];
+}

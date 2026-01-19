@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Regenerate all transaction artifacts from schema files.
+Regenerate all transaction artifacts from DSL files.
 
 This script regenerates:
 1. Markdown documentation
@@ -16,8 +16,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import yaml
-
 
 # Directories
 REPO_ROOT = Path(__file__).parent.parent
@@ -26,20 +24,22 @@ PYTHON_OUTPUT = REPO_ROOT / "simulations" / "transactions"
 GRAPHS_OUTPUT = REPO_ROOT / "docs" / "protocol" / "transactions" / "graphs"
 
 
-def find_schema_dirs() -> list[Path]:
-    """Find all transaction directories containing schema.yaml files."""
-    schema_dirs = []
+def find_transaction_dirs() -> list[Path]:
+    """Find all transaction directories containing DSL files (.omt or .yaml)."""
+    tx_dirs = []
     for item in sorted(SCHEMA_BASE.iterdir()):
         if item.is_dir():
-            schema_file = item / "schema.yaml"
-            if schema_file.exists():
-                schema_dirs.append(item)
-    return schema_dirs
+            # Prefer .omt files, fall back to .yaml
+            dsl_file = item / "transaction.omt"
+            yaml_file = item / "schema.yaml"
+            if dsl_file.exists() or yaml_file.exists():
+                tx_dirs.append(item)
+    return tx_dirs
 
 
-def generate_mermaid_statechart(schema: dict, actor_name: str) -> str:
+def generate_mermaid_statechart(tx_def: dict, actor_name: str) -> str:
     """Generate a Mermaid stateDiagram-v2 for an actor."""
-    actor_info = schema.get("actors", {}).get(actor_name, {})
+    actor_info = tx_def.get("actors", {}).get(actor_name, {})
     if not actor_info:
         return ""
 
@@ -83,9 +83,9 @@ def generate_mermaid_statechart(schema: dict, actor_name: str) -> str:
     return "\n".join(lines)
 
 
-def generate_dot_statechart(schema: dict, actor_name: str) -> str:
+def generate_dot_statechart(tx_def: dict, actor_name: str) -> str:
     """Generate a DOT (Graphviz) statechart for an actor."""
-    actor_info = schema.get("actors", {}).get(actor_name, {})
+    actor_info = tx_def.get("actors", {}).get(actor_name, {})
     if not actor_info:
         return ""
 
@@ -138,23 +138,23 @@ def generate_dot_statechart(schema: dict, actor_name: str) -> str:
     return "\n".join(lines)
 
 
-def write_graph_files(schema_dir: Path, schema: dict, output_dir: Path, verbose: bool = False):
-    """Write graph files (Mermaid and DOT) for all actors in a schema."""
-    tx_name = schema_dir.name
-    actors = schema.get("actors", {})
+def write_graph_files(tx_dir: Path, tx_def: dict, output_dir: Path, verbose: bool = False):
+    """Write graph files (Mermaid and DOT) for all actors in a transaction."""
+    tx_name = tx_dir.name
+    actors = tx_def.get("actors", {})
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for actor_name in actors:
         # Mermaid file
-        mermaid_content = generate_mermaid_statechart(schema, actor_name)
+        mermaid_content = generate_mermaid_statechart(tx_def, actor_name)
         mermaid_path = output_dir / f"{tx_name}_{actor_name.lower()}.mmd"
         mermaid_path.write_text(mermaid_content)
         if verbose:
             print(f"  Generated: {mermaid_path}")
 
         # DOT file
-        dot_content = generate_dot_statechart(schema, actor_name)
+        dot_content = generate_dot_statechart(tx_def, actor_name)
         dot_path = output_dir / f"{tx_name}_{actor_name.lower()}.dot"
         dot_path.write_text(dot_content)
         if verbose:
@@ -179,18 +179,18 @@ def write_graph_files(schema_dir: Path, schema: dict, output_dir: Path, verbose:
                 print(f"  Note: Install graphviz to render SVG (dot command not found)")
 
 
-def regenerate_markdown(schema_dir: Path, verbose: bool = False) -> bool:
+def regenerate_markdown(tx_dir: Path, verbose: bool = False) -> bool:
     """Regenerate markdown documentation for a transaction."""
-    tx_name = schema_dir.name
-    output_path = schema_dir.parent / f"{tx_name}.md"
+    tx_name = tx_dir.name
+    output_path = tx_dir.parent / f"{tx_name}.md"
 
     result = subprocess.run(
         [
             sys.executable,
-            str(REPO_ROOT / "scripts" / "generate_from_schema.py"),
+            str(REPO_ROOT / "scripts" / "generate_transaction.py"),
             "--markdown",
-            "--output-dir", str(schema_dir.parent),
-            str(schema_dir),
+            "--output-dir", str(tx_dir.parent),
+            str(tx_dir),
         ],
         capture_output=True,
         text=True,
@@ -205,18 +205,18 @@ def regenerate_markdown(schema_dir: Path, verbose: bool = False) -> bool:
         return False
 
 
-def regenerate_python(schema_dir: Path, verbose: bool = False) -> bool:
+def regenerate_python(tx_dir: Path, verbose: bool = False) -> bool:
     """Regenerate Python simulation code for a transaction."""
-    tx_name = schema_dir.name.split("_", 1)[1] if "_" in schema_dir.name else schema_dir.name
+    tx_name = tx_dir.name.split("_", 1)[1] if "_" in tx_dir.name else tx_dir.name
     output_path = PYTHON_OUTPUT / f"{tx_name}_generated.py"
 
     result = subprocess.run(
         [
             sys.executable,
-            str(REPO_ROOT / "scripts" / "generate_from_schema.py"),
+            str(REPO_ROOT / "scripts" / "generate_transaction.py"),
             "--python",
             "--output-dir", str(PYTHON_OUTPUT),
-            str(schema_dir),
+            str(tx_dir),
         ],
         capture_output=True,
         text=True,
@@ -231,24 +231,41 @@ def regenerate_python(schema_dir: Path, verbose: bool = False) -> bool:
         return False
 
 
-def regenerate_graphs(schema_dir: Path, verbose: bool = False) -> bool:
+def regenerate_graphs(tx_dir: Path, verbose: bool = False) -> bool:
     """Regenerate state machine graphs for a transaction."""
-    schema_file = schema_dir / "schema.yaml"
-
+    # Import the DSL loader
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
     try:
-        with open(schema_file) as f:
-            schema = yaml.safe_load(f)
-    except Exception as e:
-        print(f"  Error loading schema: {e}", file=sys.stderr)
+        from dsl_converter import load_transaction
+    except ImportError:
+        print(f"  Error: Could not import DSL loader", file=sys.stderr)
         return False
 
-    write_graph_files(schema_dir, schema, GRAPHS_OUTPUT, verbose)
+    # Try DSL first, then YAML
+    dsl_path = tx_dir / "transaction.omt"
+    yaml_path = tx_dir / "schema.yaml"
+
+    try:
+        if dsl_path.exists():
+            tx_def = load_transaction(dsl_path)
+        elif yaml_path.exists():
+            import yaml
+            with open(yaml_path) as f:
+                tx_def = yaml.safe_load(f)
+        else:
+            print(f"  Error: No transaction file found in {tx_dir}", file=sys.stderr)
+            return False
+    except Exception as e:
+        print(f"  Error loading transaction: {e}", file=sys.stderr)
+        return False
+
+    write_graph_files(tx_dir, tx_def, GRAPHS_OUTPUT, verbose)
     return True
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Regenerate all transaction artifacts from schema files"
+        description="Regenerate all transaction artifacts from DSL files"
     )
     parser.add_argument(
         "--graphs-only",
@@ -267,39 +284,39 @@ def main():
 
     args = parser.parse_args()
 
-    # Find all schema directories
-    schema_dirs = find_schema_dirs()
+    # Find all transaction directories
+    tx_dirs = find_transaction_dirs()
 
-    if not schema_dirs:
-        print("No schema directories found.", file=sys.stderr)
+    if not tx_dirs:
+        print("No transaction directories found.", file=sys.stderr)
         sys.exit(1)
 
     # Filter to specific transaction if requested
     if args.transaction:
-        schema_dirs = [d for d in schema_dirs if d.name == args.transaction]
-        if not schema_dirs:
+        tx_dirs = [d for d in tx_dirs if d.name == args.transaction]
+        if not tx_dirs:
             print(f"Transaction not found: {args.transaction}", file=sys.stderr)
             sys.exit(1)
 
-    print(f"Found {len(schema_dirs)} transaction schema(s)")
+    print(f"Found {len(tx_dirs)} transaction(s)")
     print()
 
     success_count = 0
     error_count = 0
 
-    for schema_dir in schema_dirs:
-        print(f"Processing: {schema_dir.name}")
+    for tx_dir in tx_dirs:
+        print(f"Processing: {tx_dir.name}")
 
         if args.graphs_only:
-            if regenerate_graphs(schema_dir, args.verbose):
+            if regenerate_graphs(tx_dir, args.verbose):
                 success_count += 1
             else:
                 error_count += 1
         else:
             # Regenerate all artifacts
-            md_ok = regenerate_markdown(schema_dir, args.verbose)
-            py_ok = regenerate_python(schema_dir, args.verbose)
-            graph_ok = regenerate_graphs(schema_dir, args.verbose)
+            md_ok = regenerate_markdown(tx_dir, args.verbose)
+            py_ok = regenerate_python(tx_dir, args.verbose)
+            graph_ok = regenerate_graphs(tx_dir, args.verbose)
 
             if md_ok and py_ok and graph_ok:
                 success_count += 1

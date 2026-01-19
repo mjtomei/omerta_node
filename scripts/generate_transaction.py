@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Generate documentation and Python code from transaction schema.
+Generate documentation and Python code from transaction definitions.
 
 Usage:
-    python generate_from_schema.py <schema_dir> [--markdown] [--python] [--output-dir <dir>]
+    python generate_transaction.py <tx_dir> [--markdown] [--python] [--output-dir <dir>]
 
 Example:
-    python generate_from_schema.py docs/protocol/transactions/00_escrow_lock --markdown
-    python generate_from_schema.py docs/protocol/transactions/00_escrow_lock --python --output-dir simulations/transactions
+    python generate_transaction.py docs/protocol/transactions/00_escrow_lock --markdown
+    python generate_transaction.py docs/protocol/transactions/00_escrow_lock --python --output-dir simulations/transactions
 """
 
 import argparse
@@ -24,7 +24,7 @@ from typing import Dict, List, Any, Optional, Set
 # =============================================================================
 
 class ExpressionTranslator:
-    """Translate schema expressions to Python code."""
+    """Translate DSL expressions to Python code."""
 
     # Built-in actor properties (accessed as self.X)
     ACTOR_PROPS = {'peer_id', 'current_time', 'chain', 'state', 'cached_chains'}
@@ -116,7 +116,7 @@ class ExpressionTranslator:
         return None
 
     def translate(self, expr: str) -> str:
-        """Translate a schema expression to Python code."""
+        """Translate a DSL expression to Python code."""
         if not expr:
             return "True"
 
@@ -518,6 +518,16 @@ class ExpressionTranslator:
                     i = j
                     continue
 
+                # Handle boolean literals
+                if token.lower() == 'true':
+                    result.append('True')
+                    i = j
+                    continue
+                if token.lower() == 'false':
+                    result.append('False')
+                    i = j
+                    continue
+
                 # Unknown identifier - assume it's a store variable
                 result.append(f'self.load("{token}")')
                 i = j
@@ -542,30 +552,38 @@ class ExpressionTranslator:
         return re.sub(pattern, replace_attr, expr)
 
 
-def load_schema(schema_dir: Path) -> dict:
-    """Load schema.yaml from directory."""
-    schema_path = schema_dir / "schema.yaml"
-    if not schema_path.exists():
-        raise FileNotFoundError(f"Schema not found: {schema_path}")
+def load_transaction(tx_dir: Path) -> dict:
+    """Load transaction definition from directory (DSL .omt file)."""
+    from dsl_converter import load_transaction as load_dsl
 
-    with open(schema_path) as f:
-        schema = yaml.safe_load(f)
+    # Look for DSL file first
+    dsl_path = tx_dir / "transaction.omt"
+    if dsl_path.exists():
+        tx_def = load_dsl(dsl_path)
+        # Validate - disallow object and list[object] types
+        validate_no_object_types(tx_def)
+        return tx_def
 
-    # Validate schema - disallow object and list[object] types
-    validate_no_object_types(schema)
+    # Fallback to YAML for backwards compatibility during transition
+    yaml_path = tx_dir / "schema.yaml"
+    if yaml_path.exists():
+        with open(yaml_path) as f:
+            tx_def = yaml.safe_load(f)
+        validate_no_object_types(tx_def)
+        return tx_def
 
-    return schema
+    raise FileNotFoundError(f"Transaction not found: tried {dsl_path} and {yaml_path}")
 
 
-def validate_no_object_types(schema: dict) -> None:
-    """Validate that schema doesn't use 'object' or 'list[object]' types.
+def validate_no_object_types(tx_def: dict) -> None:
+    """Validate that transaction doesn't use 'object' or 'list[object]' types.
 
     These types are disallowed - use explicit struct types instead.
     """
     errors = []
 
     # Check types section
-    for type_name, type_def in schema.get("types", {}).items():
+    for type_name, type_def in tx_def.get("types", {}).items():
         if isinstance(type_def, dict) and "fields" in type_def:
             for field_name, field_def in type_def["fields"].items():
                 field_type = field_def.get("type", "") if isinstance(field_def, dict) else field_def
@@ -573,22 +591,22 @@ def validate_no_object_types(schema: dict) -> None:
                     errors.append(f"types.{type_name}.{field_name}: '{field_type}' is not allowed. Use explicit struct types.")
 
     # Check messages section
-    for msg_name, msg_def in schema.get("messages", {}).items():
+    for msg_name, msg_def in tx_def.get("messages", {}).items():
         if isinstance(msg_def, dict) and "fields" in msg_def:
             for field_name, field_def in msg_def["fields"].items():
                 field_type = field_def.get("type", "") if isinstance(field_def, dict) else ""
                 if _is_disallowed_type(field_type):
                     errors.append(f"messages.{msg_name}.{field_name}: '{field_type}' is not allowed. Use explicit struct types.")
 
-    # Check actors' store_schema
-    for actor_name, actor_def in schema.get("actors", {}).items():
+    # Check actors' store
+    for actor_name, actor_def in tx_def.get("actors", {}).items():
         if isinstance(actor_def, dict) and "store_schema" in actor_def:
             for field_name, field_type in actor_def["store_schema"].items():
                 if _is_disallowed_type(field_type):
-                    errors.append(f"actors.{actor_name}.store_schema.{field_name}: '{field_type}' is not allowed. Use explicit struct types.")
+                    errors.append(f"actors.{actor_name}.store.{field_name}: '{field_type}' is not allowed. Use explicit struct types.")
 
     if errors:
-        error_msg = "Schema validation failed - disallowed types found:\n" + "\n".join(f"  - {e}" for e in errors)
+        error_msg = "Validation failed - disallowed types found:\n" + "\n".join(f"  - {e}" for e in errors)
         raise ValueError(error_msg)
 
 
@@ -607,9 +625,9 @@ def _is_disallowed_type(type_str: str) -> bool:
     return False
 
 
-def load_commentary(schema_dir: Path) -> str:
+def load_commentary(tx_dir: Path) -> str:
     """Load commentary.md from directory."""
-    commentary_path = schema_dir / "commentary.md"
+    commentary_path = tx_dir / "commentary.md"
     if not commentary_path.exists():
         return ""
 
@@ -621,9 +639,9 @@ def load_commentary(schema_dir: Path) -> str:
 # MARKDOWN GENERATION
 # =============================================================================
 
-def generate_parameters_markdown(schema: dict) -> str:
+def generate_parameters_markdown(tx_def: dict) -> str:
     """Generate parameters table markdown."""
-    params = schema.get("parameters", {})
+    params = tx_def.get("parameters", {})
     if not params:
         return "No parameters defined."
 
@@ -642,9 +660,9 @@ def generate_parameters_markdown(schema: dict) -> str:
     return "\n".join(lines)
 
 
-def generate_blocks_markdown(schema: dict) -> str:
+def generate_blocks_markdown(tx_def: dict) -> str:
     """Generate block types markdown."""
-    blocks = schema.get("blocks", {})
+    blocks = tx_def.get("blocks", {})
     if not blocks:
         return "No block types defined."
 
@@ -667,9 +685,9 @@ def generate_blocks_markdown(schema: dict) -> str:
     return "\n".join(lines)
 
 
-def generate_messages_markdown(schema: dict) -> str:
+def generate_messages_markdown(tx_def: dict) -> str:
     """Generate message types markdown."""
-    messages = schema.get("messages", {})
+    messages = tx_def.get("messages", {})
     if not messages:
         return "No messages defined."
 
@@ -707,9 +725,9 @@ def generate_messages_markdown(schema: dict) -> str:
     return "\n".join(lines)
 
 
-def generate_state_machines_markdown(schema: dict) -> str:
+def generate_state_machines_markdown(tx_def: dict) -> str:
     """Generate state machine diagrams markdown."""
-    actors = schema.get("actors", {})
+    actors = tx_def.get("actors", {})
     if not actors:
         return "No actors defined."
 
@@ -784,15 +802,15 @@ def generate_state_machines_markdown(schema: dict) -> str:
     return "\n".join(lines)
 
 
-def generate_markdown(schema_dir: Path, output_path: Path = None) -> str:
-    """Generate full markdown documentation from schema and commentary."""
-    schema = load_schema(schema_dir)
-    commentary = load_commentary(schema_dir)
+def generate_markdown(tx_dir: Path, output_path: Path = None) -> str:
+    """Generate full markdown documentation from transaction definition."""
+    tx_def = load_transaction(tx_dir)
+    commentary = load_commentary(tx_dir)
 
-    params_md = generate_parameters_markdown(schema)
-    blocks_md = generate_blocks_markdown(schema)
-    messages_md = generate_messages_markdown(schema)
-    states_md = generate_state_machines_markdown(schema)
+    params_md = generate_parameters_markdown(tx_def)
+    blocks_md = generate_blocks_markdown(tx_def)
+    messages_md = generate_messages_markdown(tx_def)
+    states_md = generate_state_machines_markdown(tx_def)
 
     result = commentary
     result = result.replace("{{PARAMETERS}}", params_md)
@@ -812,42 +830,74 @@ def generate_markdown(schema_dir: Path, output_path: Path = None) -> str:
 # PYTHON CODE GENERATION
 # =============================================================================
 
-def python_type(schema_type: str) -> str:
-    """Convert schema type to Python type hint."""
+def python_type(dsl_type: str) -> str:
+    """Convert DSL type to Python type hint."""
     type_map = {
         "hash": "str",
         "peer_id": "str",
         "bytes": "bytes",
         "uint": "int",
+        "int": "int",
         "float": "float",
         "timestamp": "float",
         "string": "str",
+        "str": "str",
         "bool": "bool",
         "signature": "str",
         "object": "Dict[str, Any]",
+        "dict": "Dict[str, Any]",
         "any": "Any",
+        "Any": "Any",
+        # Generic type parameters - use Any
+        "T": "Any",
+        "U": "Any",
     }
 
-    if schema_type.startswith("list["):
-        inner = schema_type[5:-1]
-        return f"List[{python_type(inner)}]"
-    if schema_type.startswith("map["):
-        parts = schema_type[4:-1].split(",")
+    # Handle list types with angle brackets (DSL style)
+    if dsl_type.startswith("list<"):
+        inner = dsl_type[5:-1]
+        inner_type = python_type(inner)
+        return f"List[{inner_type}]"
+    # Handle list types with square brackets (YAML style)
+    if dsl_type.startswith("list["):
+        inner = dsl_type[5:-1]
+        inner_type = python_type(inner)
+        return f"List[{inner_type}]"
+    # Handle map types with angle brackets
+    if dsl_type.startswith("map<"):
+        inner = dsl_type[4:-1]
+        parts = inner.split(",", 1)
+        key = python_type(parts[0].strip())
+        val = python_type(parts[1].strip()) if len(parts) > 1 else "Any"
+        return f"Dict[{key}, {val}]"
+    # Handle map types with square brackets
+    if dsl_type.startswith("map["):
+        inner = dsl_type[4:-1]
+        parts = inner.split(",", 1)
         key = python_type(parts[0].strip())
         val = python_type(parts[1].strip()) if len(parts) > 1 else "Any"
         return f"Dict[{key}, {val}]"
 
-    return type_map.get(schema_type, schema_type)
+    # Check if it's a known type
+    if dsl_type in type_map:
+        return type_map[dsl_type]
+
+    # Unknown types (enums, custom types) - use str for enums, Any for others
+    # If it looks like an enum (CamelCase), treat as str
+    if dsl_type and dsl_type[0].isupper():
+        return "str"
+
+    return "Any"
 
 
-def generate_parameters_python(schema: dict) -> str:
+def generate_parameters_python(tx_def: dict) -> str:
     """Generate Python parameter constants."""
-    params = schema.get("parameters", {})
+    params = tx_def.get("parameters", {})
     if not params:
         return ""
 
     lines = ["# ============================================================================="]
-    lines.append("# Parameters (from schema)")
+    lines.append("# Parameters")
     lines.append("# =============================================================================")
     lines.append("")
 
@@ -869,9 +919,9 @@ def generate_parameters_python(schema: dict) -> str:
     return "\n".join(lines)
 
 
-def generate_enums_python(schema: dict) -> str:
+def generate_enums_python(tx_def: dict) -> str:
     """Generate Python enums."""
-    enums = schema.get("enums", {})
+    enums = tx_def.get("enums", {})
     if not enums:
         return ""
 
@@ -894,9 +944,9 @@ def generate_enums_python(schema: dict) -> str:
     return "\n".join(lines)
 
 
-def generate_messages_python(schema: dict) -> str:
+def generate_messages_python(tx_def: dict) -> str:
     """Generate Python message types."""
-    messages = schema.get("messages", {})
+    messages = tx_def.get("messages", {})
     if not messages:
         return ""
 
@@ -926,24 +976,24 @@ def generate_messages_python(schema: dict) -> str:
 
 
 class PythonActorGenerator:
-    """Generate complete Python actor class from schema."""
+    """Generate complete Python actor class from transaction definition."""
 
-    def __init__(self, actor_name: str, actor_info: dict, schema: dict):
+    def __init__(self, actor_name: str, actor_info: dict, tx_def: dict):
         self.actor_name = actor_name
         self.actor_info = actor_info
-        self.schema = schema
+        self.tx_def = tx_def
         self.states = actor_info.get("states", {})
         self.transitions = actor_info.get("transitions", [])
         self.external_triggers = actor_info.get("external_triggers", {})
         self.guards = actor_info.get("guards", {})
-        self.messages = schema.get("messages", {})
+        self.messages = tx_def.get("messages", {})
         # Collect all known store variable names
         self.store_vars = set(actor_info.get("store_schema", {}).keys())
 
         # Create expression translator
-        parameters = set(schema.get("parameters", {}).keys())
+        parameters = set(tx_def.get("parameters", {}).keys())
         enums = {}
-        for enum_name, enum_info in schema.get("enums", {}).items():
+        for enum_name, enum_info in tx_def.get("enums", {}).items():
             if isinstance(enum_info, dict):
                 values = enum_info.get("values", [])
                 if isinstance(values, list):
@@ -1364,6 +1414,9 @@ class PythonActorGenerator:
                     if msg_key == "message" or msg_key == "message.payload":
                         # Store the whole message payload
                         lines.append(f'{ind}self.store("{local_key}", {msg_var or "msg"}.payload)')
+                    elif msg_key == "sender" or msg_key == "message.sender":
+                        # Access sender attribute directly (not from payload)
+                        lines.append(f'{ind}self.store("{local_key}", {msg_var or "msg"}.sender)')
                     elif msg_key.startswith("message.payload."):
                         # Access nested payload field: message.payload.X -> msg.payload.get("X")
                         payload_field = msg_key[16:]  # Remove "message.payload." prefix
@@ -1560,18 +1613,18 @@ def sanitize_guard_name(guard_name: str) -> str:
     return sanitized
 
 
-def generate_actor_helpers(actor_name: str, actor_info: dict, schema: dict) -> str:
+def generate_actor_helpers(actor_name: str, actor_info: dict, tx_def: dict) -> str:
     """Generate helper methods for an actor (payload builders, guards, etc.)."""
     lines = []
     transitions = actor_info.get("transitions", [])
     guards = actor_info.get("guards", {})
-    messages = schema.get("messages", {})
+    messages = tx_def.get("messages", {})
 
     # Create expression translator
     store_vars = set(actor_info.get("store_schema", {}).keys())
-    parameters = set(schema.get("parameters", {}).keys())
+    parameters = set(tx_def.get("parameters", {}).keys())
     enums = {}
-    for enum_name, enum_info in schema.get("enums", {}).items():
+    for enum_name, enum_info in tx_def.get("enums", {}).items():
         if isinstance(enum_info, dict):
             values = enum_info.get("values", [])
             if isinstance(values, list):
@@ -1640,6 +1693,33 @@ def generate_actor_helpers(actor_name: str, actor_info: dict, schema: dict) -> s
     for guard_name, (desc, expr) in all_guards.items():
         # Normalize and translate expression
         expr_oneline = " ".join(str(expr).split())
+
+        # Handle special semantic guards that need custom implementation
+        if guard_name == "has_provider_checkpoint":
+            # Check if there's a peer hash record for the provider in the chain
+            lines.append(f"    def _check_{guard_name}(self) -> bool:")
+            lines.append(f'        """Check if we have a prior checkpoint/record of the provider."""')
+            lines.append(f"        provider = self.load('provider')")
+            lines.append(f"        if not provider:")
+            lines.append(f"            return False")
+            lines.append(f"        return self.chain.get_peer_hash(provider) is not None")
+            lines.append("")
+            continue
+        elif guard_name == "checkpoint_exists_in_chain":
+            # Check if a requested checkpoint exists in our chain
+            lines.append(f"    def _check_{guard_name}(self) -> bool:")
+            lines.append(f'        """Check if the requested checkpoint exists in our chain."""')
+            lines.append(f"        checkpoint = self.load('requested_checkpoint')")
+            lines.append(f"        if not checkpoint:")
+            lines.append(f"            return False")
+            lines.append(f"        # Check if we have a block with this hash")
+            lines.append(f"        for block in self.chain.blocks:")
+            lines.append(f"            if block.block_hash == checkpoint:")
+            lines.append(f"                return True")
+            lines.append(f"        return False")
+            lines.append("")
+            continue
+
         translated = translator.translate(expr_oneline)
 
         lines.append(f"    def _check_{guard_name}(self) -> bool:")
@@ -1691,7 +1771,7 @@ def generate_actor_helpers(actor_name: str, actor_info: dict, schema: dict) -> s
                     block_types_to_build.add(block_type)
 
     # Generate block payload builders
-    blocks = schema.get("blocks", {})
+    blocks = tx_def.get("blocks", {})
     for block_type in block_types_to_build:
         block_info = blocks.get(block_type, {})
         lines.append(f"    def _build_{block_type.lower()}_payload(self) -> Dict[str, Any]:")
@@ -1935,8 +2015,8 @@ def generate_actor_helpers(actor_name: str, actor_info: dict, schema: dict) -> s
         lines.append("        }")
         lines.append("")
 
-    # Generate methods from schema functions section
-    functions = schema.get("functions", {})
+    # Generate methods from functions section
+    functions = tx_def.get("functions", {})
     for func_name, func_info in functions.items():
         if not isinstance(func_info, dict):
             continue
@@ -1951,17 +2031,13 @@ def generate_actor_helpers(actor_name: str, actor_info: dict, schema: dict) -> s
         for param in params:
             if isinstance(param, dict):
                 for pname, ptype in param.items():
-                    py_type = "list" if "list" in str(ptype) else str(ptype)
+                    py_type = python_type(str(ptype))
                     param_strs.append(f"{pname}: {py_type}")
             elif isinstance(param, str):
                 param_strs.append(param)
 
-        # Map return type
-        py_returns = "int" if returns == "uint" else returns
-        if "list" in str(py_returns):
-            py_returns = "list"
-        if "map" in str(py_returns):
-            py_returns = "dict"
+        # Map return type using python_type
+        py_returns = python_type(str(returns))
 
         lines.append(f"    def _{func_name}({', '.join(param_strs)}) -> {py_returns}:")
         lines.append(f'        """{desc}"""')
@@ -1969,8 +2045,9 @@ def generate_actor_helpers(actor_name: str, actor_info: dict, schema: dict) -> s
         # Generate body based on common patterns
         body_stripped = body.strip() if body else ""
 
-        # Handle common patterns
-        if "RETURN LENGTH(FILTER(" in body_stripped and "can_reach_vm" in body_stripped:
+        # Handle common patterns (normalize spaces for matching)
+        body_normalized = ' '.join(body_stripped.split())
+        if "RETURN LENGTH" in body_normalized and "FILTER" in body_normalized and "can_reach_vm" in body_normalized:
             # count_positive_votes pattern
             lines.append("        return len([v for v in votes if v.get('can_reach_vm') == True])")
         elif "RETURN true" in body_stripped.lower() or body_stripped.lower() == "return true":
@@ -1993,11 +2070,11 @@ def generate_actor_helpers(actor_name: str, actor_info: dict, schema: dict) -> s
     return "\n".join(lines)
 
 
-def generate_python(schema_dir: Path, output_path: Path = None) -> str:
-    """Generate Python code from schema."""
-    schema = load_schema(schema_dir)
+def generate_python(tx_dir: Path, output_path: Path = None) -> str:
+    """Generate Python code from transaction definition."""
+    tx_def = load_transaction(tx_dir)
 
-    transaction = schema.get("transaction", {})
+    transaction = tx_def.get("transaction", {})
     tx_name = transaction.get("name", "Unknown")
     tx_id = transaction.get("id", "00")
     tx_desc = transaction.get("description", "")
@@ -2007,7 +2084,7 @@ def generate_python(schema_dir: Path, output_path: Path = None) -> str:
     lines.append("")
     lines.append(f"{tx_desc}")
     lines.append("")
-    lines.append("GENERATED FROM schema.yaml")
+    lines.append("GENERATED FROM transaction.omt")
     lines.append('"""')
     lines.append("")
     lines.append("from enum import Enum, auto")
@@ -2022,13 +2099,13 @@ def generate_python(schema_dir: Path, output_path: Path = None) -> str:
     lines.append("")
 
     # Parameters
-    lines.append(generate_parameters_python(schema))
+    lines.append(generate_parameters_python(tx_def))
 
     # Enums
-    lines.append(generate_enums_python(schema))
+    lines.append(generate_enums_python(tx_def))
 
     # Messages
-    lines.append(generate_messages_python(schema))
+    lines.append(generate_messages_python(tx_def))
 
     # Base Actor class
     lines.append("# =============================================================================")
@@ -2087,8 +2164,8 @@ def generate_python(schema_dir: Path, output_path: Path = None) -> str:
     lines.append("            self.message_queue = [m for m in self.message_queue if m.msg_type != msg_type]")
     lines.append("")
     lines.append("    def transition_to(self, new_state):")
-    lines.append("        self.state_history.append((self.current_time, self.state))")
     lines.append("        self.state = new_state")
+    lines.append("        self.state_history.append((self.current_time, new_state))")
     lines.append("        self.store('state_entered_at', self.current_time)")
     lines.append("")
     lines.append("    def tick(self, current_time: float) -> List[Message]:")
@@ -2097,17 +2174,17 @@ def generate_python(schema_dir: Path, output_path: Path = None) -> str:
     lines.append("")
 
     # Actor classes
-    actors = schema.get("actors", {})
+    actors = tx_def.get("actors", {})
     for actor_name, actor_info in actors.items():
         lines.append("# =============================================================================")
         lines.append(f"# {actor_name}")
         lines.append("# =============================================================================")
         lines.append("")
 
-        generator = PythonActorGenerator(actor_name, actor_info, schema)
+        generator = PythonActorGenerator(actor_name, actor_info, tx_def)
         lines.append(generator.generate())
         lines.append("")
-        lines.append(generate_actor_helpers(actor_name, actor_info, schema))
+        lines.append(generate_actor_helpers(actor_name, actor_info, tx_def))
 
     result = "\n".join(lines)
 
@@ -2125,31 +2202,31 @@ def generate_python(schema_dir: Path, output_path: Path = None) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate documentation and Python code from transaction schema"
+        description="Generate documentation and Python code from transaction definitions"
     )
-    parser.add_argument("schema_dir", help="Directory containing schema.yaml")
+    parser.add_argument("tx_dir", help="Directory containing transaction.omt")
     parser.add_argument("--markdown", action="store_true", help="Generate markdown documentation")
     parser.add_argument("--python", action="store_true", help="Generate Python code")
     parser.add_argument("--output-dir", help="Output directory")
 
     args = parser.parse_args()
 
-    schema_dir = Path(args.schema_dir)
-    if not schema_dir.exists():
-        print(f"Error: Directory not found: {schema_dir}", file=sys.stderr)
+    tx_dir = Path(args.tx_dir)
+    if not tx_dir.exists():
+        print(f"Error: Directory not found: {tx_dir}", file=sys.stderr)
         sys.exit(1)
 
     if args.markdown:
-        output_dir = Path(args.output_dir) if args.output_dir else schema_dir.parent
-        tx_name = schema_dir.name
+        output_dir = Path(args.output_dir) if args.output_dir else tx_dir.parent
+        tx_name = tx_dir.name
         output_path = output_dir / f"{tx_name}.md"
-        generate_markdown(schema_dir, output_path)
+        generate_markdown(tx_dir, output_path)
 
     if args.python:
         output_dir = Path(args.output_dir) if args.output_dir else Path("simulations/transactions")
-        tx_name = schema_dir.name.split("_", 1)[1] if "_" in schema_dir.name else schema_dir.name
+        tx_name = tx_dir.name.split("_", 1)[1] if "_" in tx_dir.name else tx_dir.name
         output_path = output_dir / f"{tx_name}_generated.py"
-        generate_python(schema_dir, output_path)
+        generate_python(tx_dir, output_path)
 
     if not args.markdown and not args.python:
         print("Specify --markdown and/or --python to generate output")

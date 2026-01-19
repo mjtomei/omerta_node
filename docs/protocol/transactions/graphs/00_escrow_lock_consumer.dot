@@ -27,5 +27,4 @@ digraph {
     WAITING_FOR_TOPUP_RESULT -> LOCKED [label="timeout(CONSENSUS_TIMEOUT)"];
     REVIEWING_TOPUP_RESULT -> SIGNING_TOPUP [label="auto\n[topup_result_valid]"];
     SIGNING_TOPUP -> LOCKED [label="auto"];
-    FAILED -> IDLE [label="auto"];
 }

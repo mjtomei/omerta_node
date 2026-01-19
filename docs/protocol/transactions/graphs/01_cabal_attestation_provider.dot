@@ -1,0 +1,25 @@
+digraph {
+    rankdir=TB;
+    node [shape=box, style=rounded];
+    edge [fontsize=10];
+
+    __start__ [shape=point, width=0.2];
+    __start__ -> WAITING_FOR_LOCK;
+
+    SESSION_ABORTED [shape=box, style="rounded,bold"];
+
+    WAITING_FOR_LOCK -> VM_PROVISIONING [label="start_session"];
+    VM_PROVISIONING -> SESSION_ABORTED [label="timeout(VM_ALLOCATION_TIMEOUT)"];
+    VM_PROVISIONING -> NOTIFYING_CABAL [label="allocate_vm"];
+    NOTIFYING_CABAL -> WAITING_FOR_VERIFICATION [label="auto"];
+    WAITING_FOR_VERIFICATION -> WAITING_FOR_VERIFICATION [label="VM_CONNECTIVITY_VOTE"];
+    WAITING_FOR_VERIFICATION -> VM_RUNNING [label="auto\n[LENGTH (connectivity_vote...]"];
+    WAITING_FOR_VERIFICATION -> SENDING_CANCELLATION [label="auto\n[LENGTH (connectivity_vote...]"];
+    WAITING_FOR_VERIFICATION -> VM_RUNNING [label="timeout(CONNECTIVITY_CHECK_TIMEOUT)\n[LENGTH (connectivity_vote...]"];
+    WAITING_FOR_VERIFICATION -> SENDING_CANCELLATION [label="timeout(CONNECTIVITY_CHECK_TIMEOUT)\n[LENGTH (connectivity_vote...]"];
+    VM_RUNNING -> HANDLING_CANCEL [label="CANCEL_REQUEST\n[message.sender == LOAD (c...]"];
+    VM_RUNNING -> HANDLING_CANCEL [label="cancel_session"];
+    HANDLING_CANCEL -> SENDING_CANCELLATION [label="auto"];
+    SENDING_CANCELLATION -> WAITING_FOR_ATTESTATION [label="auto"];
+    WAITING_FOR_ATTESTATION -> SESSION_COMPLETE [label="ATTESTATION_RESULT"];
+}

@@ -20,4 +20,3 @@ stateDiagram-v2
     WAITING_FOR_TOPUP_RESULT --> LOCKED : timeout(CONSENSUS_TIMEOUT)
     REVIEWING_TOPUP_RESULT --> SIGNING_TOPUP : [auto]\n[topup_result_valid]
     SIGNING_TOPUP --> LOCKED : [auto]
-    FAILED --> IDLE : [auto]

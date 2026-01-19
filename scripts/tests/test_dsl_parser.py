@@ -16,7 +16,7 @@ from dsl_ast import (
     SendAction, AppendAction, FunctionDecl
 )
 from dsl_parser import Parser, parse, ParseError
-from dsl_to_schema import ast_to_schema, convert_schema_file
+from dsl_converter import ast_to_dict, convert_dsl_source
 
 
 # =============================================================================
@@ -295,7 +295,7 @@ class TestActors:
     def test_actor_trigger(self):
         schema = parse("""
         actor Provider (
-            trigger start_session(session_id, consumer, witnesses)
+            trigger start_session(session_id hash, consumer peer_id, witnesses list<peer_id>)
                 in [WAITING]
             state WAITING initial
         )
@@ -304,7 +304,13 @@ class TestActors:
         assert len(actor.triggers) == 1
         trigger = actor.triggers[0]
         assert trigger.name == "start_session"
-        assert trigger.params == ["session_id", "consumer", "witnesses"]
+        assert len(trigger.params) == 3
+        assert trigger.params[0].name == "session_id"
+        assert trigger.params[0].type == "hash"
+        assert trigger.params[1].name == "consumer"
+        assert trigger.params[1].type == "peer_id"
+        assert trigger.params[2].name == "witnesses"
+        assert trigger.params[2].type == "list<peer_id>"
         assert trigger.allowed_in == ["WAITING"]
 
     def test_actor_states(self):
@@ -510,7 +516,7 @@ class TestSchemaConversion:
 
     def test_transaction_conversion(self):
         schema = parse('transaction 01 "Test Transaction"')
-        result = ast_to_schema(schema)
+        result = ast_to_dict(schema)
         assert result['transaction']['id'] == '01'
         assert result['transaction']['name'] == 'Test Transaction'
 
@@ -520,7 +526,7 @@ class TestSchemaConversion:
             TIMEOUT = 300 seconds "Wait time"
         )
         """)
-        result = ast_to_schema(schema)
+        result = ast_to_dict(schema)
         assert 'parameters' in result
         assert result['parameters']['TIMEOUT']['value'] == 300
         assert result['parameters']['TIMEOUT']['unit'] == 'seconds'
@@ -532,7 +538,7 @@ class TestSchemaConversion:
             DONE
         )
         """)
-        result = ast_to_schema(schema)
+        result = ast_to_dict(schema)
         assert 'enums' in result
         assert result['enums']['Status']['values'] == ['PENDING', 'DONE']
 
@@ -543,7 +549,7 @@ class TestSchemaConversion:
             data list<string>
         )
         """)
-        result = ast_to_schema(schema)
+        result = ast_to_dict(schema)
         msg = result['messages']['TEST']
         assert msg['sender'] == 'A'
         assert msg['recipients'] == ['B', 'C']
@@ -556,7 +562,7 @@ class TestSchemaConversion:
             store (
                 session_id hash
             )
-            trigger start(id) in [IDLE]
+            trigger start(id hash) in [IDLE]
             state IDLE initial
             state RUNNING
             IDLE -> RUNNING on start (
@@ -564,7 +570,7 @@ class TestSchemaConversion:
             )
         )
         """)
-        result = ast_to_schema(schema)
+        result = ast_to_dict(schema)
         actor = result['actors']['Provider']
         assert actor['description'] == 'Provides service'
         assert actor['store_schema']['session_id'] == 'hash'
@@ -582,7 +588,7 @@ class TestSchemaConversion:
             state S initial
         )
         """)
-        result = ast_to_schema(schema)
+        result = ast_to_dict(schema)
         store = result['actors']['A']['store_schema']
         assert store['items'] == 'list[string]'
         assert store['mapping'] == 'map[peer_id, bool]'
@@ -622,7 +628,7 @@ class TestIntegration:
                 result     dict
             )
 
-            trigger start_session(session_id) in [IDLE]
+            trigger start_session(session_id hash) in [IDLE]
 
             state IDLE initial
             state WAITING
@@ -665,7 +671,7 @@ class TestIntegration:
         assert len(schema.functions) == 1
 
         # Convert to dict
-        result = ast_to_schema(schema)
+        result = ast_to_dict(schema)
         assert 'transaction' in result
         assert 'parameters' in result
         assert 'enums' in result

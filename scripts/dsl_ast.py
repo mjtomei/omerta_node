@@ -14,6 +14,7 @@ from typing import List, Optional, Dict, Any, Union
 class Transaction:
     id: str
     name: str
+    description: Optional[str] = None
     line: int = 0
     column: int = 0
 
@@ -46,6 +47,7 @@ class EnumValue:
 @dataclass
 class EnumDecl:
     name: str
+    description: Optional[str] = None
     values: List['EnumValue'] = field(default_factory=list)
     line: int = 0
     column: int = 0
@@ -84,9 +86,18 @@ class BlockDecl:
 # =============================================================================
 
 @dataclass
+class TriggerParam:
+    """Typed trigger parameter."""
+    name: str
+    type: str
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
 class TriggerDecl:
     name: str
-    params: List[str]  # Just parameter names
+    params: List['TriggerParam']  # Typed parameter list
     allowed_in: List[str]
     description: Optional[str] = None
     line: int = 0
@@ -126,6 +137,15 @@ class ComputeAction:
 
 
 @dataclass
+class LookupAction:
+    """lookup x = expr (lookup value from chain)"""
+    name: str
+    expression: str
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
 class SendAction:
     """send MESSAGE to target"""
     message: str
@@ -151,12 +171,21 @@ class AppendBlockAction:
     column: int = 0
 
 
-Action = Union[StoreAction, ComputeAction, SendAction, AppendAction, AppendBlockAction]
+Action = Union[StoreAction, ComputeAction, LookupAction, SendAction, AppendAction, AppendBlockAction]
 
 
 # =============================================================================
 # Transitions
 # =============================================================================
+
+@dataclass
+class OnGuardFail:
+    """What to do when a guard fails."""
+    target: str  # Target state
+    actions: List[Action] = field(default_factory=list)
+    line: int = 0
+    column: int = 0
+
 
 @dataclass
 class Transition:
@@ -166,6 +195,7 @@ class Transition:
     auto: bool = False
     guard: Optional[str] = None
     actions: List[Action] = field(default_factory=list)
+    on_guard_fail: Optional[OnGuardFail] = None
     line: int = 0
     column: int = 0
 

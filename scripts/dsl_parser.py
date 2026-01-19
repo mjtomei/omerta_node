@@ -10,18 +10,18 @@ try:
     from .dsl_lexer import Token, TokenType, tokenize, LexerError
     from .dsl_ast import (
         Schema, Transaction, Import, Parameter, EnumDecl, EnumValue,
-        Field, MessageDecl, BlockDecl, ActorDecl, TriggerDecl, StateDecl,
-        Transition, StoreAction, ComputeAction, SendAction, AppendAction,
-        AppendBlockAction, FunctionDecl, FunctionParam, Action
+        Field, MessageDecl, BlockDecl, ActorDecl, TriggerDecl, TriggerParam, StateDecl,
+        Transition, OnGuardFail, StoreAction, ComputeAction, LookupAction, SendAction,
+        AppendAction, AppendBlockAction, FunctionDecl, FunctionParam, Action
     )
 except ImportError:
     from dsl_lexer import Token, TokenType, tokenize, LexerError
     from dsl_ast import (
-    Schema, Transaction, Import, Parameter, EnumDecl, EnumValue,
-    Field, MessageDecl, BlockDecl, ActorDecl, TriggerDecl, StateDecl,
-    Transition, StoreAction, ComputeAction, SendAction, AppendAction,
-    AppendBlockAction, FunctionDecl, FunctionParam, Action
-)
+        Schema, Transaction, Import, Parameter, EnumDecl, EnumValue,
+        Field, MessageDecl, BlockDecl, ActorDecl, TriggerDecl, TriggerParam, StateDecl,
+        Transition, OnGuardFail, StoreAction, ComputeAction, LookupAction, SendAction,
+        AppendAction, AppendBlockAction, FunctionDecl, FunctionParam, Action
+    )
 
 
 class ParseError(Exception):
@@ -125,7 +125,7 @@ class Parser:
     # =========================================================================
 
     def _parse_transaction(self) -> Transaction:
-        """Parse: transaction ID STRING"""
+        """Parse: transaction ID STRING STRING?"""
         token = self._expect(TokenType.TRANSACTION)
         # ID can be either identifier or number
         if self._check(TokenType.NUMBER):
@@ -135,7 +135,12 @@ class Parser:
         else:
             raise ParseError("Expected transaction ID", self._peek())
         name = self._expect(TokenType.STRING, "Expected transaction name").value
-        return Transaction(id=tx_id, name=name, line=token.line, column=token.column)
+        # Optional description
+        description = None
+        if self._check(TokenType.STRING):
+            description = self._advance().value
+        return Transaction(id=tx_id, name=name, description=description,
+                          line=token.line, column=token.column)
 
     def _parse_import(self) -> Import:
         """Parse: imports path/to/file"""
@@ -197,9 +202,13 @@ class Parser:
         )
 
     def _parse_enum(self) -> EnumDecl:
-        """Parse: enum NAME ( VALUE VALUE ... )"""
+        """Parse: enum NAME "description"? ( VALUE VALUE ... )"""
         token = self._expect(TokenType.ENUM)
         name = self._expect(TokenType.IDENTIFIER, "Expected enum name").value
+        # Optional description
+        description = None
+        if self._check(TokenType.STRING):
+            description = self._advance().value
         self._skip_whitespace()
         self._expect(TokenType.LPAREN, "Expected '(' after enum name")
 
@@ -222,7 +231,8 @@ class Parser:
             self._skip_whitespace()
 
         self._expect(TokenType.RPAREN, "Expected ')' to close enum")
-        return EnumDecl(name=name, values=values, line=token.line, column=token.column)
+        return EnumDecl(name=name, description=description, values=values,
+                       line=token.line, column=token.column)
 
     def _parse_message(self) -> MessageDecl:
         """Parse: message NAME from SENDER to [RECIPIENTS] signed? ( fields )"""
@@ -318,15 +328,15 @@ class Parser:
         return fields
 
     def _parse_trigger(self) -> TriggerDecl:
-        """Parse: trigger NAME(params) in [STATES] "description"?"""
+        """Parse: trigger NAME(param1 type1, param2 type2) in [STATES] "description"?"""
         token = self._expect(TokenType.TRIGGER)
         name = self._expect(TokenType.IDENTIFIER, "Expected trigger name").value
 
-        # Parse parameters
+        # Parse typed parameters
         self._expect(TokenType.LPAREN, "Expected '(' for trigger params")
         params = []
         if not self._check(TokenType.RPAREN):
-            params = self._parse_identifier_list()
+            params = self._parse_trigger_params()
         self._expect(TokenType.RPAREN, "Expected ')' after trigger params")
 
         self._skip_whitespace()
@@ -343,6 +353,22 @@ class Parser:
             name=name, params=params, allowed_in=allowed_in,
             description=description, line=token.line, column=token.column
         )
+
+    def _parse_trigger_params(self) -> List[TriggerParam]:
+        """Parse trigger parameters: name type, name type, ..."""
+        params = []
+
+        while True:
+            param_token = self._expect(TokenType.IDENTIFIER, "Expected parameter name")
+            param_name = param_token.value
+            param_type = self._parse_type()
+            params.append(TriggerParam(name=param_name, type=param_type,
+                                       line=param_token.line, column=param_token.column))
+
+            if not self._match(TokenType.COMMA):
+                break
+
+        return params
 
     def _parse_state(self) -> StateDecl:
         """Parse: state NAME (initial|terminal)? "description"?"""
@@ -362,7 +388,7 @@ class Parser:
         )
 
     def _parse_transition(self) -> Transition:
-        """Parse: FROM -> TO (on TRIGGER | auto) (when GUARD)? ( actions )?"""
+        """Parse: FROM -> TO (on TRIGGER | auto) (when GUARD)? ( actions )? (else -> STATE ( actions ))?"""
         token = self._peek()
         from_state = self._expect(TokenType.IDENTIFIER, "Expected source state").value
         self._expect(TokenType.ARROW, "Expected '->'")
@@ -382,7 +408,7 @@ class Parser:
         # Optional guard
         guard = None
         if self._match(TokenType.WHEN):
-            guard = self._parse_expression()
+            guard = self._parse_guard_expression()
 
         # Optional actions block
         actions = []
@@ -392,11 +418,34 @@ class Parser:
             actions = self._parse_actions()
             self._expect(TokenType.RPAREN, "Expected ')' to close actions")
 
+        # Optional else clause for guard failure
+        on_guard_fail = None
+        self._skip_whitespace()
+        if self._match(TokenType.ELSE):
+            on_guard_fail = self._parse_on_guard_fail()
+
         return Transition(
             from_state=from_state, to_state=to_state, trigger=trigger,
-            auto=auto, guard=guard, actions=actions,
+            auto=auto, guard=guard, actions=actions, on_guard_fail=on_guard_fail,
             line=token.line, column=token.column
         )
+
+    def _parse_on_guard_fail(self) -> OnGuardFail:
+        """Parse: else -> STATE ( actions )"""
+        token = self._peek()
+        self._expect(TokenType.ARROW, "Expected '->' after 'else'")
+        target = self._expect(TokenType.IDENTIFIER, "Expected target state for guard failure").value
+
+        # Optional actions block
+        actions = []
+        self._skip_whitespace()
+        if self._check(TokenType.LPAREN):
+            self._advance()
+            actions = self._parse_actions()
+            self._expect(TokenType.RPAREN, "Expected ')' to close actions")
+
+        return OnGuardFail(target=target, actions=actions,
+                         line=token.line, column=token.column)
 
     def _parse_trigger_spec(self) -> str:
         """Parse trigger specification: NAME or timeout(PARAM)"""
@@ -425,6 +474,8 @@ class Parser:
                 actions.append(self._parse_store_action())
             elif self._check(TokenType.COMPUTE):
                 actions.append(self._parse_compute_action())
+            elif self._check(TokenType.LOOKUP):
+                actions.append(self._parse_lookup_action())
             elif self._check(TokenType.SEND):
                 actions.append(self._parse_send_action())
             elif self._check(TokenType.APPEND_BLOCK):
@@ -470,6 +521,16 @@ class Parser:
         return ComputeAction(name=name, expression=expr,
                            line=token.line, column=token.column)
 
+    def _parse_lookup_action(self) -> LookupAction:
+        """Parse: lookup NAME = expr"""
+        token = self._expect(TokenType.LOOKUP)
+        name = self._expect(TokenType.IDENTIFIER, "Expected variable name").value
+        self._expect(TokenType.EQUALS, "Expected '=' after variable name")
+        expr = self._parse_expression()
+
+        return LookupAction(name=name, expression=expr,
+                           line=token.line, column=token.column)
+
     def _parse_send_action(self) -> SendAction:
         """Parse: send MESSAGE to TARGET"""
         token = self._expect(TokenType.SEND)
@@ -481,8 +542,20 @@ class Parser:
                          line=token.line, column=token.column)
 
     def _parse_send_target(self) -> str:
-        """Parse send target: identifier or each(list)"""
-        name = self._expect(TokenType.IDENTIFIER, "Expected target").value
+        """Parse send target: identifier, each(list), or dotted expression like message.sender"""
+        # Allow MESSAGE token since "message.sender" is a common target
+        if self._check(TokenType.MESSAGE):
+            name = self._advance().value
+        elif self._check(TokenType.IDENTIFIER):
+            name = self._advance().value
+        else:
+            raise ParseError("Expected target", self._peek())
+
+        # Handle dotted expressions like message.sender
+        while self._check(TokenType.DOT):
+            self._advance()  # consume the dot
+            next_part = self._expect(TokenType.IDENTIFIER, "Expected identifier after dot").value
+            name = f"{name}.{next_part}"
 
         if self._check(TokenType.LPAREN):
             # each(list) or similar
@@ -559,19 +632,28 @@ class Parser:
     def _parse_function_body(self) -> str:
         """Parse function body - collect tokens until closing paren."""
         body_parts = []
-        depth = 1  # We've already consumed the opening paren
+        paren_depth = 1  # We've already consumed the opening paren
+        brace_depth = 0
 
-        while depth > 0 and not self._at_end():
+        while paren_depth > 0 and not self._at_end():
             token = self._peek()
             if token.type == TokenType.LPAREN:
-                depth += 1
+                paren_depth += 1
                 body_parts.append('(')
                 self._advance()
             elif token.type == TokenType.RPAREN:
-                depth -= 1
-                if depth > 0:
+                paren_depth -= 1
+                if paren_depth > 0:
                     body_parts.append(')')
                     self._advance()
+            elif token.type == TokenType.LBRACE:
+                brace_depth += 1
+                body_parts.append('{')
+                self._advance()
+            elif token.type == TokenType.RBRACE:
+                brace_depth -= 1
+                body_parts.append('}')
+                self._advance()
             elif token.type == TokenType.NEWLINE:
                 body_parts.append('\n')
                 self._advance()
@@ -585,10 +667,10 @@ class Parser:
                 body_parts.append(token.value)
                 self._advance()
                 # Add space after most tokens
-                if token.type not in (TokenType.LPAREN, TokenType.DOT):
+                if token.type not in (TokenType.LPAREN, TokenType.DOT, TokenType.LBRACE):
                     next_tok = self._peek()
-                    if next_tok.type not in (TokenType.RPAREN, TokenType.COMMA, TokenType.DOT,
-                                             TokenType.NEWLINE, TokenType.EOF):
+                    if next_tok.type not in (TokenType.RPAREN, TokenType.COMMA, TokenType.DOT, TokenType.COLON,
+                                             TokenType.RBRACE, TokenType.NEWLINE, TokenType.EOF):
                         body_parts.append(' ')
 
         return ''.join(body_parts).strip()
@@ -597,10 +679,111 @@ class Parser:
     # Expression parsing
     # =========================================================================
 
+    def _parse_guard_expression(self) -> str:
+        """Parse a guard expression - stops at LPAREN that starts actions block.
+
+        The heuristic for detecting the actions block LPAREN:
+        - If LPAREN immediately follows an identifier (no space), it's a function call
+        - If LPAREN follows an operator or has a space before it, and we're at depth 0,
+          and there was already some non-trivial expression, it might be the actions block
+        - Actually, the key insight is: the actions block ( always comes after a complete
+          expression that doesn't expect more arguments. If we see LPAREN after:
+          - a close paren )
+          - an identifier that's not a function name (has space before LPAREN)
+          - a number
+          Then it's likely the actions block.
+        """
+        # Delimiters that end a guard expression
+        delimiters = {
+            TokenType.NEWLINE, TokenType.COMMENT,
+            TokenType.STORE, TokenType.COMPUTE, TokenType.SEND,
+            TokenType.APPEND, TokenType.APPEND_BLOCK
+        }
+
+        parts = []
+        paren_depth = 0
+        last_token = None
+
+        while not self._at_end():
+            token = self._peek()
+
+            # Handle LPAREN - could be function call, grouping, or actions block
+            if token.type == TokenType.LPAREN:
+                is_part_of_expression = False
+
+                # LPAREN is part of expression if:
+                # 1. It immediately follows an identifier (function call like LENGTH(...))
+                # 2. It follows an operator (grouping like / (...) )
+                # 3. We're already inside parentheses (nested grouping)
+
+                if paren_depth > 0:
+                    # Already inside parens, this is grouping
+                    is_part_of_expression = True
+                elif last_token:
+                    if last_token.type == TokenType.IDENTIFIER:
+                        # Check if immediately follows (function call)
+                        expected_col = last_token.column + len(last_token.value)
+                        if token.column == expected_col and token.line == last_token.line:
+                            is_part_of_expression = True
+                    elif last_token.type in (TokenType.PLUS, TokenType.MINUS, TokenType.STAR,
+                                             TokenType.SLASH, TokenType.EQ, TokenType.NEQ,
+                                             TokenType.LTE, TokenType.GTE, TokenType.LANGLE,
+                                             TokenType.RANGLE, TokenType.COMMA, TokenType.AND,
+                                             TokenType.OR, TokenType.NOT, TokenType.EQUALS):
+                        # After an operator, LPAREN is for grouping
+                        is_part_of_expression = True
+                else:
+                    # First token is LPAREN - it's the actions block
+                    is_part_of_expression = False
+
+                if is_part_of_expression:
+                    paren_depth += 1
+                else:
+                    # This is the start of the actions block
+                    break
+            elif token.type == TokenType.RPAREN:
+                if paren_depth == 0:
+                    break
+                paren_depth -= 1
+
+            # Stop at delimiters (unless nested)
+            if token.type in delimiters and paren_depth == 0:
+                break
+
+            # Handle 'and' and 'or' keywords in expressions
+            if token.type == TokenType.AND:
+                parts.append(' and ')
+                last_token = token
+                self._advance()
+                continue
+            if token.type == TokenType.OR:
+                parts.append(' or ')
+                last_token = token
+                self._advance()
+                continue
+
+            # Collect token
+            if token.type == TokenType.STRING:
+                parts.append(f'"{token.value}"')
+            else:
+                parts.append(token.value)
+            last_token = token
+            self._advance()
+
+            # Add spacing
+            next_tok = self._peek()
+            if token.type not in (TokenType.DOT, TokenType.LPAREN):
+                if next_tok.type not in (TokenType.COMMA, TokenType.DOT, TokenType.RPAREN,
+                                         TokenType.NEWLINE, TokenType.EOF) and \
+                   next_tok.type not in delimiters:
+                    parts.append(' ')
+
+        return ''.join(parts).strip()
+
     def _parse_expression(self) -> str:
         """Parse an expression - collect tokens until we hit a delimiter."""
         # Delimiters that end an expression
-        # Note: RPAREN and RBRACKET are handled separately by nesting logic
+        # Note: RPAREN, RBRACKET, RBRACE are handled separately by nesting logic
         delimiters = {
             TokenType.NEWLINE, TokenType.COMMENT,
             TokenType.STORE, TokenType.COMPUTE, TokenType.SEND,
@@ -610,6 +793,7 @@ class Parser:
         parts = []
         paren_depth = 0
         bracket_depth = 0
+        brace_depth = 0
 
         while not self._at_end():
             token = self._peek()
@@ -627,9 +811,15 @@ class Parser:
                 if bracket_depth == 0:
                     break
                 bracket_depth -= 1
+            elif token.type == TokenType.LBRACE:
+                brace_depth += 1
+            elif token.type == TokenType.RBRACE:
+                if brace_depth == 0:
+                    break
+                brace_depth -= 1
 
             # Stop at delimiters (unless nested)
-            if token.type in delimiters and paren_depth == 0 and bracket_depth == 0:
+            if token.type in delimiters and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0:
                 break
 
             # Handle 'and' and 'or' keywords in expressions
@@ -651,10 +841,10 @@ class Parser:
 
             # Add spacing
             next_tok = self._peek()
-            if token.type not in (TokenType.LPAREN, TokenType.DOT, TokenType.LBRACKET):
-                if next_tok.type not in (TokenType.RPAREN, TokenType.COMMA, TokenType.DOT,
-                                         TokenType.RBRACKET, TokenType.NEWLINE, TokenType.EOF,
-                                         TokenType.LBRACKET, TokenType.LPAREN) and \
+            if token.type not in (TokenType.LPAREN, TokenType.DOT, TokenType.LBRACKET, TokenType.LBRACE):
+                if next_tok.type not in (TokenType.RPAREN, TokenType.COMMA, TokenType.DOT, TokenType.COLON,
+                                         TokenType.RBRACKET, TokenType.RBRACE, TokenType.NEWLINE, TokenType.EOF,
+                                         TokenType.LBRACKET, TokenType.LPAREN, TokenType.LBRACE) and \
                    next_tok.type not in delimiters:
                     parts.append(' ')
 

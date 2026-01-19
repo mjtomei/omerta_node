@@ -24,9 +24,11 @@ class TokenType(Enum):
     TRIGGER = auto()
     STATE = auto()
     COMPUTE = auto()
+    LOOKUP = auto()
     SEND = auto()
     APPEND = auto()
     APPEND_BLOCK = auto()
+    ELSE = auto()
 
     # Modifiers
     FROM = auto()
@@ -52,6 +54,8 @@ class TokenType(Enum):
     RPAREN = auto()      # )
     LBRACKET = auto()    # [
     RBRACKET = auto()    # ]
+    LBRACE = auto()      # {
+    RBRACE = auto()      # }
     LANGLE = auto()      # <
     RANGLE = auto()      # >
     ARROW = auto()       # ->
@@ -59,6 +63,7 @@ class TokenType(Enum):
     EQUALS = auto()      # =
     COMMA = auto()       # ,
     DOT = auto()         # .
+    COLON = auto()       # :
 
     # Comparison operators
     EQ = auto()          # ==
@@ -108,9 +113,11 @@ KEYWORDS = {
     'trigger': TokenType.TRIGGER,
     'state': TokenType.STATE,
     'compute': TokenType.COMPUTE,
+    'lookup': TokenType.LOOKUP,
     'send': TokenType.SEND,
     'append': TokenType.APPEND,
     'append_block': TokenType.APPEND_BLOCK,
+    'else': TokenType.ELSE,
     'from': TokenType.FROM,
     'to': TokenType.TO,
     'by': TokenType.BY,
@@ -256,11 +263,14 @@ class Lexer:
             ')': TokenType.RPAREN,
             '[': TokenType.LBRACKET,
             ']': TokenType.RBRACKET,
+            '{': TokenType.LBRACE,
+            '}': TokenType.RBRACE,
             '<': TokenType.LANGLE,
             '>': TokenType.RANGLE,
             '=': TokenType.EQUALS,
             ',': TokenType.COMMA,
             '.': TokenType.DOT,
+            ':': TokenType.COLON,
             '+': TokenType.PLUS,
             '-': TokenType.MINUS,
             '*': TokenType.STAR,

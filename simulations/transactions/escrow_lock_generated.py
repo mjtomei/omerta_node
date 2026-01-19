@@ -3,7 +3,7 @@ Transaction 00: Escrow Lock / Top-up
 
 Lock funds with distributed witness consensus for a compute session
 
-GENERATED FROM schema.yaml
+GENERATED FROM transaction.omt
 """
 
 from enum import Enum, auto
@@ -17,11 +17,11 @@ from ..chain.primitives import (
 
 
 # =============================================================================
-# Parameters (from schema)
+# Parameters
 # =============================================================================
 
-WITNESS_COUNT = 5  # Initial witnesses to recruit
-WITNESS_THRESHOLD = 3  # Minimum for consensus
+WITNESS_COUNT = 5  # Initial witnesses to recruit (count)
+WITNESS_THRESHOLD = 3  # Minimum for consensus (count)
 WITNESS_COMMITMENT_TIMEOUT = 30  # Seconds for provider to respond with witnesses (seconds)
 LOCK_TIMEOUT = 300  # Seconds for consumer to complete lock (provider waiting) (seconds)
 PRELIMINARY_TIMEOUT = 30  # Seconds to collect preliminaries (seconds)
@@ -32,10 +32,10 @@ LIVENESS_CHECK_INTERVAL = 300  # Seconds between liveness checks (seconds)
 LIVENESS_RESPONSE_TIMEOUT = 30  # Seconds to respond to ping (seconds)
 REPLACEMENT_TIMEOUT = 120  # Seconds to get replacement witness ack (seconds)
 MAX_CHAIN_AGE = 3600  # Max age of chain knowledge (seconds)
-CONSENSUS_THRESHOLD = 0.67  # Fraction needed to decide
-MAX_RECRUITMENT_ROUNDS = 3  # Max times to recruit more witnesses
-MIN_HIGH_TRUST_WITNESSES = 2  # Minimum high-trust witnesses for fairness
-MAX_PRIOR_INTERACTIONS = 5  # Max prior interactions with consumer for fairness
+CONSENSUS_THRESHOLD = 0.67  # Fraction needed to decide (fraction)
+MAX_RECRUITMENT_ROUNDS = 3  # Max times to recruit more witnesses (count)
+MIN_HIGH_TRUST_WITNESSES = 2  # Minimum high-trust witnesses for fairness (count)
+MAX_PRIOR_INTERACTIONS = 5  # Max prior interactions with consumer for fairness (count)
 
 # =============================================================================
 # Enums
@@ -144,8 +144,8 @@ class Actor:
             self.message_queue = [m for m in self.message_queue if m.msg_type != msg_type]
 
     def transition_to(self, new_state):
-        self.state_history.append((self.current_time, self.state))
         self.state = new_state
+        self.state_history.append((self.current_time, new_state))
         self.store('state_entered_at', self.current_time)
 
     def tick(self, current_time: float) -> List[Message]:
@@ -207,14 +207,13 @@ class Consumer(Actor):
         self.store("session_id", self._compute_session_id())
         # Compute: consumer_nonce = RANDOM_BYTES(32)
         self.store("consumer_nonce", self._compute_consumer_nonce())
-        _lookup_block = self.chain.get_peer_hash(self.load("provider"))
-        if _lookup_block:
-            self.store("provider_chain_checkpoint", _lookup_block.payload.get("hash"))
-            self.store("provider_chain_checkpoint_timestamp", _lookup_block.timestamp)
         if self._check_has_provider_checkpoint():
             self.transition_to(ConsumerState.SENDING_LOCK_INTENT)
         else:
-            self.store("reject_reason", "no_prior_provider_checkpoint")
+            self.store("provider", provider)
+            self.store("amount", amount)
+            self.store("consumer", self.peer_id)
+            self.store("reject_reason", 'no_prior_provider_checkpoint')
             self.transition_to(ConsumerState.FAILED)
 
     def initiate_topup(self, additional_amount: int):
@@ -280,18 +279,12 @@ class Consumer(Actor):
                 # Compute: verified_chain_state = CHAIN_STATE_AT(provider_chain_segment, provider_chain_checkpoint)
                 self.store("verified_chain_state", self._compute_verified_chain_state())
                 self.transition_to(ConsumerState.VERIFYING_WITNESSES)
-            else:
-                self.store("reject_reason", "invalid_chain_segment")
-                self.transition_to(ConsumerState.FAILED)
 
         elif self.state == ConsumerState.VERIFYING_WITNESSES:
             # Auto transition with guard: witness_selection_valid
             if self._check_witness_selection_valid():
                 self.store("witnesses", self.load("proposed_witnesses"))
                 self.transition_to(ConsumerState.SENDING_REQUESTS)
-            else:
-                self.store("reject_reason", "witness_selection_mismatch")
-                self.transition_to(ConsumerState.FAILED)
 
         elif self.state == ConsumerState.SENDING_REQUESTS:
             # Auto transition
@@ -327,9 +320,6 @@ class Consumer(Actor):
             # Auto transition with guard: result_valid_and_accepted
             if self._check_result_valid_and_accepted():
                 self.transition_to(ConsumerState.SIGNING_RESULT)
-            else:
-                self.store("reject_reason", "result_invalid")
-                self.transition_to(ConsumerState.FAILED)
 
         elif self.state == ConsumerState.SIGNING_RESULT:
             # Auto transition
@@ -372,10 +362,8 @@ class Consumer(Actor):
 
 
         elif self.state == ConsumerState.FAILED:
-            # Auto transition
-            self.store("witnesses", [])
-            self.store("pending_result", None)
-            self.transition_to(ConsumerState.IDLE)
+            # Lock failed
+            pass
 
         elif self.state == ConsumerState.SENDING_TOPUP:
             # Auto transition
@@ -410,9 +398,6 @@ class Consumer(Actor):
             # Auto transition with guard: topup_result_valid
             if self._check_topup_result_valid():
                 self.transition_to(ConsumerState.SIGNING_TOPUP)
-            else:
-                self.store("topup_failed_reason", "result_invalid")
-                self.transition_to(ConsumerState.LOCKED)
 
         elif self.state == ConsumerState.SIGNING_TOPUP:
             # Auto transition
@@ -447,20 +432,6 @@ class Consumer(Actor):
         }
         return payload
 
-    def _build_witness_request_payload(self) -> Dict[str, Any]:
-        """Build payload for WITNESS_REQUEST message."""
-        payload = {
-            "consumer": self._serialize_value(self.load("consumer")),
-            "provider": self._serialize_value(self.load("provider")),
-            "amount": self._serialize_value(self.load("amount")),
-            "session_id": self._serialize_value(self.load("session_id")),
-            "my_chain_head": self._serialize_value(self.load("my_chain_head")),
-            "witnesses": self._serialize_value(self.load("witnesses")),
-            "timestamp": self.current_time,
-        }
-        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
-        return payload
-
     def _build_lock_intent_payload(self) -> Dict[str, Any]:
         """Build payload for LOCK_INTENT message."""
         payload = {
@@ -471,16 +442,6 @@ class Consumer(Actor):
             "consumer_nonce": self._serialize_value(self.load("consumer_nonce")),
             "provider_chain_checkpoint": self._serialize_value(self.load("provider_chain_checkpoint")),
             "checkpoint_timestamp": self._serialize_value(self.load("checkpoint_timestamp")),
-            "timestamp": self.current_time,
-        }
-        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
-        return payload
-
-    def _build_liveness_pong_payload(self) -> Dict[str, Any]:
-        """Build payload for LIVENESS_PONG message."""
-        payload = {
-            "session_id": self._serialize_value(self.load("session_id")),
-            "from_witness": self._serialize_value(self.load("from_witness")),
             "timestamp": self.current_time,
         }
         payload["signature"] = sign(self.chain.private_key, hash_data(payload))
@@ -498,6 +459,30 @@ class Consumer(Actor):
         payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
+    def _build_liveness_pong_payload(self) -> Dict[str, Any]:
+        """Build payload for LIVENESS_PONG message."""
+        payload = {
+            "session_id": self._serialize_value(self.load("session_id")),
+            "from_witness": self._serialize_value(self.load("from_witness")),
+            "timestamp": self.current_time,
+        }
+        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
+        return payload
+
+    def _build_witness_request_payload(self) -> Dict[str, Any]:
+        """Build payload for WITNESS_REQUEST message."""
+        payload = {
+            "consumer": self._serialize_value(self.load("consumer")),
+            "provider": self._serialize_value(self.load("provider")),
+            "amount": self._serialize_value(self.load("amount")),
+            "session_id": self._serialize_value(self.load("session_id")),
+            "my_chain_head": self._serialize_value(self.load("my_chain_head")),
+            "witnesses": self._serialize_value(self.load("witnesses")),
+            "timestamp": self.current_time,
+        }
+        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
+        return payload
+
     def _build_consumer_signed_topup_payload(self) -> Dict[str, Any]:
         """Build payload for CONSUMER_SIGNED_TOPUP message."""
         payload = {
@@ -508,29 +493,27 @@ class Consumer(Actor):
         return payload
 
     def _check_has_provider_checkpoint(self) -> bool:
-        """Consumer has prior record of provider's chain"""
-        # Schema: chain.get_peer_hash(provider) != null...
-        return self.chain.get_peer_hash(self.load("provider")) != None
+        """Check if we have a prior checkpoint/record of the provider."""
+        provider = self.load('provider')
+        if not provider:
+            return False
+        return self.chain.get_peer_hash(provider) is not None
 
     def _check_chain_segment_valid_and_contains_checkpoint(self) -> bool:
-        """Provider's chain segment is valid and contains our checkpoint"""
-        # Schema: VERIFY_CHAIN_SEGMENT(provider_chain_segment) && CHAIN_CONTAI...
-        return self._verify_chain_segment(self.load("provider_chain_segment"))  and  self._chain_contains_hash(self.load("provider_chain_segment"), self.load("provider_chain_checkpoint"))
+        # Schema: chain_segment_valid_and_contains_checkpoint...
+        return self.load("chain_segment_valid_and_contains_checkpoint")
 
     def _check_witness_selection_valid(self) -> bool:
-        """Recomputed witness selection matches provider's proposal"""
-        # Schema: SELECT_WITNESSES(HASH(session_id + provider_nonce + consumer...
-        return self._select_witnesses(hash_data(self._to_hashable(self.load("session_id"), self.load("provider_nonce"), self.load("consumer_nonce"))), self.load("verified_chain_state")) == self.load("proposed_witnesses")  and  len(self.load("proposed_witnesses")) >= WITNESS_THRESHOLD
+        # Schema: witness_selection_valid...
+        return self.load("witness_selection_valid")
 
     def _check_result_valid_and_accepted(self) -> bool:
-        """Lock result matches request and has sufficient signatures"""
-        # Schema: pending_result != null && pending_result.session_id == sessi...
-        return self.load("pending_result") != None  and  self.load("pending_result").get("session_id")== self.load("session_id")  and  self.load("pending_result").get("consumer")== self.peer_id  and  self.load("pending_result").get("amount")== self.load("amount")  and  self.load("pending_result").get("status")== "ACCEPTED"  and  len(self.load("pending_result").get("witness_signatures")) >= WITNESS_THRESHOLD
+        # Schema: result_valid_and_accepted...
+        return self.load("result_valid_and_accepted")
 
     def _check_topup_result_valid(self) -> bool:
-        """Top-up result matches request and has sufficient signatures"""
-        # Schema: pending_topup_result != null && pending_topup_result.session...
-        return self.load("pending_topup_result") != None  and  self.load("pending_topup_result").get("session_id")== self.load("session_id")  and  self.load("pending_topup_result").get("consumer")== self.peer_id  and  self.load("pending_topup_result").get("additional_amount")== self.load("additional_amount")  and  len(self.load("pending_topup_result").get("witness_signatures")) >= WITNESS_THRESHOLD
+        # Schema: topup_result_valid...
+        return self.load("topup_result_valid")
 
     def _compute_session_id(self) -> Any:
         """Compute session_id."""
@@ -557,15 +540,6 @@ class Consumer(Actor):
         # Schema: HASH(lock_result)...
         return hash_data(self._to_hashable(self.load("lock_result")))
 
-    def _build_balance_lock_payload(self) -> Dict[str, Any]:
-        """Build payload for BALANCE_LOCK chain block."""
-        return {
-            "session_id": self.load("session_id"),
-            "amount": self.load("amount"),
-            "lock_result_hash": self.load("lock_result_hash"),
-            "timestamp": self.current_time,
-        }
-
     def _build_balance_topup_payload(self) -> Dict[str, Any]:
         """Build payload for BALANCE_TOPUP chain block."""
         return {
@@ -574,6 +548,15 @@ class Consumer(Actor):
             "topup_amount": self.load("topup_amount"),
             "new_total": self.load("new_total"),
             "topup_result_hash": self.load("topup_result_hash"),
+            "timestamp": self.current_time,
+        }
+
+    def _build_balance_lock_payload(self) -> Dict[str, Any]:
+        """Build payload for BALANCE_LOCK chain block."""
+        return {
+            "session_id": self.load("session_id"),
+            "amount": self.load("amount"),
+            "lock_result_hash": self.load("lock_result_hash"),
             "timestamp": self.current_time,
         }
 
@@ -716,6 +699,36 @@ class Consumer(Actor):
         """ABORT: Exit state machine with error."""
         raise RuntimeError(f"ABORT: {reason}")
 
+    def _COMPUTE_CONSENSUS(self, verdicts: List[str], threshold: int) -> str:
+        """"""
+        # TODO: Implement - accept_count = LENGTH (FILTER (verdicts, v = > v =...
+        return None
+
+    def _EXTRACT_FIELD(self, records: List[Any], field: str) -> List[Any]:
+        """"""
+        # TODO: Implement - RETURN MAP (records, r = > r.{field})...
+        return None
+
+    def _COUNT_MATCHING(self, items: List[Any], predicate: Any) -> int:
+        """"""
+        # TODO: Implement - RETURN LENGTH (FILTER (items, predicate))...
+        return None
+
+    def _CONTAINS(self, items: List[Any], item: Any) -> bool:
+        """"""
+        # TODO: Implement - RETURN LENGTH (FILTER (items, x = > x == item))> 0...
+        return None
+
+    def _BUILD_LOCK_RESULT(self) -> str:
+        """"""
+        # TODO: Implement - consensus = LOAD (consensus_direction) status = IF...
+        return None
+
+    def _BUILD_TOPUP_RESULT(self) -> str:
+        """"""
+        # TODO: Implement - consensus = LOAD (topup_consensus_direction) statu...
+        return None
+
 # =============================================================================
 # Provider
 # =============================================================================
@@ -724,6 +737,7 @@ class ProviderState(Enum):
     """Provider states."""
     IDLE = auto()  # Waiting for lock request
     VALIDATING_CHECKPOINT = auto()  # Validating consumer's checkpoint reference
+    SENDING_REJECTION = auto()  # Sending rejection due to invalid checkpoint
     SELECTING_WITNESSES = auto()  # Computing deterministic witness selection
     SENDING_COMMITMENT = auto()  # Sending witness selection to consumer
     WAITING_FOR_LOCK = auto()  # Waiting for lock to complete
@@ -761,22 +775,24 @@ class Provider(Actor):
             if self._check_checkpoint_exists_in_chain():
                 # Compute: chain_state_at_checkpoint = chain.get_state_at(requested_checkpoint)
                 self.store("chain_state_at_checkpoint", self._compute_chain_state_at_checkpoint())
-                # Compute: provider_chain_segment = chain.to_segment(to_hash=requested_checkpoint)
+                # Compute: provider_chain_segment = chain.to_segment(requested_checkpoint)
                 self.store("provider_chain_segment", self._compute_provider_chain_segment())
                 self.transition_to(ProviderState.SELECTING_WITNESSES)
             else:
-                msg_payload = {
-                    "reason": 'unknown_checkpoint',
-                    "timestamp": current_time,
-                }
-                outgoing.append(Message(
-                    msg_type=MessageType.LOCK_REJECTED,
-                    sender=self.peer_id,
-                    payload=msg_payload,
-                    timestamp=current_time,
-                    recipient=self.load("consumer"),
-                ))
-                self.transition_to(ProviderState.IDLE)
+                self.store("reason", 'unknown_checkpoint')
+                self.transition_to(ProviderState.SENDING_REJECTION)
+
+        elif self.state == ProviderState.SENDING_REJECTION:
+            # Auto transition
+            msg_payload = self._build_lock_rejected_payload()
+            outgoing.append(Message(
+                msg_type=MessageType.LOCK_REJECTED,
+                sender=self.peer_id,
+                payload=msg_payload,
+                timestamp=current_time,
+                recipient=self.load("consumer"),
+            ))
+            self.transition_to(ProviderState.IDLE)
 
         elif self.state == ProviderState.SELECTING_WITNESSES:
             # Auto transition
@@ -833,13 +849,30 @@ class Provider(Actor):
         payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
+    def _build_lock_rejected_payload(self) -> Dict[str, Any]:
+        """Build payload for LOCK_REJECTED message."""
+        payload = {
+            "session_id": self._serialize_value(self.load("session_id")),
+            "reason": self._serialize_value(self.load("reason")),
+            "timestamp": self.current_time,
+        }
+        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
+        return payload
+
     def _check_checkpoint_exists_in_chain(self) -> bool:
-        # Schema: chain.contains_hash(requested_checkpoint)...
-        return self.chain.contains_hash(self.load("requested_checkpoint"))
+        """Check if the requested checkpoint exists in our chain."""
+        checkpoint = self.load('requested_checkpoint')
+        if not checkpoint:
+            return False
+        # Check if we have a block with this hash
+        for block in self.chain.blocks:
+            if block.block_hash == checkpoint:
+                return True
+        return False
 
     def _check_message_lock_result_session_id_eq_session_id_and_message_loc(self) -> bool:
-        # Schema: message.lock_result.session_id == session_id && message.lock...
-        return self.load("message").get("lock_result").get("session_id")== self.load("session_id")  and  self.load("message").get("lock_result").get("status")== LockStatus.ACCEPTED
+        # Schema: message.lock_result.session_id == session_id and message.loc...
+        return self.load("message").get("lock_result").get("session_id")== self.load("session_id") and self.load("message").get("lock_result").get("status")== LockStatus.ACCEPTED
 
     def _compute_provider_nonce(self) -> Any:
         """Compute provider_nonce."""
@@ -853,8 +886,8 @@ class Provider(Actor):
 
     def _compute_provider_chain_segment(self) -> Any:
         """Compute provider_chain_segment."""
-        # Schema: chain.to_segment(to_hash=requested_checkpoint)...
-        return self.chain.to_segment(to_hash=self.load("requested_checkpoint"))
+        # Schema: chain.to_segment(requested_checkpoint)...
+        return self.chain.to_segment(self.load("requested_checkpoint"))
 
     def _compute_witnesses(self) -> Any:
         """Compute witnesses."""
@@ -1000,6 +1033,36 @@ class Provider(Actor):
         """ABORT: Exit state machine with error."""
         raise RuntimeError(f"ABORT: {reason}")
 
+    def _COMPUTE_CONSENSUS(self, verdicts: List[str], threshold: int) -> str:
+        """"""
+        # TODO: Implement - accept_count = LENGTH (FILTER (verdicts, v = > v =...
+        return None
+
+    def _EXTRACT_FIELD(self, records: List[Any], field: str) -> List[Any]:
+        """"""
+        # TODO: Implement - RETURN MAP (records, r = > r.{field})...
+        return None
+
+    def _COUNT_MATCHING(self, items: List[Any], predicate: Any) -> int:
+        """"""
+        # TODO: Implement - RETURN LENGTH (FILTER (items, predicate))...
+        return None
+
+    def _CONTAINS(self, items: List[Any], item: Any) -> bool:
+        """"""
+        # TODO: Implement - RETURN LENGTH (FILTER (items, x = > x == item))> 0...
+        return None
+
+    def _BUILD_LOCK_RESULT(self) -> str:
+        """"""
+        # TODO: Implement - consensus = LOAD (consensus_direction) status = IF...
+        return None
+
+    def _BUILD_TOPUP_RESULT(self) -> str:
+        """"""
+        # TODO: Implement - consensus = LOAD (topup_consensus_direction) statu...
+        return None
+
 # =============================================================================
 # Witness
 # =============================================================================
@@ -1065,7 +1128,7 @@ class Witness(Actor):
                 self.store("preliminaries", [])
                 self.store("votes", [])
                 self.store("signatures", [])
-                self.store("recruitment_round", 0)
+                self.store("recruitment_round", '0')
                 self.transition_to(WitnessState.CHECKING_CHAIN_KNOWLEDGE)
                 self.message_queue.remove(msg)  # Only remove processed message
 
@@ -1130,7 +1193,7 @@ class Witness(Actor):
                 self.store("consensus_direction", self._compute_consensus_direction())
                 self.transition_to(WitnessState.VOTING)
 
-            # Auto transition with guard: LENGTH(preliminaries) >= WITNESS_THRESHOLD - 1
+            # Auto transition with guard: LENGTH (preliminaries) >= WITNESS_THRESHOLD - 1
             if self._check_LENGTH_preliminaries_gte_WITNESS_THRESHOLD_1():
                 # Compute: consensus_direction = compute_consensus(preliminaries)
                 self.store("consensus_direction", self._compute_consensus_direction())
@@ -1168,7 +1231,7 @@ class Witness(Actor):
             if current_time - self.load("state_entered_at", 0) > CONSENSUS_TIMEOUT:
                 self.transition_to(WitnessState.BUILDING_RESULT)
 
-            # Auto transition with guard: LENGTH(votes) >= WITNESS_THRESHOLD
+            # Auto transition with guard: LENGTH (votes) >= WITNESS_THRESHOLD
             if self._check_LENGTH_votes_gte_WITNESS_THRESHOLD():
                 self.transition_to(WitnessState.BUILDING_RESULT)
 
@@ -1249,7 +1312,7 @@ class Witness(Actor):
             msgs = self.get_messages(MessageType.TOPUP_INTENT)
             if msgs:
                 msg = msgs[0]
-                self.store("topup_intent", msg.payload)
+                self.store("topup_intent", self.load("message"))
                 # Compute: topup_observed_balance = peer_balances[consumer]
                 self.store("topup_observed_balance", self._compute_topup_observed_balance())
                 self.transition_to(WitnessState.CHECKING_TOPUP_BALANCE)
@@ -1325,7 +1388,7 @@ class Witness(Actor):
                 self.store("topup_failed_reason", 'vote_timeout')
                 self.transition_to(WitnessState.ESCROW_ACTIVE)
 
-            # Auto transition with guard: LENGTH(topup_votes) >= WITNESS_THRESHOLD - 1
+            # Auto transition with guard: LENGTH (topup_votes) >= WITNESS_THRESHOLD - 1
             if self._check_LENGTH_topup_votes_gte_WITNESS_THRESHOLD_1():
                 self.transition_to(WitnessState.BUILDING_TOPUP_RESULT)
 
@@ -1364,16 +1427,26 @@ class Witness(Actor):
 
         return outgoing
 
-    def _build_witness_final_vote_payload(self) -> Dict[str, Any]:
-        """Build payload for WITNESS_FINAL_VOTE message."""
+    def _build_topup_vote_payload(self) -> Dict[str, Any]:
+        """Build payload for TOPUP_VOTE message."""
         payload = {
             "session_id": self._serialize_value(self.load("session_id")),
             "witness": self._serialize_value(self.load("witness")),
             "vote": self._serialize_value(self.load("vote")),
+            "additional_amount": self._serialize_value(self.load("additional_amount")),
             "observed_balance": self._serialize_value(self.load("observed_balance")),
             "timestamp": self.current_time,
         }
         payload["signature"] = sign(self.chain.private_key, hash_data(payload))
+        return payload
+
+    def _build_balance_update_broadcast_payload(self) -> Dict[str, Any]:
+        """Build payload for BALANCE_UPDATE_BROADCAST message."""
+        payload = {
+            "consumer": self._serialize_value(self.load("consumer")),
+            "lock_result": self._serialize_value(self.load("lock_result")),
+            "timestamp": self.current_time,
+        }
         return payload
 
     def _build_topup_result_for_signature_payload(self) -> Dict[str, Any]:
@@ -1384,13 +1457,12 @@ class Witness(Actor):
         }
         return payload
 
-    def _build_topup_vote_payload(self) -> Dict[str, Any]:
-        """Build payload for TOPUP_VOTE message."""
+    def _build_witness_final_vote_payload(self) -> Dict[str, Any]:
+        """Build payload for WITNESS_FINAL_VOTE message."""
         payload = {
             "session_id": self._serialize_value(self.load("session_id")),
             "witness": self._serialize_value(self.load("witness")),
             "vote": self._serialize_value(self.load("vote")),
-            "additional_amount": self._serialize_value(self.load("additional_amount")),
             "observed_balance": self._serialize_value(self.load("observed_balance")),
             "timestamp": self.current_time,
         }
@@ -1407,14 +1479,6 @@ class Witness(Actor):
         payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
-    def _build_lock_result_for_signature_payload(self) -> Dict[str, Any]:
-        """Build payload for LOCK_RESULT_FOR_SIGNATURE message."""
-        payload = {
-            "result": self._serialize_value(self.load("result")),
-            "timestamp": self.current_time,
-        }
-        return payload
-
     def _build_witness_preliminary_payload(self) -> Dict[str, Any]:
         """Build payload for WITNESS_PRELIMINARY message."""
         payload = {
@@ -1429,11 +1493,10 @@ class Witness(Actor):
         payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
-    def _build_balance_update_broadcast_payload(self) -> Dict[str, Any]:
-        """Build payload for BALANCE_UPDATE_BROADCAST message."""
+    def _build_lock_result_for_signature_payload(self) -> Dict[str, Any]:
+        """Build payload for LOCK_RESULT_FOR_SIGNATURE message."""
         payload = {
-            "consumer": self._serialize_value(self.load("consumer")),
-            "lock_result": self._serialize_value(self.load("lock_result")),
+            "result": self._serialize_value(self.load("result")),
             "timestamp": self.current_time,
         }
         return payload
@@ -1447,12 +1510,12 @@ class Witness(Actor):
         return self.load("observed_balance") < self.load("amount")
 
     def _check_LENGTH_preliminaries_gte_WITNESS_THRESHOLD_1(self) -> bool:
-        # Schema: LENGTH(preliminaries) >= WITNESS_THRESHOLD - 1...
-        return len(self.load("preliminaries")) >= WITNESS_THRESHOLD - 1
+        # Schema: LENGTH (preliminaries) >= WITNESS_THRESHOLD - 1...
+        return len (self.load("preliminaries")) >= WITNESS_THRESHOLD - 1
 
     def _check_LENGTH_votes_gte_WITNESS_THRESHOLD(self) -> bool:
-        # Schema: LENGTH(votes) >= WITNESS_THRESHOLD...
-        return len(self.load("votes")) >= WITNESS_THRESHOLD
+        # Schema: LENGTH (votes) >= WITNESS_THRESHOLD...
+        return len (self.load("votes")) >= WITNESS_THRESHOLD
 
     def _check_topup_observed_balance_total_escrowed_gte_topup_intent_addit(self) -> bool:
         # Schema: topup_observed_balance - total_escrowed >= topup_intent.addi...
@@ -1463,8 +1526,8 @@ class Witness(Actor):
         return self.load("topup_observed_balance") - self.load("total_escrowed") < self.load("topup_intent").get("additional_amount")
 
     def _check_LENGTH_topup_votes_gte_WITNESS_THRESHOLD_1(self) -> bool:
-        # Schema: LENGTH(topup_votes) >= WITNESS_THRESHOLD - 1...
-        return len(self.load("topup_votes")) >= WITNESS_THRESHOLD - 1
+        # Schema: LENGTH (topup_votes) >= WITNESS_THRESHOLD - 1...
+        return len (self.load("topup_votes")) >= WITNESS_THRESHOLD - 1
 
     def _compute_other_witnesses(self) -> Any:
         """Compute other_witnesses."""
@@ -1706,3 +1769,33 @@ class Witness(Actor):
             "witness_signatures": signatures,
             "timestamp": self.current_time,
         }
+
+    def _COMPUTE_CONSENSUS(self, verdicts: List[str], threshold: int) -> str:
+        """"""
+        # TODO: Implement - accept_count = LENGTH (FILTER (verdicts, v = > v =...
+        return None
+
+    def _EXTRACT_FIELD(self, records: List[Any], field: str) -> List[Any]:
+        """"""
+        # TODO: Implement - RETURN MAP (records, r = > r.{field})...
+        return None
+
+    def _COUNT_MATCHING(self, items: List[Any], predicate: Any) -> int:
+        """"""
+        # TODO: Implement - RETURN LENGTH (FILTER (items, predicate))...
+        return None
+
+    def _CONTAINS(self, items: List[Any], item: Any) -> bool:
+        """"""
+        # TODO: Implement - RETURN LENGTH (FILTER (items, x = > x == item))> 0...
+        return None
+
+    def _BUILD_LOCK_RESULT(self) -> str:
+        """"""
+        # TODO: Implement - consensus = LOAD (consensus_direction) status = IF...
+        return None
+
+    def _BUILD_TOPUP_RESULT(self) -> str:
+        """"""
+        # TODO: Implement - consensus = LOAD (topup_consensus_direction) statu...
+        return None

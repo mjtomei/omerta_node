@@ -1,0 +1,37 @@
+# Common Types and Functions
+# Shared across all protocol transactions
+#
+# Import in transaction schemas with:
+#   imports shared/common
+
+# =============================================================================
+# SHARED TYPES
+# =============================================================================
+
+# Note: Types are not yet fully supported in DSL syntax
+# The YAML types are complex struct definitions that would need special handling
+# For now, these are implicit - the generator will recognize these type names
+
+# =============================================================================
+# SHARED FUNCTIONS
+# =============================================================================
+
+function COMPUTE_CONSENSUS(verdicts list<WitnessVerdict>, threshold uint) -> string (
+    accept_count = LENGTH(FILTER(verdicts, v => v == ACCEPT))
+    IF accept_count >= threshold THEN
+      RETURN "ACCEPT"
+    ELSE
+      RETURN "REJECT"
+)
+
+function EXTRACT_FIELD(records list<T>, field string) -> list<U> (
+    RETURN MAP(records, r => r.{field})
+)
+
+function COUNT_MATCHING(items list<T>, predicate T) -> uint (
+    RETURN LENGTH(FILTER(items, predicate))
+)
+
+function CONTAINS(items list<T>, item T) -> bool (
+    RETURN LENGTH(FILTER(items, x => x == item)) > 0
+)
