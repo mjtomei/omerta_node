@@ -1,0 +1,8 @@
+stateDiagram-v2
+    [*] --> IDLE
+    IDLE --> VALIDATING_CHECKPOINT : LOCK_INTENT
+    VALIDATING_CHECKPOINT --> SELECTING_WITNESSES : [auto]\n[checkpoint_exists_in_chain]
+    SELECTING_WITNESSES --> SENDING_COMMITMENT : [auto]
+    SENDING_COMMITMENT --> WAITING_FOR_LOCK : [auto]
+    WAITING_FOR_LOCK --> SERVICE_PHASE : BALANCE_UPDATE_BROADCAST\n[message.lock_result.session_id...]
+    WAITING_FOR_LOCK --> IDLE : timeout(LOCK_TIMEOUT)
