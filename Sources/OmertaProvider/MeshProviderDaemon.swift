@@ -704,6 +704,11 @@ public actor MeshProviderDaemon {
         await mesh.knownPeers()
     }
 
+    /// Get known peers with full info (including endpoints)
+    public func knownPeersWithInfo() async -> [MeshNode.CachedPeerInfo] {
+        await mesh.knownPeersWithInfo()
+    }
+
     /// Get connected relays
     public func connectedRelays() async -> [String] {
         await mesh.connectedRelays()

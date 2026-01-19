@@ -378,6 +378,19 @@ public actor MeshNetwork {
         return await node.getCachedPeerIds()
     }
 
+    /// Get known peers with full info (including endpoints)
+    public func knownPeersWithInfo() async -> [MeshNode.CachedPeerInfo] {
+        guard let node = meshNode else { return [] }
+        let peerIds = await node.getCachedPeerIds()
+        var peers: [MeshNode.CachedPeerInfo] = []
+        for peerId in peerIds {
+            if let info = await node.getCachedPeer(peerId) {
+                peers.append(info)
+            }
+        }
+        return peers
+    }
+
     // MARK: - Relay Operations
 
     /// Get connected relays

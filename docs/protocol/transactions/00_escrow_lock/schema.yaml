@@ -643,6 +643,7 @@ actors:
         guard: has_provider_checkpoint
         actions:
           - { store: [provider, amount] }
+          - { store: { consumer: peer_id } }
           - { compute: session_id, from: "HASH(peer_id + provider + current_time)" }
           - { compute: consumer_nonce, from: "RANDOM_BYTES(32)" }
           - { lookup: provider_chain_checkpoint, from: "chain.get_peer_hash(provider)" }
@@ -733,7 +734,7 @@ actors:
         to: LOCKED
         actions:
           - { compute: consumer_signature, from: "SIGN(pending_result)" }
-          - { store: { lock_result: pending_result_with_signature } }
+          - { store: { lock_result: "{ ...pending_result, consumer_signature }" } }
           - append_block:
               type: BALANCE_LOCK
               fields:
@@ -750,6 +751,7 @@ actors:
         trigger: LIVENESS_PING
         to: LOCKED
         actions:
+          - { store: { from_witness: peer_id } }
           - send:
               message: LIVENESS_PONG
               to: message.sender
@@ -796,7 +798,7 @@ actors:
         to: LOCKED
         actions:
           - { compute: consumer_signature, from: "SIGN(pending_topup_result)" }
-          - { store: { topup_result: pending_topup_result_with_signature } }
+          - { store: { topup_result: "{ ...pending_topup_result, consumer_signature }" } }
           - append_block:
               type: BALANCE_TOPUP
               fields:
@@ -1189,6 +1191,15 @@ actors:
           - { store: { total_escrowed: amount } }
           - append_block:
               type: WITNESS_COMMITMENT
+          - send:
+              message: BALANCE_UPDATE_BROADCAST
+              to: provider
+
+      - from: PROPAGATING_RESULT
+        trigger: timeout(CONSENSUS_TIMEOUT)
+        to: DONE
+        actions:
+          - { store: { reject_reason: "consumer_signature_timeout" } }
 
       - from: ESCROW_ACTIVE
         trigger: TOPUP_INTENT
@@ -1218,6 +1229,7 @@ actors:
         trigger: LIVENESS_PING
         to: ESCROW_ACTIVE
         actions:
+          - { store: { from_witness: peer_id } }
           - send:
               message: LIVENESS_PONG
               to: message.sender

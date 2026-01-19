@@ -111,6 +111,9 @@ class ExpressionTranslator:
         # Normalize whitespace
         expr = " ".join(expr.split())
 
+        # Pre-process: handle struct literals with spread syntax { ...var, field }
+        expr = self._preprocess_struct_literal(expr)
+
         # Pre-process: transform hash(a + b + c) to hash(_to_bytes(a, b, c))
         expr = self._preprocess_hash_concat(expr)
 
@@ -123,6 +126,63 @@ class ExpressionTranslator:
         result = self._translate_tokens(expr)
 
         return result
+
+    def _preprocess_struct_literal(self, expr: str) -> str:
+        """
+        Handle struct literal syntax: { ...spread_var, field1, field2: value }.
+
+        Transforms:
+        - { ...base, field } → __STRUCT_SPREAD__(base, field)
+        - { a, b, c } → __STRUCT__(a, b, c)
+
+        These markers are handled by _translate_tokens and converted to proper Python.
+        """
+        # Check if expression is a struct literal (starts with { and ends with })
+        stripped = expr.strip()
+        if not (stripped.startswith('{') and stripped.endswith('}')):
+            return expr
+
+        # Check if it looks like a struct literal (has commas and no '=>')
+        # We need to distinguish from code blocks
+        inner = stripped[1:-1].strip()
+        if not inner or '=>' in inner:
+            return expr  # It's a lambda or something else
+
+        # Parse the struct literal
+        parts = []
+        current = []
+        depth = 0
+        for char in inner:
+            if char == ',' and depth == 0:
+                parts.append(''.join(current).strip())
+                current = []
+            else:
+                current.append(char)
+                if char in '({[':
+                    depth += 1
+                elif char in ')}]':
+                    depth -= 1
+        if current:
+            parts.append(''.join(current).strip())
+
+        # Check for spread syntax
+        spread_var = None
+        fields = []
+        for part in parts:
+            part = part.strip()
+            if part.startswith('...'):
+                spread_var = part[3:].strip()
+            else:
+                fields.append(part)
+
+        # Build marker expression
+        if spread_var:
+            if fields:
+                return f'__STRUCT_SPREAD__({spread_var}, {", ".join(fields)})'
+            else:
+                return f'__STRUCT_SPREAD__({spread_var})'
+        else:
+            return f'__STRUCT__({", ".join(fields)})'
 
     def _preprocess_hash_concat(self, expr: str) -> str:
         """Transform HASH(a + b + c) to HASH(_to_hashable(a, b, c))."""
@@ -264,8 +324,77 @@ class ExpressionTranslator:
 
                 # Handle function calls
                 if rest.startswith('('):
+                    # Handle struct literal markers from preprocessing
+                    if token == '__STRUCT__':
+                        # __STRUCT__(a, b, c) → {"a": self.load("a"), "b": self.load("b"), ...}
+                        paren_start = j
+                        while paren_start < len(expr) and expr[paren_start] != '(':
+                            paren_start += 1
+                        paren_start += 1
+                        depth = 1
+                        paren_end = paren_start
+                        while paren_end < len(expr) and depth > 0:
+                            if expr[paren_end] == '(':
+                                depth += 1
+                            elif expr[paren_end] == ')':
+                                depth -= 1
+                            paren_end += 1
+                        args = expr[paren_start:paren_end-1]
+                        # Parse comma-separated field names
+                        fields = [f.strip() for f in args.split(',') if f.strip()]
+                        dict_parts = []
+                        for field in fields:
+                            if ':' in field:
+                                # key: value pair
+                                key, val = field.split(':', 1)
+                                key = key.strip()
+                                val = val.strip()
+                                translated_val = self._translate_tokens(val)
+                                dict_parts.append(f'"{key}": {translated_val}')
+                            else:
+                                # shorthand: field → "field": self.load("field")
+                                translated_field = self._translate_tokens(field)
+                                dict_parts.append(f'"{field}": {translated_field}')
+                        result.append('{' + ', '.join(dict_parts) + '}')
+                        i = paren_end
+                        continue
+                    elif token == '__STRUCT_SPREAD__':
+                        # __STRUCT_SPREAD__(base, field1, field2) → {**self.load("base"), "field1": ..., ...}
+                        paren_start = j
+                        while paren_start < len(expr) and expr[paren_start] != '(':
+                            paren_start += 1
+                        paren_start += 1
+                        depth = 1
+                        paren_end = paren_start
+                        while paren_end < len(expr) and depth > 0:
+                            if expr[paren_end] == '(':
+                                depth += 1
+                            elif expr[paren_end] == ')':
+                                depth -= 1
+                            paren_end += 1
+                        args = expr[paren_start:paren_end-1]
+                        # First arg is spread base, rest are fields
+                        parts = [p.strip() for p in args.split(',') if p.strip()]
+                        if parts:
+                            spread_base = parts[0]
+                            fields = parts[1:]
+                            spread_translated = self._translate_tokens(spread_base)
+                            dict_parts = [f'**{spread_translated}']
+                            for field in fields:
+                                if ':' in field:
+                                    key, val = field.split(':', 1)
+                                    key = key.strip()
+                                    val = val.strip()
+                                    translated_val = self._translate_tokens(val)
+                                    dict_parts.append(f'"{key}": {translated_val}')
+                                else:
+                                    translated_field = self._translate_tokens(field)
+                                    dict_parts.append(f'"{field}": {translated_field}')
+                            result.append('{' + ', '.join(dict_parts) + '}')
+                        i = paren_end
+                        continue
                     # Check for literal key functions (argument is NOT translated)
-                    if token in self.LITERAL_KEY_FUNCS:
+                    elif token in self.LITERAL_KEY_FUNCS:
                         # Find the matching closing paren
                         paren_start = j
                         while paren_start < len(expr) and expr[paren_start] != '(':
@@ -865,6 +994,71 @@ class PythonActorGenerator:
 
         return "\n".join(lines)
 
+    def _is_expression(self, val: str) -> bool:
+        """
+        Determine if a string value is an expression that should be translated,
+        or a literal string that should be stored as-is.
+
+        Expressions include:
+        - Arithmetic: "a + b", "x - y", "count * 2"
+        - Comparisons: "a >= b", "x == y"
+        - Struct literals: "{ a, b, c }"
+        - Function calls: "HASH(data)"
+        - Variable references: "some_variable"
+
+        String literals include:
+        - Error messages with common patterns: "insufficient_balance", "provider_timeout"
+        - Status strings: "accept", "reject"
+        """
+        # Empty string is not an expression
+        if not val or not val.strip():
+            return False
+
+        val = val.strip()
+
+        # Struct literals start with {
+        if val.startswith('{'):
+            return True
+
+        # Contains arithmetic/comparison operators (with spaces around them)
+        expression_operators = [' + ', ' - ', ' * ', ' / ', ' >= ', ' <= ', ' > ', ' < ', ' == ', ' != ', ' && ', ' || ']
+        for op in expression_operators:
+            if op in val:
+                return True
+
+        # Contains function call syntax
+        if '(' in val and ')' in val:
+            return True
+
+        # Contains array indexing
+        if '[' in val and ']' in val:
+            return True
+
+        # Contains dot notation (attribute access)
+        if '.' in val:
+            return True
+
+        # Check for common error message patterns (these are literal strings)
+        # Error messages typically have patterns like: *_timeout, *_mismatch, *_invalid, etc.
+        error_suffixes = ('_timeout', '_mismatch', '_invalid', '_error', '_failed', '_rejected', '_missing')
+        error_prefixes = ('no_', 'invalid_', 'unknown_', 'insufficient_', 'missing_')
+        if any(val.endswith(suffix) for suffix in error_suffixes):
+            return False
+        if any(val.startswith(prefix) for prefix in error_prefixes):
+            return False
+
+        # Simple status words are literals
+        status_literals = {'accept', 'reject', 'pending', 'success', 'failure', 'ok', 'error', 'timeout'}
+        if val.lower() in status_literals:
+            return False
+
+        # If it's a simple identifier (alphanumeric with underscores), treat as expression
+        # Variable names include: pending_result, consumer_signature, total_escrowed, etc.
+        if val.replace('_', '').isalnum() and val[0].isalpha():
+            return True
+
+        return False
+
     def _generate_state_enum(self) -> str:
         """Generate state enum."""
         lines = [f"class {self.actor_name}State(Enum):"]
@@ -1034,15 +1228,20 @@ class PythonActorGenerator:
                 lines.append("")
 
         # Handle auto transitions (immediate)
+        # Track whether we've seen a guarded transition to use elif for subsequent ones
+        first_guarded = True
         for trans in auto_trans:
             guard = trans.get("guard", "")
             if guard:
                 guard_code = self._generate_guard_check(guard)
                 lines.append(f"            # Auto transition with guard: {guard}")
-                lines.append(f"            if {guard_code}:")
+                # Use 'if' for first guarded transition, 'elif' for subsequent ones
+                if_keyword = "if" if first_guarded else "elif"
+                lines.append(f"            {if_keyword} {guard_code}:")
                 lines.extend(self._generate_transition_code(trans, indent_level=4))
+                first_guarded = False
 
-                # Handle guard failure
+                # Handle guard failure (only if this is the only guarded transition)
                 on_fail = trans.get("on_guard_fail", {})
                 if on_fail:
                     lines.append("            else:")
@@ -1118,6 +1317,10 @@ class PythonActorGenerator:
                             enum_ref = self.expr_translator.get_enum_reference(val)
                             if enum_ref:
                                 lines.append(f'{ind}self.store("{key}", {enum_ref})')
+                            elif self._is_expression(val):
+                                # It's an expression - translate it
+                                translated = self.expr_translator.translate(val)
+                                lines.append(f'{ind}self.store("{key}", {translated})')
                             else:
                                 # It's a string literal
                                 lines.append(f'{ind}self.store("{key}", {repr(val)})')
@@ -1268,15 +1471,15 @@ class PythonActorGenerator:
         """Infer the 'started_at' key for timeout checking."""
         state_lower = state_name.lower()
         if "waiting" in state_lower:
-            # Try to find what we're waiting for
-            if "commitment" in state_lower:
+            # Try to find what we're waiting for (check more specific patterns first)
+            if "topup" in state_lower:
+                return "topup_sent_at"
+            elif "commitment" in state_lower:
                 return "intent_sent_at"
             elif "result" in state_lower:
                 return "requests_sent_at"
             elif "signature" in state_lower:
                 return "propagated_at"
-            elif "topup" in state_lower:
-                return "topup_sent_at"
         return "state_entered_at"
 
 

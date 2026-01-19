@@ -637,9 +637,9 @@ struct Start: AsyncParsableCommand {
             ))
 
         case .peers:
-            let peerIds = await daemon.knownPeers()
-            let peers = peerIds.map { peerId in
-                ControlResponse.PeerData(peerId: peerId, endpoint: "", lastSeen: nil)
+            let peerInfos = await daemon.knownPeersWithInfo()
+            let peers = peerInfos.map { info in
+                ControlResponse.PeerData(peerId: info.peerId, endpoint: info.endpoint, lastSeen: info.lastSeen)
             }
             return .peers(peers)
 
