@@ -710,7 +710,7 @@ struct NetworkCreate: AsyncParsableCommand {
         print("  omertad start --network \(networkId) --port \(endpoint.split(separator: ":").last ?? "9999")")
         print("")
         print("Others can join with:")
-        print("  omerta network join --key '<invite-link>'")
+        print("  omerta network join '<invite-link>'")
     }
 }
 
@@ -720,17 +720,28 @@ struct NetworkJoin: AsyncParsableCommand {
         abstract: "Join a network using a shared key"
     )
 
-    @Option(name: .long, help: "Network key (omerta://join/...)")
-    var key: String
+    @Argument(help: "Network key (omerta://join/...)")
+    var keyArg: String?
+
+    @Option(name: .long, help: "Network key (omerta://join/...) - alternative to positional argument")
+    var key: String?
 
     @Option(name: .long, help: "Optional custom name for the network")
     var name: String?
 
     mutating func run() async throws {
+        // Resolve key from positional arg or --key option
+        guard let resolvedKey = keyArg ?? key else {
+            print("Error: Missing network key")
+            print("Usage: omerta network join <key>")
+            print("   or: omerta network join --key <key>")
+            throw ExitCode.failure
+        }
+
         print("Joining network...")
 
         do {
-            let networkKey = try NetworkKey.decode(from: key)
+            let networkKey = try NetworkKey.decode(from: resolvedKey)
             let networkId = networkKey.deriveNetworkId()
 
             // Generate identity for this network
@@ -811,7 +822,7 @@ struct NetworkList: AsyncParsableCommand {
             print("  omerta network create --name \"My Network\" --endpoint \"<your-ip>:51820\"")
             print("")
             print("To join a network:")
-            print("  omerta network join --key <network-key>")
+            print("  omerta network join <network-key>")
             return
         }
 
@@ -1595,7 +1606,7 @@ struct VMRequest: AsyncParsableCommand {
             print("Error: --network <id> is required")
             print("")
             print("To join a network:")
-            print("  omerta network join --key '<invite-link>'")
+            print("  omerta network join '<invite-link>'")
             print("")
             print("To list networks:")
             print("  omerta network list")
@@ -1622,7 +1633,7 @@ struct VMRequest: AsyncParsableCommand {
                 print("  (none)")
                 print("")
                 print("Join a network with:")
-                print("  omerta network join --key '<invite-link>'")
+                print("  omerta network join '<invite-link>'")
             } else {
                 for n in networks {
                     print("  \(n.id) - \(n.name)")
