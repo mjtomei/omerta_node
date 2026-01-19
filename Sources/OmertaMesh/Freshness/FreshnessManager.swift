@@ -62,6 +62,9 @@ public actor FreshnessManager {
     public func start() async {
         await recentContacts.start()
 
+        // Run cleanup immediately on start (for short-lived daemon sessions)
+        await cleanup()
+
         // Set up path failure handler to invalidate cache
         await pathFailureReporter.onFailure { [weak self] failure in
             await self?.handlePathFailure(failure)

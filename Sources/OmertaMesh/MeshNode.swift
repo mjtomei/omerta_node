@@ -14,6 +14,15 @@ public actor MeshNode {
     public struct Config: Sendable {
         /// 256-bit symmetric key for message encryption (required)
         public let encryptionKey: Data
+
+        /// Network ID derived from encryption key (used for storage scoping)
+        /// This ensures each network has isolated persistent storage
+        public var networkId: String {
+            // Hash the encryption key and take first 16 hex chars for a readable ID
+            let hash = SHA256.hash(data: encryptionKey)
+            return hash.prefix(8).map { String(format: "%02x", $0) }.joined()
+        }
+
         public let port: UInt16
         public let targetRelays: Int
         public let maxRelays: Int
@@ -29,6 +38,10 @@ public actor MeshNode {
         public let holePunchTimeout: TimeInterval
         public let holePunchProbeCount: Int
         public let holePunchProbeInterval: TimeInterval
+
+        /// Endpoint validation mode (default: strict for production)
+        /// Use .permissive for LAN testing, .allowAll for localhost testing
+        public let endpointValidationMode: EndpointValidator.ValidationMode
 
         public init(
             encryptionKey: Data,
@@ -46,7 +59,8 @@ public actor MeshNode {
             freshnessQueryInterval: TimeInterval = 30,
             holePunchTimeout: TimeInterval = 10,
             holePunchProbeCount: Int = 5,
-            holePunchProbeInterval: TimeInterval = 0.2
+            holePunchProbeInterval: TimeInterval = 0.2,
+            endpointValidationMode: EndpointValidator.ValidationMode = .strict
         ) {
             self.encryptionKey = encryptionKey
             self.port = port
@@ -64,6 +78,7 @@ public actor MeshNode {
             self.holePunchTimeout = holePunchTimeout
             self.holePunchProbeCount = holePunchProbeCount
             self.holePunchProbeInterval = holePunchProbeInterval
+            self.endpointValidationMode = endpointValidationMode
         }
     }
 
@@ -182,7 +197,11 @@ public actor MeshNode {
         self.socket = UDPSocket(eventLoopGroup: self.eventLoopGroup)
         self.logger = Logger(label: "io.omerta.mesh.node.\(identity.peerId.prefix(8))")
         self.eventLogger = eventLogger
-        self.endpointManager = PeerEndpointManager(storagePath: nil, logger: Logger(label: "io.omerta.mesh.endpoints"))
+        self.endpointManager = PeerEndpointManager(
+            networkId: config.networkId,
+            validationMode: config.endpointValidationMode,
+            logger: Logger(label: "io.omerta.mesh.endpoints")
+        )
         self.freshnessManager = FreshnessManager()
         self.holePunchManager = HolePunchManager(
             peerId: identity.peerId,

@@ -10,11 +10,11 @@ final class MultiEndpointTests: XCTestCase {
     // MARK: - PeerEndpointManager Unit Tests
 
     func testEndpointPriorityPromotion() async throws {
-        let manager = PeerEndpointManager()
+        let manager = PeerEndpointManager(networkId: "test-network", validationMode: .strict)
         let peerId = "test-peer-123"
         let machineId = "test-machine-456"
 
-        // Record three endpoints in order
+        // Record three endpoints in order (using public IPs)
         await manager.recordMessageReceived(from: peerId, machineId: machineId, endpoint: "1.1.1.1:5000")
         await manager.recordMessageReceived(from: peerId, machineId: machineId, endpoint: "2.2.2.2:5000")
         await manager.recordMessageReceived(from: peerId, machineId: machineId, endpoint: "3.3.3.3:5000")
@@ -32,7 +32,8 @@ final class MultiEndpointTests: XCTestCase {
     }
 
     func testMultipleMachinesSamePeerId() async throws {
-        let manager = PeerEndpointManager()
+        // Use permissive mode to allow private IPs for LAN testing
+        let manager = PeerEndpointManager(networkId: "test-network", validationMode: .permissive)
         let peerId = "shared-peer-id"
         let machineA = "machine-A"
         let machineB = "machine-B"
@@ -55,7 +56,8 @@ final class MultiEndpointTests: XCTestCase {
     }
 
     func testBestEndpointReturnsFirst() async throws {
-        let manager = PeerEndpointManager()
+        // Use allowAll to test with hostname-like endpoints
+        let manager = PeerEndpointManager(networkId: "test-network", validationMode: .allowAll)
         let peerId = "test-peer"
         let machineId = "test-machine"
 
@@ -67,7 +69,8 @@ final class MultiEndpointTests: XCTestCase {
     }
 
     func testSendSuccessPromotesEndpoint() async throws {
-        let manager = PeerEndpointManager()
+        // Use allowAll to test with hostname-like endpoints
+        let manager = PeerEndpointManager(networkId: "test-network", validationMode: .allowAll)
         let peerId = "test-peer"
         let machineId = "test-machine"
 
@@ -89,22 +92,26 @@ final class MultiEndpointTests: XCTestCase {
     }
 
     func testMaxEndpointsPerMachine() async throws {
-        let manager = PeerEndpointManager()
+        // Use permissive mode to allow private IPs
+        let manager = PeerEndpointManager(networkId: "test-network", validationMode: .permissive)
         let peerId = "test-peer"
         let machineId = "test-machine"
 
         // Add 1005 endpoints (max is 1000)
         for i in 1...1005 {
-            await manager.recordMessageReceived(from: peerId, machineId: machineId, endpoint: "10.0.0.\(i):5000")
+            // Use format that creates valid IPs across multiple octets
+            let octet3 = i / 256
+            let octet4 = i % 256
+            await manager.recordMessageReceived(from: peerId, machineId: machineId, endpoint: "10.0.\(octet3).\(octet4):5000")
         }
 
         let endpoints = await manager.getEndpoints(peerId: peerId, machineId: machineId)
         XCTAssertEqual(endpoints.count, 1000)
 
-        // Most recent should be first
-        XCTAssertEqual(endpoints.first, "10.0.0.1005:5000")
+        // Most recent should be first (1005 = 3.237)
+        XCTAssertEqual(endpoints.first, "10.0.3.237:5000")
 
-        // Oldest should have been dropped
+        // Oldest should have been dropped (1 = 0.1, 5 = 0.5)
         XCTAssertFalse(endpoints.contains("10.0.0.1:5000"))
         XCTAssertFalse(endpoints.contains("10.0.0.5:5000"))
     }
@@ -377,15 +384,16 @@ final class MultiEndpointTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let storagePath = tempDir.appendingPathComponent("peer_endpoints.json")
+        let networkId = "test-persistence-network"
 
-        // Create manager and add endpoints
-        let manager1 = PeerEndpointManager(storagePath: storagePath)
+        // Create manager and add endpoints (using consistent networkId)
+        let manager1 = PeerEndpointManager(networkId: networkId, validationMode: .strict, storagePath: storagePath)
         await manager1.recordMessageReceived(from: "peer1", machineId: "machine1", endpoint: "1.1.1.1:5000")
         await manager1.recordMessageReceived(from: "peer1", machineId: "machine1", endpoint: "2.2.2.2:5000")
         try await manager1.save()
 
-        // Create new manager and load
-        let manager2 = PeerEndpointManager(storagePath: storagePath)
+        // Create new manager with same networkId and load
+        let manager2 = PeerEndpointManager(networkId: networkId, validationMode: .strict, storagePath: storagePath)
         try await manager2.load()
 
         // Should have same endpoints in same order
@@ -399,16 +407,17 @@ final class MultiEndpointTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let storagePath = tempDir.appendingPathComponent("peer_endpoints.json")
+        let networkId = "test-persistence-network"
 
-        // Create manager and add endpoints for multiple machines
-        let manager1 = PeerEndpointManager(storagePath: storagePath)
+        // Create manager and add endpoints for multiple machines (using consistent networkId)
+        let manager1 = PeerEndpointManager(networkId: networkId, validationMode: .strict, storagePath: storagePath)
         await manager1.recordMessageReceived(from: "peer1", machineId: "machineA", endpoint: "1.1.1.1:5000")
         await manager1.recordMessageReceived(from: "peer1", machineId: "machineB", endpoint: "2.2.2.2:5000")
         await manager1.recordMessageReceived(from: "peer2", machineId: "machineC", endpoint: "3.3.3.3:5000")
         try await manager1.save()
 
-        // Create new manager and load
-        let manager2 = PeerEndpointManager(storagePath: storagePath)
+        // Create new manager with same networkId and load
+        let manager2 = PeerEndpointManager(networkId: networkId, validationMode: .strict, storagePath: storagePath)
         try await manager2.load()
 
         // All machines should be restored
@@ -426,7 +435,8 @@ final class MultiEndpointTests: XCTestCase {
     private func makeTestNode(port: UInt16 = 0) async throws -> MeshNode {
         let identity = IdentityKeypair()
         let testKey = Data(repeating: 0x42, count: 32)
-        let config = MeshNode.Config(encryptionKey: testKey, port: port)
+        // Use allowAll validation mode for localhost testing
+        let config = MeshNode.Config(encryptionKey: testKey, port: port, endpointValidationMode: .allowAll)
         return try MeshNode(identity: identity, config: config)
     }
 }

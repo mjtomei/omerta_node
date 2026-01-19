@@ -1,6 +1,7 @@
 // MeshConfig.swift - Configuration for the mesh network
 
 import Foundation
+import Crypto
 
 /// Configuration for a mesh network node
 public struct MeshConfig: Sendable {
@@ -9,6 +10,14 @@ public struct MeshConfig: Sendable {
     /// 256-bit symmetric key for message encryption (ChaCha20-Poly1305)
     /// All mesh messages are encrypted with this key
     public let encryptionKey: Data
+
+    /// Network ID derived from encryption key (used for storage scoping)
+    /// This ensures each network has isolated persistent storage
+    public var networkId: String {
+        // Hash the encryption key and take first 16 hex chars for a readable ID
+        let hash = SHA256.hash(data: encryptionKey)
+        return hash.prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
 
     // MARK: - Storage Settings
 

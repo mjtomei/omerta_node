@@ -32,16 +32,18 @@ public struct MachineEndpoints: Codable, Sendable {
     }
 }
 
-/// Persistence format for peer endpoints
+/// Persistence format for peer endpoints (version 3: network-scoped)
 private struct PeerEndpointsFile: Codable {
     let version: Int
     let savedAt: Date
+    let networkId: String                     // Network this data belongs to
     let machines: [String: MachineEndpoints]  // key = "peerId:machineId"
 
-    static let currentVersion = 2
+    static let currentVersion = 3
 }
 
 /// Manages endpoint tracking for peers by (peerId, machineId)
+/// Scoped by network ID to prevent cross-network data leakage
 public actor PeerEndpointManager {
     private var machines: [String: MachineEndpoints] = [:]  // key = "peerId:machineId"
     private var isDirty = false
@@ -50,13 +52,73 @@ public actor PeerEndpointManager {
     private let logger: Logger
     private let maxEndpointsPerMachine = 1000
 
+    /// Network ID this manager is scoped to
+    private let networkId: String
+
+    /// Endpoint validation mode
+    private let validationMode: EndpointValidator.ValidationMode
+
     /// Storage path for peer endpoints
     private let storagePath: URL
 
+    /// Initialize with network scoping
+    /// - Parameters:
+    ///   - networkId: Network ID to scope storage to
+    ///   - validationMode: Endpoint validation strictness
+    ///   - storagePath: Override storage path (for testing)
+    ///   - logger: Override logger
+    public init(
+        networkId: String,
+        validationMode: EndpointValidator.ValidationMode = .strict,
+        storagePath: URL? = nil,
+        logger: Logger? = nil
+    ) {
+        self.networkId = networkId
+        self.validationMode = validationMode
+        self.storagePath = storagePath ?? URL(fileURLWithPath: OmertaConfig.getRealUserHome())
+            .appendingPathComponent(".omerta/mesh/networks/\(networkId)/peer_endpoints.json")
+        self.logger = logger ?? Logger(label: "io.omerta.mesh.endpoints")
+
+        // Clean up legacy global files (one-time migration)
+        Self.cleanupLegacyFiles(logger: self.logger)
+    }
+
+    /// Legacy init without networkId - for backwards compatibility during transition
+    /// Generates a placeholder network ID from the storage path
+    @available(*, deprecated, message: "Use init(networkId:) instead")
     public init(storagePath: URL? = nil, logger: Logger? = nil) {
+        // Use a placeholder network ID derived from path or random
+        self.networkId = "legacy-\(UUID().uuidString.prefix(8))"
+        self.validationMode = .strict
         self.storagePath = storagePath ?? URL(fileURLWithPath: OmertaConfig.getRealUserHome())
             .appendingPathComponent(".omerta/mesh/peer_endpoints.json")
-        self.logger = logger ?? Logger(label: "omerta.mesh.endpoints")
+        self.logger = logger ?? Logger(label: "io.omerta.mesh.endpoints")
+    }
+
+    /// Clean up legacy global files from pre-network-scoped versions
+    private static func cleanupLegacyFiles(logger: Logger) {
+        let meshDir = URL(fileURLWithPath: OmertaConfig.getRealUserHome())
+            .appendingPathComponent(".omerta/mesh")
+
+        // Old global files (pre-network-scoping)
+        let legacyPaths = [
+            meshDir.appendingPathComponent("peers.json"),
+            meshDir.appendingPathComponent("peer_endpoints.json")
+        ]
+
+        for path in legacyPaths {
+            if FileManager.default.fileExists(atPath: path.path) {
+                do {
+                    try FileManager.default.removeItem(at: path)
+                    logger.info("Removed legacy file", metadata: ["path": "\(path.lastPathComponent)"])
+                } catch {
+                    logger.warning("Failed to remove legacy file", metadata: [
+                        "path": "\(path.lastPathComponent)",
+                        "error": "\(error)"
+                    ])
+                }
+            }
+        }
     }
 
     /// Start background tasks for cleanup and persistence
@@ -67,6 +129,9 @@ public actor PeerEndpointManager {
         } catch {
             logger.warning("Failed to load peer endpoints: \(error)")
         }
+
+        // Run cleanup immediately on start (for short-lived daemon sessions)
+        cleanup()
 
         // Start hourly cleanup task
         cleanupTask = Task {
@@ -106,6 +171,16 @@ public actor PeerEndpointManager {
     /// Record that we received a message from this endpoint
     /// Moves the endpoint to front of the list (highest priority)
     public func recordMessageReceived(from peerId: PeerId, machineId: MachineId, endpoint: String) {
+        // Validate endpoint before storing
+        let validation = EndpointValidator.validate(endpoint, mode: validationMode)
+        guard validation.isValid else {
+            logger.debug("Rejecting invalid endpoint on receive", metadata: [
+                "endpoint": "\(endpoint)",
+                "reason": "\(validation.reason ?? "unknown")"
+            ])
+            return
+        }
+
         let key = makeKey(peerId: peerId, machineId: machineId)
 
         if var machine = machines[key] {
@@ -130,6 +205,16 @@ public actor PeerEndpointManager {
     /// Record that we successfully sent to this endpoint
     /// Moves the endpoint to front of the list (highest priority)
     public func recordSendSuccess(to peerId: PeerId, machineId: MachineId, endpoint: String) {
+        // Validate endpoint before storing
+        let validation = EndpointValidator.validate(endpoint, mode: validationMode)
+        guard validation.isValid else {
+            logger.debug("Rejecting invalid endpoint on send", metadata: [
+                "endpoint": "\(endpoint)",
+                "reason": "\(validation.reason ?? "unknown")"
+            ])
+            return
+        }
+
         let key = makeKey(peerId: peerId, machineId: machineId)
 
         if var machine = machines[key] {
@@ -142,18 +227,22 @@ public actor PeerEndpointManager {
     // MARK: - Queries
 
     /// Get endpoints for a specific machine, ordered by priority (best first)
+    /// Filters out invalid endpoints (defense in depth)
     public func getEndpoints(peerId: PeerId, machineId: MachineId) -> [String] {
         let key = makeKey(peerId: peerId, machineId: machineId)
-        return machines[key]?.endpoints ?? []
+        let endpoints = machines[key]?.endpoints ?? []
+        // Filter on read (defense in depth)
+        return EndpointValidator.filterValid(endpoints, mode: validationMode)
     }
 
     /// Get the best endpoint for a specific machine
+    /// Returns nil if no valid endpoints
     public func getBestEndpoint(peerId: PeerId, machineId: MachineId) -> String? {
-        let key = makeKey(peerId: peerId, machineId: machineId)
-        return machines[key]?.bestEndpoint
+        getEndpoints(peerId: peerId, machineId: machineId).first
     }
 
     /// Get all endpoints for all machines with this peerId (for broadcast)
+    /// Filters out invalid endpoints
     public func getAllEndpoints(peerId: PeerId) -> [String] {
         var endpoints: [String] = []
         for (key, machine) in machines {
@@ -161,9 +250,11 @@ public actor PeerEndpointManager {
                 endpoints.append(contentsOf: machine.endpoints)
             }
         }
+        // Filter on read (defense in depth)
+        let validEndpoints = EndpointValidator.filterValid(endpoints, mode: validationMode)
         // Deduplicate while preserving order
         var seen = Set<String>()
-        return endpoints.filter { seen.insert($0).inserted }
+        return validEndpoints.filter { seen.insert($0).inserted }
     }
 
     /// Get all machines with this peerId
@@ -190,14 +281,37 @@ public actor PeerEndpointManager {
         }
 
         let data = try Data(contentsOf: storagePath)
-        let file = try JSONDecoder().decode(PeerEndpointsFile.self, from: data)
 
-        // Handle version migration if needed
-        if file.version == PeerEndpointsFile.currentVersion {
+        // Try to decode - handle version mismatches gracefully
+        do {
+            let file = try JSONDecoder().decode(PeerEndpointsFile.self, from: data)
+
+            // Version check
+            guard file.version == PeerEndpointsFile.currentVersion else {
+                logger.info("Old version \(file.version), starting fresh", metadata: [
+                    "expected": "\(PeerEndpointsFile.currentVersion)"
+                ])
+                return
+            }
+
+            // Network ID check
+            guard file.networkId == networkId else {
+                logger.info("Different network, starting fresh", metadata: [
+                    "stored": "\(file.networkId)",
+                    "current": "\(networkId)"
+                ])
+                return
+            }
+
             machines = file.machines
-            logger.info("Loaded \(machines.count) machine endpoint records")
-        } else {
-            logger.warning("Unknown peer endpoints file version \(file.version), starting fresh")
+            logger.info("Loaded \(machines.count) machine endpoint records", metadata: [
+                "networkId": "\(networkId)"
+            ])
+        } catch {
+            // Decoding failed (old format or corrupt) - start fresh
+            logger.warning("Failed to decode peer endpoints, starting fresh", metadata: [
+                "error": "\(error)"
+            ])
         }
     }
 
@@ -206,6 +320,7 @@ public actor PeerEndpointManager {
         let file = PeerEndpointsFile(
             version: PeerEndpointsFile.currentVersion,
             savedAt: Date(),
+            networkId: networkId,
             machines: machines
         )
 
@@ -220,7 +335,9 @@ public actor PeerEndpointManager {
         try data.write(to: storagePath)
         isDirty = false
 
-        logger.debug("Saved \(machines.count) machine endpoint records")
+        logger.debug("Saved \(machines.count) machine endpoint records", metadata: [
+            "networkId": "\(networkId)"
+        ])
     }
 
     // MARK: - Cleanup

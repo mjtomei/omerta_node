@@ -141,11 +141,12 @@ final class Phase3Tests: XCTestCase {
             try? FileManager.default.removeItem(at: storePath)
         }
 
-        let store = PeerStore(storePath: storePath)
+        let networkId = "test-network"
+        let store = PeerStore(networkId: networkId, validationMode: .strict, storePath: storePath)
 
-        // Add some peers
-        let peer1 = createTestAnnouncement(peerId: "peer1")
-        let peer2 = createTestAnnouncement(peerId: "peer2")
+        // Add some peers (using public IP addresses)
+        let peer1 = createTestAnnouncement(peerId: "peer1", endpoint: "8.8.8.1:5000")
+        let peer2 = createTestAnnouncement(peerId: "peer2", endpoint: "8.8.8.2:5000")
 
         await store.update(peer1, contactSuccessful: true)
         await store.update(peer2, contactSuccessful: true)
@@ -153,8 +154,8 @@ final class Phase3Tests: XCTestCase {
         // Save
         try await store.save()
 
-        // Load into new store
-        let store2 = PeerStore(storePath: storePath)
+        // Load into new store with same networkId
+        let store2 = PeerStore(networkId: networkId, validationMode: .strict, storePath: storePath)
         try await store2.load()
 
         let loadedPeers = await store2.allPeers()
@@ -169,10 +170,11 @@ final class Phase3Tests: XCTestCase {
             try? FileManager.default.removeItem(at: storePath)
         }
 
-        let store = PeerStore(storePath: storePath)
+        let store = PeerStore(networkId: "test-network", validationMode: .strict, storePath: storePath)
 
-        let peer1 = createTestAnnouncement(peerId: "reliable")
-        let peer2 = createTestAnnouncement(peerId: "unreliable")
+        // Use public IP addresses
+        let peer1 = createTestAnnouncement(peerId: "reliable", endpoint: "8.8.8.1:5000")
+        let peer2 = createTestAnnouncement(peerId: "unreliable", endpoint: "8.8.8.2:5000")
 
         // Reliable peer: 10 successes
         for _ in 0..<10 {
@@ -316,12 +318,13 @@ final class Phase3Tests: XCTestCase {
 
     private func createTestAnnouncement(
         peerId: String,
-        capabilities: [String] = []
+        capabilities: [String] = [],
+        endpoint: String = "8.8.8.8:5000"
     ) -> PeerAnnouncement {
         PeerAnnouncement(
             peerId: peerId,
             publicKey: "testkey_\(peerId)",
-            reachability: [.direct(endpoint: "127.0.0.1:5000")],
+            reachability: [.direct(endpoint: endpoint)],
             capabilities: capabilities,
             timestamp: Date(),
             ttlSeconds: 3600

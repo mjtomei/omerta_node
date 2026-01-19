@@ -79,6 +79,11 @@ public actor MeshConsumerClient {
         persistencePath: String = "~/.omerta/vms/active.json",
         dryRun: Bool = false
     ) throws {
+        // Reject self-request (consumer cannot request VM from itself)
+        guard identity.peerId != providerPeerId else {
+            throw MeshConsumerError.selfRequestNotAllowed
+        }
+
         self.identity = identity
         self.machineId = try OmertaMesh.getOrCreateMachineId()
         self.networkKey = networkKey
@@ -450,6 +455,7 @@ public enum MeshConsumerError: Error, CustomStringConvertible {
     case noResponse
     case invalidResponse
     case providerError(String)
+    case selfRequestNotAllowed
 
     public var description: String {
         switch self {
@@ -467,6 +473,8 @@ public enum MeshConsumerError: Error, CustomStringConvertible {
             return "Invalid response from provider"
         case .providerError(let msg):
             return "Provider error: \(msg)"
+        case .selfRequestNotAllowed:
+            return "Cannot request VM from self (provider and consumer have same peer ID)"
         }
     }
 }

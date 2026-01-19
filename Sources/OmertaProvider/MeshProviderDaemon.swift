@@ -351,6 +351,41 @@ public actor MeshProviderDaemon {
             "from": "\(consumerPeerId.prefix(16))..."
         ])
 
+        // Reject self-requests (consumer trying to request VM from itself)
+        guard consumerPeerId != config.identity.peerId else {
+            logger.warning("Rejecting self-request (consumer and provider are same peer)", metadata: [
+                "vmId": "\(request.vmId)",
+                "peerId": "\(consumerPeerId.prefix(16))..."
+            ])
+
+            let response = MeshVMResponse(
+                type: "vm_error",
+                vmId: request.vmId,
+                vmIP: nil,
+                providerPublicKey: nil,
+                error: "Cannot request VM from self"
+            )
+            try? await sendResponse(response, to: consumerPeerId)
+            return
+        }
+
+        // Reject if running in consumer-only mode
+        guard !config.noProvider else {
+            logger.warning("Rejecting VM request (running in consumer-only mode)", metadata: [
+                "vmId": "\(request.vmId)"
+            ])
+
+            let response = MeshVMResponse(
+                type: "vm_error",
+                vmId: request.vmId,
+                vmIP: nil,
+                providerPublicKey: nil,
+                error: "This node is not accepting VM requests"
+            )
+            try? await sendResponse(response, to: consumerPeerId)
+            return
+        }
+
         // Log VM request
         await eventLogger?.recordVMRequest(
             vmId: request.vmId,
