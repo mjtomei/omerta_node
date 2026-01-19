@@ -137,7 +137,7 @@ public actor PeerEndpointManager {
         cleanupTask = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(3600))
-                await cleanup()
+                cleanup()
             }
         }
 

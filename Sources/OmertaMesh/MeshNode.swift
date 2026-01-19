@@ -151,6 +151,11 @@ public actor MeshNode {
     private var seenMessageIds: Set<String> = []
     private let maxSeenMessages = 10000
 
+    /// Gossip propagation queue - peer info to forward to other peers
+    /// Each item has a count that decrements on each forward, removed when exhausted
+    private var peerPropagationQueue: [PeerId: (info: PeerEndpointInfo, count: Int)] = [:]
+    private let gossipFanout = 5  // Number of peers to forward each new peer info to
+
     /// Handler for incoming messages
     private var messageHandler: ((MeshMessage, PeerId) async -> MeshMessage?)?
 
@@ -517,6 +522,9 @@ public actor MeshNode {
     private func handleDefaultMessage(_ message: MeshMessage, from peerId: PeerId, endpoint: String, hopCount: Int = 0) async {
         switch message {
         case .ping(let recentPeers):
+            // Check if this is a NEW peer (not previously known) BEFORE recording
+            let isNewPeer = await endpointManager.getAllEndpoints(peerId: peerId).isEmpty
+
             // Record this contact first so we're included in the response
             await freshnessManager.recordContact(
                 peerId: peerId,
@@ -525,23 +533,53 @@ public actor MeshNode {
                 connectionType: .inboundDirect
             )
 
-            // Build response with our known peers INCLUDING machineId
-            let myPeers = await buildPeerEndpointInfoList()
+            // Build response - if NEW peer, send ALL known peers; otherwise send recent subset
+            let myPeers: [PeerEndpointInfo]
+            if isNewPeer {
+                // New peer gets full peer list to bootstrap their view of the network
+                myPeers = await buildPeerEndpointInfoList()
+                logger.info("New peer \(peerId.prefix(8))... contacted us - sending \(myPeers.count) known peers")
+            } else {
+                // Known peer gets recent peers + propagation queue items
+                myPeers = await buildPeerEndpointInfoListWithPropagation(excluding: peerId)
+            }
             await send(.pong(recentPeers: myPeers), to: endpoint)
 
             // Learn about new peers from the ping WITH machineId
             for peerInfo in recentPeers where peerInfo.peerId != self.peerId {
                 // Check if we already know about this peer's endpoint
                 let existingEndpoints = await endpointManager.getAllEndpoints(peerId: peerInfo.peerId)
+                let isNewlyLearnedPeer = existingEndpoints.isEmpty
+
                 if !existingEndpoints.contains(peerInfo.endpoint) {
                     logger.info("Learned about peer \(peerInfo.peerId.prefix(16))... at \(peerInfo.endpoint) from gossip")
                 }
+
                 // Record in endpointManager (handles deduplication and priority)
                 await endpointManager.recordMessageReceived(
                     from: peerInfo.peerId,
                     machineId: peerInfo.machineId,
                     endpoint: peerInfo.endpoint
                 )
+
+                // GOSSIP: If this is a newly learned peer, add to propagation queue
+                if isNewlyLearnedPeer {
+                    addToPropagationQueue(peerInfo)
+                }
+            }
+
+            // GOSSIP: If the sender is a new peer, add them to propagation queue
+            if isNewPeer {
+                // Get the sender's machineId from endpointManager (was just recorded in handleIncomingData)
+                let senderMachines = await endpointManager.getAllMachines(peerId: peerId)
+                if let senderMachine = senderMachines.first(where: { $0.bestEndpoint == endpoint }) {
+                    let senderInfo = PeerEndpointInfo(
+                        peerId: peerId,
+                        machineId: senderMachine.machineId,
+                        endpoint: endpoint
+                    )
+                    addToPropagationQueue(senderInfo)
+                }
             }
 
         case .pong(let recentPeers):
@@ -552,15 +590,23 @@ public actor MeshNode {
             for peerInfo in recentPeers where peerInfo.peerId != self.peerId {
                 // Check if we already know about this peer's endpoint
                 let existingEndpoints = await endpointManager.getAllEndpoints(peerId: peerInfo.peerId)
+                let isNewlyLearnedPeer = existingEndpoints.isEmpty
+
                 if !existingEndpoints.contains(peerInfo.endpoint) {
                     logger.info("Learned about peer \(peerInfo.peerId.prefix(16))... at \(peerInfo.endpoint) from pong")
                 }
+
                 // Record in endpointManager (handles deduplication and priority)
                 await endpointManager.recordMessageReceived(
                     from: peerInfo.peerId,
                     machineId: peerInfo.machineId,
                     endpoint: peerInfo.endpoint
                 )
+
+                // GOSSIP: If this is a newly learned peer, add to propagation queue
+                if isNewlyLearnedPeer {
+                    addToPropagationQueue(peerInfo)
+                }
             }
 
             // Record this as a recent contact
@@ -1050,6 +1096,71 @@ public actor MeshNode {
             if result.count >= 10 { break }
         }
         return result
+    }
+
+    /// Build peer list including propagation queue items, decrementing their counts
+    /// Used for regular keepalive responses to existing peers
+    private func buildPeerEndpointInfoListWithPropagation(excluding excludePeerId: PeerId) async -> [PeerEndpointInfo] {
+        var result: [PeerEndpointInfo] = []
+
+        // Add known peers (up to 5)
+        for peerId in await endpointManager.allPeerIds {
+            guard peerId != self.peerId else { continue }
+            for machine in await endpointManager.getAllMachines(peerId: peerId) {
+                if let endpoint = machine.bestEndpoint {
+                    result.append(PeerEndpointInfo(
+                        peerId: machine.peerId,
+                        machineId: machine.machineId,
+                        endpoint: endpoint
+                    ))
+                }
+            }
+            if result.count >= 5 { break }
+        }
+
+        // Add propagation queue items (gossip) - don't include the peer we're sending to
+        var keysToRemove: [PeerId] = []
+        for (key, var item) in peerPropagationQueue {
+            guard item.info.peerId != excludePeerId else { continue }
+
+            // Add to result if not already present
+            if !result.contains(where: { $0.peerId == item.info.peerId }) {
+                result.append(item.info)
+                logger.debug("Gossiping peer \(item.info.peerId.prefix(8))... (count: \(item.count - 1) remaining)")
+            }
+
+            // Decrement count
+            item.count -= 1
+            if item.count <= 0 {
+                keysToRemove.append(key)
+            } else {
+                peerPropagationQueue[key] = item
+            }
+        }
+
+        // Remove exhausted items
+        for key in keysToRemove {
+            peerPropagationQueue.removeValue(forKey: key)
+        }
+
+        return result
+    }
+
+    /// Add peer info to the gossip propagation queue
+    private func addToPropagationQueue(_ peerInfo: PeerEndpointInfo) {
+        // Don't add ourselves
+        guard peerInfo.peerId != self.peerId else { return }
+
+        // Don't add if already in queue (but could update endpoint)
+        if peerPropagationQueue[peerInfo.peerId] != nil {
+            // Update with fresh info but keep existing count
+            let existingCount = peerPropagationQueue[peerInfo.peerId]!.count
+            peerPropagationQueue[peerInfo.peerId] = (info: peerInfo, count: existingCount)
+            return
+        }
+
+        peerPropagationQueue[peerInfo.peerId] = (info: peerInfo, count: gossipFanout)
+        logger.info("Added peer \(peerInfo.peerId.prefix(8))... to gossip queue (fanout: \(gossipFanout))")
     }
 
     // MARK: - Message Deduplication
