@@ -237,9 +237,12 @@ public actor MeshNode {
                 return NATType.unknown
             },
             getCoordinatorPeerId: { [weak self] () -> PeerId? in
-                // Return first known public peer as coordinator
-                // In production, this would use a smarter selection
+                // Return first connected relay as coordinator (they have public IPs)
                 guard let self = self else { return nil }
+                if let relay = await self.getConnectedRelays().first {
+                    return relay
+                }
+                // Fall back to first known peer
                 return await self.endpointManager.allPeerIds.first
             }
         )
@@ -796,10 +799,13 @@ public actor MeshNode {
 
         // Create signed announcement
         do {
+            var capabilities: [String] = []
+            if config.canRelay { capabilities.append("relay") }
+            if config.canCoordinateHolePunch { capabilities.append("holePunchCoordinator") }
             let announcement = try Gossip.createAnnouncement(
                 identity: identity,
                 reachability: reachability,
-                capabilities: config.canRelay ? ["relay"] : []
+                capabilities: capabilities
             )
 
             // Send as peerInfo message (self-authenticating)
