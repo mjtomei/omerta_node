@@ -156,15 +156,9 @@ function build_cabal_votes_map(votes list<dict>) -> map<peer_id, bool> (
     RETURN result
 )
 
-function check_vm_connectivity() -> bool (
-    # In simulation, this is overridden by test setup
-    RETURN true
-)
+native function check_vm_connectivity(vm_endpoint string) -> bool "omerta.native.vm_connectivity"
 
-function check_consumer_connected() -> bool (
-    # In simulation, this is overridden by test setup
-    RETURN true
-)
+native function check_consumer_connected(session_id hash) -> bool "omerta.native.vm_connectivity"
 
 # =============================================================================
 # ACTORS
@@ -208,66 +202,66 @@ actor Provider "Allocates VM, notifies cabal, handles termination" (
     # Entry from escrow lock
     WAITING_FOR_LOCK -> VM_PROVISIONING on start_session (
         store session_id, consumer, witnesses, lock_result
-        store lock_completed_at = current_time
+        STORE(lock_completed_at, NOW())
     )
 
     # VM allocation timeout
     VM_PROVISIONING -> SESSION_ABORTED on timeout(VM_ALLOCATION_TIMEOUT) (
-        store termination_reason = TerminationReason.ALLOCATION_FAILED
+        STORE(termination_reason, TerminationReason.ALLOCATION_FAILED)
     )
 
     # VM allocation success
     VM_PROVISIONING -> NOTIFYING_CABAL on allocate_vm (
         store vm_info
-        store vm_allocated_at = current_time
+        STORE(vm_allocated_at, NOW())
     )
 
     # Notify cabal and consumer
     NOTIFYING_CABAL -> WAITING_FOR_VERIFICATION auto (
-        compute vm_allocated_msg = { session_id: LOAD(session_id), provider: peer_id, consumer: LOAD(consumer), vm_info: LOAD(vm_info), allocated_at: LOAD(vm_allocated_at), lock_result_hash: HASH(LOAD(lock_result)), timestamp: current_time }
-        send VM_ALLOCATED to each(witnesses)
-        send VM_READY to consumer
-        store notified_at = current_time
-        store connectivity_votes = []
+        compute vm_allocated_msg = { session_id: LOAD(session_id), provider: peer_id, consumer: LOAD(consumer), vm_info: LOAD(vm_info), allocated_at: LOAD(vm_allocated_at), lock_result_hash: HASH(LOAD(lock_result)), timestamp: NOW() }
+        BROADCAST(witnesses, VM_ALLOCATED)
+        SEND(consumer, VM_READY)
+        STORE(notified_at, NOW())
+        STORE(connectivity_votes, [])
     )
 
     # Collect connectivity votes
     WAITING_FOR_VERIFICATION -> WAITING_FOR_VERIFICATION on VM_CONNECTIVITY_VOTE (
-        append connectivity_votes <- message.payload
+        APPEND(connectivity_votes, message.payload)
     )
 
     # All votes received - check threshold
     WAITING_FOR_VERIFICATION -> VM_RUNNING auto when LENGTH(connectivity_votes) >= LENGTH(witnesses) and count_positive_votes(connectivity_votes) / LENGTH(connectivity_votes) >= CONNECTIVITY_THRESHOLD (
-        store verification_passed = true
+        STORE(verification_passed, true)
     )
 
     # Connectivity verification failed
     WAITING_FOR_VERIFICATION -> SENDING_CANCELLATION auto when LENGTH(connectivity_votes) >= LENGTH(witnesses) and count_positive_votes(connectivity_votes) / LENGTH(connectivity_votes) < CONNECTIVITY_THRESHOLD (
-        store verification_passed = false
-        store termination_reason = TerminationReason.CONNECTIVITY_FAILED
+        STORE(verification_passed, false)
+        STORE(termination_reason, TerminationReason.CONNECTIVITY_FAILED)
     )
 
     # Timeout - check if enough positive votes
     WAITING_FOR_VERIFICATION -> VM_RUNNING on timeout(CONNECTIVITY_CHECK_TIMEOUT) when LENGTH(connectivity_votes) > 0 and count_positive_votes(connectivity_votes) / LENGTH(connectivity_votes) >= CONNECTIVITY_THRESHOLD (
-        store verification_passed = true
+        STORE(verification_passed, true)
     )
 
     WAITING_FOR_VERIFICATION -> SENDING_CANCELLATION on timeout(CONNECTIVITY_CHECK_TIMEOUT) when LENGTH(connectivity_votes) == 0 or count_positive_votes(connectivity_votes) / LENGTH(connectivity_votes) < CONNECTIVITY_THRESHOLD (
-        store verification_passed = false
-        store termination_reason = TerminationReason.CONNECTIVITY_FAILED
+        STORE(verification_passed, false)
+        STORE(termination_reason, TerminationReason.CONNECTIVITY_FAILED)
     )
 
     # Consumer cancel request
     VM_RUNNING -> HANDLING_CANCEL on CANCEL_REQUEST when message.sender == LOAD(consumer) (
-        store termination_reason = TerminationReason.CONSUMER_REQUEST
-        store cancelled_at = current_time
+        STORE(termination_reason, TerminationReason.CONSUMER_REQUEST)
+        STORE(cancelled_at, NOW())
     )
 
     # Provider-initiated cancel
     VM_RUNNING -> HANDLING_CANCEL on cancel_session (
         store reason
-        store termination_reason = reason
-        store cancelled_at = current_time
+        STORE(termination_reason, reason)
+        STORE(cancelled_at, NOW())
     )
 
     # Process cancellation
@@ -275,15 +269,15 @@ actor Provider "Allocates VM, notifies cabal, handles termination" (
 
     # Send cancellation to cabal
     SENDING_CANCELLATION -> WAITING_FOR_ATTESTATION auto (
-        compute vm_cancelled_msg = { session_id: LOAD(session_id), provider: peer_id, cancelled_at: LOAD(cancelled_at), reason: LOAD(termination_reason), actual_duration_seconds: LOAD(cancelled_at) - LOAD(vm_allocated_at), timestamp: current_time }
-        send VM_CANCELLED to each(witnesses)
-        send SESSION_TERMINATED to consumer
-        store cancellation_sent_at = current_time
+        compute vm_cancelled_msg = { session_id: LOAD(session_id), provider: peer_id, cancelled_at: LOAD(cancelled_at), reason: LOAD(termination_reason), actual_duration_seconds: LOAD(cancelled_at) - LOAD(vm_allocated_at), timestamp: NOW() }
+        BROADCAST(witnesses, VM_CANCELLED)
+        SEND(consumer, SESSION_TERMINATED)
+        STORE(cancellation_sent_at, NOW())
     )
 
     # Receive attestation
     WAITING_FOR_ATTESTATION -> SESSION_COMPLETE on ATTESTATION_RESULT (
-        store attestation = message.attestation
+        STORE(attestation, message.attestation)
     )
 )
 
@@ -339,27 +333,27 @@ actor Witness "Verifies VM accessibility, monitors session, creates attestation"
 
     # Receive VM allocation from provider
     AWAITING_ALLOCATION -> VERIFYING_VM on VM_ALLOCATED (
-        store vm_allocated_msg = message.payload
-        store vm_allocated_at = message.payload.allocated_at
+        STORE(vm_allocated_msg, message.payload)
+        STORE(vm_allocated_at, message.payload.allocated_at)
     )
 
     # Perform connectivity check and send vote
     VERIFYING_VM -> COLLECTING_VOTES auto (
-        compute can_reach_vm = check_vm_connectivity()
-        compute can_see_consumer_connected = check_consumer_connected()
-        store witness = peer_id
-        compute vote_data = { session_id: LOAD(session_id), witness: peer_id, can_reach_vm: LOAD(can_reach_vm), can_see_consumer_connected: LOAD(can_see_consumer_connected), timestamp: current_time }
+        compute can_reach_vm = check_vm_connectivity(vm_allocated_msg.consumer_wireguard_endpoint)
+        compute can_see_consumer_connected = check_consumer_connected(session_id)
+        STORE(witness, peer_id)
+        compute vote_data = { session_id: LOAD(session_id), witness: peer_id, can_reach_vm: LOAD(can_reach_vm), can_see_consumer_connected: LOAD(can_see_consumer_connected), timestamp: NOW() }
         compute vote_signature = SIGN(LOAD(vote_data))
         compute my_connectivity_vote = { ...LOAD(vote_data), signature: LOAD(vote_signature) }
-        send VM_CONNECTIVITY_VOTE to each(other_witnesses)
-        send VM_CONNECTIVITY_VOTE to provider
-        store connectivity_votes = [LOAD(my_connectivity_vote)]
-        store votes_sent_at = current_time
+        BROADCAST(other_witnesses, VM_CONNECTIVITY_VOTE)
+        SEND(provider, VM_CONNECTIVITY_VOTE)
+        STORE(connectivity_votes, [LOAD(my_connectivity_vote)])
+        STORE(votes_sent_at, NOW())
     )
 
     # Collect votes from other witnesses
     COLLECTING_VOTES -> COLLECTING_VOTES on VM_CONNECTIVITY_VOTE when message.payload.witness != peer_id (
-        append connectivity_votes <- message.payload
+        APPEND(connectivity_votes, message.payload)
     )
 
     # All votes received
@@ -370,30 +364,30 @@ actor Witness "Verifies VM accessibility, monitors session, creates attestation"
 
     # Evaluate connectivity - success
     EVALUATING_CONNECTIVITY -> MONITORING auto when LENGTH(connectivity_votes) > 0 and count_positive_votes(connectivity_votes) / LENGTH(connectivity_votes) >= CONNECTIVITY_THRESHOLD (
-        store connectivity_verified = true
+        STORE(connectivity_verified, true)
     )
 
     # Evaluate connectivity - failure
     EVALUATING_CONNECTIVITY -> VOTING_ABORT auto when LENGTH(connectivity_votes) == 0 or count_positive_votes(connectivity_votes) / LENGTH(connectivity_votes) < CONNECTIVITY_THRESHOLD (
-        store connectivity_verified = false
-        store abort_reason = "vm_unreachable"
+        STORE(connectivity_verified, false)
+        STORE(abort_reason, "vm_unreachable")
     )
 
     # Session ends normally - provider sends cancellation
     MONITORING -> ATTESTING on VM_CANCELLED (
-        store vm_cancelled_msg = message.payload
-        store actual_duration_seconds = message.payload.actual_duration_seconds
-        store termination_reason = message.payload.reason
+        STORE(vm_cancelled_msg, message.payload)
+        STORE(actual_duration_seconds, message.payload.actual_duration_seconds)
+        STORE(termination_reason, message.payload.reason)
     )
 
     # Misuse accusation received
     MONITORING -> HANDLING_MISUSE on MISUSE_ACCUSATION (
-        store misuse_accusation = message.payload
+        STORE(misuse_accusation, message.payload)
     )
 
     # Investigate misuse - evidence found
     HANDLING_MISUSE -> VOTING_ABORT auto when LOAD(misuse_accusation).evidence != "" (
-        store abort_reason = "consumer_misuse"
+        STORE(abort_reason, "consumer_misuse")
     )
 
     # Investigate misuse - no evidence
@@ -401,23 +395,23 @@ actor Witness "Verifies VM accessibility, monitors session, creates attestation"
 
     # Send abort vote
     VOTING_ABORT -> COLLECTING_ABORT_VOTES auto (
-        compute abort_vote_data = { session_id: LOAD(session_id), witness: peer_id, reason: LOAD(abort_reason), timestamp: current_time }
+        compute abort_vote_data = { session_id: LOAD(session_id), witness: peer_id, reason: LOAD(abort_reason), timestamp: NOW() }
         compute abort_vote_signature = SIGN(LOAD(abort_vote_data))
         compute my_abort_vote = { ...LOAD(abort_vote_data), signature: LOAD(abort_vote_signature) }
-        send ABORT_VOTE to each(other_witnesses)
-        store abort_votes = [LOAD(my_abort_vote)]
-        store abort_votes_sent_at = current_time
+        BROADCAST(other_witnesses, ABORT_VOTE)
+        STORE(abort_votes, [LOAD(my_abort_vote)])
+        STORE(abort_votes_sent_at, NOW())
     )
 
     # Collect abort votes
     COLLECTING_ABORT_VOTES -> COLLECTING_ABORT_VOTES on ABORT_VOTE when message.payload.witness != peer_id (
-        append abort_votes <- message.payload
+        APPEND(abort_votes, message.payload)
     )
 
     # Evaluate abort votes - threshold met
     COLLECTING_ABORT_VOTES -> ATTESTING auto when LENGTH(abort_votes) / (LENGTH(other_witnesses) + 1) >= ABORT_THRESHOLD (
-        store session_aborted = true
-        store termination_reason = LOAD(abort_reason)
+        STORE(session_aborted, true)
+        STORE(termination_reason, LOAD(abort_reason))
     )
 
     # Evaluate abort votes - threshold not met, return to monitoring
@@ -425,22 +419,22 @@ actor Witness "Verifies VM accessibility, monitors session, creates attestation"
 
     # Evaluate abort votes - timeout with threshold met
     COLLECTING_ABORT_VOTES -> ATTESTING on timeout(ABORT_VOTE_TIMEOUT) when LENGTH(abort_votes) / (LENGTH(other_witnesses) + 1) >= ABORT_THRESHOLD (
-        store session_aborted = true
-        store termination_reason = LOAD(abort_reason)
+        STORE(session_aborted, true)
+        STORE(termination_reason, LOAD(abort_reason))
     )
 
     # Create attestation
     ATTESTING -> COLLECTING_ATTESTATION_SIGS auto (
-        compute attestation = { session_id: LOAD(session_id), vm_allocated_hash: HASH(LOAD(vm_allocated_msg)), vm_cancelled_hash: HASH(LOAD(vm_cancelled_msg)), connectivity_verified: LOAD(connectivity_verified), actual_duration_seconds: LOAD(actual_duration_seconds), termination_reason: LOAD(termination_reason), cabal_votes: LOAD(connectivity_votes), cabal_signatures: [], created_at: current_time }
+        compute attestation = { session_id: LOAD(session_id), vm_allocated_hash: HASH(LOAD(vm_allocated_msg)), vm_cancelled_hash: HASH(LOAD(vm_cancelled_msg)), connectivity_verified: LOAD(connectivity_verified), actual_duration_seconds: LOAD(actual_duration_seconds), termination_reason: LOAD(termination_reason), cabal_votes: LOAD(connectivity_votes), cabal_signatures: [], created_at: NOW() }
         compute my_signature = SIGN(LOAD(attestation))
-        store attestation_signatures = [{ witness: peer_id, signature: LOAD(my_signature) }]
-        send ATTESTATION_SHARE to each(other_witnesses)
-        store attestation_sent_at = current_time
+        STORE(attestation_signatures, [{ witness: peer_id, signature: LOAD(my_signature) }])
+        BROADCAST(other_witnesses, ATTESTATION_SHARE)
+        STORE(attestation_sent_at, NOW())
     )
 
     # Collect attestation signatures
     COLLECTING_ATTESTATION_SIGS -> COLLECTING_ATTESTATION_SIGS on ATTESTATION_SHARE (
-        append attestation_signatures <- message.payload.attestation.cabal_signatures
+        APPEND(attestation_signatures, message.payload.attestation.cabal_signatures)
     )
 
     # Threshold signatures collected
@@ -449,9 +443,9 @@ actor Witness "Verifies VM accessibility, monitors session, creates attestation"
     # Send attestation to parties
     PROPAGATING_ATTESTATION -> DONE auto (
         compute final_attestation = { ...LOAD(attestation), cabal_signatures: LOAD(attestation_signatures) }
-        send ATTESTATION_RESULT to consumer
-        send ATTESTATION_RESULT to provider
-        append_block ATTESTATION
+        SEND(consumer, ATTESTATION_RESULT)
+        SEND(provider, ATTESTATION_RESULT)
+        APPEND(my_chain, ATTESTATION)
     )
 )
 
@@ -481,22 +475,22 @@ actor Consumer "Connects to VM, uses service" (
 
     # VM ready
     WAITING_FOR_VM -> CONNECTING on VM_READY (
-        store vm_info = message.vm_info
+        STORE(vm_info, message.vm_info)
     )
 
     # Connect to VM
     CONNECTING -> CONNECTED auto (
-        store connected_at = current_time
+        STORE(connected_at, NOW())
     )
 
     # Session terminated by provider
     CONNECTED -> SESSION_ENDED on SESSION_TERMINATED (
-        store termination_reason = message.reason
+        STORE(termination_reason, message.reason)
     )
 
     # Receive attestation while connected
     CONNECTED -> CONNECTED on ATTESTATION_RESULT (
-        store attestation = message.attestation
+        STORE(attestation, message.attestation)
     )
 
     # Request cancel
@@ -504,11 +498,11 @@ actor Consumer "Connects to VM, uses service" (
 
     # Send cancel request
     REQUESTING_CANCEL -> CONNECTED auto (
-        send CANCEL_REQUEST to provider
+        SEND(provider, CANCEL_REQUEST)
     )
 
     # Receive attestation after session ended
     SESSION_ENDED -> SESSION_ENDED on ATTESTATION_RESULT (
-        store attestation = message.attestation
+        STORE(attestation, message.attestation)
     )
 )

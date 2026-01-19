@@ -11,12 +11,19 @@ Example:
 """
 
 import argparse
-import yaml
 import re
 import sys
 from pathlib import Path
 from textwrap import dedent, indent
 from typing import Dict, List, Any, Optional, Set
+
+from dsl_converter import load_transaction_ast
+from dsl_ast import (
+    Schema, Transaction, Parameter, EnumDecl, MessageDecl, BlockDecl,
+    ActorDecl, TriggerDecl, StateDecl, Transition, FunctionDecl,
+    StoreAction, ComputeAction, LookupAction, SendAction, BroadcastAction, AppendAction, AppendBlockAction,
+    Field, OnGuardFail
+)
 
 
 # =============================================================================
@@ -68,6 +75,9 @@ class ExpressionTranslator:
         'CHAIN_STATE_AT': '_chain_state_at',
         # Selection
         'SELECT_WITNESSES': '_select_witnesses',
+        'VERIFY_WITNESS_SELECTION': '_verify_witness_selection',
+        'VALIDATE_LOCK_RESULT': '_validate_lock_result',
+        'VALIDATE_TOPUP_RESULT': '_validate_topup_result',
         'SEEDED_RNG': '_seeded_rng',
         'SEEDED_SAMPLE': '_seeded_sample',
         # Compute
@@ -453,7 +463,29 @@ class ExpressionTranslator:
                             i = paren_end
                             continue
                     elif token in self.BUILTIN_FUNCS:
-                        result.append(self.BUILTIN_FUNCS[token])
+                        translated = self.BUILTIN_FUNCS[token]
+                        # Special case: NOW() -> self.current_time (property, not method)
+                        # We need to consume the () but not include them in output
+                        if token == 'NOW':
+                            # Find and skip the () - NOW is always called as NOW()
+                            paren_start = j
+                            while paren_start < len(expr) and expr[paren_start] != '(':
+                                paren_start += 1
+                            if paren_start < len(expr):
+                                paren_start += 1  # skip '('
+                                depth = 1
+                                paren_end = paren_start
+                                while paren_end < len(expr) and depth > 0:
+                                    if expr[paren_end] == '(':
+                                        depth += 1
+                                    elif expr[paren_end] == ')':
+                                        depth -= 1
+                                    paren_end += 1
+                                # Skip past the closing paren
+                                i = paren_end
+                            result.append(translated)
+                            continue
+                        result.append(translated)
                     elif token in self.SELF_FUNCS:
                         result.append(f'self.{self.SELF_FUNCS[token]}')
                     else:
@@ -552,58 +584,35 @@ class ExpressionTranslator:
         return re.sub(pattern, replace_attr, expr)
 
 
-def load_transaction(tx_dir: Path) -> dict:
+def load_transaction(tx_dir: Path) -> Schema:
     """Load transaction definition from directory (DSL .omt file)."""
-    from dsl_converter import load_transaction as load_dsl
-
-    # Look for DSL file first
     dsl_path = tx_dir / "transaction.omt"
     if dsl_path.exists():
-        tx_def = load_dsl(dsl_path)
-        # Validate - disallow object and list[object] types
-        validate_no_object_types(tx_def)
-        return tx_def
+        schema = load_transaction_ast(dsl_path)
+        validate_no_object_types(schema)
+        return schema
 
-    # Fallback to YAML for backwards compatibility during transition
-    yaml_path = tx_dir / "schema.yaml"
-    if yaml_path.exists():
-        with open(yaml_path) as f:
-            tx_def = yaml.safe_load(f)
-        validate_no_object_types(tx_def)
-        return tx_def
-
-    raise FileNotFoundError(f"Transaction not found: tried {dsl_path} and {yaml_path}")
+    raise FileNotFoundError(f"Transaction not found: tried {dsl_path}")
 
 
-def validate_no_object_types(tx_def: dict) -> None:
+def validate_no_object_types(schema: Schema) -> None:
     """Validate that transaction doesn't use 'object' or 'list[object]' types.
 
     These types are disallowed - use explicit struct types instead.
     """
     errors = []
 
-    # Check types section
-    for type_name, type_def in tx_def.get("types", {}).items():
-        if isinstance(type_def, dict) and "fields" in type_def:
-            for field_name, field_def in type_def["fields"].items():
-                field_type = field_def.get("type", "") if isinstance(field_def, dict) else field_def
-                if _is_disallowed_type(field_type):
-                    errors.append(f"types.{type_name}.{field_name}: '{field_type}' is not allowed. Use explicit struct types.")
-
-    # Check messages section
-    for msg_name, msg_def in tx_def.get("messages", {}).items():
-        if isinstance(msg_def, dict) and "fields" in msg_def:
-            for field_name, field_def in msg_def["fields"].items():
-                field_type = field_def.get("type", "") if isinstance(field_def, dict) else ""
-                if _is_disallowed_type(field_type):
-                    errors.append(f"messages.{msg_name}.{field_name}: '{field_type}' is not allowed. Use explicit struct types.")
+    # Check messages
+    for msg in schema.messages:
+        for field in msg.fields:
+            if _is_disallowed_type(field.type):
+                errors.append(f"messages.{msg.name}.{field.name}: '{field.type}' is not allowed. Use explicit struct types.")
 
     # Check actors' store
-    for actor_name, actor_def in tx_def.get("actors", {}).items():
-        if isinstance(actor_def, dict) and "store_schema" in actor_def:
-            for field_name, field_type in actor_def["store_schema"].items():
-                if _is_disallowed_type(field_type):
-                    errors.append(f"actors.{actor_name}.store.{field_name}: '{field_type}' is not allowed. Use explicit struct types.")
+    for actor in schema.actors:
+        for field in actor.store:
+            if _is_disallowed_type(field.type):
+                errors.append(f"actors.{actor.name}.store.{field.name}: '{field.type}' is not allowed. Use explicit struct types.")
 
     if errors:
         error_msg = "Validation failed - disallowed types found:\n" + "\n".join(f"  - {e}" for e in errors)
@@ -639,85 +648,61 @@ def load_commentary(tx_dir: Path) -> str:
 # MARKDOWN GENERATION
 # =============================================================================
 
-def generate_parameters_markdown(tx_def: dict) -> str:
+def generate_parameters_markdown(schema: Schema) -> str:
     """Generate parameters table markdown."""
-    params = tx_def.get("parameters", {})
-    if not params:
+    if not schema.parameters:
         return "No parameters defined."
 
     lines = ["## Parameters\n"]
     lines.append("| Parameter | Value | Description |")
     lines.append("|-----------|-------|-------------|")
 
-    for name, info in params.items():
-        value = info.get("value", "")
-        unit = info.get("unit", "")
-        if unit:
-            value = f"{value} {unit}"
-        desc = info.get("description", "")
-        lines.append(f"| `{name}` | {value} | {desc} |")
+    for param in schema.parameters:
+        value = param.value
+        if param.unit:
+            value = f"{value} {param.unit}"
+        desc = param.description or ""
+        lines.append(f"| `{param.name}` | {value} | {desc} |")
 
     return "\n".join(lines)
 
 
-def generate_blocks_markdown(tx_def: dict) -> str:
+def generate_blocks_markdown(schema: Schema) -> str:
     """Generate block types markdown."""
-    blocks = tx_def.get("blocks", {})
-    if not blocks:
+    if not schema.blocks:
         return "No block types defined."
 
     lines = ["## Block Types (Chain Records)\n"]
     lines.append("```")
 
-    for name, info in blocks.items():
-        desc = info.get("description", "")
-        lines.append(f"{name} {{")
-        if desc:
-            lines.append(f"  # {desc}")
-        for field_name, field_info in info.get("fields", {}).items():
-            ftype = field_info.get("type", "any")
-            required = field_info.get("required", False)
-            req_str = "" if required else " (optional)"
-            lines.append(f"  {field_name}: {ftype}{req_str}")
+    for block in schema.blocks:
+        lines.append(f"{block.name} {{")
+        for field in block.fields:
+            lines.append(f"  {field.name}: {field.type}")
         lines.append("}\n")
 
     lines.append("```")
     return "\n".join(lines)
 
 
-def generate_messages_markdown(tx_def: dict) -> str:
+def generate_messages_markdown(schema: Schema) -> str:
     """Generate message types markdown."""
-    messages = tx_def.get("messages", {})
-    if not messages:
+    if not schema.messages:
         return "No messages defined."
 
     lines = ["## Message Types\n"]
     lines.append("```")
 
-    for name, info in messages.items():
-        sender = info.get("sender", "?")
-        recipients = info.get("recipients", [])
-        recipients_str = ", ".join(recipients) if isinstance(recipients, list) else recipients
-        desc = info.get("description", "")
+    for msg in schema.messages:
+        recipients_str = ", ".join(msg.recipients)
+        lines.append(f"# {msg.sender} -> {recipients_str}")
+        lines.append(f"{msg.name} {{")
 
-        lines.append(f"# {sender} -> {recipients_str}")
-        if desc:
-            lines.append(f"# {desc}")
-        lines.append(f"{name} {{")
+        for field in msg.fields:
+            lines.append(f"  {field.name}: {field.type}")
 
-        for field_name, field_info in info.get("fields", {}).items():
-            if isinstance(field_info, dict):
-                ftype = field_info.get("type", "any")
-                required = field_info.get("required", False)
-                req_str = "" if required else " (optional)"
-            else:
-                ftype = field_info
-                req_str = ""
-            lines.append(f"  {field_name}: {ftype}{req_str}")
-
-        signed_by = info.get("signed_by", "")
-        if signed_by:
-            lines.append(f"  signature: bytes  # signed by {signed_by}")
+        if msg.signed:
+            lines.append(f"  signature: bytes  # signed by {msg.sender.lower()}")
 
         lines.append("}\n")
 
@@ -725,92 +710,104 @@ def generate_messages_markdown(tx_def: dict) -> str:
     return "\n".join(lines)
 
 
-def generate_state_machines_markdown(tx_def: dict) -> str:
+def generate_state_machines_markdown(schema: Schema) -> str:
     """Generate state machine diagrams markdown."""
-    actors = tx_def.get("actors", {})
-    if not actors:
+    if not schema.actors:
         return "No actors defined."
 
     lines = []
 
-    for actor_name, actor_info in actors.items():
-        lines.append(f"### ACTOR: {actor_name}\n")
-        desc = actor_info.get("description", "")
-        if desc:
-            lines.append(f"*{desc}*\n")
+    for actor in schema.actors:
+        lines.append(f"### ACTOR: {actor.name}\n")
+        if actor.description:
+            lines.append(f"*{actor.description}*\n")
 
         lines.append("```")
 
         # States
-        states = actor_info.get("states", {})
-        state_names = list(states.keys())
+        state_names = [s.name for s in actor.states]
         lines.append(f"STATES: [{', '.join(state_names)}]")
         lines.append("")
 
-        initial = actor_info.get("initial_state", state_names[0] if state_names else "IDLE")
+        # Find initial state
+        initial = next((s.name for s in actor.states if s.initial), state_names[0] if state_names else "IDLE")
         lines.append(f"INITIAL: {initial}")
         lines.append("")
 
         # External triggers
-        triggers = actor_info.get("external_triggers", {})
-        if triggers:
+        if actor.triggers:
             lines.append("EXTERNAL TRIGGERS:")
-            for trigger_name, trigger_info in triggers.items():
-                params = trigger_info.get("params", {})
-                allowed_in = trigger_info.get("allowed_in", [])
-                param_str = ", ".join(f"{k}: {v}" for k, v in params.items()) if isinstance(params, dict) else ", ".join(params)
-                lines.append(f"  {trigger_name}({param_str})")
-                lines.append(f"    allowed_in: [{', '.join(allowed_in)}]")
+            for trigger in actor.triggers:
+                param_str = ", ".join(f"{p.name}: {p.type}" for p in trigger.params)
+                lines.append(f"  {trigger.name}({param_str})")
+                lines.append(f"    allowed_in: [{', '.join(trigger.allowed_in)}]")
             lines.append("")
 
         # States with descriptions
-        for state_name, state_info in states.items():
-            state_desc = state_info.get("description", "")
-            terminal = state_info.get("terminal", False)
-            term_str = " [TERMINAL]" if terminal else ""
-            lines.append(f"STATE {state_name}:{term_str}")
-            if state_desc:
-                lines.append(f"  # {state_desc}")
+        for state in actor.states:
+            term_str = " [TERMINAL]" if state.terminal else ""
+            lines.append(f"STATE {state.name}:{term_str}")
+            if state.description:
+                lines.append(f"  # {state.description}")
             lines.append("")
 
         # Transitions
-        transitions = actor_info.get("transitions", [])
-        if transitions:
+        if actor.transitions:
             lines.append("TRANSITIONS:")
-            for trans in transitions:
-                from_state = trans.get("from", "?")
-                trigger = trans.get("trigger", "?")
-                to_state = trans.get("to", "?")
-                guard = trans.get("guard", "")
-                guard_str = f" [guard: {guard}]" if guard else ""
+            for trans in actor.transitions:
+                trigger = "auto" if trans.auto else (trans.trigger or "?")
+                guard_str = f" [guard: {trans.guard}]" if trans.guard else ""
 
-                lines.append(f"  {from_state} --{trigger}-->{guard_str} {to_state}")
+                lines.append(f"  {trans.from_state} --{trigger}-->{guard_str} {trans.to_state}")
 
-                actions = trans.get("actions", [])
-                for action in actions[:3]:
-                    if isinstance(action, dict):
-                        action_str = str(action)[:60] + "..." if len(str(action)) > 60 else str(action)
-                    else:
-                        action_str = str(action)
+                for action in trans.actions[:3]:
+                    action_str = _format_action_for_md(action)
+                    if len(action_str) > 60:
+                        action_str = action_str[:60] + "..."
                     lines.append(f"    action: {action_str}")
 
-                if len(actions) > 3:
-                    lines.append(f"    ... and {len(actions) - 3} more actions")
+                if len(trans.actions) > 3:
+                    lines.append(f"    ... and {len(trans.actions) - 3} more actions")
 
         lines.append("```\n")
 
     return "\n".join(lines)
 
 
+def _format_action_for_md(action) -> str:
+    """Format an action for markdown display."""
+    if isinstance(action, StoreAction):
+        if action.assignments:
+            items = list(action.assignments.items())
+            if len(items) == 1:
+                key, val = items[0]
+                return f"STORE({key}, {val})"
+            return f"STORE({action.assignments})"
+        return f"store {', '.join(action.fields)}"
+    elif isinstance(action, ComputeAction):
+        return f"compute {action.name} = {action.expression}"
+    elif isinstance(action, LookupAction):
+        return f"lookup {action.name} = {action.expression}"
+    elif isinstance(action, SendAction):
+        return f"SEND({action.target}, {action.message})"
+    elif isinstance(action, BroadcastAction):
+        return f"BROADCAST({action.target_list}, {action.message})"
+    elif isinstance(action, AppendAction):
+        return f"APPEND({action.list_name}, {action.value})"
+    elif isinstance(action, AppendBlockAction):
+        return f"APPEND(my_chain, {action.block_type})"
+    return str(action)
+
+
 def generate_markdown(tx_dir: Path, output_path: Path = None) -> str:
     """Generate full markdown documentation from transaction definition."""
-    tx_def = load_transaction(tx_dir)
+    schema = load_transaction(tx_dir)
     commentary = load_commentary(tx_dir)
 
-    params_md = generate_parameters_markdown(tx_def)
-    blocks_md = generate_blocks_markdown(tx_def)
-    messages_md = generate_messages_markdown(tx_def)
-    states_md = generate_state_machines_markdown(tx_def)
+    params_md = generate_parameters_markdown(schema)
+    blocks_md = generate_blocks_markdown(schema)
+    messages_md = generate_messages_markdown(schema)
+    states_md = generate_state_machines_markdown(schema)
 
     result = commentary
     result = result.replace("{{PARAMETERS}}", params_md)
@@ -890,10 +887,9 @@ def python_type(dsl_type: str) -> str:
     return "Any"
 
 
-def generate_parameters_python(tx_def: dict) -> str:
+def generate_parameters_python(schema: Schema) -> str:
     """Generate Python parameter constants."""
-    params = tx_def.get("parameters", {})
-    if not params:
+    if not schema.parameters:
         return ""
 
     lines = ["# ============================================================================="]
@@ -901,28 +897,24 @@ def generate_parameters_python(tx_def: dict) -> str:
     lines.append("# =============================================================================")
     lines.append("")
 
-    for name, info in params.items():
-        value = info.get("value", 0)
-        desc = info.get("description", "")
-        unit = info.get("unit", "")
-
+    for param in schema.parameters:
+        value = param.value
         if isinstance(value, float) and value == int(value):
             value = int(value)
 
-        comment = f"  # {desc}"
-        if unit:
-            comment += f" ({unit})"
+        comment = f"  # {param.description or ''}"
+        if param.unit:
+            comment += f" ({param.unit})"
 
-        lines.append(f"{name} = {value}{comment}")
+        lines.append(f"{param.name} = {value}{comment}")
 
     lines.append("")
     return "\n".join(lines)
 
 
-def generate_enums_python(tx_def: dict) -> str:
+def generate_enums_python(schema: Schema) -> str:
     """Generate Python enums."""
-    enums = tx_def.get("enums", {})
-    if not enums:
+    if not schema.enums:
         return ""
 
     lines = ["# ============================================================================="]
@@ -930,24 +922,20 @@ def generate_enums_python(tx_def: dict) -> str:
     lines.append("# =============================================================================")
     lines.append("")
 
-    for enum_name, enum_info in enums.items():
-        desc = enum_info.get("description", "")
-        values = enum_info.get("values", [])
-
-        lines.append(f"class {enum_name}(Enum):")
-        if desc:
-            lines.append(f'    """{desc}"""')
-        for val in values:
-            lines.append(f"    {val} = auto()")
+    for enum in schema.enums:
+        lines.append(f"class {enum.name}(Enum):")
+        if enum.description:
+            lines.append(f'    """{enum.description}"""')
+        for val in enum.values:
+            lines.append(f"    {val.name} = auto()")
         lines.append("")
 
     return "\n".join(lines)
 
 
-def generate_messages_python(tx_def: dict) -> str:
+def generate_messages_python(schema: Schema) -> str:
     """Generate Python message types."""
-    messages = tx_def.get("messages", {})
-    if not messages:
+    if not schema.messages:
         return ""
 
     lines = ["# ============================================================================="]
@@ -957,8 +945,8 @@ def generate_messages_python(tx_def: dict) -> str:
     lines.append("class MessageType(Enum):")
     lines.append('    """Types of messages exchanged in this transaction."""')
 
-    for name in messages.keys():
-        lines.append(f"    {name} = auto()")
+    for msg in schema.messages:
+        lines.append(f"    {msg.name} = auto()")
 
     lines.append("")
     lines.append("")
@@ -978,30 +966,20 @@ def generate_messages_python(tx_def: dict) -> str:
 class PythonActorGenerator:
     """Generate complete Python actor class from transaction definition."""
 
-    def __init__(self, actor_name: str, actor_info: dict, tx_def: dict):
-        self.actor_name = actor_name
-        self.actor_info = actor_info
-        self.tx_def = tx_def
-        self.states = actor_info.get("states", {})
-        self.transitions = actor_info.get("transitions", [])
-        self.external_triggers = actor_info.get("external_triggers", {})
-        self.guards = actor_info.get("guards", {})
-        self.messages = tx_def.get("messages", {})
+    def __init__(self, actor: ActorDecl, schema: Schema):
+        self.actor = actor
+        self.actor_name = actor.name
+        self.schema = schema
+
+        # Build lookup dicts for messages
+        self.messages = {msg.name: msg for msg in schema.messages}
+
         # Collect all known store variable names
-        self.store_vars = set(actor_info.get("store_schema", {}).keys())
+        self.store_vars = {field.name for field in actor.store}
 
         # Create expression translator
-        parameters = set(tx_def.get("parameters", {}).keys())
-        enums = {}
-        for enum_name, enum_info in tx_def.get("enums", {}).items():
-            if isinstance(enum_info, dict):
-                values = enum_info.get("values", [])
-                if isinstance(values, list):
-                    enums[enum_name] = values
-                elif isinstance(values, dict):
-                    enums[enum_name] = list(values.keys())
-            elif isinstance(enum_info, list):
-                enums[enum_name] = enum_info
+        parameters = {param.name for param in schema.parameters}
+        enums = {enum.name: [v.name for v in enum.values] for enum in schema.enums}
         self.expr_translator = ExpressionTranslator(self.store_vars, parameters, enums)
 
     def generate(self) -> str:
@@ -1016,12 +994,12 @@ class PythonActorGenerator:
         lines.append("@dataclass")
         lines.append(f"class {self.actor_name}(Actor):")
 
-        desc = self.actor_info.get("description", "")
-        if desc:
-            lines.append(f'    """{desc}"""')
+        if self.actor.description:
+            lines.append(f'    """{self.actor.description}"""')
         lines.append("")
 
-        initial = self.actor_info.get("initial_state", "IDLE")
+        # Find initial state
+        initial = next((s.name for s in self.actor.states if s.initial), "IDLE")
         lines.append(f"    state: {self.actor_name}State = {self.actor_name}State.{initial}")
 
         # Actor-specific attributes
@@ -1048,8 +1026,8 @@ class PythonActorGenerator:
             lines.append("")
 
         # External trigger methods
-        for trigger_name, trigger_info in self.external_triggers.items():
-            lines.append(self._generate_external_trigger(trigger_name, trigger_info))
+        for trigger in self.actor.triggers:
+            lines.append(self._generate_external_trigger(trigger))
             lines.append("")
 
         # Tick method
@@ -1125,33 +1103,196 @@ class PythonActorGenerator:
     def _generate_state_enum(self) -> str:
         """Generate state enum."""
         lines = [f"class {self.actor_name}State(Enum):"]
-        desc = self.actor_info.get("description", "")
-        if desc:
+        if self.actor.description:
             lines.append(f'    """{self.actor_name} states."""')
 
-        for state_name, state_info in self.states.items():
-            state_desc = state_info.get("description", "")
-            if state_desc:
-                lines.append(f"    {state_name} = auto()  # {state_desc}")
+        for state in self.actor.states:
+            if state.description:
+                lines.append(f"    {state.name} = auto()  # {state.description}")
             else:
-                lines.append(f"    {state_name} = auto()")
+                lines.append(f"    {state.name} = auto()")
 
         return "\n".join(lines)
 
-    def _generate_external_trigger(self, trigger_name: str, trigger_info: dict) -> str:
-        """Generate external trigger method."""
-        params = trigger_info.get("params", {})
-        trigger_desc = trigger_info.get("description", "")
-        allowed_in = trigger_info.get("allowed_in", [])
+    def _generate_action_code_ast(self, action, indent_level: int, msg_var: str = None) -> List[str]:
+        """Generate code for an AST action directly from AST types."""
+        from dsl_ast import StoreAction, ComputeAction, LookupAction, SendAction, BroadcastAction, AppendAction, AppendBlockAction
 
-        if isinstance(params, dict):
-            param_list = ", ".join(f"{k}: {python_type(v)}" for k, v in params.items())
-        else:
-            param_list = ", ".join(f"{p}: Any" for p in params)
+        lines = []
+        ind = "    " * indent_level
+
+        if isinstance(action, StoreAction):
+            if action.assignments:
+                # Store with explicit key=value assignments
+                for key, val in action.assignments.items():
+                    if isinstance(val, str):
+                        # Check for special patterns
+                        if val == "message" and msg_var:
+                            # Store the entire message payload
+                            lines.append(f'{ind}self.store("{key}", {msg_var}.payload)')
+                        elif val.startswith("message."):
+                            # Expression referencing message
+                            msg_attr = val[8:]  # Remove "message." prefix
+                            msg = msg_var or "msg"
+                            if msg_attr == "payload":
+                                # Store the entire payload
+                                lines.append(f'{ind}self.store("{key}", {msg}.payload)')
+                            elif msg_attr.startswith("payload."):
+                                payload_field = msg_attr[8:]
+                                lines.append(f'{ind}self.store("{key}", {msg}.payload.get("{payload_field}"))')
+                            elif msg_attr == "sender":
+                                # Access sender attribute directly
+                                lines.append(f'{ind}self.store("{key}", {msg}.sender)')
+                            else:
+                                # Access other message fields via payload
+                                lines.append(f'{ind}self.store("{key}", {msg}.payload.get("{msg_attr}"))')
+                        elif val in ExpressionTranslator.ACTOR_PROPS:
+                            lines.append(f'{ind}self.store("{key}", self.{val})')
+                        elif val in self.store_vars:
+                            lines.append(f'{ind}self.store("{key}", self.load("{val}"))')
+                        else:
+                            enum_ref = self.expr_translator.get_enum_reference(val)
+                            if enum_ref:
+                                lines.append(f'{ind}self.store("{key}", {enum_ref})')
+                            elif self._is_expression(val):
+                                translated = self.expr_translator.translate(val)
+                                lines.append(f'{ind}self.store("{key}", {translated})')
+                            else:
+                                # Strip outer quotes if present (DSL string literals)
+                                stripped = val
+                                if len(val) >= 2 and ((val.startswith('"') and val.endswith('"')) or
+                                                       (val.startswith("'") and val.endswith("'"))):
+                                    stripped = val[1:-1]
+                                lines.append(f'{ind}self.store("{key}", {repr(stripped)})')
+                    else:
+                        lines.append(f'{ind}self.store("{key}", {repr(val)})')
+            elif action.fields:
+                # Store fields from params (function arguments) or message
+                for field in action.fields:
+                    if msg_var:
+                        # Message-triggered transition: store from message payload
+                        lines.append(f'{ind}self.store("{field}", {msg_var}.payload.get("{field}"))')
+                    else:
+                        # External trigger: store function argument directly
+                        lines.append(f'{ind}self.store("{field}", {field})')
+
+        elif isinstance(action, ComputeAction):
+            var_name = action.name
+            from_expr = action.expression
+            from_expr_oneline = " ".join(str(from_expr).split())
+            lines.append(f'{ind}# Compute: {var_name} = {from_expr_oneline}')
+            lines.append(f'{ind}self.store("{var_name}", self._compute_{var_name}())')
+
+        elif isinstance(action, LookupAction):
+            var_name = action.name
+            from_expr = action.expression
+
+            # Special handling for chain.get_peer_hash
+            if "get_peer_hash" in from_expr:
+                peer_match = re.search(r'get_peer_hash\((\w+)\)', from_expr)
+                peer_var = peer_match.group(1) if peer_match else "peer"
+                lines.append(f'{ind}_lookup_block = self.chain.get_peer_hash(self.load("{peer_var}"))')
+                lines.append(f'{ind}if _lookup_block:')
+                lines.append(f'{ind}    self.store("{var_name}", _lookup_block.payload.get("hash"))')
+                lines.append(f'{ind}    self.store("{var_name}_timestamp", _lookup_block.timestamp)')
+            else:
+                translated = self.expr_translator.translate(from_expr)
+                lines.append(f'{ind}self.store("{var_name}", {translated})')
+
+        elif isinstance(action, SendAction):
+            msg_type = action.message
+            to_target = action.target
+
+            # Handle dotted expressions like message.sender
+            if to_target.startswith("message."):
+                attr = to_target[8:]  # e.g., "sender"
+                msg = msg_var or "msg"
+                recipient_expr = f'{msg}.{attr}'
+            elif to_target in self.store_vars:
+                recipient_expr = f'self.load("{to_target}")'
+            else:
+                recipient_expr = f'self.load("{to_target}")'
+
+            lines.append(f'{ind}msg_payload = self._build_{msg_type.lower()}_payload()')
+            lines.append(f'{ind}outgoing.append(Message(')
+            lines.append(f'{ind}    msg_type=MessageType.{msg_type},')
+            lines.append(f'{ind}    sender=self.peer_id,')
+            lines.append(f'{ind}    payload=msg_payload,')
+            lines.append(f'{ind}    timestamp=current_time,')
+            lines.append(f'{ind}    recipient={recipient_expr},')
+            lines.append(f'{ind}))')
+
+        elif isinstance(action, BroadcastAction):
+            msg_type = action.message
+            target_list = action.target_list
+
+            lines.append(f'{ind}for recipient in self.load("{target_list}", []):')
+            lines.append(f'{ind}    msg_payload = self._build_{msg_type.lower()}_payload()')
+            lines.append(f'{ind}    outgoing.append(Message(')
+            lines.append(f'{ind}        msg_type=MessageType.{msg_type},')
+            lines.append(f'{ind}        sender=self.peer_id,')
+            lines.append(f'{ind}        payload=msg_payload,')
+            lines.append(f'{ind}        timestamp=current_time,')
+            lines.append(f'{ind}        recipient=recipient,')
+            lines.append(f'{ind}    ))')
+
+        elif isinstance(action, AppendBlockAction):
+            block_type = action.block_type
+            lines.append(f'{ind}self.chain.append(')
+            lines.append(f'{ind}    BlockType.{block_type},')
+            lines.append(f'{ind}    self._build_{block_type.lower()}_payload(),')
+            lines.append(f'{ind}    current_time,')
+            lines.append(f'{ind})')
+
+        elif isinstance(action, AppendAction):
+            list_name = action.list_name
+            value = action.value
+
+            # Special case: APPEND(my_chain, BLOCK_TYPE) is a chain append
+            if list_name == "my_chain":
+                block_type = value
+                lines.append(f'{ind}self.chain.append(')
+                lines.append(f'{ind}    BlockType.{block_type},')
+                lines.append(f'{ind}    self._build_{block_type.lower()}_payload(),')
+                lines.append(f'{ind}    current_time,')
+                lines.append(f'{ind})')
+            elif isinstance(value, str):
+                if value.startswith("message."):
+                    msg_attr = value[8:]
+                    msg = msg_var or "msg"
+                    lines.append(f'{ind}_list = self.load("{list_name}") or []')
+                    if msg_attr.startswith("payload."):
+                        payload_field = msg_attr[8:]
+                        lines.append(f'{ind}_list.append({msg}.payload.get("{payload_field}"))')
+                    elif msg_attr == "payload":
+                        lines.append(f'{ind}_list.append({msg}.payload)')
+                    else:
+                        lines.append(f'{ind}_list.append({msg}.{msg_attr})')
+                    lines.append(f'{ind}self.store("{list_name}", _list)')
+                elif value in self.store_vars:
+                    lines.append(f'{ind}_list = self.load("{list_name}") or []')
+                    lines.append(f'{ind}_list.append(self.load("{value}"))')
+                    lines.append(f'{ind}self.store("{list_name}", _list)')
+                else:
+                    lines.append(f'{ind}_list = self.load("{list_name}") or []')
+                    lines.append(f'{ind}_list.append({repr(value)})')
+                    lines.append(f'{ind}self.store("{list_name}", _list)')
+            else:
+                lines.append(f'{ind}_list = self.load("{list_name}") or []')
+                lines.append(f'{ind}_list.append({repr(value)})')
+                lines.append(f'{ind}self.store("{list_name}", _list)')
+
+        return lines
+
+    def _generate_external_trigger(self, trigger: TriggerDecl) -> str:
+        """Generate external trigger method."""
+        trigger_name = trigger.name
+        param_list = ", ".join(f"{p.name}: {python_type(p.type)}" for p in trigger.params)
+        allowed_in = trigger.allowed_in
 
         lines = [f"    def {trigger_name}(self{', ' + param_list if param_list else ''}):"]
-        if trigger_desc:
-            lines.append(f'        """{trigger_desc}"""')
+        if trigger.description:
+            lines.append(f'        """{trigger.description}"""')
 
         if allowed_in:
             allowed_states = ", ".join(f"{self.actor_name}State.{s}" for s in allowed_in)
@@ -1160,53 +1301,38 @@ class PythonActorGenerator:
             lines.append("")
 
         # Find transitions triggered by this external trigger
-        for trans in self.transitions:
-            if trans.get("trigger") == trigger_name and trans.get("from") in allowed_in:
-                guard = trans.get("guard", "")
-                on_guard_fail = trans.get("on_guard_fail", {})
+        for trans in self.actor.transitions:
+            if trans.trigger == trigger_name and trans.from_state in allowed_in:
+                guard = trans.guard
 
                 # Execute actions first
-                actions = trans.get("actions", [])
-                for action in actions:
-                    if isinstance(action, dict):
-                        lines.extend(self._generate_action_code(action, indent_level=2, msg_var=None))
-                    elif isinstance(action, str):
-                        lines.append(f"        # Action: {action}")
+                for action in trans.actions:
+                    lines.extend(self._generate_action_code_ast(action, indent_level=2, msg_var=None))
 
                 # If there's a guard, check it after actions
                 if guard:
                     guard_code = self._generate_guard_check(guard)
                     lines.append(f"        if {guard_code}:")
-                    to_state = trans.get("to", "")
-                    if to_state:
-                        lines.append(f"            self.transition_to({self.actor_name}State.{to_state})")
+                    if trans.to_state:
+                        lines.append(f"            self.transition_to({self.actor_name}State.{trans.to_state})")
 
                     # Handle guard failure
-                    if on_guard_fail:
+                    if trans.on_guard_fail:
                         lines.append("        else:")
                         # Process actions in on_guard_fail
-                        fail_actions = on_guard_fail.get("actions", [])
-                        for action in fail_actions:
-                            if isinstance(action, dict):
-                                lines.extend(["    " + l for l in self._generate_action_code(action, indent_level=2, msg_var=None)])
-                        fail_store = on_guard_fail.get("store", {})
-                        if fail_store:
-                            for key, val in fail_store.items():
-                                lines.append(f'            self.store("{key}", "{val}")')
-                        fail_target = on_guard_fail.get("target", "")
-                        if fail_target:
-                            lines.append(f"            self.transition_to({self.actor_name}State.{fail_target})")
+                        for action in trans.on_guard_fail.actions:
+                            lines.extend(["    " + l for l in self._generate_action_code_ast(action, indent_level=2, msg_var=None)])
+                        if trans.on_guard_fail.target:
+                            lines.append(f"            self.transition_to({self.actor_name}State.{trans.on_guard_fail.target})")
                 else:
                     # No guard - just transition
-                    to_state = trans.get("to", "")
-                    if to_state:
-                        lines.append(f"        self.transition_to({self.actor_name}State.{to_state})")
+                    if trans.to_state:
+                        lines.append(f"        self.transition_to({self.actor_name}State.{trans.to_state})")
                 break
         else:
             # No matching transition found - store params and transition
-            if isinstance(params, dict):
-                for param_name in params.keys():
-                    lines.append(f'        self.store("{param_name}", {param_name})')
+            for p in trigger.params:
+                lines.append(f'        self.store("{p.name}", {p.name})')
             lines.append(f"        # Trigger processed - state machine will continue in tick()")
 
         return "\n".join(lines)
@@ -1220,52 +1346,54 @@ class PythonActorGenerator:
         lines.append("")
 
         # Group transitions by from-state
-        transitions_by_state: Dict[str, List[dict]] = {}
-        for trans in self.transitions:
-            from_state = trans.get("from", "")
+        transitions_by_state: Dict[str, List[Transition]] = {}
+        for trans in self.actor.transitions:
+            from_state = trans.from_state
             if from_state not in transitions_by_state:
                 transitions_by_state[from_state] = []
             transitions_by_state[from_state].append(trans)
 
         first = True
-        for state_name, state_info in self.states.items():
+        for state in self.actor.states:
             prefix = "if" if first else "elif"
             first = False
 
-            lines.append(f"        {prefix} self.state == {self.actor_name}State.{state_name}:")
+            lines.append(f"        {prefix} self.state == {self.actor_name}State.{state.name}:")
 
-            state_transitions = transitions_by_state.get(state_name, [])
+            state_transitions = transitions_by_state.get(state.name, [])
             if not state_transitions:
                 # No transitions - passive state
-                state_desc = state_info.get("description", "")
-                if state_desc:
-                    lines.append(f"            # {state_desc}")
+                if state.description:
+                    lines.append(f"            # {state.description}")
                 lines.append("            pass")
             else:
-                lines.extend(self._generate_state_body(state_name, state_transitions))
+                lines.extend(self._generate_state_body(state.name, state_transitions))
 
             lines.append("")
 
         lines.append("        return outgoing")
         return "\n".join(lines)
 
-    def _generate_state_body(self, state_name: str, transitions: List[dict]) -> List[str]:
+    def _generate_state_body(self, state_name: str, transitions: List[Transition]) -> List[str]:
         """Generate the body of a state handler."""
         lines = []
 
+        # Build set of external trigger names
+        external_trigger_names = {t.name for t in self.actor.triggers}
+
         # Separate transitions by trigger type
-        auto_trans = [t for t in transitions if t.get("trigger") == "auto"]
-        msg_trans = [t for t in transitions if t.get("trigger", "").startswith("timeout(") is False
-                     and t.get("trigger") != "auto"
-                     and t.get("trigger") not in self.external_triggers]
-        timeout_trans = [t for t in transitions if str(t.get("trigger", "")).startswith("timeout(")]
-        external_trans = [t for t in transitions if t.get("trigger") in self.external_triggers]
+        auto_trans = [t for t in transitions if t.auto]
+        msg_trans = [t for t in transitions if not t.auto
+                     and t.trigger is not None
+                     and not str(t.trigger).startswith("timeout(")
+                     and t.trigger not in external_trigger_names]
+        timeout_trans = [t for t in transitions if t.trigger and str(t.trigger).startswith("timeout(")]
 
         # Handle message triggers first (check queue)
         for trans in msg_trans:
-            trigger = trans.get("trigger", "")
+            trigger = trans.trigger
             # Skip if it's an external trigger
-            if trigger in self.external_triggers:
+            if trigger in external_trigger_names:
                 continue
 
             msg_type = trigger
@@ -1279,7 +1407,7 @@ class PythonActorGenerator:
 
         # Handle timeout transitions
         for trans in timeout_trans:
-            trigger = trans.get("trigger", "")
+            trigger = trans.trigger
             # Extract timeout parameter name: timeout(PARAM_NAME)
             if trigger.startswith("timeout(") and trigger.endswith(")"):
                 param_name = trigger[8:-1]
@@ -1294,7 +1422,7 @@ class PythonActorGenerator:
         # Track whether we've seen a guarded transition to use elif for subsequent ones
         first_guarded = True
         for trans in auto_trans:
-            guard = trans.get("guard", "")
+            guard = trans.guard
             if guard:
                 guard_code = self._generate_guard_check(guard)
                 lines.append(f"            # Auto transition with guard: {guard}")
@@ -1304,22 +1432,14 @@ class PythonActorGenerator:
                 lines.extend(self._generate_transition_code(trans, indent_level=4))
                 first_guarded = False
 
-                # Handle guard failure (only if this is the only guarded transition)
-                on_fail = trans.get("on_guard_fail", {})
-                if on_fail:
+                # Handle guard failure
+                if trans.on_guard_fail:
                     lines.append("            else:")
                     # Process actions in on_guard_fail
-                    fail_actions = on_fail.get("actions", [])
-                    for action in fail_actions:
-                        if isinstance(action, dict):
-                            lines.extend(["    " + l for l in self._generate_action_code(action, indent_level=3, msg_var=None)])
-                    fail_target = on_fail.get("target", "")
-                    fail_store = on_fail.get("store", {})
-                    if fail_store:
-                        for key, val in fail_store.items():
-                            lines.append(f'                self.store("{key}", "{val}")')
-                    if fail_target:
-                        lines.append(f"                self.transition_to({self.actor_name}State.{fail_target})")
+                    for action in trans.on_guard_fail.actions:
+                        lines.extend(["    " + l for l in self._generate_action_code_ast(action, indent_level=3, msg_var=None)])
+                    if trans.on_guard_fail.target:
+                        lines.append(f"                self.transition_to({self.actor_name}State.{trans.on_guard_fail.target})")
             else:
                 lines.append("            # Auto transition")
                 lines.extend(self._generate_transition_code(trans, indent_level=3))
@@ -1330,233 +1450,16 @@ class PythonActorGenerator:
 
         return lines
 
-    def _generate_transition_code(self, trans: dict, indent_level: int = 3, msg_var: str = None) -> List[str]:
+    def _generate_transition_code(self, trans: Transition, indent_level: int = 3, msg_var: str = None) -> List[str]:
         """Generate code for a transition's actions."""
         lines = []
         ind = "    " * indent_level
 
-        actions = trans.get("actions", [])
-        to_state = trans.get("to", "")
+        for action in trans.actions:
+            lines.extend(self._generate_action_code_ast(action, indent_level, msg_var))
 
-        for action in actions:
-            if isinstance(action, dict):
-                lines.extend(self._generate_action_code(action, indent_level, msg_var))
-            elif isinstance(action, str):
-                lines.append(f"{ind}# Action: {action}")
-
-        if to_state:
-            lines.append(f"{ind}self.transition_to({self.actor_name}State.{to_state})")
-
-        return lines
-
-    def _generate_action_code(self, action: dict, indent_level: int, msg_var: str = None) -> List[str]:
-        """Generate code for a single action."""
-        lines = []
-        ind = "    " * indent_level
-
-        if "store" in action:
-            store_val = action["store"]
-            if isinstance(store_val, list):
-                # Store multiple fields from params - these are function arguments
-                for field in store_val:
-                    lines.append(f'{ind}self.store("{field}", {field})')
-            elif isinstance(store_val, dict):
-                for key, val in store_val.items():
-                    if isinstance(val, str):
-                        # Check for special patterns
-                        if val.startswith("message."):
-                            # Expression referencing message - translate to msg
-                            msg_attr = val[8:]  # Remove "message." prefix
-                            msg = msg_var or "msg"
-                            # Handle payload field access: message.payload.X -> msg.payload.get("X")
-                            if msg_attr.startswith("payload."):
-                                payload_field = msg_attr[8:]  # Remove "payload." prefix
-                                lines.append(f'{ind}self.store("{key}", {msg}.payload.get("{payload_field}"))')
-                            else:
-                                lines.append(f'{ind}self.store("{key}", {msg}.{msg_attr})')
-                        elif val in ExpressionTranslator.ACTOR_PROPS:
-                            # It's an actor property (current_time, peer_id, etc.)
-                            lines.append(f'{ind}self.store("{key}", self.{val})')
-                        elif val in self.store_vars:
-                            # It's a variable reference - load it from store
-                            lines.append(f'{ind}self.store("{key}", self.load("{val}"))')
-                        else:
-                            # Check if it's an enum value
-                            enum_ref = self.expr_translator.get_enum_reference(val)
-                            if enum_ref:
-                                lines.append(f'{ind}self.store("{key}", {enum_ref})')
-                            elif self._is_expression(val):
-                                # It's an expression - translate it
-                                translated = self.expr_translator.translate(val)
-                                lines.append(f'{ind}self.store("{key}", {translated})')
-                            else:
-                                # It's a string literal
-                                lines.append(f'{ind}self.store("{key}", {repr(val)})')
-                    elif isinstance(val, list):
-                        # Handle list values - translate any expressions inside
-                        translated_items = []
-                        for item in val:
-                            if isinstance(item, str) and self._is_expression(item):
-                                translated_items.append(self.expr_translator.translate(item))
-                            else:
-                                translated_items.append(repr(item))
-                        lines.append(f'{ind}self.store("{key}", [{", ".join(translated_items)}])')
-                    else:
-                        lines.append(f'{ind}self.store("{key}", {repr(val)})')
-
-        elif "store_from_message" in action:
-            fields = action["store_from_message"]
-            if isinstance(fields, list):
-                for field in fields:
-                    lines.append(f'{ind}self.store("{field}", {msg_var or "msg"}.payload.get("{field}"))')
-            elif isinstance(fields, dict):
-                for local_key, msg_key in fields.items():
-                    if msg_key == "message" or msg_key == "message.payload":
-                        # Store the whole message payload
-                        lines.append(f'{ind}self.store("{local_key}", {msg_var or "msg"}.payload)')
-                    elif msg_key == "sender" or msg_key == "message.sender":
-                        # Access sender attribute directly (not from payload)
-                        lines.append(f'{ind}self.store("{local_key}", {msg_var or "msg"}.sender)')
-                    elif msg_key.startswith("message.payload."):
-                        # Access nested payload field: message.payload.X -> msg.payload.get("X")
-                        payload_field = msg_key[16:]  # Remove "message.payload." prefix
-                        lines.append(f'{ind}self.store("{local_key}", {msg_var or "msg"}.payload.get("{payload_field}"))')
-                    else:
-                        lines.append(f'{ind}self.store("{local_key}", {msg_var or "msg"}.payload.get("{msg_key}"))')
-
-        elif "compute" in action:
-            compute_val = action["compute"]
-            if isinstance(compute_val, str):
-                # Form: { compute: var_name, from: "..." }
-                var_name = compute_val
-                from_expr = action.get("from", "")
-            elif isinstance(compute_val, dict):
-                # Form: { compute: { var_name: ..., from: "..." } }
-                from_expr = compute_val.get("from", "")
-                # Find the var name (key that's not "from")
-                var_name = None
-                for key in compute_val.keys():
-                    if key != "from":
-                        var_name = key
-                        break
-                if not var_name:
-                    var_name = "computed_value"
-            else:
-                var_name = "computed_value"
-                from_expr = ""
-            # Generate a simplified version - full expression parsing would be complex
-            from_expr_oneline = " ".join(str(from_expr).split())
-            lines.append(f'{ind}# Compute: {var_name} = {from_expr_oneline}')
-            lines.append(f'{ind}self.store("{var_name}", self._compute_{var_name}())')
-
-        elif "send" in action:
-            send_info = action["send"]
-            msg_type = send_info.get("message", "")
-            to_target = send_info.get("to", "")
-            inline_fields = send_info.get("fields", {})
-
-            if to_target.startswith("each("):
-                # Send to multiple recipients
-                list_name = to_target[5:-1]
-                lines.append(f'{ind}for recipient in self.load("{list_name}", []):')
-                if inline_fields:
-                    # Build payload inline with provided fields
-                    lines.append(f'{ind}    msg_payload = {{')
-                    for field_name, field_val in inline_fields.items():
-                        lines.append(f'{ind}        "{field_name}": {repr(field_val)},')
-                    lines.append(f'{ind}        "timestamp": current_time,')
-                    lines.append(f'{ind}    }}')
-                else:
-                    lines.append(f'{ind}    msg_payload = self._build_{msg_type.lower()}_payload()')
-                lines.append(f'{ind}    outgoing.append(Message(')
-                lines.append(f'{ind}        msg_type=MessageType.{msg_type},')
-                lines.append(f'{ind}        sender=self.peer_id,')
-                lines.append(f'{ind}        payload=msg_payload,')
-                lines.append(f'{ind}        timestamp=current_time,')
-                lines.append(f'{ind}        recipient=recipient,')
-                lines.append(f'{ind}    ))')
-            else:
-                # Single recipient - look up from store
-                if to_target:
-                    recipient_expr = f'self.load("{to_target}")'
-                else:
-                    recipient_expr = 'None'
-                if inline_fields:
-                    # Build payload inline with provided fields
-                    lines.append(f'{ind}msg_payload = {{')
-                    for field_name, field_val in inline_fields.items():
-                        lines.append(f'{ind}    "{field_name}": {repr(field_val)},')
-                    lines.append(f'{ind}    "timestamp": current_time,')
-                    lines.append(f'{ind}}}')
-                else:
-                    lines.append(f'{ind}msg_payload = self._build_{msg_type.lower()}_payload()')
-                lines.append(f'{ind}outgoing.append(Message(')
-                lines.append(f'{ind}    msg_type=MessageType.{msg_type},')
-                lines.append(f'{ind}    sender=self.peer_id,')
-                lines.append(f'{ind}    payload=msg_payload,')
-                lines.append(f'{ind}    timestamp=current_time,')
-                lines.append(f'{ind}    recipient={recipient_expr},')
-                lines.append(f'{ind}))')
-
-        elif "append_block" in action:
-            block_info = action["append_block"]
-            block_type = block_info.get("type", "")
-            lines.append(f'{ind}self.chain.append(')
-            lines.append(f'{ind}    BlockType.{block_type},')
-            lines.append(f'{ind}    self._build_{block_type.lower()}_payload(),')
-            lines.append(f'{ind}    current_time,')
-            lines.append(f'{ind})')
-
-        elif "lookup" in action:
-            # Lookup action: retrieve data from chain and store
-            var_name = action["lookup"]
-            from_expr = action.get("from", "")
-
-            # Special handling for chain.get_peer_hash - extracts hash and timestamp
-            if "get_peer_hash" in from_expr:
-                # Extract the peer argument
-                peer_match = re.search(r'get_peer_hash\((\w+)\)', from_expr)
-                peer_var = peer_match.group(1) if peer_match else "peer"
-                lines.append(f'{ind}_lookup_block = self.chain.get_peer_hash(self.load("{peer_var}"))')
-                lines.append(f'{ind}if _lookup_block:')
-                lines.append(f'{ind}    self.store("{var_name}", _lookup_block.payload.get("hash"))')
-                lines.append(f'{ind}    self.store("{var_name}_timestamp", _lookup_block.timestamp)')
-            else:
-                # Generic lookup - store the raw result
-                translated = self.expr_translator.translate(from_expr) if hasattr(self, 'expr_translator') else from_expr
-                lines.append(f'{ind}self.store("{var_name}", {translated})')
-
-        elif "append" in action:
-            # Append to a list: { append: { list_name: value } }
-            append_info = action["append"]
-            for list_name, value in append_info.items():
-                if isinstance(value, str):
-                    if value.startswith("message."):
-                        # Reference to message field
-                        msg_attr = value[8:]
-                        msg = msg_var or "msg"
-                        lines.append(f'{ind}_list = self.load("{list_name}") or []')
-                        # Handle payload field access: message.payload.X -> msg.payload.get("X")
-                        if msg_attr.startswith("payload."):
-                            payload_field = msg_attr[8:]  # Remove "payload." prefix
-                            lines.append(f'{ind}_list.append({msg}.payload.get("{payload_field}"))')
-                        elif msg_attr == "payload":
-                            lines.append(f'{ind}_list.append({msg}.payload)')
-                        else:
-                            lines.append(f'{ind}_list.append({msg}.{msg_attr})')
-                        lines.append(f'{ind}self.store("{list_name}", _list)')
-                    elif value in self.store_vars:
-                        lines.append(f'{ind}_list = self.load("{list_name}") or []')
-                        lines.append(f'{ind}_list.append(self.load("{value}"))')
-                        lines.append(f'{ind}self.store("{list_name}", _list)')
-                    else:
-                        lines.append(f'{ind}_list = self.load("{list_name}") or []')
-                        lines.append(f'{ind}_list.append({repr(value)})')
-                        lines.append(f'{ind}self.store("{list_name}", _list)')
-                else:
-                    lines.append(f'{ind}_list = self.load("{list_name}") or []')
-                    lines.append(f'{ind}_list.append({repr(value)})')
-                    lines.append(f'{ind}self.store("{list_name}", _list)')
+        if trans.to_state:
+            lines.append(f"{ind}self.transition_to({self.actor_name}State.{trans.to_state})")
 
         return lines
 
@@ -1613,77 +1516,66 @@ def sanitize_guard_name(guard_name: str) -> str:
     return sanitized
 
 
-def generate_actor_helpers(actor_name: str, actor_info: dict, tx_def: dict) -> str:
+def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
     """Generate helper methods for an actor (payload builders, guards, etc.)."""
     lines = []
-    transitions = actor_info.get("transitions", [])
-    guards = actor_info.get("guards", {})
-    messages = tx_def.get("messages", {})
+    actor_name = actor.name
+    transitions = actor.transitions
+
+    # Build lookup structures
+    messages = {msg.name: msg for msg in schema.messages}
+    blocks = {block.name: block for block in schema.blocks}
 
     # Create expression translator
-    store_vars = set(actor_info.get("store_schema", {}).keys())
-    parameters = set(tx_def.get("parameters", {}).keys())
-    enums = {}
-    for enum_name, enum_info in tx_def.get("enums", {}).items():
-        if isinstance(enum_info, dict):
-            values = enum_info.get("values", [])
-            if isinstance(values, list):
-                enums[enum_name] = values
-            elif isinstance(values, dict):
-                enums[enum_name] = list(values.keys())
-        elif isinstance(enum_info, list):
-            enums[enum_name] = enum_info
+    store_vars = {field.name for field in actor.store}
+    parameters = {param.name for param in schema.parameters}
+    enums = {enum.name: [v.name for v in enum.values] for enum in schema.enums}
     translator = ExpressionTranslator(store_vars, parameters, enums)
 
     # Collect all message types we need to build
     msg_types_to_build = set()
     for trans in transitions:
-        for action in trans.get("actions", []):
-            if isinstance(action, dict) and "send" in action:
-                msg_type = action["send"].get("message", "")
-                if msg_type:
-                    msg_types_to_build.add(msg_type)
+        for action in trans.actions:
+            if isinstance(action, SendAction):
+                if action.message:
+                    msg_types_to_build.add(action.message)
+            elif isinstance(action, BroadcastAction):
+                if action.message:
+                    msg_types_to_build.add(action.message)
 
     # Generate payload builder methods
     for msg_type in msg_types_to_build:
-        msg_info = messages.get(msg_type, {})
+        msg_decl = messages.get(msg_type)
         lines.append(f"    def _build_{msg_type.lower()}_payload(self) -> Dict[str, Any]:")
         lines.append(f'        """Build payload for {msg_type} message."""')
         lines.append("        payload = {")
 
-        for field_name, field_info in msg_info.get("fields", {}).items():
-            if field_name == "timestamp":
-                continue  # Skip timestamp - we add it explicitly
-            if isinstance(field_info, dict) and field_info.get("type") == "object":
-                # For nested objects, load from store with same name
-                lines.append(f'            "{field_name}": self.load("{field_name}"),')
-                continue
-            lines.append(f'            "{field_name}": self._serialize_value(self.load("{field_name}")),')
+        if msg_decl:
+            for field in msg_decl.fields:
+                if field.name == "timestamp":
+                    continue  # Skip timestamp - we add it explicitly
+                if field.type == "object":
+                    lines.append(f'            "{field.name}": self.load("{field.name}"),')
+                else:
+                    lines.append(f'            "{field.name}": self._serialize_value(self.load("{field.name}")),')
 
         lines.append("            \"timestamp\": self.current_time,")
         lines.append("        }")
 
         # Add signature if needed
-        signed_by = msg_info.get("signed_by", "")
-        if signed_by:
+        if msg_decl and msg_decl.signed:
             lines.append("        payload[\"signature\"] = sign(self.chain.private_key, hash_data(payload))")
 
         lines.append("        return payload")
         lines.append("")
 
-    # Collect all guards - both named guards and inline guard expressions
+    # Collect all guards - inline guard expressions from transitions
     all_guards = {}  # sanitized_name -> (description, expression)
-
-    # Add named guards from guards dict
-    for guard_name, guard_info in guards.items():
-        desc = guard_info.get("description", "")
-        expr = guard_info.get("expression", "True")
-        all_guards[guard_name] = (desc, expr)
 
     # Add inline guards from transitions
     for trans in transitions:
-        guard = trans.get("guard", "")
-        if guard and guard not in guards:
+        guard = trans.guard
+        if guard:
             # This is an inline guard expression
             sanitized = sanitize_guard_name(guard)
             if sanitized not in all_guards:
@@ -1732,21 +1624,10 @@ def generate_actor_helpers(actor_name: str, actor_info: dict, tx_def: dict) -> s
     # Generate compute methods - collect var_name -> from_expr mappings
     compute_exprs = {}  # var_name -> from_expression
     for trans in transitions:
-        for action in trans.get("actions", []):
-            if isinstance(action, dict) and "compute" in action:
-                compute_val = action["compute"]
-                from_expr = action.get("from", "")
-                if isinstance(compute_val, str):
-                    # Form: { compute: var_name, from: "..." }
-                    if compute_val not in compute_exprs:
-                        compute_exprs[compute_val] = from_expr
-                elif isinstance(compute_val, dict):
-                    # Form: { compute: { var_name: ..., from: "..." } }
-                    from_expr = compute_val.get("from", "")
-                    for key in compute_val.keys():
-                        if key != "from":
-                            if key not in compute_exprs:
-                                compute_exprs[key] = from_expr
+        for action in trans.actions:
+            if isinstance(action, ComputeAction):
+                if action.name not in compute_exprs:
+                    compute_exprs[action.name] = action.expression
 
     for var_name, from_expr in compute_exprs.items():
         lines.append(f"    def _compute_{var_name}(self) -> Any:")
@@ -1764,25 +1645,28 @@ def generate_actor_helpers(actor_name: str, actor_info: dict, tx_def: dict) -> s
     # Collect block types to build
     block_types_to_build = set()
     for trans in transitions:
-        for action in trans.get("actions", []):
-            if isinstance(action, dict) and "append_block" in action:
-                block_type = action["append_block"].get("type", "")
-                if block_type:
-                    block_types_to_build.add(block_type)
+        for action in trans.actions:
+            if isinstance(action, AppendBlockAction):
+                if action.block_type:
+                    block_types_to_build.add(action.block_type)
+            elif isinstance(action, AppendAction):
+                # APPEND(my_chain, BLOCK_TYPE) is a chain append
+                if action.list_name == "my_chain" and action.value:
+                    block_types_to_build.add(action.value)
 
     # Generate block payload builders
-    blocks = tx_def.get("blocks", {})
     for block_type in block_types_to_build:
-        block_info = blocks.get(block_type, {})
+        block_decl = blocks.get(block_type)
         lines.append(f"    def _build_{block_type.lower()}_payload(self) -> Dict[str, Any]:")
         lines.append(f'        """Build payload for {block_type} chain block."""')
         lines.append("        return {")
 
-        for field_name in block_info.get("fields", {}).keys():
-            if field_name == "timestamp":
-                lines.append(f'            "timestamp": self.current_time,')
-            else:
-                lines.append(f'            "{field_name}": self.load("{field_name}"),')
+        if block_decl:
+            for field in block_decl.fields:
+                if field.name == "timestamp":
+                    lines.append(f'            "timestamp": self.current_time,')
+                else:
+                    lines.append(f'            "{field.name}": self.load("{field.name}"),')
 
         lines.append("        }")
         lines.append("")
@@ -1799,7 +1683,8 @@ def generate_actor_helpers(actor_name: str, actor_info: dict, tx_def: dict) -> s
     lines.append("        for i in range(1, len(segment)):")
     lines.append('            if segment[i].get("previous_hash") != segment[i-1].get("block_hash"):')
     lines.append("                return False")
-    lines.append("            if segment[i].get(\"sequence\") != i:")
+    lines.append("            # Verify sequences are consecutive")
+    lines.append('            if segment[i].get("sequence") != segment[i-1].get("sequence") + 1:')
     lines.append("                return False")
     lines.append("        return True")
     lines.append("")
@@ -1914,6 +1799,73 @@ def generate_actor_helpers(actor_name: str, actor_info: dict, tx_def: dict) -> s
     lines.append("        return selected")
     lines.append("")
 
+    # _verify_witness_selection
+    lines.append("    def _verify_witness_selection(")
+    lines.append("        self,")
+    lines.append("        proposed_witnesses: List[str],")
+    lines.append("        chain_state: dict,")
+    lines.append("        session_id: Any,")
+    lines.append("        provider_nonce: bytes,")
+    lines.append("        consumer_nonce: bytes,")
+    lines.append("    ) -> bool:")
+    lines.append('        """VERIFY_WITNESS_SELECTION: Verify that proposed witnesses were correctly selected."""')
+    lines.append("        # Recompute the seed and selection")
+    lines.append("        seed = hash_data(self._to_hashable(session_id, provider_nonce, consumer_nonce))")
+    lines.append("        expected = self._select_witnesses(seed, chain_state)")
+    lines.append("        # Compare - order matters for deterministic selection")
+    lines.append("        return set(proposed_witnesses) == set(expected)")
+    lines.append("")
+
+    # _validate_lock_result
+    lines.append("    def _validate_lock_result(")
+    lines.append("        self,")
+    lines.append("        result: dict,")
+    lines.append("        expected_session_id: str,")
+    lines.append("        expected_amount: float,")
+    lines.append("    ) -> bool:")
+    lines.append('        """VALIDATE_LOCK_RESULT: Validate a lock result matches expected values and has ACCEPTED status."""')
+    lines.append("        if not result:")
+    lines.append("            return False")
+    lines.append("        # Check session_id matches")
+    lines.append('        if result.get("session_id") != expected_session_id:')
+    lines.append("            return False")
+    lines.append("        # Check amount matches")
+    lines.append('        if result.get("amount") != expected_amount:')
+    lines.append("            return False")
+    lines.append("        # Check status is ACCEPTED (as string from serialization)")
+    lines.append('        status = result.get("status")')
+    lines.append('        if status not in ("ACCEPTED", LockStatus.ACCEPTED):')
+    lines.append("            return False")
+    lines.append("        # Check we have witness signatures (at least one)")
+    lines.append('        signatures = result.get("witness_signatures", [])')
+    lines.append("        if not signatures:")
+    lines.append("            return False")
+    lines.append("        return True")
+    lines.append("")
+
+    # _validate_topup_result
+    lines.append("    def _validate_topup_result(")
+    lines.append("        self,")
+    lines.append("        result: dict,")
+    lines.append("        expected_session_id: str,")
+    lines.append("        expected_additional_amount: float,")
+    lines.append("    ) -> bool:")
+    lines.append('        """VALIDATE_TOPUP_RESULT: Validate a top-up result matches expected values."""')
+    lines.append("        if not result:")
+    lines.append("            return False")
+    lines.append("        # Check session_id matches")
+    lines.append('        if result.get("session_id") != expected_session_id:')
+    lines.append("            return False")
+    lines.append("        # Check additional_amount matches")
+    lines.append('        if result.get("additional_amount") != expected_additional_amount:')
+    lines.append("            return False")
+    lines.append("        # Check we have witness signatures (at least one)")
+    lines.append('        signatures = result.get("witness_signatures", [])')
+    lines.append("        if not signatures:")
+    lines.append("            return False")
+    lines.append("        return True")
+    lines.append("")
+
     # _seeded_rng
     lines.append("    def _seeded_rng(self, seed: bytes) -> Any:")
     lines.append('        """SEEDED_RNG: Create a seeded random number generator."""')
@@ -2016,31 +1968,31 @@ def generate_actor_helpers(actor_name: str, actor_info: dict, tx_def: dict) -> s
         lines.append("")
 
     # Generate methods from functions section
-    functions = tx_def.get("functions", {})
-    for func_name, func_info in functions.items():
-        if not isinstance(func_info, dict):
-            continue
-
-        desc = func_info.get("description", "")
-        params = func_info.get("params", [])
-        returns = func_info.get("returns", "Any")
-        body = func_info.get("body", "")
+    for func in schema.functions:
+        params = func.params
+        returns = func.return_type or "Any"
+        body = func.body or ""
 
         # Build parameter list
         param_strs = ["self"]
         for param in params:
-            if isinstance(param, dict):
-                for pname, ptype in param.items():
-                    py_type = python_type(str(ptype))
-                    param_strs.append(f"{pname}: {py_type}")
-            elif isinstance(param, str):
-                param_strs.append(param)
+            py_type = python_type(param.type)
+            param_strs.append(f"{param.name}: {py_type}")
 
         # Map return type using python_type
-        py_returns = python_type(str(returns))
+        py_returns = python_type(returns)
 
-        lines.append(f"    def _{func_name}({', '.join(param_strs)}) -> {py_returns}:")
-        lines.append(f'        """{desc}"""')
+        lines.append(f"    def _{func.name}({', '.join(param_strs)}) -> {py_returns}:")
+        lines.append(f'        """Compute {func.name}."""')
+
+        # Handle native functions - call imported library function
+        if func.is_native:
+            arg_names = [p.name for p in params]
+            # The import is added at the top of the file; here we just call it
+            lines.append(f'        # Native function from: {func.library_path}')
+            lines.append(f'        return {func.name}({", ".join(arg_names)})')
+            lines.append("")
+            continue
 
         # Generate body based on common patterns
         body_stripped = body.strip() if body else ""
@@ -2072,12 +2024,11 @@ def generate_actor_helpers(actor_name: str, actor_info: dict, tx_def: dict) -> s
 
 def generate_python(tx_dir: Path, output_path: Path = None) -> str:
     """Generate Python code from transaction definition."""
-    tx_def = load_transaction(tx_dir)
+    schema = load_transaction(tx_dir)
 
-    transaction = tx_def.get("transaction", {})
-    tx_name = transaction.get("name", "Unknown")
-    tx_id = transaction.get("id", "00")
-    tx_desc = transaction.get("description", "")
+    tx_name = schema.transaction.name if schema.transaction else "Unknown"
+    tx_id = schema.transaction.id if schema.transaction else "00"
+    tx_desc = schema.transaction.description if schema.transaction else ""
 
     lines = ['"""']
     lines.append(f"Transaction {tx_id}: {tx_name}")
@@ -2096,16 +2047,37 @@ def generate_python(tx_dir: Path, output_path: Path = None) -> str:
     lines.append("    hash_data, sign, verify_sig, generate_id, random_bytes")
     lines.append(")")
     lines.append("")
+
+    # Import native functions
+    native_funcs = [f for f in schema.functions if f.is_native]
+    if native_funcs:
+        # Group by library path
+        by_library: Dict[str, List[str]] = {}
+        for func in native_funcs:
+            lib = func.library_path
+            if lib not in by_library:
+                by_library[lib] = []
+            by_library[lib].append(func.name)
+
+        for lib_path, func_names in sorted(by_library.items()):
+            # Use simulations.native as the mock library location
+            mock_path = "simulations.native." + lib_path.split(".")[-1]
+            lines.append(f"try:")
+            lines.append(f"    from {lib_path} import {', '.join(sorted(func_names))}")
+            lines.append(f"except ImportError:")
+            lines.append(f"    from {mock_path} import {', '.join(sorted(func_names))}")
+        lines.append("")
+
     lines.append("")
 
     # Parameters
-    lines.append(generate_parameters_python(tx_def))
+    lines.append(generate_parameters_python(schema))
 
     # Enums
-    lines.append(generate_enums_python(tx_def))
+    lines.append(generate_enums_python(schema))
 
     # Messages
-    lines.append(generate_messages_python(tx_def))
+    lines.append(generate_messages_python(schema))
 
     # Base Actor class
     lines.append("# =============================================================================")
@@ -2174,17 +2146,16 @@ def generate_python(tx_dir: Path, output_path: Path = None) -> str:
     lines.append("")
 
     # Actor classes
-    actors = tx_def.get("actors", {})
-    for actor_name, actor_info in actors.items():
+    for actor in schema.actors:
         lines.append("# =============================================================================")
-        lines.append(f"# {actor_name}")
+        lines.append(f"# {actor.name}")
         lines.append("# =============================================================================")
         lines.append("")
 
-        generator = PythonActorGenerator(actor_name, actor_info, tx_def)
+        generator = PythonActorGenerator(actor, schema)
         lines.append(generator.generate())
         lines.append("")
-        lines.append(generate_actor_helpers(actor_name, actor_info, tx_def))
+        lines.append(generate_actor_helpers(actor, schema))
 
     result = "\n".join(lines)
 

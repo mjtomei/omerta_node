@@ -15,6 +15,11 @@ from ..chain.primitives import (
     hash_data, sign, verify_sig, generate_id, random_bytes
 )
 
+try:
+    from omerta.native.vm_connectivity import check_consumer_connected, check_vm_connectivity
+except ImportError:
+    from simulations.native.vm_connectivity import check_consumer_connected, check_vm_connectivity
+
 
 # =============================================================================
 # Parameters
@@ -210,7 +215,7 @@ class Provider(Actor):
 
         elif self.state == ProviderState.NOTIFYING_CABAL:
             # Auto transition
-            # Compute: vm_allocated_msg = {session_id: LOAD(session_id), provider: peer_id, consumer: LOAD(consumer), vm_info: LOAD(vm_info), allocated_at: LOAD(vm_allocated_at), lock_result_hash: HASH(LOAD(lock_result)), timestamp: current_time}
+            # Compute: vm_allocated_msg = {session_id: LOAD(session_id), provider: peer_id, consumer: LOAD(consumer), vm_info: LOAD(vm_info), allocated_at: LOAD(vm_allocated_at), lock_result_hash: HASH(LOAD(lock_result)), timestamp: NOW()}
             self.store("vm_allocated_msg", self._compute_vm_allocated_msg())
             for recipient in self.load("witnesses", []):
                 msg_payload = self._build_vm_allocated_payload()
@@ -282,7 +287,7 @@ class Provider(Actor):
 
         elif self.state == ProviderState.SENDING_CANCELLATION:
             # Auto transition
-            # Compute: vm_cancelled_msg = {session_id: LOAD(session_id), provider: peer_id, cancelled_at: LOAD(cancelled_at), reason: LOAD(termination_reason), actual_duration_seconds: LOAD(cancelled_at) - LOAD(vm_allocated_at), timestamp: current_time}
+            # Compute: vm_cancelled_msg = {session_id: LOAD(session_id), provider: peer_id, cancelled_at: LOAD(cancelled_at), reason: LOAD(termination_reason), actual_duration_seconds: LOAD(cancelled_at) - LOAD(vm_allocated_at), timestamp: NOW()}
             self.store("vm_cancelled_msg", self._compute_vm_cancelled_msg())
             for recipient in self.load("witnesses", []):
                 msg_payload = self._build_vm_cancelled_payload()
@@ -324,17 +329,22 @@ class Provider(Actor):
 
         return outgoing
 
-    def _build_vm_cancelled_payload(self) -> Dict[str, Any]:
-        """Build payload for VM_CANCELLED message."""
+    def _build_vm_ready_payload(self) -> Dict[str, Any]:
+        """Build payload for VM_READY message."""
         payload = {
             "session_id": self._serialize_value(self.load("session_id")),
-            "provider": self._serialize_value(self.load("provider")),
-            "cancelled_at": self._serialize_value(self.load("cancelled_at")),
-            "reason": self._serialize_value(self.load("reason")),
-            "actual_duration_seconds": self._serialize_value(self.load("actual_duration_seconds")),
+            "vm_info": self._serialize_value(self.load("vm_info")),
             "timestamp": self.current_time,
         }
-        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
+        return payload
+
+    def _build_session_terminated_payload(self) -> Dict[str, Any]:
+        """Build payload for SESSION_TERMINATED message."""
+        payload = {
+            "session_id": self._serialize_value(self.load("session_id")),
+            "reason": self._serialize_value(self.load("reason")),
+            "timestamp": self.current_time,
+        }
         return payload
 
     def _build_vm_allocated_payload(self) -> Dict[str, Any]:
@@ -353,22 +363,17 @@ class Provider(Actor):
         payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
-    def _build_vm_ready_payload(self) -> Dict[str, Any]:
-        """Build payload for VM_READY message."""
+    def _build_vm_cancelled_payload(self) -> Dict[str, Any]:
+        """Build payload for VM_CANCELLED message."""
         payload = {
             "session_id": self._serialize_value(self.load("session_id")),
-            "vm_info": self._serialize_value(self.load("vm_info")),
-            "timestamp": self.current_time,
-        }
-        return payload
-
-    def _build_session_terminated_payload(self) -> Dict[str, Any]:
-        """Build payload for SESSION_TERMINATED message."""
-        payload = {
-            "session_id": self._serialize_value(self.load("session_id")),
+            "provider": self._serialize_value(self.load("provider")),
+            "cancelled_at": self._serialize_value(self.load("cancelled_at")),
             "reason": self._serialize_value(self.load("reason")),
+            "actual_duration_seconds": self._serialize_value(self.load("actual_duration_seconds")),
             "timestamp": self.current_time,
         }
+        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
     def _check_LENGTH_connectivity_votes_gte_LENGTH_witnesses_and_count_pos(self) -> bool:
@@ -405,7 +410,8 @@ class Provider(Actor):
         for i in range(1, len(segment)):
             if segment[i].get("previous_hash") != segment[i-1].get("block_hash"):
                 return False
-            if segment[i].get("sequence") != i:
+            # Verify sequences are consecutive
+            if segment[i].get("sequence") != segment[i-1].get("sequence") + 1:
                 return False
         return True
 
@@ -513,6 +519,67 @@ class Provider(Actor):
         
         return selected
 
+    def _verify_witness_selection(
+        self,
+        proposed_witnesses: List[str],
+        chain_state: dict,
+        session_id: Any,
+        provider_nonce: bytes,
+        consumer_nonce: bytes,
+    ) -> bool:
+        """VERIFY_WITNESS_SELECTION: Verify that proposed witnesses were correctly selected."""
+        # Recompute the seed and selection
+        seed = hash_data(self._to_hashable(session_id, provider_nonce, consumer_nonce))
+        expected = self._select_witnesses(seed, chain_state)
+        # Compare - order matters for deterministic selection
+        return set(proposed_witnesses) == set(expected)
+
+    def _validate_lock_result(
+        self,
+        result: dict,
+        expected_session_id: str,
+        expected_amount: float,
+    ) -> bool:
+        """VALIDATE_LOCK_RESULT: Validate a lock result matches expected values and has ACCEPTED status."""
+        if not result:
+            return False
+        # Check session_id matches
+        if result.get("session_id") != expected_session_id:
+            return False
+        # Check amount matches
+        if result.get("amount") != expected_amount:
+            return False
+        # Check status is ACCEPTED (as string from serialization)
+        status = result.get("status")
+        if status not in ("ACCEPTED", LockStatus.ACCEPTED):
+            return False
+        # Check we have witness signatures (at least one)
+        signatures = result.get("witness_signatures", [])
+        if not signatures:
+            return False
+        return True
+
+    def _validate_topup_result(
+        self,
+        result: dict,
+        expected_session_id: str,
+        expected_additional_amount: float,
+    ) -> bool:
+        """VALIDATE_TOPUP_RESULT: Validate a top-up result matches expected values."""
+        if not result:
+            return False
+        # Check session_id matches
+        if result.get("session_id") != expected_session_id:
+            return False
+        # Check additional_amount matches
+        if result.get("additional_amount") != expected_additional_amount:
+            return False
+        # Check we have witness signatures (at least one)
+        signatures = result.get("witness_signatures", [])
+        if not signatures:
+            return False
+        return True
+
     def _seeded_rng(self, seed: bytes) -> Any:
         """SEEDED_RNG: Create a seeded random number generator."""
         import random as _random
@@ -537,41 +604,43 @@ class Provider(Actor):
         raise RuntimeError(f"ABORT: {reason}")
 
     def _COMPUTE_CONSENSUS(self, verdicts: List[str], threshold: int) -> str:
-        """"""
+        """Compute COMPUTE_CONSENSUS."""
         # TODO: Implement - accept_count = LENGTH (FILTER (verdicts, v = > v =...
         return None
 
     def _EXTRACT_FIELD(self, records: List[Any], field: str) -> List[Any]:
-        """"""
+        """Compute EXTRACT_FIELD."""
         # TODO: Implement - RETURN MAP (records, r = > r.{field})...
         return None
 
     def _COUNT_MATCHING(self, items: List[Any], predicate: Any) -> int:
-        """"""
+        """Compute COUNT_MATCHING."""
         # TODO: Implement - RETURN LENGTH (FILTER (items, predicate))...
         return None
 
     def _CONTAINS(self, items: List[Any], item: Any) -> bool:
-        """"""
+        """Compute CONTAINS."""
         # TODO: Implement - RETURN LENGTH (FILTER (items, x = > x == item))> 0...
         return None
 
     def _count_positive_votes(self, votes: List[Dict[str, Any]]) -> int:
-        """"""
+        """Compute count_positive_votes."""
         return len([v for v in votes if v.get('can_reach_vm') == True])
 
     def _build_cabal_votes_map(self, votes: List[Dict[str, Any]]) -> Dict[str, bool]:
-        """"""
+        """Compute build_cabal_votes_map."""
         # TODO: Implement - result = {} FOR v IN votes: result [ v.witness ] =...
         return None
 
-    def _check_vm_connectivity(self) -> bool:
-        """"""
-        return True
+    def _check_vm_connectivity(self, vm_endpoint: str) -> bool:
+        """Compute check_vm_connectivity."""
+        # Native function from: omerta.native.vm_connectivity
+        return check_vm_connectivity(vm_endpoint)
 
-    def _check_consumer_connected(self) -> bool:
-        """"""
-        return True
+    def _check_consumer_connected(self, session_id: str) -> bool:
+        """Compute check_consumer_connected."""
+        # Native function from: omerta.native.vm_connectivity
+        return check_consumer_connected(session_id)
 
 # =============================================================================
 # Witness
@@ -620,20 +689,20 @@ class Witness(Actor):
             msgs = self.get_messages(MessageType.VM_ALLOCATED)
             if msgs:
                 msg = msgs[0]
-                self.store("vm_allocated_msg", msg.payload.get("payload"))
-                self.store("vm_allocated_at", msg.payload.get("payload.allocated_at"))
+                self.store("vm_allocated_msg", msg.payload)
+                self.store("vm_allocated_at", msg.payload.get("allocated_at"))
                 self.transition_to(WitnessState.VERIFYING_VM)
                 self.message_queue.remove(msg)  # Only remove processed message
 
 
         elif self.state == WitnessState.VERIFYING_VM:
             # Auto transition
-            # Compute: can_reach_vm = check_vm_connectivity()
+            # Compute: can_reach_vm = check_vm_connectivity(vm_allocated_msg.consumer_wireguard_endpoint)
             self.store("can_reach_vm", self._compute_can_reach_vm())
-            # Compute: can_see_consumer_connected = check_consumer_connected()
+            # Compute: can_see_consumer_connected = check_consumer_connected(session_id)
             self.store("can_see_consumer_connected", self._compute_can_see_consumer_connected())
             self.store("witness", self.peer_id)
-            # Compute: vote_data = {session_id: LOAD(session_id), witness: peer_id, can_reach_vm: LOAD(can_reach_vm), can_see_consumer_connected: LOAD(can_see_consumer_connected), timestamp: current_time}
+            # Compute: vote_data = {session_id: LOAD(session_id), witness: peer_id, can_reach_vm: LOAD(can_reach_vm), can_see_consumer_connected: LOAD(can_see_consumer_connected), timestamp: NOW()}
             self.store("vote_data", self._compute_vote_data())
             # Compute: vote_signature = SIGN(LOAD(vote_data))
             self.store("vote_signature", self._compute_vote_signature())
@@ -687,7 +756,7 @@ class Witness(Actor):
             # Auto transition with guard: LENGTH (connectivity_votes) == 0  or count_positive_votes (connectivity_votes) / LENGTH (connectivity_votes) < CONNECTIVITY_THRESHOLD
             elif self._check_LENGTH_connectivity_votes_eq_0_or_count_positive_votes_conne():
                 self.store("connectivity_verified", False)
-                self.store("abort_reason", self.load("vm_unreachable"))
+                self.store("abort_reason", 'vm_unreachable')
                 self.transition_to(WitnessState.VOTING_ABORT)
 
         elif self.state == WitnessState.MONITORING:
@@ -695,9 +764,9 @@ class Witness(Actor):
             msgs = self.get_messages(MessageType.VM_CANCELLED)
             if msgs:
                 msg = msgs[0]
-                self.store("vm_cancelled_msg", msg.payload.get("payload"))
-                self.store("actual_duration_seconds", msg.payload.get("payload.actual_duration_seconds"))
-                self.store("termination_reason", msg.payload.get("payload.reason"))
+                self.store("vm_cancelled_msg", msg.payload)
+                self.store("actual_duration_seconds", msg.payload.get("actual_duration_seconds"))
+                self.store("termination_reason", msg.payload.get("reason"))
                 self.transition_to(WitnessState.ATTESTING)
                 self.message_queue.remove(msg)  # Only remove processed message
 
@@ -705,7 +774,7 @@ class Witness(Actor):
             msgs = self.get_messages(MessageType.MISUSE_ACCUSATION)
             if msgs:
                 msg = msgs[0]
-                self.store("misuse_accusation", msg.payload.get("payload"))
+                self.store("misuse_accusation", msg.payload)
                 self.transition_to(WitnessState.HANDLING_MISUSE)
                 self.message_queue.remove(msg)  # Only remove processed message
 
@@ -713,7 +782,7 @@ class Witness(Actor):
         elif self.state == WitnessState.HANDLING_MISUSE:
             # Auto transition with guard: LOAD (misuse_accusation).evidence != ""
             if self._check_LOAD_misuse_accusation_evidence_neq():
-                self.store("abort_reason", self.load("consumer_misuse"))
+                self.store("abort_reason", 'consumer_misuse')
                 self.transition_to(WitnessState.VOTING_ABORT)
             # Auto transition with guard: LOAD (misuse_accusation).evidence == ""
             elif self._check_LOAD_misuse_accusation_evidence_eq():
@@ -721,7 +790,7 @@ class Witness(Actor):
 
         elif self.state == WitnessState.VOTING_ABORT:
             # Auto transition
-            # Compute: abort_vote_data = {session_id: LOAD(session_id), witness: peer_id, reason: LOAD(abort_reason), timestamp: current_time}
+            # Compute: abort_vote_data = {session_id: LOAD(session_id), witness: peer_id, reason: LOAD(abort_reason), timestamp: NOW()}
             self.store("abort_vote_data", self._compute_abort_vote_data())
             # Compute: abort_vote_signature = SIGN(LOAD(abort_vote_data))
             self.store("abort_vote_signature", self._compute_abort_vote_signature())
@@ -769,7 +838,7 @@ class Witness(Actor):
 
         elif self.state == WitnessState.ATTESTING:
             # Auto transition
-            # Compute: attestation = {session_id: LOAD(session_id), vm_allocated_hash: HASH(LOAD(vm_allocated_msg)), vm_cancelled_hash: HASH(LOAD(vm_cancelled_msg)), connectivity_verified: LOAD(connectivity_verified), actual_duration_seconds: LOAD(actual_duration_seconds), termination_reason: LOAD(termination_reason), cabal_votes: LOAD(connectivity_votes), cabal_signatures:[], created_at: current_time}
+            # Compute: attestation = {session_id: LOAD(session_id), vm_allocated_hash: HASH(LOAD(vm_allocated_msg)), vm_cancelled_hash: HASH(LOAD(vm_cancelled_msg)), connectivity_verified: LOAD(connectivity_verified), actual_duration_seconds: LOAD(actual_duration_seconds), termination_reason: LOAD(termination_reason), cabal_votes: LOAD(connectivity_votes), cabal_signatures:[], created_at: NOW()}
             self.store("attestation", self._compute_attestation())
             # Compute: my_signature = SIGN(LOAD(attestation))
             self.store("my_signature", self._compute_my_signature())
@@ -834,17 +903,6 @@ class Witness(Actor):
 
         return outgoing
 
-    def _build_abort_vote_payload(self) -> Dict[str, Any]:
-        """Build payload for ABORT_VOTE message."""
-        payload = {
-            "session_id": self._serialize_value(self.load("session_id")),
-            "witness": self._serialize_value(self.load("witness")),
-            "reason": self._serialize_value(self.load("reason")),
-            "timestamp": self.current_time,
-        }
-        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
-        return payload
-
     def _build_vm_connectivity_vote_payload(self) -> Dict[str, Any]:
         """Build payload for VM_CONNECTIVITY_VOTE message."""
         payload = {
@@ -852,6 +910,17 @@ class Witness(Actor):
             "witness": self._serialize_value(self.load("witness")),
             "can_reach_vm": self._serialize_value(self.load("can_reach_vm")),
             "can_see_consumer_connected": self._serialize_value(self.load("can_see_consumer_connected")),
+            "timestamp": self.current_time,
+        }
+        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
+        return payload
+
+    def _build_abort_vote_payload(self) -> Dict[str, Any]:
+        """Build payload for ABORT_VOTE message."""
+        payload = {
+            "session_id": self._serialize_value(self.load("session_id")),
+            "witness": self._serialize_value(self.load("witness")),
+            "reason": self._serialize_value(self.load("reason")),
             "timestamp": self.current_time,
         }
         payload["signature"] = sign(self.chain.private_key, hash_data(payload))
@@ -911,13 +980,13 @@ class Witness(Actor):
 
     def _compute_can_reach_vm(self) -> Any:
         """Compute can_reach_vm."""
-        # Schema: check_vm_connectivity()...
-        return self._check_vm_connectivity()
+        # Schema: check_vm_connectivity(vm_allocated_msg.consumer_wireguard_en...
+        return self._check_vm_connectivity(self.load("vm_allocated_msg").get("consumer_wireguard_endpoint"))
 
     def _compute_can_see_consumer_connected(self) -> Any:
         """Compute can_see_consumer_connected."""
-        # Schema: check_consumer_connected()...
-        return self._check_consumer_connected()
+        # Schema: check_consumer_connected(session_id)...
+        return self._check_consumer_connected(self.load("session_id"))
 
     def _compute_vote_data(self) -> Any:
         """Compute vote_data."""
@@ -983,7 +1052,8 @@ class Witness(Actor):
         for i in range(1, len(segment)):
             if segment[i].get("previous_hash") != segment[i-1].get("block_hash"):
                 return False
-            if segment[i].get("sequence") != i:
+            # Verify sequences are consecutive
+            if segment[i].get("sequence") != segment[i-1].get("sequence") + 1:
                 return False
         return True
 
@@ -1090,6 +1160,67 @@ class Witness(Actor):
             selected.extend(rng.sample(remaining, min(needed, len(remaining))))
         
         return selected
+
+    def _verify_witness_selection(
+        self,
+        proposed_witnesses: List[str],
+        chain_state: dict,
+        session_id: Any,
+        provider_nonce: bytes,
+        consumer_nonce: bytes,
+    ) -> bool:
+        """VERIFY_WITNESS_SELECTION: Verify that proposed witnesses were correctly selected."""
+        # Recompute the seed and selection
+        seed = hash_data(self._to_hashable(session_id, provider_nonce, consumer_nonce))
+        expected = self._select_witnesses(seed, chain_state)
+        # Compare - order matters for deterministic selection
+        return set(proposed_witnesses) == set(expected)
+
+    def _validate_lock_result(
+        self,
+        result: dict,
+        expected_session_id: str,
+        expected_amount: float,
+    ) -> bool:
+        """VALIDATE_LOCK_RESULT: Validate a lock result matches expected values and has ACCEPTED status."""
+        if not result:
+            return False
+        # Check session_id matches
+        if result.get("session_id") != expected_session_id:
+            return False
+        # Check amount matches
+        if result.get("amount") != expected_amount:
+            return False
+        # Check status is ACCEPTED (as string from serialization)
+        status = result.get("status")
+        if status not in ("ACCEPTED", LockStatus.ACCEPTED):
+            return False
+        # Check we have witness signatures (at least one)
+        signatures = result.get("witness_signatures", [])
+        if not signatures:
+            return False
+        return True
+
+    def _validate_topup_result(
+        self,
+        result: dict,
+        expected_session_id: str,
+        expected_additional_amount: float,
+    ) -> bool:
+        """VALIDATE_TOPUP_RESULT: Validate a top-up result matches expected values."""
+        if not result:
+            return False
+        # Check session_id matches
+        if result.get("session_id") != expected_session_id:
+            return False
+        # Check additional_amount matches
+        if result.get("additional_amount") != expected_additional_amount:
+            return False
+        # Check we have witness signatures (at least one)
+        signatures = result.get("witness_signatures", [])
+        if not signatures:
+            return False
+        return True
 
     def _seeded_rng(self, seed: bytes) -> Any:
         """SEEDED_RNG: Create a seeded random number generator."""
@@ -1175,41 +1306,43 @@ class Witness(Actor):
         }
 
     def _COMPUTE_CONSENSUS(self, verdicts: List[str], threshold: int) -> str:
-        """"""
+        """Compute COMPUTE_CONSENSUS."""
         # TODO: Implement - accept_count = LENGTH (FILTER (verdicts, v = > v =...
         return None
 
     def _EXTRACT_FIELD(self, records: List[Any], field: str) -> List[Any]:
-        """"""
+        """Compute EXTRACT_FIELD."""
         # TODO: Implement - RETURN MAP (records, r = > r.{field})...
         return None
 
     def _COUNT_MATCHING(self, items: List[Any], predicate: Any) -> int:
-        """"""
+        """Compute COUNT_MATCHING."""
         # TODO: Implement - RETURN LENGTH (FILTER (items, predicate))...
         return None
 
     def _CONTAINS(self, items: List[Any], item: Any) -> bool:
-        """"""
+        """Compute CONTAINS."""
         # TODO: Implement - RETURN LENGTH (FILTER (items, x = > x == item))> 0...
         return None
 
     def _count_positive_votes(self, votes: List[Dict[str, Any]]) -> int:
-        """"""
+        """Compute count_positive_votes."""
         return len([v for v in votes if v.get('can_reach_vm') == True])
 
     def _build_cabal_votes_map(self, votes: List[Dict[str, Any]]) -> Dict[str, bool]:
-        """"""
+        """Compute build_cabal_votes_map."""
         # TODO: Implement - result = {} FOR v IN votes: result [ v.witness ] =...
         return None
 
-    def _check_vm_connectivity(self) -> bool:
-        """"""
-        return True
+    def _check_vm_connectivity(self, vm_endpoint: str) -> bool:
+        """Compute check_vm_connectivity."""
+        # Native function from: omerta.native.vm_connectivity
+        return check_vm_connectivity(vm_endpoint)
 
-    def _check_consumer_connected(self) -> bool:
-        """"""
-        return True
+    def _check_consumer_connected(self, session_id: str) -> bool:
+        """Compute check_consumer_connected."""
+        # Native function from: omerta.native.vm_connectivity
+        return check_consumer_connected(session_id)
 
 # =============================================================================
 # Consumer
@@ -1340,7 +1473,8 @@ class Consumer(Actor):
         for i in range(1, len(segment)):
             if segment[i].get("previous_hash") != segment[i-1].get("block_hash"):
                 return False
-            if segment[i].get("sequence") != i:
+            # Verify sequences are consecutive
+            if segment[i].get("sequence") != segment[i-1].get("sequence") + 1:
                 return False
         return True
 
@@ -1448,6 +1582,67 @@ class Consumer(Actor):
         
         return selected
 
+    def _verify_witness_selection(
+        self,
+        proposed_witnesses: List[str],
+        chain_state: dict,
+        session_id: Any,
+        provider_nonce: bytes,
+        consumer_nonce: bytes,
+    ) -> bool:
+        """VERIFY_WITNESS_SELECTION: Verify that proposed witnesses were correctly selected."""
+        # Recompute the seed and selection
+        seed = hash_data(self._to_hashable(session_id, provider_nonce, consumer_nonce))
+        expected = self._select_witnesses(seed, chain_state)
+        # Compare - order matters for deterministic selection
+        return set(proposed_witnesses) == set(expected)
+
+    def _validate_lock_result(
+        self,
+        result: dict,
+        expected_session_id: str,
+        expected_amount: float,
+    ) -> bool:
+        """VALIDATE_LOCK_RESULT: Validate a lock result matches expected values and has ACCEPTED status."""
+        if not result:
+            return False
+        # Check session_id matches
+        if result.get("session_id") != expected_session_id:
+            return False
+        # Check amount matches
+        if result.get("amount") != expected_amount:
+            return False
+        # Check status is ACCEPTED (as string from serialization)
+        status = result.get("status")
+        if status not in ("ACCEPTED", LockStatus.ACCEPTED):
+            return False
+        # Check we have witness signatures (at least one)
+        signatures = result.get("witness_signatures", [])
+        if not signatures:
+            return False
+        return True
+
+    def _validate_topup_result(
+        self,
+        result: dict,
+        expected_session_id: str,
+        expected_additional_amount: float,
+    ) -> bool:
+        """VALIDATE_TOPUP_RESULT: Validate a top-up result matches expected values."""
+        if not result:
+            return False
+        # Check session_id matches
+        if result.get("session_id") != expected_session_id:
+            return False
+        # Check additional_amount matches
+        if result.get("additional_amount") != expected_additional_amount:
+            return False
+        # Check we have witness signatures (at least one)
+        signatures = result.get("witness_signatures", [])
+        if not signatures:
+            return False
+        return True
+
     def _seeded_rng(self, seed: bytes) -> Any:
         """SEEDED_RNG: Create a seeded random number generator."""
         import random as _random
@@ -1472,38 +1667,40 @@ class Consumer(Actor):
         raise RuntimeError(f"ABORT: {reason}")
 
     def _COMPUTE_CONSENSUS(self, verdicts: List[str], threshold: int) -> str:
-        """"""
+        """Compute COMPUTE_CONSENSUS."""
         # TODO: Implement - accept_count = LENGTH (FILTER (verdicts, v = > v =...
         return None
 
     def _EXTRACT_FIELD(self, records: List[Any], field: str) -> List[Any]:
-        """"""
+        """Compute EXTRACT_FIELD."""
         # TODO: Implement - RETURN MAP (records, r = > r.{field})...
         return None
 
     def _COUNT_MATCHING(self, items: List[Any], predicate: Any) -> int:
-        """"""
+        """Compute COUNT_MATCHING."""
         # TODO: Implement - RETURN LENGTH (FILTER (items, predicate))...
         return None
 
     def _CONTAINS(self, items: List[Any], item: Any) -> bool:
-        """"""
+        """Compute CONTAINS."""
         # TODO: Implement - RETURN LENGTH (FILTER (items, x = > x == item))> 0...
         return None
 
     def _count_positive_votes(self, votes: List[Dict[str, Any]]) -> int:
-        """"""
+        """Compute count_positive_votes."""
         return len([v for v in votes if v.get('can_reach_vm') == True])
 
     def _build_cabal_votes_map(self, votes: List[Dict[str, Any]]) -> Dict[str, bool]:
-        """"""
+        """Compute build_cabal_votes_map."""
         # TODO: Implement - result = {} FOR v IN votes: result [ v.witness ] =...
         return None
 
-    def _check_vm_connectivity(self) -> bool:
-        """"""
-        return True
+    def _check_vm_connectivity(self, vm_endpoint: str) -> bool:
+        """Compute check_vm_connectivity."""
+        # Native function from: omerta.native.vm_connectivity
+        return check_vm_connectivity(vm_endpoint)
 
-    def _check_consumer_connected(self) -> bool:
-        """"""
-        return True
+    def _check_consumer_connected(self, session_id: str) -> bool:
+        """Compute check_consumer_connected."""
+        # Native function from: omerta.native.vm_connectivity
+        return check_consumer_connected(session_id)

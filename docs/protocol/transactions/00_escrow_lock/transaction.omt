@@ -195,7 +195,7 @@ message LOCK_RESULT_FOR_SIGNATURE from Witness to [Consumer] (
 )
 
 # --- Witness -> Network ---
-message BALANCE_UPDATE_BROADCAST from Witness to [Broadcast] (
+message BALANCE_UPDATE_BROADCAST from Witness to [Network] (
     consumer     peer_id
     lock_result  LockResult
     timestamp    timestamp
@@ -340,69 +340,73 @@ actor Consumer "Party paying for service" (
     # Initial lock flow
     IDLE -> SENDING_LOCK_INTENT on initiate_lock when has_provider_checkpoint (
         store provider, amount
-        store consumer = peer_id
-        compute session_id = HASH(peer_id + provider + current_time)
+        STORE(consumer, peer_id)
+        compute session_id = HASH(peer_id + provider + NOW())
         compute consumer_nonce = RANDOM_BYTES(32)
+        lookup provider_chain_checkpoint = chain.get_peer_hash(provider)
     ) else -> FAILED (
         store provider, amount
-        store consumer = peer_id
-        store reject_reason = "no_prior_provider_checkpoint"
+        STORE(consumer, peer_id)
+        STORE(reject_reason, "no_prior_provider_checkpoint")
     )
 
     SENDING_LOCK_INTENT -> WAITING_FOR_WITNESS_COMMITMENT auto (
-        send LOCK_INTENT to provider
-        store intent_sent_at = current_time
+        SEND(provider, LOCK_INTENT)
+        STORE(intent_sent_at, NOW())
     )
 
     WAITING_FOR_WITNESS_COMMITMENT -> VERIFYING_PROVIDER_CHAIN on WITNESS_SELECTION_COMMITMENT (
         store provider_nonce, provider_chain_segment, selection_inputs
-        store proposed_witnesses = message.witnesses
+        STORE(proposed_witnesses, message.witnesses)
+        compute chain_segment_valid_and_contains_checkpoint = VERIFY_CHAIN_SEGMENT(provider_chain_segment) AND CHAIN_CONTAINS_HASH(provider_chain_segment, provider_chain_checkpoint)
     )
 
     WAITING_FOR_WITNESS_COMMITMENT -> FAILED on LOCK_REJECTED (
-        store reject_reason = message.reason
+        STORE(reject_reason, message.reason)
     )
 
     WAITING_FOR_WITNESS_COMMITMENT -> FAILED on timeout(WITNESS_COMMITMENT_TIMEOUT) (
-        store reject_reason = "provider_timeout"
+        STORE(reject_reason, "provider_timeout")
     )
 
     VERIFYING_PROVIDER_CHAIN -> VERIFYING_WITNESSES auto when chain_segment_valid_and_contains_checkpoint (
         compute verified_chain_state = CHAIN_STATE_AT(provider_chain_segment, provider_chain_checkpoint)
+        compute witness_selection_valid = VERIFY_WITNESS_SELECTION(proposed_witnesses, selection_inputs, session_id, provider_nonce, consumer_nonce)
     )
 
     VERIFYING_WITNESSES -> SENDING_REQUESTS auto when witness_selection_valid (
-        store witnesses = proposed_witnesses
+        STORE(witnesses, proposed_witnesses)
     )
 
     SENDING_REQUESTS -> WAITING_FOR_RESULT auto (
-        send WITNESS_REQUEST to each(witnesses)
-        store requests_sent_at = current_time
+        BROADCAST(witnesses, WITNESS_REQUEST)
+        STORE(requests_sent_at, NOW())
     )
 
     WAITING_FOR_RESULT -> REVIEWING_RESULT on LOCK_RESULT_FOR_SIGNATURE (
-        store pending_result = message.result
-        store result_sender = message.sender
+        STORE(pending_result, message.result)
+        STORE(result_sender, message.sender)
+        compute result_valid_and_accepted = VALIDATE_LOCK_RESULT(pending_result, session_id, amount)
     )
 
     WAITING_FOR_RESULT -> FAILED on timeout(RECRUITMENT_TIMEOUT) (
-        store reject_reason = "witness_timeout"
+        STORE(reject_reason, "witness_timeout")
     )
 
     REVIEWING_RESULT -> SIGNING_RESULT auto when result_valid_and_accepted
 
     SIGNING_RESULT -> LOCKED auto (
         compute consumer_signature = SIGN(pending_result)
-        store lock_result = { ...pending_result, consumer_signature }
-        append_block BALANCE_LOCK
-        send CONSUMER_SIGNED_LOCK to each(witnesses)
-        store total_escrowed = amount
+        STORE(lock_result, { ...pending_result, consumer_signature })
+        APPEND(my_chain, BALANCE_LOCK)
+        BROADCAST(witnesses, CONSUMER_SIGNED_LOCK)
+        STORE(total_escrowed, amount)
     )
 
     # Locked state transitions
     LOCKED -> LOCKED on LIVENESS_PING (
-        store from_witness = peer_id
-        send LIVENESS_PONG to message.sender
+        STORE(from_witness, peer_id)
+        SEND(message.sender, LIVENESS_PONG)
     )
 
     LOCKED -> SENDING_TOPUP on initiate_topup (
@@ -412,26 +416,27 @@ actor Consumer "Party paying for service" (
 
     # Top-up flow
     SENDING_TOPUP -> WAITING_FOR_TOPUP_RESULT auto (
-        send TOPUP_INTENT to each(witnesses)
-        store topup_sent_at = current_time
+        BROADCAST(witnesses, TOPUP_INTENT)
+        STORE(topup_sent_at, NOW())
     )
 
     WAITING_FOR_TOPUP_RESULT -> REVIEWING_TOPUP_RESULT on TOPUP_RESULT_FOR_SIGNATURE (
-        store pending_topup_result = message.topup_result
+        STORE(pending_topup_result, message.topup_result)
+        compute topup_result_valid = VALIDATE_TOPUP_RESULT(pending_topup_result, session_id, additional_amount)
     )
 
     WAITING_FOR_TOPUP_RESULT -> LOCKED on timeout(CONSENSUS_TIMEOUT) (
-        store topup_failed_reason = "timeout"
+        STORE(topup_failed_reason, "timeout")
     )
 
     REVIEWING_TOPUP_RESULT -> SIGNING_TOPUP auto when topup_result_valid
 
     SIGNING_TOPUP -> LOCKED auto (
         compute consumer_signature = SIGN(pending_topup_result)
-        store topup_result = { ...pending_topup_result, consumer_signature }
-        append_block BALANCE_TOPUP
-        send CONSUMER_SIGNED_TOPUP to each(witnesses)
-        store total_escrowed = total_escrowed + additional_amount
+        STORE(topup_result, { ...pending_topup_result, consumer_signature })
+        APPEND(my_chain, BALANCE_TOPUP)
+        BROADCAST(witnesses, CONSUMER_SIGNED_TOPUP)
+        STORE(total_escrowed, total_escrowed + additional_amount)
     )
 )
 
@@ -463,7 +468,7 @@ actor Provider "Party providing service, selects witnesses" (
 
     IDLE -> VALIDATING_CHECKPOINT on LOCK_INTENT (
         store consumer, amount, session_id, consumer_nonce
-        store requested_checkpoint = message.provider_chain_checkpoint
+        STORE(requested_checkpoint, message.provider_chain_checkpoint)
         compute provider_nonce = RANDOM_BYTES(32)
     )
 
@@ -471,29 +476,29 @@ actor Provider "Party providing service, selects witnesses" (
         compute chain_state_at_checkpoint = chain.get_state_at(requested_checkpoint)
         compute provider_chain_segment = chain.to_segment(requested_checkpoint)
     ) else -> SENDING_REJECTION (
-        store reason = "unknown_checkpoint"
+        STORE(reason, "unknown_checkpoint")
     )
 
     SENDING_REJECTION -> IDLE auto (
-        send LOCK_REJECTED to consumer
+        SEND(consumer, LOCK_REJECTED)
     )
 
     SELECTING_WITNESSES -> SENDING_COMMITMENT auto (
         compute witnesses = SELECT_WITNESSES(HASH(session_id + provider_nonce + consumer_nonce), chain_state_at_checkpoint)
-        store selection_inputs = { known_peers, trust_scores, interaction_counts }
+        STORE(selection_inputs, chain_state_at_checkpoint)
     )
 
     SENDING_COMMITMENT -> WAITING_FOR_LOCK auto (
-        send WITNESS_SELECTION_COMMITMENT to consumer
-        store commitment_sent_at = current_time
+        SEND(consumer, WITNESS_SELECTION_COMMITMENT)
+        STORE(commitment_sent_at, NOW())
     )
 
     WAITING_FOR_LOCK -> SERVICE_PHASE on BALANCE_UPDATE_BROADCAST when message.lock_result.session_id == session_id and message.lock_result.status == ACCEPTED (
-        store lock_result = message.lock_result
+        STORE(lock_result, message.lock_result)
     )
 
     WAITING_FOR_LOCK -> IDLE on timeout(LOCK_TIMEOUT) (
-        store session_id = null
+        STORE(session_id, null)
     )
 )
 
@@ -563,12 +568,12 @@ actor Witness "Verifies consumer balance, participates in consensus" (
 
     IDLE -> CHECKING_CHAIN_KNOWLEDGE on WITNESS_REQUEST (
         store consumer, provider, amount, session_id, my_chain_head, witnesses
-        store consumer = message.sender
+        STORE(consumer, message.sender)
         compute other_witnesses = REMOVE(witnesses, peer_id)
-        store preliminaries = []
-        store votes = []
-        store signatures = []
-        store recruitment_round = 0
+        STORE(preliminaries, [])
+        STORE(votes, [])
+        STORE(signatures, [])
+        STORE(recruitment_round, 0)
     )
 
     CHECKING_CHAIN_KNOWLEDGE -> CHECKING_BALANCE auto (
@@ -578,21 +583,21 @@ actor Witness "Verifies consumer balance, participates in consensus" (
     CHECKING_BALANCE -> CHECKING_EXISTING_LOCKS auto when observed_balance >= amount
 
     CHECKING_BALANCE -> SHARING_PRELIMINARY auto when observed_balance < amount (
-        store verdict = REJECT
-        store reject_reason = "insufficient_balance"
+        STORE(verdict, REJECT)
+        STORE(reject_reason, "insufficient_balance")
     )
 
     CHECKING_EXISTING_LOCKS -> SHARING_PRELIMINARY auto (
-        store verdict = ACCEPT
+        STORE(verdict, ACCEPT)
     )
 
     SHARING_PRELIMINARY -> COLLECTING_PRELIMINARIES auto (
-        send WITNESS_PRELIMINARY to each(other_witnesses)
-        store preliminary_sent_at = current_time
+        BROADCAST(other_witnesses, WITNESS_PRELIMINARY)
+        STORE(preliminary_sent_at, NOW())
     )
 
     COLLECTING_PRELIMINARIES -> COLLECTING_PRELIMINARIES on WITNESS_PRELIMINARY (
-        append preliminaries <- message.payload
+        APPEND(preliminaries, message.payload)
     )
 
     # Fast path: advance when enough preliminaries collected
@@ -606,11 +611,11 @@ actor Witness "Verifies consumer balance, participates in consensus" (
     )
 
     VOTING -> COLLECTING_VOTES auto (
-        send WITNESS_FINAL_VOTE to each(other_witnesses)
+        BROADCAST(other_witnesses, WITNESS_FINAL_VOTE)
     )
 
     COLLECTING_VOTES -> COLLECTING_VOTES on WITNESS_FINAL_VOTE (
-        append votes <- message.payload
+        APPEND(votes, message.payload)
     )
 
     # Fast path: advance when enough votes collected
@@ -624,44 +629,44 @@ actor Witness "Verifies consumer balance, participates in consensus" (
     )
 
     SIGNING_RESULT -> PROPAGATING_RESULT auto (
-        send LOCK_RESULT_FOR_SIGNATURE to consumer
-        store propagated_at = current_time
+        SEND(consumer, LOCK_RESULT_FOR_SIGNATURE)
+        STORE(propagated_at, NOW())
     )
 
     PROPAGATING_RESULT -> ESCROW_ACTIVE on CONSUMER_SIGNED_LOCK (
-        store consumer_signature = message.signature
-        store total_escrowed = amount
-        append_block WITNESS_COMMITMENT
-        send BALANCE_UPDATE_BROADCAST to provider
+        STORE(consumer_signature, message.signature)
+        STORE(total_escrowed, amount)
+        APPEND(my_chain, WITNESS_COMMITMENT)
+        SEND(provider, BALANCE_UPDATE_BROADCAST)
     )
 
     PROPAGATING_RESULT -> DONE on timeout(CONSENSUS_TIMEOUT) (
-        store reject_reason = "consumer_signature_timeout"
+        STORE(reject_reason, "consumer_signature_timeout")
     )
 
     ESCROW_ACTIVE -> CHECKING_TOPUP_BALANCE on TOPUP_INTENT (
-        store topup_intent = message
+        STORE(topup_intent, message)
         compute topup_observed_balance = peer_balances[consumer]
     )
 
     # Top-up balance check - accept if sufficient free balance
     CHECKING_TOPUP_BALANCE -> VOTING_TOPUP auto when topup_observed_balance - total_escrowed >= topup_intent.additional_amount (
-        store topup_verdict = accept
+        STORE(topup_verdict, accept)
     )
 
     # Top-up balance check - reject if insufficient
     CHECKING_TOPUP_BALANCE -> ESCROW_ACTIVE auto when topup_observed_balance - total_escrowed < topup_intent.additional_amount (
-        store topup_verdict = reject
-        store topup_reject_reason = "insufficient_free_balance"
+        STORE(topup_verdict, reject)
+        STORE(topup_reject_reason, "insufficient_free_balance")
     )
 
     VOTING_TOPUP -> COLLECTING_TOPUP_VOTES auto (
-        store topup_votes = []
-        send TOPUP_VOTE to each(other_witnesses)
+        STORE(topup_votes, [])
+        BROADCAST(other_witnesses, TOPUP_VOTE)
     )
 
     COLLECTING_TOPUP_VOTES -> COLLECTING_TOPUP_VOTES on TOPUP_VOTE (
-        append topup_votes <- message.payload
+        APPEND(topup_votes, message.payload)
     )
 
     # Fast path
@@ -671,24 +676,24 @@ actor Witness "Verifies consumer balance, participates in consensus" (
     COLLECTING_TOPUP_VOTES -> BUILDING_TOPUP_RESULT on timeout(PRELIMINARY_TIMEOUT) when LENGTH(topup_votes) >= WITNESS_THRESHOLD - 1
 
     COLLECTING_TOPUP_VOTES -> ESCROW_ACTIVE on timeout(CONSENSUS_TIMEOUT) (
-        store topup_failed_reason = "vote_timeout"
+        STORE(topup_failed_reason, "vote_timeout")
     )
 
     BUILDING_TOPUP_RESULT -> PROPAGATING_TOPUP auto (
         compute topup_result = build_topup_result()
-        send TOPUP_RESULT_FOR_SIGNATURE to consumer
+        SEND(consumer, TOPUP_RESULT_FOR_SIGNATURE)
     )
 
     PROPAGATING_TOPUP -> ESCROW_ACTIVE on CONSUMER_SIGNED_TOPUP (
-        store total_escrowed = total_escrowed + topup_intent.additional_amount
+        STORE(total_escrowed, total_escrowed + topup_intent.additional_amount)
     )
 
     PROPAGATING_TOPUP -> ESCROW_ACTIVE on timeout(CONSENSUS_TIMEOUT) (
-        store topup_failed_reason = "consumer_signature_timeout"
+        STORE(topup_failed_reason, "consumer_signature_timeout")
     )
 
     ESCROW_ACTIVE -> ESCROW_ACTIVE on LIVENESS_PING (
-        store from_witness = peer_id
-        send LIVENESS_PONG to message.sender
+        STORE(from_witness, peer_id)
+        SEND(message.sender, LIVENESS_PONG)
     )
 )

@@ -13,7 +13,7 @@ from dsl_lexer import Lexer, Token, TokenType, tokenize, LexerError
 from dsl_ast import (
     Schema, Transaction, Parameter, EnumDecl, MessageDecl, BlockDecl,
     ActorDecl, StateDecl, Transition, StoreAction, ComputeAction,
-    SendAction, AppendAction, FunctionDecl
+    SendAction, BroadcastAction, AppendAction, FunctionDecl
 )
 from dsl_parser import Parser, parse, ParseError
 from dsl_converter import ast_to_dict, convert_dsl_source
@@ -402,13 +402,13 @@ class TestTransitions:
             state S1 initial
             state S2
             S1 -> S2 on evt (
-                store x = current_time
+                STORE(x, NOW())
             )
         )
         """)
         action = schema.actors[0].transitions[0].actions[0]
         assert isinstance(action, StoreAction)
-        assert action.assignments == {"x": "current_time"}
+        assert action.assignments == {"x": "NOW()"}
 
     def test_transition_with_compute(self):
         schema = parse("""
@@ -431,8 +431,8 @@ class TestTransitions:
             state S1 initial
             state S2
             S1 -> S2 auto (
-                send MSG_TYPE to consumer
-                send BROADCAST to each(witnesses)
+                SEND(consumer, MSG_TYPE)
+                BROADCAST(witnesses, MSG_BROADCAST)
             )
         )
         """)
@@ -441,7 +441,9 @@ class TestTransitions:
         assert isinstance(actions[0], SendAction)
         assert actions[0].message == "MSG_TYPE"
         assert actions[0].target == "consumer"
-        assert actions[1].target == "each(witnesses)"
+        assert isinstance(actions[1], BroadcastAction)
+        assert actions[1].message == "MSG_BROADCAST"
+        assert actions[1].target_list == "witnesses"
 
     def test_transition_with_append(self):
         schema = parse("""
@@ -449,7 +451,7 @@ class TestTransitions:
             state S1 initial
             state S2
             S1 -> S2 on MSG (
-                append votes <- message.payload
+                APPEND(votes, message.payload)
             )
         )
         """)
@@ -636,11 +638,11 @@ class TestIntegration:
 
             IDLE -> WAITING on start_session (
                 store session_id
-                send REQUEST to provider
+                SEND(provider, REQUEST)
             )
 
             WAITING -> DONE on RESPONSE (
-                store result = message.payload.result
+                STORE(result, message.payload.result)
             )
         )
 
@@ -652,8 +654,8 @@ class TestIntegration:
             state IDLE initial
 
             IDLE -> IDLE on REQUEST (
-                store session_id = message.payload.session_id
-                send RESPONSE to consumer
+                STORE(session_id, message.payload.session_id)
+                SEND(consumer, RESPONSE)
             )
         )
 

@@ -147,9 +147,18 @@ class LookupAction:
 
 @dataclass
 class SendAction:
-    """send MESSAGE to target"""
+    """SEND(target, MESSAGE)"""
     message: str
-    target: str  # e.g., "consumer", "each(witnesses)", "provider"
+    target: str  # e.g., "consumer", "provider", "message.sender"
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class BroadcastAction:
+    """BROADCAST(list, MESSAGE)"""
+    message: str
+    target_list: str  # e.g., "witnesses", "other_witnesses"
     line: int = 0
     column: int = 0
 
@@ -171,7 +180,7 @@ class AppendBlockAction:
     column: int = 0
 
 
-Action = Union[StoreAction, ComputeAction, LookupAction, SendAction, AppendAction, AppendBlockAction]
+Action = Union[StoreAction, ComputeAction, LookupAction, SendAction, BroadcastAction, AppendAction, AppendBlockAction]
 
 
 # =============================================================================
@@ -234,6 +243,8 @@ class FunctionDecl:
     params: List[FunctionParam] = field(default_factory=list)
     return_type: str = "void"
     body: str = ""  # Raw body text for now
+    is_native: bool = False  # Whether this is a native function
+    library_path: str = ""  # Library path for native functions
     line: int = 0
     column: int = 0
 

@@ -20,12 +20,14 @@ class TokenType(Enum):
     BLOCK = auto()
     ACTOR = auto()
     FUNCTION = auto()
+    NATIVE = auto()
     STORE = auto()
     TRIGGER = auto()
     STATE = auto()
     COMPUTE = auto()
     LOOKUP = auto()
     SEND = auto()
+    BROADCAST = auto()
     APPEND = auto()
     APPEND_BLOCK = auto()
     ELSE = auto()
@@ -109,12 +111,14 @@ KEYWORDS = {
     'block': TokenType.BLOCK,
     'actor': TokenType.ACTOR,
     'function': TokenType.FUNCTION,
+    'native': TokenType.NATIVE,
     'store': TokenType.STORE,
     'trigger': TokenType.TRIGGER,
     'state': TokenType.STATE,
     'compute': TokenType.COMPUTE,
     'lookup': TokenType.LOOKUP,
     'send': TokenType.SEND,
+    'broadcast': TokenType.BROADCAST,
     'append': TokenType.APPEND,
     'append_block': TokenType.APPEND_BLOCK,
     'else': TokenType.ELSE,

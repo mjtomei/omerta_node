@@ -12,7 +12,7 @@ try:
         Schema, Transaction, Import, Parameter, EnumDecl, EnumValue,
         Field, MessageDecl, BlockDecl, ActorDecl, TriggerDecl, TriggerParam, StateDecl,
         Transition, OnGuardFail, StoreAction, ComputeAction, LookupAction, SendAction,
-        AppendAction, AppendBlockAction, FunctionDecl, FunctionParam, Action
+        BroadcastAction, AppendAction, AppendBlockAction, FunctionDecl, FunctionParam, Action
     )
 except ImportError:
     from dsl_lexer import Token, TokenType, tokenize, LexerError
@@ -20,7 +20,7 @@ except ImportError:
         Schema, Transaction, Import, Parameter, EnumDecl, EnumValue,
         Field, MessageDecl, BlockDecl, ActorDecl, TriggerDecl, TriggerParam, StateDecl,
         Transition, OnGuardFail, StoreAction, ComputeAction, LookupAction, SendAction,
-        AppendAction, AppendBlockAction, FunctionDecl, FunctionParam, Action
+        BroadcastAction, AppendAction, AppendBlockAction, FunctionDecl, FunctionParam, Action
     )
 
 
@@ -63,6 +63,8 @@ class Parser:
                 schema.actors.append(self._parse_actor())
             elif self._check(TokenType.FUNCTION):
                 schema.functions.append(self._parse_function())
+            elif self._check(TokenType.NATIVE):
+                schema.functions.append(self._parse_native_function())
             elif self._check(TokenType.COMMENT):
                 self._advance()  # Skip comments
             elif self._check(TokenType.NEWLINE):
@@ -478,6 +480,8 @@ class Parser:
                 actions.append(self._parse_lookup_action())
             elif self._check(TokenType.SEND):
                 actions.append(self._parse_send_action())
+            elif self._check(TokenType.BROADCAST):
+                actions.append(self._parse_broadcast_action())
             elif self._check(TokenType.APPEND_BLOCK):
                 actions.append(self._parse_append_block_action())
             elif self._check(TokenType.APPEND):
@@ -491,17 +495,24 @@ class Parser:
         return actions
 
     def _parse_store_action(self) -> StoreAction:
-        """Parse: store x, y, z  OR  store x = expr"""
+        """Parse: store x, y, z  OR  STORE(key, value)"""
         token = self._expect(TokenType.STORE)
         action = StoreAction(line=token.line, column=token.column)
 
+        # Check for function-call style: STORE(key, value)
+        if self._check(TokenType.LPAREN):
+            self._advance()  # consume (
+            key = self._expect(TokenType.IDENTIFIER, "Expected key name").value
+            self._expect(TokenType.COMMA, "Expected ',' after key")
+            value = self._parse_expression()
+            self._expect(TokenType.RPAREN, "Expected ')' to close STORE")
+            action.assignments[key] = value
+            return action
+
+        # Legacy style: store x, y, z (field extraction from message/trigger)
         first_id = self._expect(TokenType.IDENTIFIER, "Expected field name").value
 
-        if self._match(TokenType.EQUALS):
-            # store x = expr
-            expr = self._parse_expression()
-            action.assignments[first_id] = expr
-        elif self._match(TokenType.COMMA):
+        if self._match(TokenType.COMMA):
             # store x, y, z
             action.fields = [first_id]
             action.fields.extend(self._parse_identifier_list())
@@ -532,17 +543,31 @@ class Parser:
                            line=token.line, column=token.column)
 
     def _parse_send_action(self) -> SendAction:
-        """Parse: send MESSAGE to TARGET"""
+        """Parse: SEND(target, MESSAGE)"""
         token = self._expect(TokenType.SEND)
-        message = self._expect(TokenType.IDENTIFIER, "Expected message name").value
-        self._expect(TokenType.TO, "Expected 'to'")
+        self._expect(TokenType.LPAREN, "Expected '(' after SEND")
         target = self._parse_send_target()
+        self._expect(TokenType.COMMA, "Expected ',' after target")
+        message = self._expect(TokenType.IDENTIFIER, "Expected message name").value
+        self._expect(TokenType.RPAREN, "Expected ')' to close SEND")
 
         return SendAction(message=message, target=target,
                          line=token.line, column=token.column)
 
+    def _parse_broadcast_action(self) -> BroadcastAction:
+        """Parse: BROADCAST(list, MESSAGE)"""
+        token = self._expect(TokenType.BROADCAST)
+        self._expect(TokenType.LPAREN, "Expected '(' after BROADCAST")
+        target_list = self._expect(TokenType.IDENTIFIER, "Expected target list").value
+        self._expect(TokenType.COMMA, "Expected ',' after target list")
+        message = self._expect(TokenType.IDENTIFIER, "Expected message name").value
+        self._expect(TokenType.RPAREN, "Expected ')' to close BROADCAST")
+
+        return BroadcastAction(message=message, target_list=target_list,
+                              line=token.line, column=token.column)
+
     def _parse_send_target(self) -> str:
-        """Parse send target: identifier, each(list), or dotted expression like message.sender"""
+        """Parse send target: identifier or dotted expression like message.sender"""
         # Allow MESSAGE token since "message.sender" is a common target
         if self._check(TokenType.MESSAGE):
             name = self._advance().value
@@ -557,27 +582,22 @@ class Parser:
             next_part = self._expect(TokenType.IDENTIFIER, "Expected identifier after dot").value
             name = f"{name}.{next_part}"
 
-        if self._check(TokenType.LPAREN):
-            # each(list) or similar
-            self._advance()
-            inner = self._expect(TokenType.IDENTIFIER, "Expected list name").value
-            self._expect(TokenType.RPAREN, "Expected ')'")
-            return f"{name}({inner})"
-
         return name
 
     def _parse_append_action(self) -> AppendAction:
-        """Parse: append LIST <- VALUE"""
+        """Parse: APPEND(list, value) - for both list appends and chain appends (my_chain)"""
         token = self._expect(TokenType.APPEND)
+        self._expect(TokenType.LPAREN, "Expected '(' after APPEND")
         list_name = self._expect(TokenType.IDENTIFIER, "Expected list name").value
-        self._expect(TokenType.LARROW, "Expected '<-'")
+        self._expect(TokenType.COMMA, "Expected ',' after list name")
         value = self._parse_expression()
+        self._expect(TokenType.RPAREN, "Expected ')' to close APPEND")
 
         return AppendAction(list_name=list_name, value=value,
                            line=token.line, column=token.column)
 
     def _parse_append_block_action(self) -> AppendBlockAction:
-        """Parse: append_block BLOCK_TYPE"""
+        """Parse: append_block BLOCK_TYPE (legacy - kept for backwards compatibility)"""
         token = self._expect(TokenType.APPEND_BLOCK)
         block_type = self._expect(TokenType.IDENTIFIER, "Expected block type").value
 
@@ -612,6 +632,33 @@ class Parser:
 
         return FunctionDecl(
             name=name, params=params, return_type=return_type, body=body,
+            line=token.line, column=token.column
+        )
+
+    def _parse_native_function(self) -> FunctionDecl:
+        """Parse: native function NAME(params) -> TYPE "library.path" """
+        token = self._expect(TokenType.NATIVE)
+        self._expect(TokenType.FUNCTION, "Expected 'function' after 'native'")
+        name = self._expect(TokenType.IDENTIFIER, "Expected function name").value
+
+        # Parameters
+        self._expect(TokenType.LPAREN, "Expected '(' for function params")
+        params = []
+        if not self._check(TokenType.RPAREN):
+            params = self._parse_function_params()
+        self._expect(TokenType.RPAREN, "Expected ')' after function params")
+
+        # Return type
+        self._expect(TokenType.ARROW, "Expected '->' for return type")
+        return_type = self._parse_type()
+
+        # Library path (string)
+        self._skip_whitespace()
+        library_path = self._expect(TokenType.STRING, "Expected library path string").value
+
+        return FunctionDecl(
+            name=name, params=params, return_type=return_type, body="",
+            is_native=True, library_path=library_path,
             line=token.line, column=token.column
         )
 
@@ -682,23 +729,20 @@ class Parser:
     def _parse_guard_expression(self) -> str:
         """Parse a guard expression - stops at LPAREN that starts actions block.
 
-        The heuristic for detecting the actions block LPAREN:
-        - If LPAREN immediately follows an identifier (no space), it's a function call
-        - If LPAREN follows an operator or has a space before it, and we're at depth 0,
-          and there was already some non-trivial expression, it might be the actions block
-        - Actually, the key insight is: the actions block ( always comes after a complete
-          expression that doesn't expect more arguments. If we see LPAREN after:
-          - a close paren )
-          - an identifier that's not a function name (has space before LPAREN)
-          - a number
-          Then it's likely the actions block.
+        Disambiguation between function calls and actions blocks:
+        - Look at the first token inside the parentheses
+        - If it's an action keyword (store, compute, lookup, send, append, append_block),
+          then the LPAREN starts the actions block
+        - Otherwise, it's a function call or grouping expression
         """
-        # Delimiters that end a guard expression
-        delimiters = {
-            TokenType.NEWLINE, TokenType.COMMENT,
-            TokenType.STORE, TokenType.COMPUTE, TokenType.SEND,
-            TokenType.APPEND, TokenType.APPEND_BLOCK
+        # Action keywords that indicate start of actions block
+        action_keywords = {
+            TokenType.STORE, TokenType.COMPUTE, TokenType.LOOKUP,
+            TokenType.SEND, TokenType.BROADCAST, TokenType.APPEND, TokenType.APPEND_BLOCK
         }
+
+        # Delimiters that end a guard expression
+        delimiters = {TokenType.NEWLINE, TokenType.COMMENT} | action_keywords
 
         parts = []
         paren_depth = 0
@@ -712,29 +756,32 @@ class Parser:
                 is_part_of_expression = False
 
                 # LPAREN is part of expression if:
-                # 1. It immediately follows an identifier (function call like LENGTH(...))
-                # 2. It follows an operator (grouping like / (...) )
-                # 3. We're already inside parentheses (nested grouping)
+                # 1. We're already inside parentheses (nested)
+                # 2. The first token inside is NOT an action keyword (function call or grouping)
 
                 if paren_depth > 0:
-                    # Already inside parens, this is grouping
+                    # Already inside parens, this is nested grouping
                     is_part_of_expression = True
-                elif last_token:
-                    if last_token.type == TokenType.IDENTIFIER:
-                        # Check if immediately follows (function call)
-                        expected_col = last_token.column + len(last_token.value)
-                        if token.column == expected_col and token.line == last_token.line:
-                            is_part_of_expression = True
-                    elif last_token.type in (TokenType.PLUS, TokenType.MINUS, TokenType.STAR,
-                                             TokenType.SLASH, TokenType.EQ, TokenType.NEQ,
-                                             TokenType.LTE, TokenType.GTE, TokenType.LANGLE,
-                                             TokenType.RANGLE, TokenType.COMMA, TokenType.AND,
-                                             TokenType.OR, TokenType.NOT, TokenType.EQUALS):
-                        # After an operator, LPAREN is for grouping
-                        is_part_of_expression = True
                 else:
-                    # First token is LPAREN - it's the actions block
-                    is_part_of_expression = False
+                    # Check what's inside the parens (skip whitespace/newlines)
+                    offset = 1
+                    while self._peek(offset).type in (TokenType.NEWLINE, TokenType.COMMENT):
+                        offset += 1
+                    token_after_lparen = self._peek(offset)
+
+                    if token_after_lparen.type in action_keywords:
+                        # First token inside is an action keyword - this is the actions block
+                        is_part_of_expression = False
+                    elif token_after_lparen.type == TokenType.RPAREN:
+                        # Empty parens () - could be zero-arg function call or empty actions
+                        # Treat as function call if preceded by identifier, else actions block
+                        is_part_of_expression = (last_token and last_token.type == TokenType.IDENTIFIER)
+                    elif last_token is None:
+                        # LPAREN is first token - it's the actions block
+                        is_part_of_expression = False
+                    else:
+                        # Content inside is an expression - this is a function call or grouping
+                        is_part_of_expression = True
 
                 if is_part_of_expression:
                     paren_depth += 1
