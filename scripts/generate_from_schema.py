@@ -98,9 +98,21 @@ class ExpressionTranslator:
                 self.value_to_enum[val] = enum_name
 
     def get_enum_reference(self, value: str) -> Optional[str]:
-        """Get enum reference for a value, e.g., 'ACCEPT' -> 'WitnessVerdict.ACCEPT'."""
+        """Get enum reference for a value, e.g., 'ACCEPT' -> 'WitnessVerdict.ACCEPT'.
+
+        Also handles fully-qualified references like 'TerminationReason.CONSUMER_REQUEST'.
+        """
+        # Check for bare enum value
         if value in self.value_to_enum:
             return f"{self.value_to_enum[value]}.{value}"
+        # Check for fully-qualified enum reference (EnumName.VALUE)
+        if '.' in value:
+            parts = value.split('.', 1)
+            if len(parts) == 2:
+                enum_name, enum_value = parts
+                # Verify the enum and value exist
+                if enum_value in self.value_to_enum and self.value_to_enum[enum_value] == enum_name:
+                    return value  # Already fully-qualified
         return None
 
     def translate(self, expr: str) -> str:
@@ -1306,7 +1318,12 @@ class PythonActorGenerator:
                             # Expression referencing message - translate to msg
                             msg_attr = val[8:]  # Remove "message." prefix
                             msg = msg_var or "msg"
-                            lines.append(f'{ind}self.store("{key}", {msg}.{msg_attr})')
+                            # Handle payload field access: message.payload.X -> msg.payload.get("X")
+                            if msg_attr.startswith("payload."):
+                                payload_field = msg_attr[8:]  # Remove "payload." prefix
+                                lines.append(f'{ind}self.store("{key}", {msg}.payload.get("{payload_field}"))')
+                            else:
+                                lines.append(f'{ind}self.store("{key}", {msg}.{msg_attr})')
                         elif val in ExpressionTranslator.ACTOR_PROPS:
                             # It's an actor property (current_time, peer_id, etc.)
                             lines.append(f'{ind}self.store("{key}", self.{val})')
@@ -1325,6 +1342,15 @@ class PythonActorGenerator:
                             else:
                                 # It's a string literal
                                 lines.append(f'{ind}self.store("{key}", {repr(val)})')
+                    elif isinstance(val, list):
+                        # Handle list values - translate any expressions inside
+                        translated_items = []
+                        for item in val:
+                            if isinstance(item, str) and self._is_expression(item):
+                                translated_items.append(self.expr_translator.translate(item))
+                            else:
+                                translated_items.append(repr(item))
+                        lines.append(f'{ind}self.store("{key}", [{", ".join(translated_items)}])')
                     else:
                         lines.append(f'{ind}self.store("{key}", {repr(val)})')
 
@@ -1335,9 +1361,13 @@ class PythonActorGenerator:
                     lines.append(f'{ind}self.store("{field}", {msg_var or "msg"}.payload.get("{field}"))')
             elif isinstance(fields, dict):
                 for local_key, msg_key in fields.items():
-                    if msg_key == "message":
+                    if msg_key == "message" or msg_key == "message.payload":
                         # Store the whole message payload
                         lines.append(f'{ind}self.store("{local_key}", {msg_var or "msg"}.payload)')
+                    elif msg_key.startswith("message.payload."):
+                        # Access nested payload field: message.payload.X -> msg.payload.get("X")
+                        payload_field = msg_key[16:]  # Remove "message.payload." prefix
+                        lines.append(f'{ind}self.store("{local_key}", {msg_var or "msg"}.payload.get("{payload_field}"))')
                     else:
                         lines.append(f'{ind}self.store("{local_key}", {msg_var or "msg"}.payload.get("{msg_key}"))')
 
@@ -1453,7 +1483,14 @@ class PythonActorGenerator:
                         msg_attr = value[8:]
                         msg = msg_var or "msg"
                         lines.append(f'{ind}_list = self.load("{list_name}") or []')
-                        lines.append(f'{ind}_list.append({msg}.{msg_attr})')
+                        # Handle payload field access: message.payload.X -> msg.payload.get("X")
+                        if msg_attr.startswith("payload."):
+                            payload_field = msg_attr[8:]  # Remove "payload." prefix
+                            lines.append(f'{ind}_list.append({msg}.payload.get("{payload_field}"))')
+                        elif msg_attr == "payload":
+                            lines.append(f'{ind}_list.append({msg}.payload)')
+                        else:
+                            lines.append(f'{ind}_list.append({msg}.{msg_attr})')
                         lines.append(f'{ind}self.store("{list_name}", _list)')
                     elif value in self.store_vars:
                         lines.append(f'{ind}_list = self.load("{list_name}") or []')
@@ -1896,6 +1933,61 @@ def generate_actor_helpers(actor_name: str, actor_info: dict, schema: dict) -> s
         lines.append('            "witness_signatures": signatures,')
         lines.append('            "timestamp": self.current_time,')
         lines.append("        }")
+        lines.append("")
+
+    # Generate methods from schema functions section
+    functions = schema.get("functions", {})
+    for func_name, func_info in functions.items():
+        if not isinstance(func_info, dict):
+            continue
+
+        desc = func_info.get("description", "")
+        params = func_info.get("params", [])
+        returns = func_info.get("returns", "Any")
+        body = func_info.get("body", "")
+
+        # Build parameter list
+        param_strs = ["self"]
+        for param in params:
+            if isinstance(param, dict):
+                for pname, ptype in param.items():
+                    py_type = "list" if "list" in str(ptype) else str(ptype)
+                    param_strs.append(f"{pname}: {py_type}")
+            elif isinstance(param, str):
+                param_strs.append(param)
+
+        # Map return type
+        py_returns = "int" if returns == "uint" else returns
+        if "list" in str(py_returns):
+            py_returns = "list"
+        if "map" in str(py_returns):
+            py_returns = "dict"
+
+        lines.append(f"    def _{func_name}({', '.join(param_strs)}) -> {py_returns}:")
+        lines.append(f'        """{desc}"""')
+
+        # Generate body based on common patterns
+        body_stripped = body.strip() if body else ""
+
+        # Handle common patterns
+        if "RETURN LENGTH(FILTER(" in body_stripped and "can_reach_vm" in body_stripped:
+            # count_positive_votes pattern
+            lines.append("        return len([v for v in votes if v.get('can_reach_vm') == True])")
+        elif "RETURN true" in body_stripped.lower() or body_stripped.lower() == "return true":
+            lines.append("        return True")
+        elif "RETURN false" in body_stripped.lower() or body_stripped.lower() == "return false":
+            lines.append("        return False")
+        elif "# In simulation" in body_stripped:
+            # Simulation hook - return default value
+            if returns == "bool":
+                lines.append("        return True")
+            else:
+                lines.append("        return None")
+        else:
+            # Default: return None with a TODO (sanitize body for comment)
+            body_oneline = " ".join(body_stripped.split())[:50]
+            lines.append(f"        # TODO: Implement - {body_oneline}...")
+            lines.append("        return None")
         lines.append("")
 
     return "\n".join(lines)
