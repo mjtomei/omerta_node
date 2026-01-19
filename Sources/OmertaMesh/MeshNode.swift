@@ -153,8 +153,9 @@ public actor MeshNode {
 
     /// Gossip propagation queue - peer info to forward to other peers
     /// Each item has a count that decrements on each forward, removed when exhausted
-    private var peerPropagationQueue: [PeerId: (info: PeerEndpointInfo, count: Int)] = [:]
-    private let gossipFanout = 5  // Number of peers to forward each new peer info to
+    /// Internal for testing
+    var peerPropagationQueue: [PeerId: (info: PeerEndpointInfo, count: Int)] = [:]
+    let gossipFanout = 5  // Number of peers to forward each new peer info to
 
     /// Handler for incoming messages
     private var messageHandler: ((MeshMessage, PeerId) async -> MeshMessage?)?
@@ -1080,7 +1081,7 @@ public actor MeshNode {
     // MARK: - Helpers
 
     /// Build a list of peer endpoint info for gossip (includes machineId)
-    private func buildPeerEndpointInfoList() async -> [PeerEndpointInfo] {
+    func buildPeerEndpointInfoList() async -> [PeerEndpointInfo] {
         var result: [PeerEndpointInfo] = []
         for peerId in await endpointManager.allPeerIds {
             guard peerId != self.peerId else { continue }
@@ -1100,7 +1101,7 @@ public actor MeshNode {
 
     /// Build peer list including propagation queue items, decrementing their counts
     /// Used for regular keepalive responses to existing peers
-    private func buildPeerEndpointInfoListWithPropagation(excluding excludePeerId: PeerId) async -> [PeerEndpointInfo] {
+    func buildPeerEndpointInfoListWithPropagation(excluding excludePeerId: PeerId) async -> [PeerEndpointInfo] {
         var result: [PeerEndpointInfo] = []
 
         // Add known peers (up to 5)
@@ -1147,7 +1148,7 @@ public actor MeshNode {
     }
 
     /// Add peer info to the gossip propagation queue
-    private func addToPropagationQueue(_ peerInfo: PeerEndpointInfo) {
+    func addToPropagationQueue(_ peerInfo: PeerEndpointInfo) {
         // Don't add ourselves
         guard peerInfo.peerId != self.peerId else { return }
 
@@ -1161,6 +1162,28 @@ public actor MeshNode {
 
         peerPropagationQueue[peerInfo.peerId] = (info: peerInfo, count: gossipFanout)
         logger.info("Added peer \(peerInfo.peerId.prefix(8))... to gossip queue (fanout: \(gossipFanout))")
+    }
+
+    /// Set propagation count for a peer (internal for testing)
+    func setPropagationCount(for peerId: PeerId, count: Int) {
+        guard var item = peerPropagationQueue[peerId] else { return }
+        item.count = count
+        peerPropagationQueue[peerId] = item
+    }
+
+    /// Get propagation count for a peer (internal for testing)
+    func getPropagationCount(for peerId: PeerId) -> Int? {
+        peerPropagationQueue[peerId]?.count
+    }
+
+    /// Get propagation info for a peer (internal for testing)
+    func getPropagationInfo(for peerId: PeerId) -> PeerEndpointInfo? {
+        peerPropagationQueue[peerId]?.info
+    }
+
+    /// Get propagation queue size (internal for testing)
+    var propagationQueueCount: Int {
+        peerPropagationQueue.count
     }
 
     // MARK: - Message Deduplication
