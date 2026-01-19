@@ -21,6 +21,43 @@ private func expandTilde(_ path: String) -> String {
     return OmertaConfig.getRealUserHome() + String(path.dropFirst(1))
 }
 
+/// Resolve a network ID or prefix to a full network
+/// Returns: (network, nil) on match, (nil, error message) on no match or ambiguous
+private func resolveNetwork(_ idOrPrefix: String, store: NetworkStore) async -> (OmertaMesh.Network?, String?) {
+    // First try exact match
+    if let network = await store.network(id: idOrPrefix) {
+        return (network, nil)
+    }
+
+    // Try prefix match
+    let allNetworks = await store.allNetworks()
+    let matches = allNetworks.filter { $0.id.hasPrefix(idOrPrefix) }
+
+    switch matches.count {
+    case 0:
+        // Also try matching by name prefix (case-insensitive)
+        let nameMatches = allNetworks.filter { $0.name.lowercased().hasPrefix(idOrPrefix.lowercased()) }
+        if nameMatches.count == 1 {
+            return (nameMatches[0], nil)
+        } else if nameMatches.count > 1 {
+            var msg = "Ambiguous network name prefix '\(idOrPrefix)'. Did you mean:\n"
+            for net in nameMatches.prefix(5) {
+                msg += "  \(net.id.prefix(8))... (\(net.name))\n"
+            }
+            return (nil, msg)
+        }
+        return (nil, nil) // Not found, let caller handle
+    case 1:
+        return (matches[0], nil)
+    default:
+        var msg = "Ambiguous network ID prefix '\(idOrPrefix)'. Did you mean:\n"
+        for net in matches.prefix(5) {
+            msg += "  \(net.id.prefix(8))... (\(net.name))\n"
+        }
+        return (nil, msg)
+    }
+}
+
 // MARK: - Daemon Configuration
 
 /// Configuration for the omertad daemon
@@ -217,7 +254,10 @@ struct Start: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "Path to config file (default: ~/.omerta/omertad.conf)")
     var config: String?
 
-    @Option(name: .long, help: "Network ID (from 'omerta network create' or 'omerta network list')")
+    @Argument(help: "Network ID or prefix (from 'omerta network list')")
+    var networkArg: String?
+
+    @Option(name: .long, help: "Network ID or prefix (from 'omerta network list')")
     var network: String?
 
     @Option(name: .long, help: "Mesh port (default: 9999)")
@@ -262,7 +302,8 @@ struct Start: AsyncParsableCommand {
 
         // Merge: command line options override config file
         // For boolean flags: CLI flag disables (--no-relay), config enables by default
-        let effectiveNetwork = network ?? fileConfig.network
+        // Positional arg takes precedence over --network flag
+        let effectiveNetwork = networkArg ?? network ?? fileConfig.network
         let effectivePort = port ?? fileConfig.port
         let effectiveNoProvider = noProvider || fileConfig.noProvider
         let effectiveDryRun = dryRun || fileConfig.dryRun
@@ -278,14 +319,13 @@ struct Start: AsyncParsableCommand {
         print("")
 
         // Load network from store
-        guard let networkId = effectiveNetwork else {
+        guard let networkIdOrPrefix = effectiveNetwork else {
             print("Error: Network ID is required")
             print("")
-            print("Either specify --network <id> or set 'network' in config file:")
-            print("  \(DaemonConfig.defaultPath)")
-            print("")
-            print("To create a network:")
-            print("  omerta network create --name \"My Network\" --endpoint \"<your-ip>:9999\"")
+            print("Usage:")
+            print("  omertad start <network-id>")
+            print("  omertad start --network <network-id>")
+            print("  omertad start  # if 'network' is set in config file")
             print("")
             print("To list existing networks:")
             print("  omerta network list")
@@ -298,8 +338,15 @@ struct Start: AsyncParsableCommand {
         let networkStore = NetworkStore.defaultStore()
         try await networkStore.load()
 
-        guard let storedNetwork = await networkStore.network(id: networkId) else {
-            print("Error: Network '\(networkId)' not found")
+        // Resolve network ID prefix
+        let (resolvedNetwork, resolveError) = await resolveNetwork(networkIdOrPrefix, store: networkStore)
+
+        guard let storedNetwork = resolvedNetwork else {
+            if let error = resolveError {
+                print(error)
+                throw ExitCode.failure
+            }
+            print("Error: Network '\(networkIdOrPrefix)' not found")
             print("")
             print("Available networks:")
             let networks = await networkStore.allNetworks()
@@ -310,7 +357,7 @@ struct Start: AsyncParsableCommand {
                 print("  omerta network create --name \"My Network\" --endpoint \"<your-ip>:9999\"")
             } else {
                 for n in networks {
-                    print("  \(n.id) - \(n.name)")
+                    print("  \(n.id.prefix(8))... - \(n.name)")
                 }
             }
             throw ExitCode.failure
@@ -319,7 +366,7 @@ struct Start: AsyncParsableCommand {
         let keyData = storedNetwork.key.networkKey
         let bootstrapPeers = storedNetwork.key.bootstrapPeers
 
-        print("Network: \(storedNetwork.name) (\(networkId))")
+        print("Network: \(storedNetwork.name) (\(storedNetwork.id))")
 
         // Load identity for this network
         // Use getRealUserHome() to handle sudo correctly
@@ -331,12 +378,12 @@ struct Start: AsyncParsableCommand {
         if FileManager.default.fileExists(atPath: identitiesPath.path),
            let data = try? Data(contentsOf: identitiesPath),
            let identities = try? JSONDecoder().decode([String: [String: String]].self, from: data),
-           let storedIdentity = identities[networkId],
+           let storedIdentity = identities[storedNetwork.id],
            let privateKeyBase64 = storedIdentity["privateKeyBase64"] {
             identity = try OmertaMesh.IdentityKeypair(privateKeyBase64: privateKeyBase64)
             print("Loaded identity for network: \(identity.peerId)")
         } else {
-            print("Error: No identity found for network '\(networkId)'")
+            print("Error: No identity found for network '\(storedNetwork.id)'")
             print("The network may have been created on a different machine.")
             print("")
             print("To create a new network on this machine:")
@@ -365,7 +412,7 @@ struct Start: AsyncParsableCommand {
 
         // Run the mesh daemon
         try await runMeshDaemon(
-            networkId: networkId,
+            networkId: storedNetwork.id,
             identity: identity,
             keyData: keyData,
             bootstrapPeers: bootstrapPeers,
@@ -1041,7 +1088,10 @@ struct Stop: AsyncParsableCommand {
         abstract: "Stop the provider daemon"
     )
 
-    @Option(name: .long, help: "Network ID (default: first available)")
+    @Argument(help: "Network ID or prefix (default: first available)")
+    var networkArg: String?
+
+    @Option(name: .long, help: "Network ID or prefix (default: first available)")
     var network: String?
 
     @Option(name: .long, help: "Graceful shutdown timeout in seconds (default: 30)")
@@ -1051,17 +1101,18 @@ struct Stop: AsyncParsableCommand {
     var force: Bool = false
 
     mutating func run() async throws {
-        // Find network ID
         let networkStore = NetworkStore.defaultStore()
         try await networkStore.load()
 
         let networkId: String
-        if let specifiedNetwork = network {
-            guard await networkStore.network(id: specifiedNetwork) != nil else {
-                print("Error: Network '\(specifiedNetwork)' not found")
+        let specifiedNetwork = networkArg ?? network
+        if let specified = specifiedNetwork {
+            let (resolved, error) = await resolveNetwork(specified, store: networkStore)
+            guard let net = resolved else {
+                print(error ?? "Network '\(specified)' not found")
                 throw ExitCode.failure
             }
-            networkId = specifiedNetwork
+            networkId = net.id
         } else {
             let networks = await networkStore.allNetworks()
             guard let firstNetwork = networks.first else {
@@ -1123,7 +1174,10 @@ struct Restart: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "Path to new config file")
     var config: String?
 
-    @Option(name: .long, help: "Network ID")
+    @Argument(help: "Network ID or prefix (default: first available)")
+    var networkArg: String?
+
+    @Option(name: .long, help: "Network ID or prefix (default: first available)")
     var network: String?
 
     @Option(name: .long, help: "Graceful shutdown timeout in seconds (default: 30)")
@@ -1138,12 +1192,14 @@ struct Restart: AsyncParsableCommand {
         try await networkStore.load()
 
         let networkId: String
-        if let specifiedNetwork = network {
-            guard await networkStore.network(id: specifiedNetwork) != nil else {
-                print("Error: Network '\(specifiedNetwork)' not found")
+        let specifiedNetwork = networkArg ?? network
+        if let specified = specifiedNetwork {
+            let (resolved, error) = await resolveNetwork(specified, store: networkStore)
+            guard let net = resolved else {
+                print(error ?? "Network '\(specified)' not found")
                 throw ExitCode.failure
             }
-            networkId = specifiedNetwork
+            networkId = net.id
         } else {
             let networks = await networkStore.allNetworks()
             guard let firstNetwork = networks.first else {
@@ -1274,7 +1330,10 @@ struct ConfigGenerate: AsyncParsableCommand {
     @Option(name: .long, help: "Output path (default: ~/.omerta/omertad.conf)")
     var output: String?
 
-    @Option(name: .long, help: "Network ID to include in config")
+    @Argument(help: "Network ID or prefix to include in config")
+    var networkArg: String?
+
+    @Option(name: .long, help: "Network ID or prefix to include in config")
     var network: String?
 
     @Flag(name: .long, help: "Overwrite existing config file")
@@ -1284,7 +1343,21 @@ struct ConfigGenerate: AsyncParsableCommand {
     var stdout: Bool = false
 
     mutating func run() async throws {
-        let content = DaemonConfig.sampleConfig(network: network)
+        // Resolve network ID if provided
+        var resolvedNetworkId: String?
+        let specifiedNetwork = networkArg ?? network
+        if let specified = specifiedNetwork {
+            let networkStore = NetworkStore.defaultStore()
+            try await networkStore.load()
+            let (resolved, error) = await resolveNetwork(specified, store: networkStore)
+            guard let net = resolved else {
+                print(error ?? "Network '\(specified)' not found")
+                throw ExitCode.failure
+            }
+            resolvedNetworkId = net.id
+        }
+
+        let content = DaemonConfig.sampleConfig(network: resolvedNetworkId)
 
         if stdout {
             print(content)
@@ -1381,11 +1454,22 @@ struct ConfigTrust: AsyncParsableCommand {
         abstract: "Add a trusted network"
     )
 
-    @Argument(help: "Network ID to trust")
-    var networkId: String
+    @Argument(help: "Network ID or prefix to trust")
+    var networkArg: String
 
     mutating func run() async throws {
-        print("Added trusted network: \(networkId)")
+        // Resolve network ID prefix
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+
+        let (resolved, error) = await resolveNetwork(networkArg, store: networkStore)
+        guard let net = resolved else {
+            print(error ?? "Network '\(networkArg)' not found")
+            throw ExitCode.failure
+        }
+
+        print("Added trusted network: \(net.id)")
+        print("  Name: \(net.name)")
         print("")
         print("Configuration will be applied on next daemon restart")
     }
