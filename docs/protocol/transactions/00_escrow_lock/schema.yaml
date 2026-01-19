@@ -510,7 +510,7 @@ messages:
     recipients: [Consumer]
     description: "Witnesses send top-up result for signature"
     fields:
-      result: { type: TopUpResult, required: true }
+      topup_result: { type: TopUpResult, required: true }
 
   CONSUMER_SIGNED_TOPUP:
     sender: Consumer
@@ -777,7 +777,7 @@ actors:
         trigger: TOPUP_RESULT_FOR_SIGNATURE
         to: REVIEWING_TOPUP_RESULT
         actions:
-          - { store_from_message: { pending_topup_result: result } }
+          - { store_from_message: { pending_topup_result: topup_result } }
 
       - from: WAITING_FOR_TOPUP_RESULT
         trigger: timeout(CONSENSUS_TIMEOUT)
@@ -1073,16 +1073,13 @@ actors:
         description: "Voting on top-up request"
 
       COLLECTING_TOPUP_VOTES:
-        description: "Collecting top-up votes"
+        description: "Collecting top-up votes from other witnesses"
 
-      SIGNING_TOPUP_RESULT:
-        description: "Signing top-up result"
-
-      COLLECTING_TOPUP_SIGNATURES:
-        description: "Collecting top-up signatures"
+      BUILDING_TOPUP_RESULT:
+        description: "Building the top-up result after consensus"
 
       PROPAGATING_TOPUP:
-        description: "Sending top-up result to consumer"
+        description: "Sending top-up result to consumer for signature"
 
       WAITING_FOR_CONSUMER_TOPUP_SIGNATURE:
         description: "Waiting for consumer top-up signature"
@@ -1143,6 +1140,15 @@ actors:
         actions:
           - { append: { preliminaries: message.payload } }
 
+      # Fast path: advance immediately when we have enough preliminaries
+      - from: COLLECTING_PRELIMINARIES
+        trigger: auto
+        to: VOTING
+        guard: "LENGTH(preliminaries) >= WITNESS_THRESHOLD - 1"
+        actions:
+          - { compute: consensus_direction, from: "compute_consensus(preliminaries)" }
+
+      # Timeout fallback: advance even with fewer preliminaries
       - from: COLLECTING_PRELIMINARIES
         trigger: timeout(PRELIMINARY_TIMEOUT)
         to: VOTING
@@ -1163,6 +1169,13 @@ actors:
         actions:
           - { append: { votes: message.payload } }
 
+      # Fast path: advance immediately when we have enough votes
+      - from: COLLECTING_VOTES
+        trigger: auto
+        to: BUILDING_RESULT
+        guard: "LENGTH(votes) >= WITNESS_THRESHOLD"
+
+      # Timeout fallback
       - from: COLLECTING_VOTES
         trigger: timeout(CONSENSUS_TIMEOUT)
         to: BUILDING_RESULT
@@ -1224,6 +1237,61 @@ actors:
         guard: "topup_observed_balance - total_escrowed < topup_intent.additional_amount"
         actions:
           - { store: { topup_verdict: "reject", topup_reject_reason: "insufficient_free_balance" } }
+
+      # Top-up voting and result flow with multi-witness consensus
+      - from: VOTING_TOPUP
+        trigger: auto
+        to: COLLECTING_TOPUP_VOTES
+        actions:
+          - { store: { topup_votes: [] } }
+          - send:
+              message: TOPUP_VOTE
+              to: each(other_witnesses)
+
+      - from: COLLECTING_TOPUP_VOTES
+        trigger: TOPUP_VOTE
+        to: COLLECTING_TOPUP_VOTES
+        actions:
+          - { append: { topup_votes: message.payload } }
+
+      # Fast path: advance immediately when we have enough votes
+      - from: COLLECTING_TOPUP_VOTES
+        trigger: auto
+        to: BUILDING_TOPUP_RESULT
+        guard: "LENGTH(topup_votes) >= WITNESS_THRESHOLD - 1"
+
+      # Timeout fallback: advance even with fewer votes after preliminary timeout
+      - from: COLLECTING_TOPUP_VOTES
+        trigger: timeout(PRELIMINARY_TIMEOUT)
+        to: BUILDING_TOPUP_RESULT
+        guard: "LENGTH(topup_votes) >= WITNESS_THRESHOLD - 1"
+
+      - from: COLLECTING_TOPUP_VOTES
+        trigger: timeout(CONSENSUS_TIMEOUT)
+        to: ESCROW_ACTIVE
+        actions:
+          - { store: { topup_failed_reason: "vote_timeout" } }
+
+      - from: BUILDING_TOPUP_RESULT
+        trigger: auto
+        to: PROPAGATING_TOPUP
+        actions:
+          - { compute: topup_result, from: "build_topup_result()" }
+          - send:
+              message: TOPUP_RESULT_FOR_SIGNATURE
+              to: consumer
+
+      - from: PROPAGATING_TOPUP
+        trigger: CONSUMER_SIGNED_TOPUP
+        to: ESCROW_ACTIVE
+        actions:
+          - { store: { total_escrowed: "total_escrowed + topup_intent.additional_amount" } }
+
+      - from: PROPAGATING_TOPUP
+        trigger: timeout(CONSENSUS_TIMEOUT)
+        to: ESCROW_ACTIVE
+        actions:
+          - { store: { topup_failed_reason: "consumer_signature_timeout" } }
 
       - from: ESCROW_ACTIVE
         trigger: LIVENESS_PING

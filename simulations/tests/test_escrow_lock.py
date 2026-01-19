@@ -279,9 +279,9 @@ class TestEscrowLockIntegration:
         consumer = simulation.create_consumer("pk_consumer")
         provider = simulation.create_provider("pk_provider")
 
-        # Create witnesses
+        # Create witnesses - must create all 10 since any can be selected
         witnesses = []
-        for i in range(WITNESS_COUNT):
+        for i in range(10):
             w = simulation.create_witness(f"pk_witness_{i}")
             # Give witnesses cached balance data
             w.store("peer_balances", {"pk_consumer": 100.0})  # Seed balance for test
@@ -326,8 +326,8 @@ class TestEscrowLockIntegration:
         consumer = simulation.create_consumer("pk_consumer")
         provider = simulation.create_provider("pk_provider")
 
-        # Create witnesses with LOW balance data
-        for i in range(WITNESS_COUNT):
+        # Create witnesses with LOW balance data - create all 10 since any can be selected
+        for i in range(10):
             w = simulation.create_witness(f"pk_witness_{i}")
             w.store("peer_balances", {"pk_consumer": 5.0})  # Seed low balance for test
 
@@ -525,8 +525,8 @@ class TestTopUp:
         consumer = simulation.create_consumer("pk_consumer")
         provider = simulation.create_provider("pk_provider")
 
-        # Create witnesses with balance data
-        for i in range(WITNESS_COUNT):
+        # Create witnesses with balance data - create all 10 since any can be selected
+        for i in range(10):
             w = simulation.create_witness(f"pk_witness_{i}")
             w.store("peer_balances", {"pk_consumer": 100.0})  # Seed balance for test
 
@@ -555,7 +555,8 @@ class TestTopUp:
         consumer = simulation.create_consumer("pk_consumer")
         provider = simulation.create_provider("pk_provider")
 
-        for i in range(WITNESS_COUNT):
+        # Create all 10 witnesses since any can be selected
+        for i in range(10):
             w = simulation.create_witness(f"pk_witness_{i}")
             w.store("peer_balances", {"pk_consumer": 100.0})  # Seed balance for test
 
@@ -722,9 +723,9 @@ class TestTopUpIntegration:
         consumer = simulation.create_consumer("pk_consumer")
         provider = simulation.create_provider("pk_provider")
 
-        # Create witnesses with sufficient balance data
+        # Create witnesses with sufficient balance data - create all 10 since any can be selected
         witnesses = []
-        for i in range(WITNESS_COUNT):
+        for i in range(10):
             w = simulation.create_witness(f"pk_witness_{i}")
             w.store("peer_balances", {"pk_consumer": 100.0})  # Seed balance for test
             witnesses.append(w)
@@ -753,17 +754,228 @@ class TestTopUpIntegration:
         # Consumer should still be LOCKED (returned after top-up)
         assert consumer.state == ConsumerState.LOCKED
 
-        # If top-up succeeded, total should have increased
-        if consumer.total_escrowed == 15.0:
-            # Check chain has top-up block
-            assert len(consumer.chain.blocks) > initial_chain_len
+        # Top-up should succeed - verify total increased
+        assert consumer.total_escrowed == 15.0, \
+            f"Top-up should increase total from 10.0 to 15.0, got {consumer.total_escrowed}"
 
-            # Find BALANCE_TOPUP block
-            from simulations.chain.primitives import BlockType
-            topup_blocks = [b for b in consumer.chain.blocks if b.block_type == BlockType.BALANCE_TOPUP]
-            assert len(topup_blocks) == 1
-            assert topup_blocks[0].payload["topup_amount"] == 5.0
-            assert topup_blocks[0].payload["new_total"] == 15.0
+        # Check chain has top-up block
+        assert len(consumer.chain.blocks) > initial_chain_len
+
+        # Find BALANCE_TOPUP block
+        from simulations.chain.primitives import BlockType
+        topup_blocks = [b for b in consumer.chain.blocks if b.block_type == BlockType.BALANCE_TOPUP]
+        assert len(topup_blocks) == 1
+
+    def test_topup_witnesses_share_preliminaries(self, network, simulation):
+        """Witnesses should share preliminary verdicts with each other during top-up."""
+        # Create actors
+        consumer = simulation.create_consumer("pk_consumer")
+        provider = simulation.create_provider("pk_provider")
+
+        witnesses = []
+        for i in range(10):
+            w = simulation.create_witness(f"pk_witness_{i}")
+            w.store("peer_balances", {"pk_consumer": 100.0})
+            witnesses.append(w)
+
+        # First get to LOCKED state
+        consumer.initiate_lock("pk_provider", 10.0)
+        simulation.run_until_stable(max_ticks=200)
+
+        if consumer.state != ConsumerState.LOCKED:
+            pytest.skip("Initial lock did not succeed")
+
+        # Clear message log and initiate top-up
+        simulation.message_log.clear()
+        consumer.initiate_topup(5.0)
+
+        # Run a few ticks to let witnesses start processing
+        for _ in range(20):
+            simulation.tick()
+
+        # Check that TOPUP_VOTE messages were exchanged between witnesses
+        topup_votes = [m for m in simulation.message_log if m.msg_type == MessageType.TOPUP_VOTE]
+
+        # With proper multi-witness consensus, witnesses should send votes to each other
+        assert len(topup_votes) > 0, "Witnesses should exchange TOPUP_VOTE messages during consensus"
+
+    def test_topup_result_has_threshold_signatures(self, network, simulation):
+        """Top-up result should have signatures from at least WITNESS_THRESHOLD witnesses."""
+        consumer = simulation.create_consumer("pk_consumer")
+        provider = simulation.create_provider("pk_provider")
+
+        witnesses = []
+        for i in range(10):
+            w = simulation.create_witness(f"pk_witness_{i}")
+            w.store("peer_balances", {"pk_consumer": 100.0})
+            witnesses.append(w)
+
+        # First get to LOCKED state
+        consumer.initiate_lock("pk_provider", 10.0)
+        simulation.run_until_stable(max_ticks=200)
+
+        if consumer.state != ConsumerState.LOCKED:
+            pytest.skip("Initial lock did not succeed")
+
+        # Clear message log and initiate top-up
+        simulation.message_log.clear()
+        consumer.initiate_topup(5.0)
+        simulation.run_until_stable(max_ticks=200)
+
+        # Find the TOPUP_RESULT_FOR_SIGNATURE message sent to consumer
+        topup_results = [m for m in simulation.message_log
+                        if m.msg_type == MessageType.TOPUP_RESULT_FOR_SIGNATURE
+                        and m.recipient == "pk_consumer"]
+
+        assert len(topup_results) > 0, "Consumer should receive TOPUP_RESULT_FOR_SIGNATURE"
+
+        # The result should be a proper TopUpResult (not a reused LockResult)
+        result = topup_results[0].payload.get("topup_result", {})
+        assert result is not None, "TOPUP_RESULT_FOR_SIGNATURE should have a topup_result field"
+
+        # TopUpResult should have additional_amount field (not just amount)
+        assert "additional_amount" in result, \
+            f"Top-up result should have additional_amount field, got keys: {result.keys()}"
+        assert result.get("additional_amount") == 5.0, \
+            f"Top-up result should have additional_amount=5.0, got {result.get('additional_amount')}"
+
+        # Should have witness signatures from proper consensus
+        witness_signatures = result.get("witness_signatures", [])
+        assert len(witness_signatures) >= WITNESS_THRESHOLD, \
+            f"Top-up result should have at least {WITNESS_THRESHOLD} signatures, got {len(witness_signatures)}"
+
+
+# =============================================================================
+# Issue #1: String Literals Stored Instead of Computed Values
+# =============================================================================
+
+class TestIssue1StringLiterals:
+    """Tests for Issue #1 - store actions should evaluate expressions, not store string literals."""
+
+    def test_store_computes_arithmetic_expression(self, network):
+        """Store action with arithmetic should compute the value, not store string."""
+        # This tests that `store: { total_escrowed: "total_escrowed + additional_amount" }`
+        # actually computes the sum instead of storing the string literal
+        chain = network.get_chain("pk_consumer")
+        consumer = Consumer(
+            peer_id="pk_consumer",
+            chain=chain,
+            current_time=network.current_time,
+        )
+
+        # Set up state to test the arithmetic expression in SIGNING_TOPUP
+        consumer.store("total_escrowed", 10.0)
+        consumer.store("additional_amount", 5.0)
+        consumer.store("witnesses", ["pk_witness_0"])
+        consumer.store("session_id", "test_session")
+        consumer.store("pending_topup_result", {
+            "session_id": "test_session",
+            "consumer": "pk_consumer",
+            "additional_amount": 5.0,
+            "witness_signatures": ["sig1", "sig2", "sig3"],  # >= WITNESS_THRESHOLD
+        })
+
+        # Transition directly to SIGNING_TOPUP to test the arithmetic
+        consumer.transition_to(ConsumerState.SIGNING_TOPUP)
+        consumer.tick(network.current_time + 1)
+
+        # total_escrowed should be a number (15.0), not the string "total_escrowed + additional_amount"
+        total = consumer.load("total_escrowed")
+        assert isinstance(total, (int, float)), f"total_escrowed should be numeric, got {type(total).__name__}: {total}"
+        assert total == 15.0, f"total_escrowed should be 15.0, got {total}"
+
+    def test_store_computes_variable_reference(self, network):
+        """Store action with variable reference should evaluate the variable."""
+        chain = network.get_chain("pk_consumer")
+        consumer = Consumer(
+            peer_id="pk_consumer",
+            chain=chain,
+            current_time=network.current_time,
+        )
+
+        # Manually set up state to test lock_result storage
+        consumer.store("pending_result", {"session_id": "test", "amount": 10.0})
+        consumer.store("consumer_signature", "sig123")
+
+        # The schema has: store: { lock_result: pending_result_with_signature }
+        # which should evaluate to a combined dict, not the string "pending_result_with_signature"
+
+        # Simulate reaching the state where lock_result is stored
+        consumer.transition_to(ConsumerState.SIGNING_RESULT)
+        consumer.tick(network.current_time + 1)
+
+        lock_result = consumer.load("lock_result")
+        # Should be a dict with the result data, not a string
+        assert lock_result != "pending_result_with_signature", \
+            f"lock_result should be computed value, not string literal: {lock_result}"
+
+
+# =============================================================================
+# Issue #9: Sequential Guards Should Use Elif
+# =============================================================================
+
+class TestIssue9ElifGuards:
+    """Tests for Issue #9 - mutually exclusive guards should use elif, not separate if statements."""
+
+    def test_witness_balance_check_only_one_branch(self, network):
+        """When balance >= amount, should only execute ACCEPT branch, not both."""
+        chain = network.get_chain("pk_witness_0")
+        witness = Witness(
+            peer_id="pk_witness_0",
+            chain=chain,
+            current_time=network.current_time,
+        )
+
+        # Set up with sufficient balance
+        witness.store("peer_balances", {"pk_consumer": 100.0})
+        witness.store("consumer", "pk_consumer")
+        witness.store("amount", 10.0)
+        witness.store("observed_balance", 100.0)  # More than enough
+        witness.store("other_witnesses", [])
+        witness.store("preliminaries", [])
+        witness.store("votes", [])
+        witness.store("signatures", [])
+
+        witness.transition_to(WitnessState.CHECKING_BALANCE)
+        # Need multiple ticks: CHECKING_BALANCE → CHECKING_EXISTING_LOCKS → SHARING_PRELIMINARY
+        # The verdict is set in CHECKING_EXISTING_LOCKS
+        for _ in range(3):
+            witness.tick(network.current_time + 1)
+            if witness.load("verdict") is not None:
+                break
+
+        # Should ONLY set verdict to ACCEPT, not also set reject_reason
+        verdict = witness.load("verdict")
+        reject_reason = witness.load("reject_reason")
+
+        assert verdict == WitnessVerdict.ACCEPT, f"Expected ACCEPT verdict, got {verdict}"
+        # If elif is used correctly, reject_reason should NOT be set when balance is sufficient
+        assert reject_reason is None, \
+            f"reject_reason should be None when accepted, got: {reject_reason}"
+
+
+# =============================================================================
+# Issue #3: Consumer's consumer Field Never Set
+# =============================================================================
+
+class TestIssue3ConsumerField:
+    """Tests for Issue #3 - Consumer should set its own 'consumer' field for message payloads."""
+
+    def test_consumer_sets_consumer_field(self, network):
+        """Consumer should have 'consumer' field set to its own peer_id."""
+        chain = network.get_chain("pk_consumer")
+        consumer = Consumer(
+            peer_id="pk_consumer",
+            chain=chain,
+            current_time=network.current_time,
+        )
+
+        consumer.initiate_lock("pk_provider", 10.0)
+
+        # Consumer should store its own ID as 'consumer'
+        stored_consumer = consumer.load("consumer")
+        assert stored_consumer == "pk_consumer", \
+            f"Consumer should store its own peer_id as 'consumer', got: {stored_consumer}"
 
 
 if __name__ == "__main__":

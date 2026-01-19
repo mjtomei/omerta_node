@@ -86,6 +86,7 @@ class Message:
     sender: str
     payload: Dict[str, Any]
     timestamp: float
+    recipient: Optional[str] = None  # None means broadcast
 
 # =============================================================================
 # Actor Base Class
@@ -242,6 +243,7 @@ class Consumer(Actor):
                 sender=self.peer_id,
                 payload=msg_payload,
                 timestamp=current_time,
+                recipient=self.load("provider"),
             ))
             self.store("intent_sent_at", self.current_time)
             self.transition_to(ConsumerState.WAITING_FOR_WITNESS_COMMITMENT)
@@ -300,6 +302,7 @@ class Consumer(Actor):
                     sender=self.peer_id,
                     payload=msg_payload,
                     timestamp=current_time,
+                    recipient=recipient,
                 ))
             self.store("requests_sent_at", self.current_time)
             self.transition_to(ConsumerState.WAITING_FOR_RESULT)
@@ -345,6 +348,7 @@ class Consumer(Actor):
                     sender=self.peer_id,
                     payload=msg_payload,
                     timestamp=current_time,
+                    recipient=recipient,
                 ))
             self.store("total_escrowed", self.load("amount"))
             self.transition_to(ConsumerState.LOCKED)
@@ -361,6 +365,7 @@ class Consumer(Actor):
                     sender=self.peer_id,
                     payload=msg_payload,
                     timestamp=current_time,
+                    recipient=self.load("message.sender"),
                 ))
                 self.transition_to(ConsumerState.LOCKED)
                 self.message_queue.remove(msg)  # Only remove processed message
@@ -381,6 +386,7 @@ class Consumer(Actor):
                     sender=self.peer_id,
                     payload=msg_payload,
                     timestamp=current_time,
+                    recipient=recipient,
                 ))
             self.store("topup_sent_at", self.current_time)
             self.transition_to(ConsumerState.WAITING_FOR_TOPUP_RESULT)
@@ -390,7 +396,7 @@ class Consumer(Actor):
             msgs = self.get_messages(MessageType.TOPUP_RESULT_FOR_SIGNATURE)
             if msgs:
                 msg = msgs[0]
-                self.store("pending_topup_result", msg.payload.get("result"))
+                self.store("pending_topup_result", msg.payload.get("topup_result"))
                 self.transition_to(ConsumerState.REVIEWING_TOPUP_RESULT)
                 self.message_queue.remove(msg)  # Only remove processed message
 
@@ -425,11 +431,21 @@ class Consumer(Actor):
                     sender=self.peer_id,
                     payload=msg_payload,
                     timestamp=current_time,
+                    recipient=recipient,
                 ))
             self.store("total_escrowed", self.load("total_escrowed") + self.load("additional_amount"))
             self.transition_to(ConsumerState.LOCKED)
 
         return outgoing
+
+    def _build_consumer_signed_lock_payload(self) -> Dict[str, Any]:
+        """Build payload for CONSUMER_SIGNED_LOCK message."""
+        payload = {
+            "session_id": self._serialize_value(self.load("session_id")),
+            "consumer_signature": self._serialize_value(self.load("consumer_signature")),
+            "timestamp": self.current_time,
+        }
+        return payload
 
     def _build_witness_request_payload(self) -> Dict[str, Any]:
         """Build payload for WITNESS_REQUEST message."""
@@ -445,22 +461,16 @@ class Consumer(Actor):
         payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
-    def _build_consumer_signed_topup_payload(self) -> Dict[str, Any]:
-        """Build payload for CONSUMER_SIGNED_TOPUP message."""
+    def _build_lock_intent_payload(self) -> Dict[str, Any]:
+        """Build payload for LOCK_INTENT message."""
         payload = {
-            "session_id": self._serialize_value(self.load("session_id")),
-            "consumer_signature": self._serialize_value(self.load("consumer_signature")),
-            "timestamp": self.current_time,
-        }
-        return payload
-
-    def _build_topup_intent_payload(self) -> Dict[str, Any]:
-        """Build payload for TOPUP_INTENT message."""
-        payload = {
-            "session_id": self._serialize_value(self.load("session_id")),
             "consumer": self._serialize_value(self.load("consumer")),
-            "additional_amount": self._serialize_value(self.load("additional_amount")),
-            "current_lock_result_hash": self._serialize_value(self.load("current_lock_result_hash")),
+            "provider": self._serialize_value(self.load("provider")),
+            "amount": self._serialize_value(self.load("amount")),
+            "session_id": self._serialize_value(self.load("session_id")),
+            "consumer_nonce": self._serialize_value(self.load("consumer_nonce")),
+            "provider_chain_checkpoint": self._serialize_value(self.load("provider_chain_checkpoint")),
+            "checkpoint_timestamp": self._serialize_value(self.load("checkpoint_timestamp")),
             "timestamp": self.current_time,
         }
         payload["signature"] = sign(self.chain.private_key, hash_data(payload))
@@ -476,28 +486,25 @@ class Consumer(Actor):
         payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
-    def _build_consumer_signed_lock_payload(self) -> Dict[str, Any]:
-        """Build payload for CONSUMER_SIGNED_LOCK message."""
+    def _build_topup_intent_payload(self) -> Dict[str, Any]:
+        """Build payload for TOPUP_INTENT message."""
+        payload = {
+            "session_id": self._serialize_value(self.load("session_id")),
+            "consumer": self._serialize_value(self.load("consumer")),
+            "additional_amount": self._serialize_value(self.load("additional_amount")),
+            "current_lock_result_hash": self._serialize_value(self.load("current_lock_result_hash")),
+            "timestamp": self.current_time,
+        }
+        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
+        return payload
+
+    def _build_consumer_signed_topup_payload(self) -> Dict[str, Any]:
+        """Build payload for CONSUMER_SIGNED_TOPUP message."""
         payload = {
             "session_id": self._serialize_value(self.load("session_id")),
             "consumer_signature": self._serialize_value(self.load("consumer_signature")),
             "timestamp": self.current_time,
         }
-        return payload
-
-    def _build_lock_intent_payload(self) -> Dict[str, Any]:
-        """Build payload for LOCK_INTENT message."""
-        payload = {
-            "consumer": self._serialize_value(self.load("consumer")),
-            "provider": self._serialize_value(self.load("provider")),
-            "amount": self._serialize_value(self.load("amount")),
-            "session_id": self._serialize_value(self.load("session_id")),
-            "consumer_nonce": self._serialize_value(self.load("consumer_nonce")),
-            "provider_chain_checkpoint": self._serialize_value(self.load("provider_chain_checkpoint")),
-            "checkpoint_timestamp": self._serialize_value(self.load("checkpoint_timestamp")),
-            "timestamp": self.current_time,
-        }
-        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
     def _check_has_provider_checkpoint(self) -> bool:
@@ -550,6 +557,15 @@ class Consumer(Actor):
         # Schema: HASH(lock_result)...
         return hash_data(self._to_hashable(self.load("lock_result")))
 
+    def _build_balance_lock_payload(self) -> Dict[str, Any]:
+        """Build payload for BALANCE_LOCK chain block."""
+        return {
+            "session_id": self.load("session_id"),
+            "amount": self.load("amount"),
+            "lock_result_hash": self.load("lock_result_hash"),
+            "timestamp": self.current_time,
+        }
+
     def _build_balance_topup_payload(self) -> Dict[str, Any]:
         """Build payload for BALANCE_TOPUP chain block."""
         return {
@@ -558,15 +574,6 @@ class Consumer(Actor):
             "topup_amount": self.load("topup_amount"),
             "new_total": self.load("new_total"),
             "topup_result_hash": self.load("topup_result_hash"),
-            "timestamp": self.current_time,
-        }
-
-    def _build_balance_lock_payload(self) -> Dict[str, Any]:
-        """Build payload for BALANCE_LOCK chain block."""
-        return {
-            "session_id": self.load("session_id"),
-            "amount": self.load("amount"),
-            "lock_result_hash": self.load("lock_result_hash"),
             "timestamp": self.current_time,
         }
 
@@ -639,6 +646,9 @@ class Consumer(Actor):
         """SELECT_WITNESSES: Deterministically select witnesses from seed and chain state."""
         import random as _random
         exclude = exclude or []
+        # Always exclude self, consumer, and provider from witness selection
+        auto_exclude = {self.peer_id, self.load('consumer'), self.load('provider')}
+        exclude = set(exclude) | {x for x in auto_exclude if x}
         
         # Get candidates from chain state
         known_peers = chain_state.get("known_peers", [])
@@ -706,43 +716,6 @@ class Consumer(Actor):
         """ABORT: Exit state machine with error."""
         raise RuntimeError(f"ABORT: {reason}")
 
-    def _compute_consensus(self, preliminaries: list) -> str:
-        """COMPUTE_CONSENSUS: Determine consensus from preliminary verdicts."""
-        if not preliminaries:
-            return "REJECT"
-        accept_count = 0
-        reject_count = 0
-        for p in preliminaries:
-            verdict = p.get('verdict') if isinstance(p, dict) else getattr(p, 'verdict', None)
-            if verdict in ('ACCEPT', WitnessVerdict.ACCEPT):
-                accept_count += 1
-            else:
-                reject_count += 1
-        # Need threshold for acceptance
-        if accept_count >= WITNESS_THRESHOLD:
-            return "ACCEPT"
-        return "REJECT"
-
-    def _build_lock_result(self) -> Dict[str, Any]:
-        """BUILD_LOCK_RESULT: Build the final lock result structure."""
-        consensus = self.load('consensus_direction')
-        # Use enum for type checking but store name for JSON serialization
-        status_enum = LockStatus.ACCEPTED if consensus == 'ACCEPT' else LockStatus.REJECTED
-        # Extract signatures from collected votes
-        votes = self.load('votes') or []
-        signatures = [v.get('signature') for v in votes if v.get('signature')]
-        return {
-            "session_id": self.load("session_id"),
-            "consumer": self.load("consumer"),
-            "provider": self.load("provider"),
-            "amount": self.load("amount"),
-            "status": status_enum.name,  # Use string for JSON serialization
-            "observed_balance": self.load("observed_balance"),
-            "witnesses": self.load("witnesses"),
-            "witness_signatures": signatures,
-            "timestamp": self.current_time,
-        }
-
 # =============================================================================
 # Provider
 # =============================================================================
@@ -801,6 +774,7 @@ class Provider(Actor):
                     sender=self.peer_id,
                     payload=msg_payload,
                     timestamp=current_time,
+                    recipient=self.load("consumer"),
                 ))
                 self.transition_to(ProviderState.IDLE)
 
@@ -819,6 +793,7 @@ class Provider(Actor):
                 sender=self.peer_id,
                 payload=msg_payload,
                 timestamp=current_time,
+                recipient=self.load("consumer"),
             ))
             self.store("commitment_sent_at", self.current_time)
             self.transition_to(ProviderState.WAITING_FOR_LOCK)
@@ -955,6 +930,9 @@ class Provider(Actor):
         """SELECT_WITNESSES: Deterministically select witnesses from seed and chain state."""
         import random as _random
         exclude = exclude or []
+        # Always exclude self, consumer, and provider from witness selection
+        auto_exclude = {self.peer_id, self.load('consumer'), self.load('provider')}
+        exclude = set(exclude) | {x for x in auto_exclude if x}
         
         # Get candidates from chain state
         known_peers = chain_state.get("known_peers", [])
@@ -1022,43 +1000,6 @@ class Provider(Actor):
         """ABORT: Exit state machine with error."""
         raise RuntimeError(f"ABORT: {reason}")
 
-    def _compute_consensus(self, preliminaries: list) -> str:
-        """COMPUTE_CONSENSUS: Determine consensus from preliminary verdicts."""
-        if not preliminaries:
-            return "REJECT"
-        accept_count = 0
-        reject_count = 0
-        for p in preliminaries:
-            verdict = p.get('verdict') if isinstance(p, dict) else getattr(p, 'verdict', None)
-            if verdict in ('ACCEPT', WitnessVerdict.ACCEPT):
-                accept_count += 1
-            else:
-                reject_count += 1
-        # Need threshold for acceptance
-        if accept_count >= WITNESS_THRESHOLD:
-            return "ACCEPT"
-        return "REJECT"
-
-    def _build_lock_result(self) -> Dict[str, Any]:
-        """BUILD_LOCK_RESULT: Build the final lock result structure."""
-        consensus = self.load('consensus_direction')
-        # Use enum for type checking but store name for JSON serialization
-        status_enum = LockStatus.ACCEPTED if consensus == 'ACCEPT' else LockStatus.REJECTED
-        # Extract signatures from collected votes
-        votes = self.load('votes') or []
-        signatures = [v.get('signature') for v in votes if v.get('signature')]
-        return {
-            "session_id": self.load("session_id"),
-            "consumer": self.load("consumer"),
-            "provider": self.load("provider"),
-            "amount": self.load("amount"),
-            "status": status_enum.name,  # Use string for JSON serialization
-            "observed_balance": self.load("observed_balance"),
-            "witnesses": self.load("witnesses"),
-            "witness_signatures": signatures,
-            "timestamp": self.current_time,
-        }
-
 # =============================================================================
 # Witness
 # =============================================================================
@@ -1090,10 +1031,9 @@ class WitnessState(Enum):
     REJECTED = auto()  # Witness declined to participate
     CHECKING_TOPUP_BALANCE = auto()  # Verifying consumer has additional free balance
     VOTING_TOPUP = auto()  # Voting on top-up request
-    COLLECTING_TOPUP_VOTES = auto()  # Collecting top-up votes
-    SIGNING_TOPUP_RESULT = auto()  # Signing top-up result
-    COLLECTING_TOPUP_SIGNATURES = auto()  # Collecting top-up signatures
-    PROPAGATING_TOPUP = auto()  # Sending top-up result to consumer
+    COLLECTING_TOPUP_VOTES = auto()  # Collecting top-up votes from other witnesses
+    BUILDING_TOPUP_RESULT = auto()  # Building the top-up result after consensus
+    PROPAGATING_TOPUP = auto()  # Sending top-up result to consumer for signature
     WAITING_FOR_CONSUMER_TOPUP_SIGNATURE = auto()  # Waiting for consumer top-up signature
 
 @dataclass
@@ -1168,6 +1108,7 @@ class Witness(Actor):
                     sender=self.peer_id,
                     payload=msg_payload,
                     timestamp=current_time,
+                    recipient=recipient,
                 ))
             self.store("preliminary_sent_at", self.current_time)
             self.transition_to(WitnessState.COLLECTING_PRELIMINARIES)
@@ -1189,6 +1130,11 @@ class Witness(Actor):
                 self.store("consensus_direction", self._compute_consensus_direction())
                 self.transition_to(WitnessState.VOTING)
 
+            # Auto transition with guard: LENGTH(preliminaries) >= WITNESS_THRESHOLD - 1
+            if self._check_LENGTH_preliminaries_gte_WITNESS_THRESHOLD_1():
+                # Compute: consensus_direction = compute_consensus(preliminaries)
+                self.store("consensus_direction", self._compute_consensus_direction())
+                self.transition_to(WitnessState.VOTING)
 
         elif self.state == WitnessState.EVALUATING_PRELIMINARIES:
             # Evaluating preliminary consensus
@@ -1203,6 +1149,7 @@ class Witness(Actor):
                     sender=self.peer_id,
                     payload=msg_payload,
                     timestamp=current_time,
+                    recipient=recipient,
                 ))
             self.transition_to(WitnessState.COLLECTING_VOTES)
 
@@ -1221,6 +1168,9 @@ class Witness(Actor):
             if current_time - self.load("state_entered_at", 0) > CONSENSUS_TIMEOUT:
                 self.transition_to(WitnessState.BUILDING_RESULT)
 
+            # Auto transition with guard: LENGTH(votes) >= WITNESS_THRESHOLD
+            if self._check_LENGTH_votes_gte_WITNESS_THRESHOLD():
+                self.transition_to(WitnessState.BUILDING_RESULT)
 
         elif self.state == WitnessState.EVALUATING_VOTES:
             # Evaluating vote consensus
@@ -1248,6 +1198,7 @@ class Witness(Actor):
                 sender=self.peer_id,
                 payload=msg_payload,
                 timestamp=current_time,
+                recipient=self.load("consumer"),
             ))
             self.store("propagated_at", self.current_time)
             self.transition_to(WitnessState.PROPAGATING_RESULT)
@@ -1274,6 +1225,7 @@ class Witness(Actor):
                     sender=self.peer_id,
                     payload=msg_payload,
                     timestamp=current_time,
+                    recipient=self.load("provider"),
                 ))
                 self.transition_to(WitnessState.ESCROW_ACTIVE)
                 self.message_queue.remove(msg)  # Only remove processed message
@@ -1314,6 +1266,7 @@ class Witness(Actor):
                     sender=self.peer_id,
                     payload=msg_payload,
                     timestamp=current_time,
+                    recipient=self.load("message.sender"),
                 ))
                 self.transition_to(WitnessState.ESCROW_ACTIVE)
                 self.message_queue.remove(msg)  # Only remove processed message
@@ -1339,24 +1292,71 @@ class Witness(Actor):
                 self.transition_to(WitnessState.ESCROW_ACTIVE)
 
         elif self.state == WitnessState.VOTING_TOPUP:
-            # Voting on top-up request
-            pass
+            # Auto transition
+            self.store("topup_votes", [])
+            for recipient in self.load("other_witnesses", []):
+                msg_payload = self._build_topup_vote_payload()
+                outgoing.append(Message(
+                    msg_type=MessageType.TOPUP_VOTE,
+                    sender=self.peer_id,
+                    payload=msg_payload,
+                    timestamp=current_time,
+                    recipient=recipient,
+                ))
+            self.transition_to(WitnessState.COLLECTING_TOPUP_VOTES)
 
         elif self.state == WitnessState.COLLECTING_TOPUP_VOTES:
-            # Collecting top-up votes
-            pass
+            # Check for TOPUP_VOTE
+            msgs = self.get_messages(MessageType.TOPUP_VOTE)
+            if msgs:
+                msg = msgs[0]
+                _list = self.load("topup_votes") or []
+                _list.append(msg.payload)
+                self.store("topup_votes", _list)
+                self.transition_to(WitnessState.COLLECTING_TOPUP_VOTES)
+                self.message_queue.remove(msg)  # Only remove processed message
 
-        elif self.state == WitnessState.SIGNING_TOPUP_RESULT:
-            # Signing top-up result
-            pass
+            # Timeout check
+            if current_time - self.load("state_entered_at", 0) > PRELIMINARY_TIMEOUT:
+                self.transition_to(WitnessState.BUILDING_TOPUP_RESULT)
 
-        elif self.state == WitnessState.COLLECTING_TOPUP_SIGNATURES:
-            # Collecting top-up signatures
-            pass
+            # Timeout check
+            if current_time - self.load("state_entered_at", 0) > CONSENSUS_TIMEOUT:
+                self.store("topup_failed_reason", 'vote_timeout')
+                self.transition_to(WitnessState.ESCROW_ACTIVE)
+
+            # Auto transition with guard: LENGTH(topup_votes) >= WITNESS_THRESHOLD - 1
+            if self._check_LENGTH_topup_votes_gte_WITNESS_THRESHOLD_1():
+                self.transition_to(WitnessState.BUILDING_TOPUP_RESULT)
+
+        elif self.state == WitnessState.BUILDING_TOPUP_RESULT:
+            # Auto transition
+            # Compute: topup_result = build_topup_result()
+            self.store("topup_result", self._compute_topup_result())
+            msg_payload = self._build_topup_result_for_signature_payload()
+            outgoing.append(Message(
+                msg_type=MessageType.TOPUP_RESULT_FOR_SIGNATURE,
+                sender=self.peer_id,
+                payload=msg_payload,
+                timestamp=current_time,
+                recipient=self.load("consumer"),
+            ))
+            self.transition_to(WitnessState.PROPAGATING_TOPUP)
 
         elif self.state == WitnessState.PROPAGATING_TOPUP:
-            # Sending top-up result to consumer
-            pass
+            # Check for CONSUMER_SIGNED_TOPUP
+            msgs = self.get_messages(MessageType.CONSUMER_SIGNED_TOPUP)
+            if msgs:
+                msg = msgs[0]
+                self.store("total_escrowed", self.load("total_escrowed") + self.load("topup_intent").get("additional_amount"))
+                self.transition_to(WitnessState.ESCROW_ACTIVE)
+                self.message_queue.remove(msg)  # Only remove processed message
+
+            # Timeout check
+            if current_time - self.load("state_entered_at", 0) > CONSENSUS_TIMEOUT:
+                self.store("topup_failed_reason", 'consumer_signature_timeout')
+                self.transition_to(WitnessState.ESCROW_ACTIVE)
+
 
         elif self.state == WitnessState.WAITING_FOR_CONSUMER_TOPUP_SIGNATURE:
             # Waiting for consumer top-up signature
@@ -1364,35 +1364,33 @@ class Witness(Actor):
 
         return outgoing
 
-    def _build_balance_update_broadcast_payload(self) -> Dict[str, Any]:
-        """Build payload for BALANCE_UPDATE_BROADCAST message."""
-        payload = {
-            "consumer": self._serialize_value(self.load("consumer")),
-            "lock_result": self._serialize_value(self.load("lock_result")),
-            "timestamp": self.current_time,
-        }
-        return payload
-
-    def _build_witness_preliminary_payload(self) -> Dict[str, Any]:
-        """Build payload for WITNESS_PRELIMINARY message."""
-        payload = {
-            "session_id": self._serialize_value(self.load("session_id")),
-            "witness": self._serialize_value(self.load("witness")),
-            "verdict": self._serialize_value(self.load("verdict")),
-            "observed_balance": self._serialize_value(self.load("observed_balance")),
-            "observed_chain_head": self._serialize_value(self.load("observed_chain_head")),
-            "reject_reason": self._serialize_value(self.load("reject_reason")),
-            "timestamp": self.current_time,
-        }
-        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
-        return payload
-
     def _build_witness_final_vote_payload(self) -> Dict[str, Any]:
         """Build payload for WITNESS_FINAL_VOTE message."""
         payload = {
             "session_id": self._serialize_value(self.load("session_id")),
             "witness": self._serialize_value(self.load("witness")),
             "vote": self._serialize_value(self.load("vote")),
+            "observed_balance": self._serialize_value(self.load("observed_balance")),
+            "timestamp": self.current_time,
+        }
+        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
+        return payload
+
+    def _build_topup_result_for_signature_payload(self) -> Dict[str, Any]:
+        """Build payload for TOPUP_RESULT_FOR_SIGNATURE message."""
+        payload = {
+            "topup_result": self._serialize_value(self.load("topup_result")),
+            "timestamp": self.current_time,
+        }
+        return payload
+
+    def _build_topup_vote_payload(self) -> Dict[str, Any]:
+        """Build payload for TOPUP_VOTE message."""
+        payload = {
+            "session_id": self._serialize_value(self.load("session_id")),
+            "witness": self._serialize_value(self.load("witness")),
+            "vote": self._serialize_value(self.load("vote")),
+            "additional_amount": self._serialize_value(self.load("additional_amount")),
             "observed_balance": self._serialize_value(self.load("observed_balance")),
             "timestamp": self.current_time,
         }
@@ -1417,6 +1415,29 @@ class Witness(Actor):
         }
         return payload
 
+    def _build_witness_preliminary_payload(self) -> Dict[str, Any]:
+        """Build payload for WITNESS_PRELIMINARY message."""
+        payload = {
+            "session_id": self._serialize_value(self.load("session_id")),
+            "witness": self._serialize_value(self.load("witness")),
+            "verdict": self._serialize_value(self.load("verdict")),
+            "observed_balance": self._serialize_value(self.load("observed_balance")),
+            "observed_chain_head": self._serialize_value(self.load("observed_chain_head")),
+            "reject_reason": self._serialize_value(self.load("reject_reason")),
+            "timestamp": self.current_time,
+        }
+        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
+        return payload
+
+    def _build_balance_update_broadcast_payload(self) -> Dict[str, Any]:
+        """Build payload for BALANCE_UPDATE_BROADCAST message."""
+        payload = {
+            "consumer": self._serialize_value(self.load("consumer")),
+            "lock_result": self._serialize_value(self.load("lock_result")),
+            "timestamp": self.current_time,
+        }
+        return payload
+
     def _check_observed_balance_gte_amount(self) -> bool:
         # Schema: observed_balance >= amount...
         return self.load("observed_balance") >= self.load("amount")
@@ -1424,6 +1445,10 @@ class Witness(Actor):
     def _check_observed_balance_lt_amount(self) -> bool:
         # Schema: observed_balance < amount...
         return self.load("observed_balance") < self.load("amount")
+
+    def _check_LENGTH_preliminaries_gte_WITNESS_THRESHOLD_1(self) -> bool:
+        # Schema: LENGTH(preliminaries) >= WITNESS_THRESHOLD - 1...
+        return len(self.load("preliminaries")) >= WITNESS_THRESHOLD - 1
 
     def _check_LENGTH_votes_gte_WITNESS_THRESHOLD(self) -> bool:
         # Schema: LENGTH(votes) >= WITNESS_THRESHOLD...
@@ -1436,6 +1461,10 @@ class Witness(Actor):
     def _check_topup_observed_balance_total_escrowed_lt_topup_intent_additi(self) -> bool:
         # Schema: topup_observed_balance - total_escrowed < topup_intent.addit...
         return self.load("topup_observed_balance") - self.load("total_escrowed") < self.load("topup_intent").get("additional_amount")
+
+    def _check_LENGTH_topup_votes_gte_WITNESS_THRESHOLD_1(self) -> bool:
+        # Schema: LENGTH(topup_votes) >= WITNESS_THRESHOLD - 1...
+        return len(self.load("topup_votes")) >= WITNESS_THRESHOLD - 1
 
     def _compute_other_witnesses(self) -> Any:
         """Compute other_witnesses."""
@@ -1461,6 +1490,11 @@ class Witness(Actor):
         """Compute topup_observed_balance."""
         # Schema: peer_balances[consumer]...
         return self.load("peer_balances")[self.load("consumer")]
+
+    def _compute_topup_result(self) -> Any:
+        """Compute topup_result."""
+        # Schema: build_topup_result()...
+        return self._build_topup_result()
 
     def _build_witness_commitment_payload(self) -> Dict[str, Any]:
         """Build payload for WITNESS_COMMITMENT chain block."""
@@ -1543,6 +1577,9 @@ class Witness(Actor):
         """SELECT_WITNESSES: Deterministically select witnesses from seed and chain state."""
         import random as _random
         exclude = exclude or []
+        # Always exclude self, consumer, and provider from witness selection
+        auto_exclude = {self.peer_id, self.load('consumer'), self.load('provider')}
+        exclude = set(exclude) | {x for x in auto_exclude if x}
         
         # Get candidates from chain state
         known_peers = chain_state.get("known_peers", [])
@@ -1612,11 +1649,12 @@ class Witness(Actor):
 
     def _compute_consensus(self, preliminaries: list) -> str:
         """COMPUTE_CONSENSUS: Determine consensus from preliminary verdicts."""
-        if not preliminaries:
-            return "REJECT"
-        accept_count = 0
-        reject_count = 0
-        for p in preliminaries:
+        # Start with witness's own verdict
+        my_verdict = self.load('verdict')
+        accept_count = 1 if my_verdict in ('ACCEPT', 'accept', WitnessVerdict.ACCEPT) else 0
+        reject_count = 1 - accept_count
+        # Count verdicts from other witnesses
+        for p in (preliminaries or []):
             verdict = p.get('verdict') if isinstance(p, dict) else getattr(p, 'verdict', None)
             if verdict in ('ACCEPT', WitnessVerdict.ACCEPT):
                 accept_count += 1
@@ -1642,6 +1680,28 @@ class Witness(Actor):
             "amount": self.load("amount"),
             "status": status_enum.name,  # Use string for JSON serialization
             "observed_balance": self.load("observed_balance"),
+            "witnesses": self.load("witnesses"),
+            "witness_signatures": signatures,
+            "timestamp": self.current_time,
+        }
+
+    def _build_topup_result(self) -> Dict[str, Any]:
+        """BUILD_TOPUP_RESULT: Build the top-up result structure."""
+        topup_intent = self.load('topup_intent') or {}
+        # Extract signatures from collected votes
+        votes = self.load('topup_votes') or []
+        signatures = [v.get('signature') for v in votes if v.get('signature')]
+        # Add our own signature
+        my_signature = sign(self.chain.private_key, hash_data({'verdict': self.load('topup_verdict'), 'session_id': self.load('session_id')}))
+        signatures.append(my_signature)
+        return {
+            "session_id": self.load("session_id"),
+            "consumer": self.load("consumer"),
+            "provider": self.load("provider"),
+            "previous_total": self.load("total_escrowed"),
+            "additional_amount": topup_intent.get("additional_amount"),
+            "new_total": self.load("total_escrowed") + topup_intent.get("additional_amount", 0),
+            "observed_balance": self.load("topup_observed_balance"),
             "witnesses": self.load("witnesses"),
             "witness_signatures": signatures,
             "timestamp": self.current_time,

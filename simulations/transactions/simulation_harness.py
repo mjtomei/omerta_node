@@ -90,10 +90,14 @@ class EscrowLockSimulation:
             for msg in outgoing:
                 total_messages += 1
 
-                # Route to all other actors (simplified routing)
-                for recipient in self.actors:
-                    if recipient != msg.sender:
-                        self.route_message(msg, recipient)
+                # Use recipient if specified, otherwise broadcast
+                if msg.recipient:
+                    self.route_message(msg, msg.recipient)
+                else:
+                    # Broadcast to all other actors
+                    for recipient in self.actors:
+                        if recipient != msg.sender:
+                            self.route_message(msg, recipient)
 
         return total_messages
 
