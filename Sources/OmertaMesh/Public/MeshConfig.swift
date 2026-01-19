@@ -193,8 +193,8 @@ public struct MeshConfig: Sendable {
 
     /// Default STUN servers (Omerta STUN servers for NAT detection)
     public static let defaultSTUNServers: [String] = [
-        "52.27.78.210:3478",
-        "52.88.62.29:3478"
+        "stun1.omerta.run:3478",
+        "stun2.omerta.run:3478"
     ]
 
     // MARK: - Preset Configurations

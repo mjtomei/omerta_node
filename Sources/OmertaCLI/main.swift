@@ -3871,7 +3871,7 @@ struct NATDetect: AsyncParsableCommand {
         abstract: "Detect NAT type and discover public endpoint"
     )
 
-    @Option(name: .long, help: "STUN server to use (default: 52.27.78.210:3478)")
+    @Option(name: .long, help: "STUN server to use (default: stun1.omerta.run:3478)")
     var stunServer: String?
 
     @Option(name: .long, help: "Local port to use (default: auto)")
@@ -3890,7 +3890,7 @@ struct NATDetect: AsyncParsableCommand {
         let natConfig = (try? await configManager.load())?.nat ?? OmertaCore.NATConfig()
 
         // Determine STUN server
-        let server = stunServer ?? natConfig.stunServers.first ?? "52.27.78.210:3478"
+        let server = stunServer ?? natConfig.stunServers.first ?? "stun1.omerta.run:3478"
 
         if verbose {
             print("Using STUN server: \(server)")

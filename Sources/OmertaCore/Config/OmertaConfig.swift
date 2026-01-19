@@ -191,8 +191,8 @@ public struct MeshConfigOptions: Codable, Sendable {
 
     /// Default STUN servers (Omerta STUN servers for NAT detection)
     public static let defaultSTUNServers = [
-        "52.27.78.210:3478",
-        "52.88.62.29:3478"
+        "stun1.omerta.run:3478",
+        "stun2.omerta.run:3478"
     ]
 
     /// Default configuration (mesh disabled)
@@ -254,8 +254,8 @@ public struct NATConfig: Codable, Sendable {
 
     /// Default STUN servers (Omerta STUN servers for NAT detection)
     public static let defaultSTUNServers = [
-        "52.27.78.210:3478",
-        "52.88.62.29:3478"
+        "stun1.omerta.run:3478",
+        "stun2.omerta.run:3478"
     ]
 
     /// Timeout as TimeInterval
