@@ -212,7 +212,7 @@ class Provider(Actor):
 
         elif self.state == ProviderState.VM_PROVISIONING:
             # Timeout check
-            if current_time - self.load("state_entered_at", 0) > VM_ALLOCATION_TIMEOUT:
+            if self.current_time - self.load('state_entered_at', 0) > VM_ALLOCATION_TIMEOUT:
                 self.store("termination_reason", TerminationReason.ALLOCATION_FAILED)
                 self.transition_to(ProviderState.SESSION_ABORTED)
 
@@ -254,12 +254,12 @@ class Provider(Actor):
                 self.message_queue.remove(msg)  # Only remove processed message
 
             # Timeout check
-            if current_time - self.load("state_entered_at", 0) > CONNECTIVITY_CHECK_TIMEOUT:
+            if self.current_time - self.load('state_entered_at', 0) > CONNECTIVITY_CHECK_TIMEOUT:
                 self.store("verification_passed", True)
                 self.transition_to(ProviderState.VM_RUNNING)
 
             # Timeout check
-            if current_time - self.load("state_entered_at", 0) > CONNECTIVITY_CHECK_TIMEOUT:
+            if self.current_time - self.load('state_entered_at', 0) > CONNECTIVITY_CHECK_TIMEOUT:
                 self.store("verification_passed", False)
                 self.store("termination_reason", TerminationReason.CONNECTIVITY_FAILED)
                 self.transition_to(ProviderState.SENDING_CANCELLATION)
@@ -674,7 +674,7 @@ class Witness(Actor):
                 self.message_queue.remove(msg)  # Only remove processed message
 
             # Timeout check
-            if current_time - self.load("state_entered_at", 0) > CONNECTIVITY_VOTE_TIMEOUT:
+            if self.current_time - self.load('state_entered_at', 0) > CONNECTIVITY_VOTE_TIMEOUT:
                 self.transition_to(WitnessState.EVALUATING_CONNECTIVITY)
 
             # Auto transition with guard: LENGTH (connectivity_votes) >= LENGTH (other_witnesses) + 1
@@ -754,11 +754,11 @@ class Witness(Actor):
                 self.message_queue.remove(msg)  # Only remove processed message
 
             # Timeout check
-            if current_time - self.load("state_entered_at", 0) > ABORT_VOTE_TIMEOUT:
+            if self.current_time - self.load('state_entered_at', 0) > ABORT_VOTE_TIMEOUT:
                 self.transition_to(WitnessState.MONITORING)
 
             # Timeout check
-            if current_time - self.load("state_entered_at", 0) > ABORT_VOTE_TIMEOUT:
+            if self.current_time - self.load('state_entered_at', 0) > ABORT_VOTE_TIMEOUT:
                 self.store("session_aborted", True)
                 self.store("termination_reason", self.load("abort_reason"))
                 self.transition_to(WitnessState.ATTESTING)
@@ -836,8 +836,20 @@ class Witness(Actor):
 
         return outgoing
 
-    def _build_attestation_result_payload(self) -> Dict[str, Any]:
-        """Build payload for ATTESTATION_RESULT message."""
+    def _build_vm_connectivity_vote_payload(self) -> Dict[str, Any]:
+        """Build payload for VM_CONNECTIVITY_VOTE message."""
+        payload = {
+            "session_id": self._serialize_value(self.load("session_id")),
+            "witness": self._serialize_value(self.load("witness")),
+            "can_reach_vm": self._serialize_value(self.load("can_reach_vm")),
+            "can_see_consumer_connected": self._serialize_value(self.load("can_see_consumer_connected")),
+            "timestamp": self.current_time,
+        }
+        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
+        return payload
+
+    def _build_attestation_share_payload(self) -> Dict[str, Any]:
+        """Build payload for ATTESTATION_SHARE message."""
         payload = {
             "attestation": self._serialize_value(self.load("attestation")),
             "timestamp": self.current_time,
@@ -855,20 +867,8 @@ class Witness(Actor):
         payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
-    def _build_vm_connectivity_vote_payload(self) -> Dict[str, Any]:
-        """Build payload for VM_CONNECTIVITY_VOTE message."""
-        payload = {
-            "session_id": self._serialize_value(self.load("session_id")),
-            "witness": self._serialize_value(self.load("witness")),
-            "can_reach_vm": self._serialize_value(self.load("can_reach_vm")),
-            "can_see_consumer_connected": self._serialize_value(self.load("can_see_consumer_connected")),
-            "timestamp": self.current_time,
-        }
-        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
-        return payload
-
-    def _build_attestation_share_payload(self) -> Dict[str, Any]:
-        """Build payload for ATTESTATION_SHARE message."""
+    def _build_attestation_result_payload(self) -> Dict[str, Any]:
+        """Build payload for ATTESTATION_RESULT message."""
         payload = {
             "attestation": self._serialize_value(self.load("attestation")),
             "timestamp": self.current_time,

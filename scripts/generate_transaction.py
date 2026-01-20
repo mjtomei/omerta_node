@@ -1726,10 +1726,9 @@ class PythonActorGenerator:
             # Extract timeout parameter name: timeout(PARAM_NAME)
             if trigger.startswith("timeout(") and trigger.endswith(")"):
                 param_name = trigger[8:-1]
-                # Find a reasonable "started_at" key
-                started_at_key = self._infer_started_at_key(state_name)
+                # Use state_entered_at which is automatically set by transition_to()
                 lines.append(f"            # Timeout check")
-                lines.append(f"            if current_time - self.load(\"{started_at_key}\", 0) > {param_name}:")
+                lines.append(f"            if self.current_time - self.load('state_entered_at', 0) > {param_name}:")
                 lines.extend(self._generate_transition_code(trans, indent_level=4))
                 lines.append("")
 
@@ -1782,22 +1781,6 @@ class PythonActorGenerator:
         """Generate Python code for a guard check."""
         sanitized = sanitize_guard_name(guard_name)
         return f"self._check_{sanitized}()"
-
-    def _infer_started_at_key(self, state_name: str) -> str:
-        """Infer the 'started_at' key for timeout checking."""
-        state_lower = state_name.lower()
-        if "waiting" in state_lower:
-            # Try to find what we're waiting for (check more specific patterns first)
-            if "topup" in state_lower:
-                return "topup_sent_at"
-            elif "commitment" in state_lower:
-                return "intent_sent_at"
-            elif "result" in state_lower:
-                return "requests_sent_at"
-            elif "signature" in state_lower:
-                return "propagated_at"
-        return "state_entered_at"
-
 
 def sanitize_guard_name(guard_name: str) -> str:
     """Convert an expression or guard name into a valid Python identifier."""
