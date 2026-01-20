@@ -178,6 +178,7 @@ class Parser:
     def __init__(self, tokens: List[Token]):
         self.tokens = tokens
         self.pos = 0
+        self._grouping_depth = 0  # Track nesting inside (), [], {}
 
     def parse(self) -> Schema:
         """Parse the token stream into a Schema AST."""
@@ -254,6 +255,15 @@ class Parser:
         """Skip newlines and comments."""
         while self._match(TokenType.NEWLINE, TokenType.COMMENT):
             pass
+
+    def _skip_expr_newlines(self):
+        """Skip newlines/comments when inside grouping constructs (parens, brackets, braces).
+
+        This allows multiline expressions inside grouping constructs while preserving
+        newlines as statement separators at the top level.
+        """
+        if self._grouping_depth > 0:
+            self._skip_whitespace()
 
     def _skip_to_newline(self):
         """Skip to end of line (for inline comments)."""
@@ -380,16 +390,24 @@ class Parser:
     def _parse_message(self) -> MessageDecl:
         """Parse: message NAME from SENDER to [RECIPIENTS] signed? ( fields )"""
         token = self._expect(TokenType.MESSAGE)
+        self._skip_whitespace()
         name = self._expect(TokenType.IDENTIFIER, "Expected message name").value
 
+        self._skip_whitespace()
         self._expect(TokenType.FROM, "Expected 'from'")
+        self._skip_whitespace()
         sender = self._expect(TokenType.IDENTIFIER, "Expected sender").value
 
+        self._skip_whitespace()
         self._expect(TokenType.TO, "Expected 'to'")
+        self._skip_whitespace()
         self._expect(TokenType.LBRACKET, "Expected '[' before recipients")
+        self._skip_whitespace()
         recipients = self._parse_identifier_list()
+        self._skip_whitespace()
         self._expect(TokenType.RBRACKET, "Expected ']' after recipients")
 
+        self._skip_whitespace()
         signed = self._match(TokenType.SIGNED)
 
         self._skip_whitespace()
@@ -405,11 +423,16 @@ class Parser:
     def _parse_block(self) -> BlockDecl:
         """Parse: block NAME by [ACTORS] ( fields )"""
         token = self._expect(TokenType.BLOCK)
+        self._skip_whitespace()
         name = self._expect(TokenType.IDENTIFIER, "Expected block name").value
 
+        self._skip_whitespace()
         self._expect(TokenType.BY, "Expected 'by'")
+        self._skip_whitespace()
         self._expect(TokenType.LBRACKET, "Expected '[' before actors")
+        self._skip_whitespace()
         appended_by = self._parse_identifier_list()
+        self._skip_whitespace()
         self._expect(TokenType.RBRACKET, "Expected ']' after actors")
 
         self._skip_whitespace()
@@ -501,6 +524,7 @@ class Parser:
         """Parse trigger parameters: name type, name type, ..."""
         params = []
 
+        self._skip_whitespace()  # Allow leading whitespace
         while True:
             param_token = self._expect(TokenType.IDENTIFIER, "Expected parameter name")
             param_name = param_token.value
@@ -508,8 +532,10 @@ class Parser:
             params.append(TriggerParam(name=param_name, type=param_type,
                                        line=param_token.line, column=param_token.column))
 
+            self._skip_whitespace()  # Allow whitespace before comma
             if not self._match(TokenType.COMMA):
                 break
+            self._skip_whitespace()  # Allow whitespace after comma
 
         return params
 
@@ -534,13 +560,17 @@ class Parser:
         """Parse: FROM -> TO (on TRIGGER | auto) (when GUARD)? ( actions )? (else -> STATE ( actions ))?"""
         token = self._peek()
         from_state = self._expect(TokenType.IDENTIFIER, "Expected source state").value
+        self._skip_whitespace()  # Allow whitespace before ->
         self._expect(TokenType.ARROW, "Expected '->'")
+        self._skip_whitespace()  # Allow whitespace after ->
         to_state = self._expect(TokenType.IDENTIFIER, "Expected target state").value
 
         # Trigger or auto
+        self._skip_whitespace()  # Allow whitespace before on/auto
         trigger = None
         auto = False
         if self._match(TokenType.ON):
+            self._skip_whitespace()  # Allow whitespace after on
             # Could be a message name, trigger name, or timeout(...)
             trigger = self._parse_trigger_spec()
         elif self._match(TokenType.AUTO):
@@ -549,8 +579,10 @@ class Parser:
             raise ParseError("Expected 'on' or 'auto' after transition", self._peek())
 
         # Optional guard
+        self._skip_whitespace()  # Allow whitespace before when
         guard = None
         if self._match(TokenType.WHEN):
+            self._skip_whitespace()  # Allow whitespace after when
             guard = self._parse_guard_expression()
 
         # Optional actions block
@@ -576,7 +608,9 @@ class Parser:
     def _parse_on_guard_fail(self) -> OnGuardFail:
         """Parse: else -> STATE ( actions )"""
         token = self._peek()
+        self._skip_whitespace()  # Allow whitespace before ->
         self._expect(TokenType.ARROW, "Expected '->' after 'else'")
+        self._skip_whitespace()  # Allow whitespace after ->
         target = self._expect(TokenType.IDENTIFIER, "Expected target state for guard failure").value
 
         # Optional actions block
@@ -649,9 +683,13 @@ class Parser:
         # Check for function-call style: STORE(key, value)
         if self._check(TokenType.LPAREN):
             self._advance()  # consume (
+            self._skip_whitespace()
             key = self._expect(TokenType.IDENTIFIER, "Expected key name").value
+            self._skip_whitespace()
             self._expect(TokenType.COMMA, "Expected ',' after key")
+            self._skip_whitespace()
             value = self._parse_expression()
+            self._skip_whitespace()
             self._expect(TokenType.RPAREN, "Expected ')' to close STORE")
             action.assignments[key] = value
             return action
@@ -693,9 +731,13 @@ class Parser:
         """Parse: SEND(target, MESSAGE)"""
         token = self._expect(TokenType.SEND)
         self._expect(TokenType.LPAREN, "Expected '(' after SEND")
+        self._skip_whitespace()
         target = self._parse_send_target()
+        self._skip_whitespace()
         self._expect(TokenType.COMMA, "Expected ',' after target")
+        self._skip_whitespace()
         message = self._expect(TokenType.IDENTIFIER, "Expected message name").value
+        self._skip_whitespace()
         self._expect(TokenType.RPAREN, "Expected ')' to close SEND")
 
         return SendAction(message=message, target=target,
@@ -705,9 +747,13 @@ class Parser:
         """Parse: BROADCAST(list, MESSAGE)"""
         token = self._expect(TokenType.BROADCAST)
         self._expect(TokenType.LPAREN, "Expected '(' after BROADCAST")
+        self._skip_whitespace()
         target_list = self._expect(TokenType.IDENTIFIER, "Expected target list").value
+        self._skip_whitespace()
         self._expect(TokenType.COMMA, "Expected ',' after target list")
+        self._skip_whitespace()
         message = self._expect(TokenType.IDENTIFIER, "Expected message name").value
+        self._skip_whitespace()
         self._expect(TokenType.RPAREN, "Expected ')' to close BROADCAST")
 
         return BroadcastAction(message=message, target_list=target_list,
@@ -735,9 +781,13 @@ class Parser:
         """Parse: APPEND(list, value) - for both list appends and chain appends (my_chain)"""
         token = self._expect(TokenType.APPEND)
         self._expect(TokenType.LPAREN, "Expected '(' after APPEND")
+        self._skip_whitespace()
         list_name = self._expect(TokenType.IDENTIFIER, "Expected list name").value
+        self._skip_whitespace()
         self._expect(TokenType.COMMA, "Expected ',' after list name")
+        self._skip_whitespace()
         value = self._parse_expression()
+        self._skip_whitespace()
         self._expect(TokenType.RPAREN, "Expected ')' to close APPEND")
 
         return AppendAction(list_name=list_name, value=value,
@@ -817,13 +867,16 @@ class Parser:
         """Parse function parameters: name type, name type, ..."""
         params = []
 
+        self._skip_whitespace()  # Allow leading whitespace
         while True:
             name = self._expect(TokenType.IDENTIFIER, "Expected parameter name").value
             param_type = self._parse_type()
             params.append(FunctionParam(name=name, type=param_type))
 
+            self._skip_whitespace()  # Allow whitespace before comma
             if not self._match(TokenType.COMMA):
                 break
+            self._skip_whitespace()  # Allow whitespace after comma
 
         return params
 
@@ -1032,18 +1085,24 @@ class Parser:
     def _parse_or_expr(self) -> Expr:
         """Parse OR expression (lowest precedence)."""
         left = self._parse_and_expr()
+        self._skip_expr_newlines()  # Allow multiline before 'or' when in grouping
         while self._check(TokenType.OR):
             token = self._advance()
+            self._skip_expr_newlines()  # Allow multiline after 'or'
             right = self._parse_and_expr()
+            self._skip_expr_newlines()  # Allow multiline before next 'or'
             left = BinaryExpr(left, BinaryOperator.OR, right, token.line, token.column)
         return left
 
     def _parse_and_expr(self) -> Expr:
         """Parse AND expression."""
         left = self._parse_not_expr()
+        self._skip_expr_newlines()  # Allow multiline before 'and' when in grouping
         while self._check(TokenType.AND):
             token = self._advance()
+            self._skip_expr_newlines()  # Allow multiline after 'and'
             right = self._parse_not_expr()
+            self._skip_expr_newlines()  # Allow multiline before next 'and'
             left = BinaryExpr(left, BinaryOperator.AND, right, token.line, token.column)
         return left
 
@@ -1051,6 +1110,7 @@ class Parser:
         """Parse NOT expression (unary)."""
         if self._check(TokenType.NOT):
             token = self._advance()
+            self._skip_expr_newlines()  # Allow multiline after 'not'
             operand = self._parse_not_expr()
             return UnaryExpr(UnaryOperator.NOT, operand, token.line, token.column)
         return self._parse_comparison_expr()
@@ -1068,10 +1128,13 @@ class Parser:
             TokenType.GTE: BinaryOperator.GTE,
         }
 
+        self._skip_expr_newlines()  # Allow multiline before comparison when in grouping
         while self._peek().type in comparison_ops:
             token = self._advance()
+            self._skip_expr_newlines()  # Allow multiline after comparison operator
             op = comparison_ops[token.type]
             right = self._parse_additive_expr()
+            self._skip_expr_newlines()  # Allow multiline before next comparison
             left = BinaryExpr(left, op, right, token.line, token.column)
 
         return left
@@ -1080,10 +1143,13 @@ class Parser:
         """Parse additive expressions (+, -)."""
         left = self._parse_multiplicative_expr()
 
+        self._skip_expr_newlines()  # Allow multiline before +/- when in grouping
         while self._check(TokenType.PLUS) or self._check(TokenType.MINUS):
             token = self._advance()
+            self._skip_expr_newlines()  # Allow multiline after +/-
             op = BinaryOperator.ADD if token.type == TokenType.PLUS else BinaryOperator.SUB
             right = self._parse_multiplicative_expr()
+            self._skip_expr_newlines()  # Allow multiline before next +/-
             left = BinaryExpr(left, op, right, token.line, token.column)
 
         return left
@@ -1092,10 +1158,13 @@ class Parser:
         """Parse multiplicative expressions (*, /)."""
         left = self._parse_unary_expr()
 
+        self._skip_expr_newlines()  # Allow multiline before * or / when in grouping
         while self._check(TokenType.STAR) or self._check(TokenType.SLASH):
             token = self._advance()
+            self._skip_expr_newlines()  # Allow multiline after * or /
             op = BinaryOperator.MUL if token.type == TokenType.STAR else BinaryOperator.DIV
             right = self._parse_unary_expr()
+            self._skip_expr_newlines()  # Allow multiline before next * or /
             left = BinaryExpr(left, op, right, token.line, token.column)
 
         return left
@@ -1145,6 +1214,7 @@ class Parser:
         # Check for lambda: identifier => body
         if isinstance(expr, Identifier) and self._check(TokenType.FATARROW):
             self._advance()
+            self._skip_whitespace()  # Allow multiline after =>
             body = self._parse_expr()
             return LambdaExpr(expr.name, body, expr.line, expr.column)
 
@@ -1153,15 +1223,23 @@ class Parser:
     def _parse_function_call(self, name: str, line: int, column: int) -> FunctionCallExpr:
         """Parse function call arguments."""
         self._expect(TokenType.LPAREN, "Expected '(' for function call")
-        args = []
+        self._grouping_depth += 1
+        try:
+            self._skip_whitespace()  # Allow multiline after (
+            args = []
 
-        if not self._check(TokenType.RPAREN):
-            args.append(self._parse_expr())
-            while self._match(TokenType.COMMA):
+            if not self._check(TokenType.RPAREN):
                 args.append(self._parse_expr())
+                self._skip_whitespace()  # Allow multiline after argument
+                while self._match(TokenType.COMMA):
+                    self._skip_whitespace()  # Allow multiline after comma
+                    args.append(self._parse_expr())
+                    self._skip_whitespace()  # Allow multiline after argument
 
-        self._expect(TokenType.RPAREN, "Expected ')' after function arguments")
-        return FunctionCallExpr(name, args, line, column)
+            self._expect(TokenType.RPAREN, "Expected ')' after function arguments")
+            return FunctionCallExpr(name, args, line, column)
+        finally:
+            self._grouping_depth -= 1
 
     def _parse_primary_expr(self) -> Expr:
         """Parse primary expressions (literals, identifiers, grouped, if, struct, list)."""
@@ -1179,12 +1257,28 @@ class Parser:
         if self._check(TokenType.LBRACKET):
             return self._parse_list_literal()
 
-        # Grouped expression: ( ... )
+        # Grouped expression or paren-based struct literal: ( ... )
         if self._check(TokenType.LPAREN):
-            self._advance()
-            expr = self._parse_expr()
-            self._expect(TokenType.RPAREN, "Expected ')' after grouped expression")
-            return expr
+            paren_token = self._advance()
+            self._grouping_depth += 1
+            try:
+                self._skip_whitespace()  # Allow multiline expressions inside parens
+
+                # Check if this is a paren-based struct literal: (field = value, ...)
+                # by looking for identifier followed by = (but not ==)
+                if (self._check(TokenType.IDENTIFIER) and
+                    self._peek(1).type == TokenType.EQUALS and
+                    self._peek(2).type != TokenType.EQUALS):
+                    # Parse as struct literal using parens
+                    return self._parse_paren_struct_literal(paren_token)
+
+                # Regular grouped expression
+                expr = self._parse_expr()
+                self._skip_whitespace()  # Allow trailing newlines before )
+                self._expect(TokenType.RPAREN, "Expected ')' after grouped expression")
+                return expr
+            finally:
+                self._grouping_depth -= 1
 
         # String literal
         if self._check(TokenType.STRING):
@@ -1234,18 +1328,22 @@ class Parser:
     def _parse_if_expr(self) -> IfExpr:
         """Parse IF condition THEN expr ELSE expr."""
         token = self._advance()  # consume 'IF'
+        self._skip_whitespace()  # Allow multiline after IF
         condition = self._parse_expr()
 
         # Expect THEN - can be either IDENTIFIER 'THEN' or a dedicated token
+        self._skip_whitespace()  # Allow multiline before THEN
         then_token = self._peek()
         is_then = (then_token.type == TokenType.IDENTIFIER and then_token.value.upper() == 'THEN')
         if not is_then:
             raise ParseError("Expected 'THEN' after IF condition", then_token)
         self._advance()
 
+        self._skip_whitespace()  # Allow multiline after THEN
         then_expr = self._parse_expr()
 
         # Expect ELSE - can be either TokenType.ELSE or IDENTIFIER 'ELSE'
+        self._skip_whitespace()  # Allow multiline before ELSE
         else_token = self._peek()
         is_else = (else_token.type == TokenType.ELSE or
                    (else_token.type == TokenType.IDENTIFIER and else_token.value.upper() == 'ELSE'))
@@ -1253,6 +1351,7 @@ class Parser:
             raise ParseError("Expected 'ELSE' after THEN expression", else_token)
         self._advance()
 
+        self._skip_whitespace()  # Allow multiline after ELSE
         else_expr = self._parse_expr()
 
         return IfExpr(condition, then_expr, else_expr, token.line, token.column)
@@ -1260,57 +1359,92 @@ class Parser:
     def _parse_struct_literal(self) -> StructLiteralExpr:
         """Parse struct literal: { field: value, ... } or { ...spread, field: value }."""
         token = self._expect(TokenType.LBRACE, "Expected '{'")
+        self._grouping_depth += 1
+        try:
+            fields = {}
+            spread = None
+
+            self._skip_whitespace()
+            while not self._check(TokenType.RBRACE) and not self._at_end():
+                # Check for spread: ...expr
+                if self._check(TokenType.DOT):
+                    # Check for ... (three dots)
+                    if self._peek(1).type == TokenType.DOT and self._peek(2).type == TokenType.DOT:
+                        self._advance()  # first .
+                        self._advance()  # second .
+                        self._advance()  # third .
+                        spread = self._parse_expr()
+                        if self._check(TokenType.COMMA):
+                            self._advance()
+                        self._skip_whitespace()
+                        continue
+
+                # Regular field: name: value OR shorthand: name (equivalent to name: name)
+                field_token = self._expect(TokenType.IDENTIFIER, "Expected field name")
+                if self._check(TokenType.COLON):
+                    self._advance()  # consume :
+                    self._skip_whitespace()  # Allow multiline after :
+                    value = self._parse_expr()
+                else:
+                    # Shorthand syntax: just identifier means identifier: identifier
+                    value = Identifier(field_token.value, field_token.line, field_token.column)
+                fields[field_token.value] = value
+
+                if self._check(TokenType.COMMA):
+                    self._advance()
+                self._skip_whitespace()
+
+            self._expect(TokenType.RBRACE, "Expected '}' to close struct literal")
+            return StructLiteralExpr(fields, spread, token.line, token.column)
+        finally:
+            self._grouping_depth -= 1
+
+    def _parse_paren_struct_literal(self, token: Token) -> StructLiteralExpr:
+        """Parse paren-based struct literal: (field = value, ...).
+
+        This is an alternative struct literal syntax using parens instead of braces,
+        commonly used in compute expressions. Note: already consumed opening '('.
+        """
         fields = {}
-        spread = None
 
-        self._skip_whitespace()
-        while not self._check(TokenType.RBRACE) and not self._at_end():
-            # Check for spread: ...expr
-            if self._check(TokenType.DOT):
-                # Check for ... (three dots)
-                if self._peek(1).type == TokenType.DOT and self._peek(2).type == TokenType.DOT:
-                    self._advance()  # first .
-                    self._advance()  # second .
-                    self._advance()  # third .
-                    spread = self._parse_expr()
-                    if self._check(TokenType.COMMA):
-                        self._advance()
-                    self._skip_whitespace()
-                    continue
-
-            # Regular field: name: value OR shorthand: name (equivalent to name: name)
+        while not self._check(TokenType.RPAREN) and not self._at_end():
+            # Expect field name
             field_token = self._expect(TokenType.IDENTIFIER, "Expected field name")
-            if self._check(TokenType.COLON):
-                self._advance()  # consume :
-                value = self._parse_expr()
-            else:
-                # Shorthand syntax: just identifier means identifier: identifier
-                value = Identifier(field_token.value, field_token.line, field_token.column)
+            self._expect(TokenType.EQUALS, "Expected '=' after field name")
+            self._skip_whitespace()  # Allow multiline after =
+            value = self._parse_expr()
             fields[field_token.value] = value
 
+            # Optional comma between fields
             if self._check(TokenType.COMMA):
                 self._advance()
             self._skip_whitespace()
 
-        self._expect(TokenType.RBRACE, "Expected '}' to close struct literal")
-        return StructLiteralExpr(fields, spread, token.line, token.column)
+        self._expect(TokenType.RPAREN, "Expected ')' to close struct literal")
+        return StructLiteralExpr(fields, None, token.line, token.column)
 
     def _parse_list_literal(self) -> ListLiteralExpr:
         """Parse list literal: [a, b, c]."""
         token = self._expect(TokenType.LBRACKET, "Expected '['")
-        elements = []
+        self._grouping_depth += 1
+        try:
+            elements = []
 
-        self._skip_whitespace()
-        if not self._check(TokenType.RBRACKET):
-            elements.append(self._parse_expr())
-            while self._match(TokenType.COMMA):
-                self._skip_whitespace()
-                if self._check(TokenType.RBRACKET):
-                    break  # Allow trailing comma
+            self._skip_whitespace()
+            if not self._check(TokenType.RBRACKET):
                 elements.append(self._parse_expr())
+                self._skip_whitespace()  # Allow multiline after element
+                while self._match(TokenType.COMMA):
+                    self._skip_whitespace()
+                    if self._check(TokenType.RBRACKET):
+                        break  # Allow trailing comma
+                    elements.append(self._parse_expr())
+                    self._skip_whitespace()  # Allow multiline after element
 
-        self._expect(TokenType.RBRACKET, "Expected ']' to close list literal")
-        return ListLiteralExpr(elements, token.line, token.column)
+            self._expect(TokenType.RBRACKET, "Expected ']' to close list literal")
+            return ListLiteralExpr(elements, token.line, token.column)
+        finally:
+            self._grouping_depth -= 1
 
     def _parse_guard_expression(self) -> Expr:
         """Parse a guard expression - returns an Expr AST node."""
@@ -1330,22 +1464,30 @@ class Parser:
         name = token.value
 
         if self._match(TokenType.LANGLE):
+            self._skip_whitespace()  # Allow whitespace after <
             # Generic type: list<T> or map<K, V>
             if name.lower() == 'list':
                 element_type = self._parse_type()
+                self._skip_whitespace()  # Allow whitespace before >
                 self._expect(TokenType.RANGLE, "Expected '>' to close list type")
                 return ListType(element_type, token.line, token.column)
             elif name.lower() == 'map':
                 key_type = self._parse_type()
+                self._skip_whitespace()  # Allow whitespace before comma
                 self._expect(TokenType.COMMA, "Expected ',' in map type")
+                self._skip_whitespace()  # Allow whitespace after comma
                 value_type = self._parse_type()
+                self._skip_whitespace()  # Allow whitespace before >
                 self._expect(TokenType.RANGLE, "Expected '>' to close map type")
                 return MapType(key_type, value_type, token.line, token.column)
             else:
                 # Unknown generic - treat as simple type with generic suffix for now
                 type_params = [self._parse_type()]
+                self._skip_whitespace()  # Allow whitespace before comma or >
                 while self._match(TokenType.COMMA):
+                    self._skip_whitespace()  # Allow whitespace after comma
                     type_params.append(self._parse_type())
+                    self._skip_whitespace()  # Allow whitespace before next comma or >
                 self._expect(TokenType.RANGLE, "Expected '>' to close generic type")
                 # Fallback: create simple type with generic syntax preserved
                 param_strs = [_type_to_str(tp) for tp in type_params]
@@ -1359,10 +1501,14 @@ class Parser:
 
     def _parse_identifier_list(self) -> List[str]:
         """Parse comma-separated identifiers."""
+        self._skip_whitespace()  # Allow leading whitespace
         ids = [self._expect(TokenType.IDENTIFIER, "Expected identifier").value]
 
+        self._skip_whitespace()  # Allow whitespace before comma
         while self._match(TokenType.COMMA):
+            self._skip_whitespace()  # Allow whitespace after comma
             ids.append(self._expect(TokenType.IDENTIFIER, "Expected identifier").value)
+            self._skip_whitespace()  # Allow whitespace before next comma
 
         return ids
 

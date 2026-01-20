@@ -341,17 +341,88 @@ APPEND(chain, BALANCE_LOCK)
 
 ---
 
-## Reserved Keywords
+## Protected Keywords
 
-The following identifiers have special meaning and cannot be used as variable names:
+The following words are part of the DSL syntax and cannot be used as identifiers (variable names, message names, state names, etc.). Keywords are case-insensitive (`trigger`, `TRIGGER`, and `Trigger` are all reserved).
 
-| Keyword | Context | Meaning |
-|---------|---------|---------|
+### Declaration Keywords
+
+| Keyword | Usage |
+|---------|-------|
+| `transaction` | Transaction header declaration |
+| `imports` | Import shared definitions |
+| `parameters` | Protocol parameters block |
+| `enum` | Enum type declaration |
+| `message` | Message type declaration |
+| `block` | Block type declaration |
+| `actor` | Actor declaration |
+| `function` | Function declaration |
+| `native` | Native function modifier |
+
+### Actor Keywords
+
+| Keyword | Usage |
+|---------|-------|
+| `store` | Actor local storage block |
+| `trigger` | External trigger declaration |
+| `state` | State declaration |
+| `initial` | Initial state modifier |
+| `terminal` | Terminal state modifier |
+
+### Transition Keywords
+
+| Keyword | Usage |
+|---------|-------|
+| `on` | Message/trigger transition |
+| `auto` | Automatic transition |
+| `when` | Guard condition |
+| `else` | Guard failure handler |
+
+### Action Keywords
+
+| Keyword | Usage |
+|---------|-------|
+| `compute` | Compute and store expression |
+| `lookup` | Lookup value from chain |
+| `send` | Send message to peer |
+| `broadcast` | Broadcast message to list |
+| `append` | Append to list/chain |
+| `append_block` | Append block (legacy) |
+| `return` | Return from function |
+
+### Modifier Keywords
+
+| Keyword | Usage |
+|---------|-------|
+| `from` | Message sender |
+| `to` | Message recipients |
+| `by` | Block appenders |
+| `in` | Trigger valid states / loop iteration |
+| `with` | Additional context |
+| `signed` | Message requires signature |
+
+### Logical Operators
+
+| Keyword | Usage |
+|---------|-------|
+| `and` | Boolean AND |
+| `or` | Boolean OR |
+| `not` | Boolean NOT |
+
+---
+
+## Reserved Identifiers
+
+The following identifiers have special meaning at runtime and cannot be used as variable names:
+
+| Identifier | Context | Meaning |
+|------------|---------|---------|
 | `chain` | Any expression | The actor's own blockchain (`self.chain`) |
 | `peer_id` | Any expression | The actor's own peer identifier |
-| `current_time` | Any expression | Current simulation/real time |
 | `message` | Message transitions | The incoming message being processed |
 | `null` | Any expression | Null/None value |
+
+Note: Use `NOW()` function to get the current time instead of a reserved keyword.
 
 ### Accessing Message Fields
 
