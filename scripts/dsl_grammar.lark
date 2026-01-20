@@ -1,0 +1,236 @@
+// Transaction DSL Grammar (PEG-style for Lark)
+//
+// This grammar defines the complete syntax for the transaction protocol DSL.
+// It uses Lark's EBNF-like syntax with PEG semantics (ordered choice).
+
+// =============================================================================
+// Top-level structure
+// =============================================================================
+
+start: _NL* (declaration _NL*)*
+
+declaration: transaction_decl
+           | imports_decl
+           | parameters_block
+           | enum_decl
+           | message_decl
+           | block_decl
+           | actor_decl
+           | function_decl
+           | native_function_decl
+
+// =============================================================================
+// Transaction header
+// =============================================================================
+
+transaction_decl: "transaction" (NUMBER | IDENTIFIER) STRING STRING?
+
+// =============================================================================
+// Imports
+// =============================================================================
+
+imports_decl: "imports" import_path
+import_path: IDENTIFIER ("/" IDENTIFIER)*
+
+// =============================================================================
+// Parameters
+// =============================================================================
+
+parameters_block: "parameters" "(" _NL* (parameter _NL*)* ")"
+parameter: IDENTIFIER "=" (NUMBER | IDENTIFIER) IDENTIFIER? STRING?
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+enum_decl: "enum" IDENTIFIER STRING? "(" _NL* (enum_value _NL*)* ")"
+enum_value: IDENTIFIER COMMENT?
+
+// =============================================================================
+// Messages
+// =============================================================================
+
+message_decl: "message" IDENTIFIER "from" IDENTIFIER "to" "[" identifier_list "]" SIGNED? "(" _NL* (field _NL*)* ")"
+SIGNED: "signed"
+
+// =============================================================================
+// Blocks
+// =============================================================================
+
+block_decl: "block" IDENTIFIER "by" "[" identifier_list "]" "(" _NL* (field _NL*)* ")"
+
+// =============================================================================
+// Fields and types
+// =============================================================================
+
+field: IDENTIFIER type_expr
+
+type_expr: IDENTIFIER "<" type_expr ("," type_expr)* ">"  -> generic_type
+         | IDENTIFIER                                      -> simple_type
+
+identifier_list: IDENTIFIER ("," IDENTIFIER)*
+
+// =============================================================================
+// Actors
+// =============================================================================
+
+actor_decl: "actor" IDENTIFIER STRING? "(" _NL* actor_body* ")"
+
+actor_body: store_block _NL*
+          | trigger_decl _NL*
+          | state_decl _NL*
+          | transition _NL*
+          | COMMENT _NL*
+
+store_block: "store" "(" _NL* (field _NL*)* ")"
+
+trigger_decl: "trigger" IDENTIFIER "(" trigger_params? ")" "in" "[" identifier_list "]" STRING?
+trigger_params: trigger_param ("," trigger_param)*
+trigger_param: IDENTIFIER type_expr
+
+state_decl: "state" IDENTIFIER state_modifier* STRING?
+state_modifier: INITIAL | TERMINAL
+INITIAL: "initial"
+TERMINAL: "terminal"
+
+// =============================================================================
+// Transitions
+// =============================================================================
+
+transition: IDENTIFIER "->" IDENTIFIER transition_trigger guard_clause? action_block? else_clause?
+
+transition_trigger: "auto"                           -> auto_trigger
+                  | "on" IDENTIFIER                  -> named_trigger
+                  | "on" "timeout" "(" IDENTIFIER ")" -> timeout_trigger
+
+guard_clause: "when" expr
+
+action_block: "(" _NL* action* ")"
+
+else_clause: "else" "->" IDENTIFIER action_block?
+
+// =============================================================================
+// Actions
+// =============================================================================
+
+action: store_action _NL*
+      | lookup_action _NL*
+      | send_action _NL*
+      | broadcast_action _NL*
+      | append_action _NL*
+      | append_block_action _NL*
+      | assignment_action _NL*
+      | COMMENT _NL*
+
+store_action: "store" IDENTIFIER ("," IDENTIFIER)*        -> store_fields
+            | "STORE" "(" IDENTIFIER "," expr ")"         -> store_assign
+
+lookup_action: "lookup" IDENTIFIER "=" expr
+
+send_action: "SEND" "(" expr "," IDENTIFIER ")"
+
+broadcast_action: "BROADCAST" "(" IDENTIFIER "," IDENTIFIER ")"
+
+append_action: "APPEND" "(" IDENTIFIER "," expr ")"
+
+append_block_action: "append_block" IDENTIFIER
+
+assignment_action: IDENTIFIER "=" expr
+
+// =============================================================================
+// Functions
+// =============================================================================
+
+function_decl: "function" IDENTIFIER "(" function_params? ")" "->" type_expr "(" _NL* function_body* ")"
+function_params: function_param ("," function_param)*
+function_param: IDENTIFIER type_expr
+
+native_function_decl: "native" "function" IDENTIFIER "(" function_params? ")" "->" type_expr STRING
+
+function_body: return_stmt _NL*
+             | assignment_stmt _NL*
+             | for_stmt _NL*
+             | COMMENT _NL*
+
+return_stmt: "return"i expr
+assignment_stmt: IDENTIFIER "=" expr
+for_stmt: "FOR"i IDENTIFIER "IN"i expr ":" _NL* function_body*
+
+// =============================================================================
+// Expressions
+// =============================================================================
+
+// Precedence (lowest to highest):
+// 1. or
+// 2. and
+// 3. not
+// 4. comparison (==, !=, <, >, <=, >=)
+// 5. additive (+, -)
+// 6. multiplicative (*, /)
+// 7. unary (-, not)
+// 8. postfix (call, field access, index)
+// 9. primary (literals, identifiers, grouped)
+
+?expr: or_expr
+
+?or_expr: and_expr "or"i or_expr                         -> binary_or
+        | and_expr
+?and_expr: not_expr "and"i and_expr                      -> binary_and
+         | not_expr
+?not_expr: "not"i not_expr                               -> unary_not
+         | comparison
+
+?comparison: additive COMP_OP additive                   -> binary_comp
+           | additive
+COMP_OP: "==" | "!=" | "<=" | ">=" | "<" | ">"
+
+?additive: multiplicative "+" additive                   -> binary_add
+         | multiplicative "-" additive                   -> binary_sub
+         | multiplicative
+?multiplicative: unary "*" multiplicative                -> binary_mul
+               | unary "/" multiplicative                -> binary_div
+               | unary
+
+?unary: "-" unary                                        -> unary_neg
+      | postfix
+
+?postfix: postfix "(" args? ")"                          -> func_call
+        | postfix "." "{" expr "}"                       -> dynamic_field
+        | postfix "." IDENTIFIER                         -> field_access
+        | postfix "[" expr "]"                           -> index_access
+        | primary
+
+?primary: "(" _NL* expr _NL* ")"                         -> grouped
+        | "[" _NL* args? _NL* "]"                         -> list_literal
+        | "{" _NL* struct_fields? _NL* "}"               -> struct_literal
+        | "IF"i expr "THEN"i expr "ELSE"i expr           -> if_expr
+        | IDENTIFIER "=>" expr                           -> lambda_expr
+        | IDENTIFIER "." IDENTIFIER                      -> enum_ref
+        | NUMBER                                         -> number
+        | STRING                                         -> string
+        | "true"i                                        -> true_lit
+        | "false"i                                       -> false_lit
+        | "null"i                                        -> null_lit
+        | IDENTIFIER                                     -> identifier
+
+args: expr ("," _NL* expr)*
+
+struct_fields: struct_field ("," _NL* struct_field)*
+struct_field: "..." expr                                 -> spread_field
+            | IDENTIFIER ":" expr                        -> named_field
+            | IDENTIFIER                                 -> shorthand_field
+
+// =============================================================================
+// Terminals
+// =============================================================================
+
+IDENTIFIER: /[a-zA-Z_][a-zA-Z0-9_]*/
+NUMBER: /\-?[0-9]+(\.[0-9]+)?/
+STRING: /"[^"]*"/
+COMMENT: /#[^\n]*/
+
+// Whitespace handling
+%import common.WS_INLINE
+%ignore WS_INLINE
+_NL: /\n/+
+%ignore COMMENT
