@@ -14,12 +14,15 @@ public struct PeerEndpointInfo: Codable, Sendable, Equatable {
     public let machineId: MachineId
     public let endpoint: String
     public let natType: NATType
+    /// Whether the sender has direct contact with this peer (first-hand knowledge)
+    public let isFirstHand: Bool
 
-    public init(peerId: PeerId, machineId: MachineId, endpoint: String, natType: NATType = .unknown) {
+    public init(peerId: PeerId, machineId: MachineId, endpoint: String, natType: NATType = .unknown, isFirstHand: Bool = false) {
         self.peerId = peerId
         self.machineId = machineId
         self.endpoint = endpoint
         self.natType = natType
+        self.isFirstHand = isFirstHand
     }
 }
 
@@ -28,7 +31,11 @@ public enum MeshMessage: Codable, Sendable, Equatable {
     // MARK: - Keepalive
 
     /// Heartbeat with list of recently contacted peers (includes machineId and sender's NAT type)
-    case ping(recentPeers: [PeerEndpointInfo], myNATType: NATType)
+    /// - Parameters:
+    ///   - recentPeers: Peers we know about (delta or full list depending on context)
+    ///   - myNATType: Sender's NAT type
+    ///   - requestFullList: If true, responder should send their full peer list (for bootstrap/reconnection)
+    case ping(recentPeers: [PeerEndpointInfo], myNATType: NATType, requestFullList: Bool = false)
 
     /// Heartbeat response (includes machineId, sender's NAT type, and tells sender their observed endpoint)
     case pong(recentPeers: [PeerEndpointInfo], yourEndpoint: String, myNATType: NATType)
@@ -100,8 +107,12 @@ public enum MeshMessage: Codable, Sendable, Equatable {
     /// Invitation to hole punch (from coordinator)
     case holePunchInvite(fromPeerId: PeerId, theirEndpoint: Endpoint, theirNATType: NATType)
 
-    /// Execute hole punch now
-    case holePunchExecute(targetEndpoint: Endpoint, strategy: HolePunchStrategy)
+    /// Execute hole punch now (bidirectional - sent to both parties)
+    /// - Parameters:
+    ///   - targetEndpoint: The endpoint we should send probes to
+    ///   - peerEndpoint: Our own endpoint (for reference/logging)
+    ///   - simultaneousSend: If true, both parties should send probes simultaneously
+    case holePunchExecute(targetEndpoint: Endpoint, peerEndpoint: Endpoint? = nil, simultaneousSend: Bool = false)
 
     /// Report hole punch result
     case holePunchResult(targetPeerId: PeerId, success: Bool, establishedEndpoint: Endpoint?)

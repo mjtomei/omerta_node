@@ -630,9 +630,9 @@ struct Start: AsyncParsableCommand {
         shutdownCoordinator: ShutdownCoordinator
     ) async -> ControlResponse {
         switch command {
-        case .ping(let peerId, let timeout):
+        case .ping(let peerId, let timeout, let requestFullList):
             // Ping through the daemon's mesh network
-            if let result = await daemon.ping(peerId: peerId, timeout: TimeInterval(timeout)) {
+            if let result = await daemon.ping(peerId: peerId, timeout: TimeInterval(timeout), requestFullList: requestFullList) {
                 return .pingResult(ControlResponse.PingResultData(
                     peerId: result.peerId,
                     endpoint: result.endpoint,

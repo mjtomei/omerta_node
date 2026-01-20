@@ -111,10 +111,11 @@ final class ObservedEndpointTests: XCTestCase {
 
         let ping = MeshMessage.ping(recentPeers: [peerInfo], myNATType: .unknown)
 
-        // Verify ping only has recentPeers and myNATType
-        if case .ping(let peers, _) = ping {
+        // Verify ping has recentPeers, myNATType, and requestFullList
+        if case .ping(let peers, _, let requestFullList) = ping {
             XCTAssertEqual(peers.count, 1, "Should have 1 peer")
             XCTAssertEqual(peers[0].peerId, "test-peer-123", "Peer ID should match")
+            XCTAssertFalse(requestFullList, "requestFullList should default to false")
         } else {
             XCTFail("Should match ping pattern")
         }

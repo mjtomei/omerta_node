@@ -248,11 +248,12 @@ public actor HolePunchManager {
             )
             return nil
 
-        case .holePunchExecute(let targetEndpoint, let strategy):
-            // Coordinator tells us to execute
+        case .holePunchExecute(let targetEndpoint, let peerEndpoint, let simultaneousSend):
+            // Coordinator tells us to execute (bidirectional - both parties receive this)
             await handleExecute(
                 targetEndpoint: targetEndpoint,
-                strategy: strategy,
+                peerEndpoint: peerEndpoint,
+                simultaneousSend: simultaneousSend,
                 from: peerId
             )
             return nil
@@ -344,7 +345,8 @@ public actor HolePunchManager {
 
     private func handleExecute(
         targetEndpoint: Endpoint,
-        strategy: HolePunchStrategy,
+        peerEndpoint: Endpoint?,
+        simultaneousSend: Bool,
         from coordinatorId: PeerId
     ) async {
         // Extract target peer ID from pending results
@@ -353,7 +355,9 @@ public actor HolePunchManager {
             return
         }
 
-        logger.info("Executing hole punch to \(targetEndpoint) with strategy \(strategy.rawValue)")
+        // Determine strategy based on simultaneousSend flag
+        let strategy: HolePunchStrategy = simultaneousSend ? .simultaneous : .initiatorFirst
+        logger.info("Executing hole punch to \(targetEndpoint) with strategy \(strategy.rawValue) (simultaneousSend: \(simultaneousSend))")
 
         // Execute hole punch
         let startTime = Date()

@@ -147,10 +147,27 @@ public actor MeshNode {
     /// Known peer connections
     private var peers: [PeerId: PeerConnection] = [:]
 
-    /// Potential relays for symmetric NAT peers
+    /// Known contact information for reaching machines
+    public struct KnownContact: Sendable {
+        public let contactMachineId: MachineId
+        public let contactPeerId: PeerId
+        public let lastSeen: Date
+        public let isFirstHand: Bool
+    }
+
+    /// Known contacts for all peers (not just symmetric NAT)
+    /// Maps target machineId -> list of contacts who can reach that machine
+    private var knownContacts: [MachineId: [KnownContact]] = [:]
+    private let maxContactsPerMachine = 10
+
+    /// Legacy: Potential relays for symmetric NAT peers (kept for backward compatibility)
     /// Maps symmetric NAT peer ID -> list of potential relays (most recent first)
     private var potentialRelays: [PeerId: [(relayPeerId: PeerId, lastSeen: Date)]] = [:]
     private let maxRelaysPerPeer = 10
+
+    /// Machines we've received messages directly from (not via gossip)
+    /// Used to set isFirstHand flag in gossip messages
+    private var directContacts: Set<MachineId> = []
 
     /// Message IDs we've seen (for deduplication)
     private var seenMessageIds: Set<String> = []
@@ -297,23 +314,48 @@ public actor MeshNode {
 
     /// Set up the connection keepalive callbacks
     private func setupConnectionKeepalive() async {
-        await connectionKeepalive.setPingSender { [weak self] (peerId: PeerId, endpoint: String) -> Bool in
-            guard let self = self else { return false }
-            return await self.sendPing(to: peerId, timeout: 5.0)
+        // Provide endpoint lookup for keepalive
+        await connectionKeepalive.setEndpointProvider { [weak self] (peerId: PeerId, machineId: MachineId) -> String? in
+            guard let self = self else { return nil }
+            // Get best endpoint for this specific machine
+            return await self.endpointManager.getBestEndpoint(peerId: peerId, machineId: machineId)
         }
 
-        await connectionKeepalive.setFailureHandler { [weak self] (peerId: PeerId, endpoint: String) in
+        // Provide ping sender for keepalive
+        await connectionKeepalive.setPingSender { [weak self] (peerId: PeerId, machineId: MachineId, endpoint: String) -> Bool in
+            guard let self = self else { return false }
+            // Send ping to specific endpoint
+            return await self.sendPingToEndpoint(peerId: peerId, endpoint: endpoint, timeout: 5.0)
+        }
+
+        // Handle keepalive failures
+        await connectionKeepalive.setFailureHandler { [weak self] (peerId: PeerId, machineId: MachineId, endpoint: String) in
             guard let self = self else { return }
-            self.logger.warning("Connection to \(peerId) failed keepalive check")
-            // Remove from direct connections - could trigger reconnection or relay fallback
-            await self.handleKeepaliveFailure(peerId: peerId, endpoint: endpoint)
+            self.logger.warning("Connection to \(peerId.prefix(8))...:\(machineId.prefix(8))... failed keepalive check")
+            await self.handleKeepaliveFailure(peerId: peerId, machineId: machineId, endpoint: endpoint)
         }
     }
 
-    /// Handle a keepalive failure for a peer
-    private func handleKeepaliveFailure(peerId: PeerId, endpoint: String) async {
+    /// Send a ping to a specific endpoint (for keepalive)
+    private func sendPingToEndpoint(peerId: PeerId, endpoint: String, timeout: TimeInterval) async -> Bool {
+        // Build our recentPeers to send (with machineId and NAT type)
+        let peerInfoList = await buildPeerEndpointInfoList()
+        let sentPeers = Array(peerInfoList.prefix(5))
+        let myNATType = await getPredictedNATType().type
+        let ping = MeshMessage.ping(recentPeers: sentPeers, myNATType: myNATType)
+
+        do {
+            let _ = try await sendAndReceive(ping, to: endpoint, timeout: timeout)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Handle a keepalive failure for a machine
+    private func handleKeepaliveFailure(peerId: PeerId, machineId: MachineId, endpoint: String) async {
         // Log the failure - endpointManager handles endpoint lifecycle via activity tracking
-        logger.info("Keepalive failure for \(peerId) at \(endpoint)")
+        logger.info("Keepalive failure for \(peerId.prefix(8))...:\(machineId.prefix(8))... at \(endpoint)")
 
         // Notify freshness manager about the failure
         let _ = await freshnessManager.pathFailureReporter.reportFailure(
@@ -499,6 +541,10 @@ public actor MeshNode {
             endpoint: endpointString
         )
 
+        // Record direct contact for first-hand tracking
+        // This machine has sent us a message directly, so we have first-hand knowledge of it
+        directContacts.insert(envelope.machineId)
+
         // Log peer seen event
         await eventLogger?.recordPeerSeen(
             peerId: envelope.fromPeerId,
@@ -508,6 +554,11 @@ public actor MeshNode {
 
         // Check if this is a response to a pending request
         if case .pong(_, _, _) = envelope.payload {
+            // Add/update machine in keepalive monitoring
+            // This happens before resuming the continuation so sendPingWithDetails sees updated state
+            await connectionKeepalive.addMachine(peerId: envelope.fromPeerId, machineId: envelope.machineId)
+            await connectionKeepalive.recordSuccessfulCommunication(peerId: envelope.fromPeerId, machineId: envelope.machineId)
+
             // Find any pending ping request
             for (requestId, pending) in pendingResponses {
                 if requestId.hasPrefix("ping-") {
@@ -548,12 +599,12 @@ public actor MeshNode {
     /// Default message handling for basic protocol
     private func handleDefaultMessage(_ message: MeshMessage, from peerId: PeerId, endpoint: String, hopCount: Int = 0) async {
         switch message {
-        case .ping(let recentPeers, let theirNATType):
+        case .ping(let recentPeers, let theirNATType, let requestFullList):
             // Check if this is a NEW or RECONNECTING peer BEFORE recording
-            // A peer is considered "reconnecting" if we haven't heard from them in 60+ seconds
-            // (4 missed keepalives at 15s interval)
+            // A peer is considered "reconnecting" if we haven't heard from them in 10+ minutes
+            // (updated from 60s to 600s for more efficient gossip)
             let hasEndpoints = !(await endpointManager.getAllEndpoints(peerId: peerId).isEmpty)
-            let hasRecentContact = await freshnessManager.hasRecentContact(peerId, maxAgeSeconds: 60)
+            let hasRecentContact = await freshnessManager.hasRecentContact(peerId, maxAgeSeconds: 600)
             let isNewOrReconnecting = !hasEndpoints || !hasRecentContact
 
             // Track sender's NAT type
@@ -567,18 +618,20 @@ public actor MeshNode {
                 connectionType: .inboundDirect
             )
 
-            // Build response - if NEW or RECONNECTING peer, send ALL known peers; otherwise send recent subset
+            // Build response - if requestFullList, NEW or RECONNECTING peer, send ALL known peers; otherwise send delta
             let myPeers: [PeerEndpointInfo]
-            if isNewOrReconnecting {
-                // New/reconnecting peer gets full peer list to bootstrap their view of the network
+            if requestFullList || isNewOrReconnecting {
+                // Explicit request or new/reconnecting peer gets full peer list to bootstrap their view of the network
                 myPeers = await buildPeerEndpointInfoList()
-                if hasEndpoints {
+                if requestFullList {
+                    logger.info("Peer \(peerId.prefix(8))... requested full list - sending \(myPeers.count) known peers")
+                } else if hasEndpoints {
                     logger.info("Reconnecting peer \(peerId.prefix(8))... - sending \(myPeers.count) known peers")
                 } else {
                     logger.info("New peer \(peerId.prefix(8))... contacted us - sending \(myPeers.count) known peers")
                 }
             } else {
-                // Known peer gets recent peers + propagation queue items
+                // Known peer gets recent peers + propagation queue items (delta gossip)
                 myPeers = await buildPeerEndpointInfoListWithPropagation(excluding: peerId)
             }
 
@@ -587,6 +640,10 @@ public actor MeshNode {
             await send(.pong(recentPeers: myPeers, yourEndpoint: endpoint, myNATType: myNATType), to: endpoint)
 
             // Learn about new peers from the ping WITH machineId and NAT type
+            // Get sender's machine ID for contact tracking
+            let senderMachines = await endpointManager.getAllMachines(peerId: peerId)
+            let senderMachineId = senderMachines.first(where: { $0.bestEndpoint == endpoint })?.machineId ?? "unknown-\(peerId.prefix(8))"
+
             for peerInfo in recentPeers where peerInfo.peerId != self.peerId {
                 // Check if we already know about this peer's endpoint
                 let existingEndpoints = await endpointManager.getAllEndpoints(peerId: peerInfo.peerId)
@@ -606,13 +663,24 @@ public actor MeshNode {
                 // Track peer's NAT type from gossip
                 await endpointManager.updateNATType(peerId: peerInfo.peerId, natType: peerInfo.natType)
 
-                // RELAY DISCOVERY: If this peer is behind symmetric NAT, the sender becomes a potential relay
+                // CONTACT TRACKING: Record the sender as a known contact for ALL peers (not just symmetric)
+                // This helps us route messages to peers we can't reach directly
+                recordKnownContact(
+                    for: peerInfo.machineId,
+                    targetPeerId: peerInfo.peerId,
+                    via: senderMachineId,
+                    contactPeerId: peerId,
+                    isFirstHand: peerInfo.isFirstHand
+                )
+
+                // LEGACY: Still record potential relay for symmetric NAT peers
                 if peerInfo.natType == .symmetric {
                     recordPotentialRelay(for: peerInfo.peerId, via: peerId)
                 }
 
-                // GOSSIP: If this is a newly learned peer, add to propagation queue
-                if isNewlyLearnedPeer {
+                // GOSSIP: Propagate if new peer OR endpoint has changed
+                let endpointChanged = !isNewlyLearnedPeer && !existingEndpoints.contains(peerInfo.endpoint)
+                if isNewlyLearnedPeer || endpointChanged {
                     addToPropagationQueue(peerInfo)
                 }
             }
@@ -643,6 +711,10 @@ public actor MeshNode {
             await updateObservedEndpoint(yourEndpoint, reportedBy: peerId)
 
             // Learn about new peers from the pong WITH machineId and NAT type
+            // Get sender's machine ID for contact tracking
+            let senderMachinesPong = await endpointManager.getAllMachines(peerId: peerId)
+            let senderMachineIdPong = senderMachinesPong.first(where: { $0.bestEndpoint == endpoint })?.machineId ?? "unknown-\(peerId.prefix(8))"
+
             for peerInfo in recentPeers where peerInfo.peerId != self.peerId {
                 // Check if we already know about this peer's endpoint
                 let existingEndpoints = await endpointManager.getAllEndpoints(peerId: peerInfo.peerId)
@@ -666,13 +738,24 @@ public actor MeshNode {
                 // Track peer's NAT type from gossip
                 await endpointManager.updateNATType(peerId: peerInfo.peerId, natType: peerInfo.natType)
 
-                // RELAY DISCOVERY: If this peer is behind symmetric NAT, the sender becomes a potential relay
+                // CONTACT TRACKING: Record the sender as a known contact for ALL peers (not just symmetric)
+                // This helps us route messages to peers we can't reach directly
+                recordKnownContact(
+                    for: peerInfo.machineId,
+                    targetPeerId: peerInfo.peerId,
+                    via: senderMachineIdPong,
+                    contactPeerId: peerId,
+                    isFirstHand: peerInfo.isFirstHand
+                )
+
+                // LEGACY: Still record potential relay for symmetric NAT peers
                 if peerInfo.natType == .symmetric {
                     recordPotentialRelay(for: peerInfo.peerId, via: peerId)
                 }
 
-                // GOSSIP: If this is a newly learned peer, add to propagation queue
-                if isNewlyLearnedPeer {
+                // GOSSIP: Propagate if new peer OR endpoint has changed
+                let endpointChanged = !isNewlyLearnedPeer && !existingEndpoints.contains(peerInfo.endpoint)
+                if isNewlyLearnedPeer || endpointChanged {
                     addToPropagationQueue(peerInfo)
                 }
             }
@@ -1033,6 +1116,72 @@ public actor MeshNode {
         potentialRelays.removeValue(forKey: peerId)
     }
 
+    // MARK: - Known Contacts (All NAT Types)
+
+    /// Record a known contact for any machine (not just symmetric NAT)
+    /// Called when we receive gossip about a peer - the sender becomes a potential contact path
+    public func recordKnownContact(
+        for targetMachineId: MachineId,
+        targetPeerId: PeerId,
+        via contactMachineId: MachineId,
+        contactPeerId: PeerId,
+        isFirstHand: Bool
+    ) {
+        // Don't record ourselves as a contact
+        guard contactPeerId != peerId else { return }
+        // Don't record the target as its own contact
+        guard contactMachineId != targetMachineId else { return }
+
+        var contacts = knownContacts[targetMachineId] ?? []
+
+        // Remove existing entry for this contact (to update position)
+        contacts.removeAll { $0.contactMachineId == contactMachineId }
+
+        // Add at front (most recent)
+        contacts.insert(KnownContact(
+            contactMachineId: contactMachineId,
+            contactPeerId: contactPeerId,
+            lastSeen: Date(),
+            isFirstHand: isFirstHand
+        ), at: 0)
+
+        // Keep only max contacts
+        knownContacts[targetMachineId] = Array(contacts.prefix(maxContactsPerMachine))
+
+        logger.debug("Recorded contact \(contactPeerId.prefix(8))... for machine \(targetMachineId.prefix(8))... (firstHand: \(isFirstHand))")
+    }
+
+    /// Get contacts for a machine with priority sorting
+    /// Priority: first-hand Public/Shared > first-hand Per-Peer > second-hand Public/Shared > second-hand Per-Peer
+    public func getContactsForMachine(_ machineId: MachineId) async -> [KnownContact] {
+        guard let contacts = knownContacts[machineId] else { return [] }
+
+        // Pre-fetch NAT types for all contacts
+        var natTypes: [PeerId: NATType] = [:]
+        for contact in contacts {
+            natTypes[contact.contactPeerId] = await endpointManager.getNATType(peerId: contact.contactPeerId) ?? .unknown
+        }
+
+        return contacts.sorted { a, b in
+            let aNatType = natTypes[a.contactPeerId] ?? .unknown
+            let bNatType = natTypes[b.contactPeerId] ?? .unknown
+            let aIsRestricted = aNatType == .symmetric || aNatType == .portRestrictedCone
+            let bIsRestricted = bNatType == .symmetric || bNatType == .portRestrictedCone
+
+            // First-hand before second-hand
+            if a.isFirstHand != b.isFirstHand { return a.isFirstHand }
+            // Public/Shared before Per-Peer (restricted)
+            if aIsRestricted != bIsRestricted { return !aIsRestricted }
+            // Most recent
+            return a.lastSeen > b.lastSeen
+        }
+    }
+
+    /// Clear known contacts for a machine (e.g., when direct connection established)
+    public func clearKnownContacts(for machineId: MachineId) {
+        knownContacts.removeValue(forKey: machineId)
+    }
+
     // MARK: - Relay Forwarding
 
     /// Handle a relay forward request - forward payload to target peer
@@ -1296,14 +1445,18 @@ public actor MeshNode {
 
     /// Send a ping to a peer and wait for pong response
     /// Returns true if pong received, false if timeout or error
-    public func sendPing(to targetPeerId: PeerId, timeout: TimeInterval = 3.0) async -> Bool {
-        let result = await sendPingWithDetails(to: targetPeerId, timeout: timeout)
+    public func sendPing(to targetPeerId: PeerId, timeout: TimeInterval = 3.0, requestFullList: Bool = false) async -> Bool {
+        let result = await sendPingWithDetails(to: targetPeerId, timeout: timeout, requestFullList: requestFullList)
         return result != nil
     }
 
     /// Send a ping to a peer and return detailed results including gossip info
-    /// Returns nil if timeout or error
-    public func sendPingWithDetails(to targetPeerId: PeerId, timeout: TimeInterval = 3.0) async -> PingResult? {
+    /// - Parameters:
+    ///   - targetPeerId: The peer to ping
+    ///   - timeout: Timeout in seconds
+    ///   - requestFullList: If true, request the peer's full peer list (for bootstrap/reconnection)
+    /// - Returns: PingResult with latency and gossip info, or nil if failed
+    public func sendPingWithDetails(to targetPeerId: PeerId, timeout: TimeInterval = 3.0, requestFullList: Bool = false) async -> PingResult? {
         // Get the endpoint for this peer
         guard let endpoint = await endpointManager.getAllEndpoints(peerId: targetPeerId).first else {
             logger.debug("sendPing: No endpoint for peer \(targetPeerId)")
@@ -1314,7 +1467,7 @@ public actor MeshNode {
         let peerInfoList = await buildPeerEndpointInfoList()
         let sentPeers = Array(peerInfoList.prefix(5))
         let myNATType = await getPredictedNATType().type
-        let ping = MeshMessage.ping(recentPeers: sentPeers, myNATType: myNATType)
+        let ping = MeshMessage.ping(recentPeers: sentPeers, myNATType: myNATType, requestFullList: requestFullList)
 
         let startTime = Date()
         do {
@@ -1365,12 +1518,8 @@ public actor MeshNode {
                 // Log latency sample
                 await eventLogger?.recordLatencySample(peerId: targetPeerId, latencyMs: Double(latencyMs))
 
-                // Add to keepalive monitoring if not already monitored
-                if await !connectionKeepalive.isMonitoring(peerId: targetPeerId) {
-                    await connectionKeepalive.addConnection(peerId: targetPeerId, endpoint: endpoint)
-                } else {
-                    await connectionKeepalive.recordSuccessfulCommunication(peerId: targetPeerId)
-                }
+                // Note: Keepalive monitoring is handled in handleIncomingData when pong is received
+                // This ensures we have the machineId from the response envelope
 
                 return PingResult(
                     peerId: targetPeerId,
@@ -1421,7 +1570,12 @@ public actor MeshNode {
 
     // MARK: - Helpers
 
-    /// Build a list of peer endpoint info for gossip (includes machineId and natType)
+    /// Check if we have direct contact with a machine (first-hand knowledge)
+    public func hasDirectContact(with machineId: MachineId) -> Bool {
+        directContacts.contains(machineId)
+    }
+
+    /// Build a list of peer endpoint info for gossip (includes machineId, natType, and isFirstHand)
     func buildPeerEndpointInfoList() async -> [PeerEndpointInfo] {
         var result: [PeerEndpointInfo] = []
         for peerId in await endpointManager.allPeerIds {
@@ -1429,11 +1583,14 @@ public actor MeshNode {
             let natType = await endpointManager.getNATType(peerId: peerId) ?? .unknown
             for machine in await endpointManager.getAllMachines(peerId: peerId) {
                 if let endpoint = machine.bestEndpoint {
+                    // Set isFirstHand based on whether we have direct contact with this machine
+                    let isFirstHand = directContacts.contains(machine.machineId)
                     result.append(PeerEndpointInfo(
                         peerId: machine.peerId,
                         machineId: machine.machineId,
                         endpoint: endpoint,
-                        natType: natType
+                        natType: natType,
+                        isFirstHand: isFirstHand
                     ))
                 }
             }
@@ -1443,7 +1600,7 @@ public actor MeshNode {
     }
 
     /// Build peer list including propagation queue items, decrementing their counts
-    /// Used for regular keepalive responses to existing peers
+    /// Used for regular keepalive responses to existing peers (delta gossip)
     func buildPeerEndpointInfoListWithPropagation(excluding excludePeerId: PeerId) async -> [PeerEndpointInfo] {
         var result: [PeerEndpointInfo] = []
 
@@ -1453,11 +1610,14 @@ public actor MeshNode {
             let natType = await endpointManager.getNATType(peerId: peerId) ?? .unknown
             for machine in await endpointManager.getAllMachines(peerId: peerId) {
                 if let endpoint = machine.bestEndpoint {
+                    // Set isFirstHand based on whether we have direct contact with this machine
+                    let isFirstHand = directContacts.contains(machine.machineId)
                     result.append(PeerEndpointInfo(
                         peerId: machine.peerId,
                         machineId: machine.machineId,
                         endpoint: endpoint,
-                        natType: natType
+                        natType: natType,
+                        isFirstHand: isFirstHand
                     ))
                 }
             }

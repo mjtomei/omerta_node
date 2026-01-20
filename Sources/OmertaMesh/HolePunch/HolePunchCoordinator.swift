@@ -192,31 +192,38 @@ public actor HolePunchCoordinator {
             "strategy": "\(compatibility.strategy.rawValue)"
         ])
 
-        // Send invite to target peer
-        let inviteMessage = MeshMessage.holePunchInvite(
-            fromPeerId: initiatorPeerId,
-            theirEndpoint: initiatorEndpoint,
-            theirNATType: initiatorNATType
+        // Bidirectional coordination: send holePunchExecute to BOTH parties simultaneously
+        // Both parties should send probes to each other at the same time
+        let simultaneousSend = compatibility.strategy == .simultaneous
+
+        // Tell initiator to send to target
+        let executeToInitiator = MeshMessage.holePunchExecute(
+            targetEndpoint: targetEndpoint,
+            peerEndpoint: initiatorEndpoint,
+            simultaneousSend: simultaneousSend
         )
-        await sendMessage?(inviteMessage, targetPeerId)
+
+        // Tell target to send to initiator
+        let executeToTarget = MeshMessage.holePunchExecute(
+            targetEndpoint: initiatorEndpoint,
+            peerEndpoint: targetEndpoint,
+            simultaneousSend: simultaneousSend
+        )
+
+        // Send both execute messages
+        await sendMessage?(executeToInitiator, initiatorPeerId)
+        await sendMessage?(executeToTarget, targetPeerId)
 
         // Update state
         var updatedRequest = request
-        updatedRequest.state = .inviteSent
-        requests[request.requestId] = updatedRequest
-
-        // After invite is sent, tell initiator to execute
-        // The strategy determines who sends first
-        let strategy = compatibility.strategy
-        let executeMessage = MeshMessage.holePunchExecute(
-            targetEndpoint: targetEndpoint,
-            strategy: strategy
-        )
-        await sendMessage?(executeMessage, initiatorPeerId)
-
-        // Update state
         updatedRequest.state = .executing
         requests[request.requestId] = updatedRequest
+
+        logger.info("Sent bidirectional hole punch execute to both parties", metadata: [
+            "initiator": "\(initiatorPeerId)",
+            "target": "\(targetPeerId)",
+            "simultaneousSend": "\(simultaneousSend)"
+        ])
 
         return true
     }

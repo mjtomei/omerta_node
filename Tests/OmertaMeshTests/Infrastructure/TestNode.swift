@@ -187,7 +187,7 @@ public actor TestNode {
     /// Default message handling
     private func handleDefaultMessage(_ message: MeshMessage, from senderId: String) async {
         switch message {
-        case .ping(_, _):
+        case .ping(_, _, _):
             // Respond with pong including recent peers with endpoints
             var peerEndpointInfoList: [PeerEndpointInfo] = []
             for (peerId, contact) in recentContacts {

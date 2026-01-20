@@ -3407,6 +3407,9 @@ struct Ping: AsyncParsableCommand {
     @Flag(name: .shortAndLong, help: "Show detailed gossip information")
     var verbose: Bool = false
 
+    @Flag(name: .long, help: "Request full peer list (default is delta/subset)")
+    var requestFullList: Bool = false
+
     mutating func run() async throws {
         // Delegate to MeshPing implementation
         var meshPing = MeshPing()
@@ -3416,6 +3419,7 @@ struct Ping: AsyncParsableCommand {
         meshPing.timeout = timeout
         meshPing.count = count
         meshPing.verbose = verbose
+        meshPing.requestFullList = requestFullList
         try await meshPing.run()
     }
 }
@@ -3760,6 +3764,9 @@ struct MeshPing: AsyncParsableCommand {
     @Flag(name: .shortAndLong, help: "Show detailed gossip information")
     var verbose: Bool = false
 
+    @Flag(name: .long, help: "Request full peer list (default is delta/subset)")
+    var requestFullList: Bool = false
+
     mutating func run() async throws {
         // Get peer ID from either argument or --peer flag
         guard let peerId = peerIdArg ?? peer else {
@@ -3816,7 +3823,7 @@ struct MeshPing: AsyncParsableCommand {
 
         for i in 0..<count {
             do {
-                let response = try await client.send(.ping(peerId: resolvedPeerId, timeout: timeout))
+                let response = try await client.send(.ping(peerId: resolvedPeerId, timeout: timeout, requestFullList: requestFullList))
 
                 switch response {
                 case .pingResult(let result):

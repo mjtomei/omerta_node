@@ -324,12 +324,13 @@ public actor MeshNetwork {
     /// - Parameters:
     ///   - targetPeerId: The peer to ping
     ///   - timeout: Timeout in seconds
+    ///   - requestFullList: If true, request the peer's full peer list (for bootstrap/reconnection)
     /// - Returns: PingResult with latency and gossip info, or nil if failed
-    public func ping(_ targetPeerId: PeerId, timeout: TimeInterval = 3.0) async -> MeshNode.PingResult? {
+    public func ping(_ targetPeerId: PeerId, timeout: TimeInterval = 3.0, requestFullList: Bool = false) async -> MeshNode.PingResult? {
         guard state == .running, let node = meshNode else {
             return nil
         }
-        return await node.sendPingWithDetails(to: targetPeerId, timeout: timeout)
+        return await node.sendPingWithDetails(to: targetPeerId, timeout: timeout, requestFullList: requestFullList)
     }
 
     /// Receive a message handler

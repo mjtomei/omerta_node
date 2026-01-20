@@ -714,8 +714,12 @@ public actor MeshProviderDaemon {
     }
 
     /// Ping a peer through the mesh network
-    public func ping(peerId: String, timeout: TimeInterval = 5) async -> MeshNode.PingResult? {
-        await mesh.ping(peerId, timeout: timeout)
+    /// - Parameters:
+    ///   - peerId: The peer to ping
+    ///   - timeout: Timeout in seconds
+    ///   - requestFullList: If true, request the peer's full peer list (for bootstrap/reconnection)
+    public func ping(peerId: String, timeout: TimeInterval = 5, requestFullList: Bool = false) async -> MeshNode.PingResult? {
+        await mesh.ping(peerId, timeout: timeout, requestFullList: requestFullList)
     }
 
     /// Connect to a peer through the mesh network
