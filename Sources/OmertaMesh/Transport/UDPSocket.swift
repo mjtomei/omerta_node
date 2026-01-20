@@ -1,4 +1,5 @@
 // UDPSocket.swift - Async/await UDP socket wrapper using SwiftNIO
+// Supports both IPv4 and IPv6 with dual-stack socket
 
 import Foundation
 import NIOCore
@@ -6,12 +7,16 @@ import NIOPosix
 import Logging
 
 /// Async/await wrapper for UDP sockets using SwiftNIO
+/// Uses dual-stack IPv6 socket to support both IPv4 and IPv6
 public actor UDPSocket {
     /// The NIO event loop group
     private let group: EventLoopGroup
 
-    /// The bound channel
+    /// The bound channel (IPv6 dual-stack preferred, IPv4 fallback)
     private var channel: Channel?
+
+    /// Whether we're using an IPv6 socket (for address conversion)
+    private var isIPv6Socket = false
 
     /// The local address we're bound to
     public private(set) var localAddress: SocketAddress?
@@ -26,7 +31,7 @@ public actor UDPSocket {
     private let logger = Logger(label: "io.omerta.mesh.udp")
 
     /// Bootstrap for creating datagram channels
-    private var bootstrap: DatagramBootstrap {
+    private func makeBootstrap() -> DatagramBootstrap {
         DatagramBootstrap(group: group)
             .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .channelInitializer { channel in
@@ -40,18 +45,44 @@ public actor UDPSocket {
 
     // MARK: - Lifecycle
 
-    /// Bind to a specific port
-    public func bind(host: String = "0.0.0.0", port: Int) async throws {
+    /// Bind to a specific port with dual-stack IPv6 support
+    /// Uses IPv6 dual-stack socket (accepts both IPv4 and IPv6) with IPv4 fallback
+    public func bind(host: String = "::", port: Int) async throws {
         guard !isRunning else {
             throw UDPSocketError.alreadyRunning
         }
 
-        let channel = try await bootstrap.bind(host: host, port: port).get()
-        self.channel = channel
-        self.localAddress = channel.localAddress
+        // Try IPv6 dual-stack first (works with both IPv4 and IPv6)
+        // Fall back to IPv4-only if IPv6 fails
+        let (boundChannel, usingIPv6) = try await bindDualStack(port: port, preferredHost: host)
+
+        self.channel = boundChannel
+        self.isIPv6Socket = usingIPv6
+        self.localAddress = boundChannel.localAddress
         self.isRunning = true
 
-        logger.info("UDP socket bound to \(channel.localAddress?.description ?? "unknown")")
+        let socketType = usingIPv6 ? "IPv6 dual-stack" : "IPv4"
+        logger.info("UDP socket bound to \(boundChannel.localAddress?.description ?? "unknown") (\(socketType))")
+    }
+
+    /// Attempt to bind with dual-stack support
+    private func bindDualStack(port: Int, preferredHost: String) async throws -> (Channel, Bool) {
+        // If explicitly requesting IPv4, use it
+        if preferredHost == "0.0.0.0" {
+            let channel = try await makeBootstrap().bind(host: "0.0.0.0", port: port).get()
+            return (channel, false)
+        }
+
+        // Try IPv6 dual-stack first
+        do {
+            let channel = try await makeBootstrap().bind(host: "::", port: port).get()
+            return (channel, true)
+        } catch {
+            logger.info("IPv6 bind failed, falling back to IPv4: \(error)")
+            // Fall back to IPv4
+            let channel = try await makeBootstrap().bind(host: "0.0.0.0", port: port).get()
+            return (channel, false)
+        }
     }
 
     /// Close the socket
@@ -75,18 +106,46 @@ public actor UDPSocket {
             throw UDPSocketError.notRunning
         }
 
-        let buffer = channel.allocator.buffer(bytes: data)
-        let envelope = AddressedEnvelope(remoteAddress: address, data: buffer)
+        // Convert address if needed for socket type compatibility
+        let sendAddress = try convertAddressForSocket(address)
 
-        logger.info("UDP sending \(data.count) bytes to \(address)")
+        let buffer = channel.allocator.buffer(bytes: data)
+        let envelope = AddressedEnvelope(remoteAddress: sendAddress, data: buffer)
+
+        logger.info("UDP sending \(data.count) bytes to \(sendAddress)")
         try await channel.writeAndFlush(envelope)
-        logger.info("UDP sent \(data.count) bytes to \(address)")
+        logger.info("UDP sent \(data.count) bytes to \(sendAddress)")
     }
 
     /// Send data to a host:port string
     public func send(_ data: Data, to endpoint: String) async throws {
         let address = try parseEndpoint(endpoint)
         try await send(data, to: address)
+    }
+
+    /// Convert address to be compatible with current socket type
+    private func convertAddressForSocket(_ address: SocketAddress) throws -> SocketAddress {
+        guard isIPv6Socket else {
+            // IPv4 socket - can only send to IPv4
+            // If we get an IPv6 address, this is an error
+            if case .v6 = address {
+                throw UDPSocketError.addressMismatch("Cannot send IPv6 address on IPv4 socket")
+            }
+            return address
+        }
+
+        // IPv6 socket - convert IPv4 to IPv4-mapped IPv6
+        if case .v4 = address {
+            // Create IPv4-mapped IPv6 address (::ffff:w.x.y.z)
+            guard let port = address.port,
+                  let ipString = address.ipAddress else {
+                throw UDPSocketError.invalidEndpoint("Cannot extract IP/port from address")
+            }
+            let mappedAddress = "::ffff:\(ipString)"
+            return try SocketAddress(ipAddress: mappedAddress, port: port)
+        }
+
+        return address
     }
 
     // MARK: - Receiving
@@ -103,16 +162,59 @@ public actor UDPSocket {
 
     // MARK: - Utilities
 
-    /// Parse an endpoint string like "127.0.0.1:5000" into a SocketAddress
+    /// Parse an endpoint string into a SocketAddress
+    /// Supports:
+    /// - IPv4: "192.168.1.1:5000"
+    /// - IPv6: "[::1]:5000" or "::1:5000" (if unambiguous)
+    /// - Hostname: "example.com:5000"
     private func parseEndpoint(_ endpoint: String) throws -> SocketAddress {
+        // Handle IPv6 bracket notation: [::1]:5000
+        if endpoint.hasPrefix("[") {
+            guard let closeBracket = endpoint.firstIndex(of: "]"),
+                  endpoint[endpoint.index(after: closeBracket)] == ":",
+                  let port = Int(endpoint[endpoint.index(after: endpoint.index(after: closeBracket))...]) else {
+                throw UDPSocketError.invalidEndpoint(endpoint)
+            }
+            let host = String(endpoint[endpoint.index(after: endpoint.startIndex)..<closeBracket])
+            return try SocketAddress(ipAddress: host, port: port)
+        }
+
+        // Standard host:port format
         let parts = endpoint.split(separator: ":")
-        guard parts.count == 2,
-              let port = Int(parts[1]) else {
+        guard parts.count >= 2,
+              let port = Int(parts.last!) else {
             throw UDPSocketError.invalidEndpoint(endpoint)
         }
 
-        let host = String(parts[0])
+        // For IPv6 without brackets (multiple colons), rejoin all but last part
+        let host: String
+        if parts.count > 2 {
+            // This looks like IPv6 - everything except the last part is the address
+            host = parts.dropLast().joined(separator: ":")
+        } else {
+            host = String(parts[0])
+        }
+
+        // Check if this is already an IP address - if so, create address directly
+        // without DNS resolution (avoids DNS64 synthesizing addresses on NAT64 networks)
+        if isIPv4Address(host) || isIPv6Address(host) {
+            return try SocketAddress(ipAddress: host, port: port)
+        }
+
+        // For hostnames, use DNS resolution
         return try SocketAddress.makeAddressResolvingHost(host, port: port)
+    }
+
+    /// Check if a string is a valid IPv4 address
+    private func isIPv4Address(_ string: String) -> Bool {
+        var addr = in_addr()
+        return inet_pton(AF_INET, string, &addr) == 1
+    }
+
+    /// Check if a string is a valid IPv6 address
+    private func isIPv6Address(_ string: String) -> Bool {
+        var addr = in6_addr()
+        return inet_pton(AF_INET6, string, &addr) == 1
     }
 
     /// Get the port we're bound to
@@ -127,6 +229,7 @@ public enum UDPSocketError: Error, CustomStringConvertible {
     case notRunning
     case invalidEndpoint(String)
     case sendFailed(Error)
+    case addressMismatch(String)
 
     public var description: String {
         switch self {
@@ -138,6 +241,8 @@ public enum UDPSocketError: Error, CustomStringConvertible {
             return "Invalid endpoint: \(endpoint)"
         case .sendFailed(let error):
             return "Send failed: \(error)"
+        case .addressMismatch(let reason):
+            return "Address mismatch: \(reason)"
         }
     }
 }
