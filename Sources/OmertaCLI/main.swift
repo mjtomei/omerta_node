@@ -3474,12 +3474,16 @@ struct Peers: AsyncParsableCommand {
         abstract: "List discovered mesh peers (alias for 'omerta mesh peers', requires omertad)"
     )
 
-    @Option(name: .long, help: "Network ID (default: first available)")
+    @Argument(help: "Network ID or prefix (default: first available)")
+    var networkArg: String?
+
+    @Option(name: .long, help: "Network ID or prefix (default: first available)")
     var network: String?
 
     mutating func run() async throws {
         // Delegate to MeshPeers implementation
         var meshPeers = MeshPeers()
+        meshPeers.networkArg = networkArg
         meshPeers.network = network
         try await meshPeers.run()
     }
