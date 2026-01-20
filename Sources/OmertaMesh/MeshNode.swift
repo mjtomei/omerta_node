@@ -971,6 +971,29 @@ public actor MeshNode {
         await natPredictor.reset()
     }
 
+    /// Wait for endpoint observations from bootstrap peers
+    /// - Parameters:
+    ///   - minimumObservations: Minimum number of observations to wait for (default: 2)
+    ///   - timeout: Maximum time to wait in seconds (default: 2.0)
+    /// - Returns: Number of observations received before timeout
+    public func waitForBootstrapObservations(minimum: Int = 2, timeout: TimeInterval = 2.0) async -> Int {
+        let startTime = Date()
+        let pollInterval: UInt64 = 50_000_000 // 50ms
+
+        while Date().timeIntervalSince(startTime) < timeout {
+            let count = await natPredictor.observationCount
+            if count >= minimum {
+                logger.debug("Received \(count) bootstrap observations")
+                return count
+            }
+            try? await Task.sleep(nanoseconds: pollInterval)
+        }
+
+        let finalCount = await natPredictor.observationCount
+        logger.debug("Bootstrap observation wait timed out with \(finalCount) observations")
+        return finalCount
+    }
+
     // MARK: - Relay Discovery
 
     /// Record a potential relay for a symmetric NAT peer

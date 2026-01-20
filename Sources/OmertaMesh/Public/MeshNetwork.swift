@@ -148,9 +148,9 @@ public actor MeshNetwork {
             state = .bootstrapping
             await connectToBootstrapPeers()
 
-            // Wait briefly for bootstrap pong responses to arrive
-            // This allows NATPredictor to collect endpoint observations
-            try await Task.sleep(nanoseconds: 500_000_000) // 500ms
+            // Wait for bootstrap pong responses (up to 2 seconds, or until we have 2 observations)
+            let observationCount = await meshNode?.waitForBootstrapObservations(minimum: 2, timeout: 2.0) ?? 0
+            logger.debug("Received \(observationCount) endpoint observations from bootstrap peers")
 
             // Detect NAT type from peer observations (after bootstrap pongs)
             await detectNATFromPeers()
