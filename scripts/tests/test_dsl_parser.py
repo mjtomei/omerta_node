@@ -471,13 +471,14 @@ class TestTransitions:
         assert isinstance(action, StoreAction)
         assert assignments_to_str(action.assignments) == {"x": "NOW()"}
 
-    def test_transition_with_compute(self):
+    def test_transition_with_assignment(self):
+        """Assignment action in transition."""
         schema = parse("""
         actor A (
             state S1 initial
             state S2
             S1 -> S2 auto (
-                compute result = HASH(data)
+                result = HASH(data)
             )
         )
         """)
@@ -486,8 +487,8 @@ class TestTransitions:
         assert action.name == "result"
         assert expr_to_str(action.expression) == "HASH(data)"
 
-    def test_transition_with_bare_assignment(self):
-        """Bare assignment (without compute keyword) should work."""
+    def test_transition_with_multiple_assignments(self):
+        """Multiple bare assignments should work."""
         schema = parse("""
         actor A (
             state S1 initial
@@ -547,7 +548,7 @@ class TestTransitions:
             state S1 initial
             state S2
             S1 -> S2 auto (
-                compute data = (
+                data = (
                     session_id = session_id
                     provider = peer_id
                     timestamp = current_time
@@ -901,7 +902,7 @@ class TestParenthesesHandling:
             state S1 initial
             state S2
             S1 -> S2 auto (
-                compute result = HASH((a + b))
+                result = HASH((a + b))
             )
         )
         """)
@@ -926,7 +927,7 @@ class TestParenthesesHandling:
             state S1 initial
             state S2
             S1 -> S2 auto (
-                compute x = ((a + b) * (c - d)) / e
+                x = ((a + b) * (c - d)) / e
             )
         )
         """)
@@ -1024,7 +1025,7 @@ class TestParenthesesHandling:
             state S1 initial
             state S2
             S1 -> S2 auto (
-                compute x = -(a + b)
+                x = -(a + b)
             )
         )
         """)
@@ -1065,7 +1066,7 @@ class TestParenthesesHandling:
             state S1 initial
             state S2
             S1 -> S2 auto (
-                compute x = (42) + 1
+                x = (42) + 1
             )
         )
         """)
@@ -1145,7 +1146,7 @@ class TestParenthesesHandling:
             state S1 initial
             state S2
             S1 -> S2 auto (
-                compute result = (
+                result = (
                     base_value + offset
                 ) * multiplier
             )
@@ -1213,7 +1214,7 @@ class TestParenthesesHandling:
             state S1 initial
             state S2
             S1 -> S2 auto (
-                compute data = (
+                data = (
                     total = (base + extra)
                     ratio = (count / max)
                 )
@@ -1374,7 +1375,7 @@ class TestWhitespaceTolerance:
             state S1 initial
             state S2 terminal
             S1   ->   S2   on   start_action   when   x > 0   (
-                compute result = x + 1
+                result = x + 1
             )
         )
         """)
@@ -1407,6 +1408,210 @@ class TestWhitespaceTolerance:
         assert len(func.params) == 2
         assert func.params[0].name == "a"
         assert func.params[1].name == "b"
+
+
+# =============================================================================
+# Difficult Parsing Cases
+# =============================================================================
+
+class TestDifficultParsingCases:
+    """Tests for ambiguous or tricky parsing scenarios.
+
+    These test cases document edge cases in the grammar where the parser
+    must make context-sensitive decisions. The key challenge is distinguishing:
+    - Guard expressions from function calls: `when foo(x)` vs `when foo (store x)`
+    - Action blocks from function arguments: `(store x)` vs `(x + 1)`
+
+    The parser uses keyword lookahead to distinguish these cases:
+    - If token after `(` is an action keyword (store, send, etc.) -> action block
+    - If token after `(` is an expression token -> function call argument
+    """
+
+    def test_guard_with_function_call(self):
+        """Guard containing a function call: foo(x) is the guard."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2 terminal
+            S1 -> S2 on MSG when validate(data) (
+                store result
+            )
+        )
+        """)
+        trans = schema.actors[0].transitions[0]
+        # Guard should be the function call validate(data)
+        guard_str = expr_to_str(trans.guard)
+        assert guard_str == "validate(data)"
+
+    def test_guard_with_simple_identifier(self):
+        """Guard is a simple identifier followed by action block."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2 terminal
+            S1 -> S2 on MSG when is_valid (
+                store result
+            )
+        )
+        """)
+        trans = schema.actors[0].transitions[0]
+        # Guard should be just the identifier
+        guard_str = expr_to_str(trans.guard)
+        assert guard_str == "is_valid"
+
+    def test_guard_with_comparison(self):
+        """Guard with comparison operator."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2 terminal
+            S1 -> S2 on MSG when count >= threshold (
+                store result
+            )
+        )
+        """)
+        trans = schema.actors[0].transitions[0]
+        guard_str = expr_to_str(trans.guard)
+        assert guard_str == "count >= threshold"
+
+    def test_guard_with_nested_function_calls(self):
+        """Guard with nested function calls."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2 terminal
+            S1 -> S2 auto when LENGTH(FILTER(items, x => x.valid)) >= MIN_COUNT (
+                store result
+            )
+        )
+        """)
+        trans = schema.actors[0].transitions[0]
+        # The entire expression should be parsed as the guard
+        assert trans.guard is not None
+
+    def test_action_block_starts_with_keyword(self):
+        """Action block is recognized by starting keyword."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2 terminal
+            S1 -> S2 auto (
+                store x
+                SEND(target, MSG)
+                result = HASH(data)
+            )
+        )
+        """)
+        actions = schema.actors[0].transitions[0].actions
+        assert len(actions) == 3
+        assert isinstance(actions[0], StoreAction)
+        assert isinstance(actions[1], SendAction)
+        assert isinstance(actions[2], ComputeAction)
+
+    def test_function_call_with_expression_args(self):
+        """Function call arguments are expressions, not actions."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2 terminal
+            S1 -> S2 auto when validate(x + 1, y * 2) (
+                store result
+            )
+        )
+        """)
+        trans = schema.actors[0].transitions[0]
+        guard_str = expr_to_str(trans.guard)
+        assert "validate" in guard_str
+        assert "x + 1" in guard_str
+
+    def test_guard_function_vs_action_block_distinction(self):
+        """The critical distinction: action keywords after ( mean action block."""
+        # This is a function call in the guard
+        schema1 = parse("""
+        actor A (
+            state S1 initial
+            state S2 terminal
+            S1 -> S2 on MSG when check(value) (
+                store x
+            )
+        )
+        """)
+        guard1 = expr_to_str(schema1.actors[0].transitions[0].guard)
+        assert guard1 == "check(value)"
+
+        # This has a simple guard followed by action block
+        schema2 = parse("""
+        actor A (
+            state S1 initial
+            state S2 terminal
+            S1 -> S2 on MSG when is_ready (
+                store x
+            )
+        )
+        """)
+        guard2 = expr_to_str(schema2.actors[0].transitions[0].guard)
+        assert guard2 == "is_ready"
+
+    def test_empty_action_block(self):
+        """Empty action block is valid."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2 terminal
+            S1 -> S2 auto ()
+        )
+        """)
+        trans = schema.actors[0].transitions[0]
+        assert trans.actions == []
+
+    def test_guard_with_struct_literal(self):
+        """Guard can contain struct literals."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2 terminal
+            S1 -> S2 auto when result == { status: "OK" } (
+                store x
+            )
+        )
+        """)
+        trans = schema.actors[0].transitions[0]
+        assert trans.guard is not None
+
+    def test_guard_with_list_literal(self):
+        """Guard can contain list literals."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2 terminal
+            S1 -> S2 auto when CONTAINS([1, 2, 3], value) (
+                store x
+            )
+        )
+        """)
+        trans = schema.actors[0].transitions[0]
+        assert trans.guard is not None
+
+    def test_multiline_guard_expression(self):
+        """Guard expression can span multiple lines inside parens."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2 terminal
+            S1 -> S2 auto when (
+                is_valid
+                and has_permission
+                and count >= threshold
+            ) (
+                store result
+            )
+        )
+        """)
+        trans = schema.actors[0].transitions[0]
+        assert trans.guard is not None
+        # All three conditions should be ANDed together
+        guard_str = expr_to_str(trans.guard)
+        assert "and" in guard_str.lower() or "AND" in guard_str
 
 
 # =============================================================================

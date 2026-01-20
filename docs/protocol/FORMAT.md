@@ -247,7 +247,7 @@ Modifiers:
 ```
 IDLE -> SENDING_LOCK on initiate_lock when has_provider_checkpoint (
     store provider, amount
-    compute session_id = HASH(peer_id + provider + NOW())
+    session_id = HASH(peer_id + provider + NOW())
 ) else -> FAILED (
     STORE(reject_reason, "no_checkpoint")
 )
@@ -267,7 +267,7 @@ WAITING -> PROCESSING on RESPONSE when message.status == "OK" (
 **Auto transition (immediate):**
 ```
 COMPUTING -> SENDING auto (
-    compute result = BUILD_RESULT()
+    result = BUILD_RESULT()
     SEND(consumer, RESULT_MESSAGE)
 )
 

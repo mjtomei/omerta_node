@@ -24,7 +24,6 @@ class TokenType(Enum):
     STORE = auto()
     TRIGGER = auto()
     STATE = auto()
-    COMPUTE = auto()
     LOOKUP = auto()
     SEND = auto()
     BROADCAST = auto()
@@ -62,6 +61,7 @@ class TokenType(Enum):
     RANGLE = auto()      # >
     ARROW = auto()       # ->
     LARROW = auto()      # <-
+    FATARROW = auto()    # =>
     EQUALS = auto()      # =
     COMMA = auto()       # ,
     DOT = auto()         # .
@@ -115,7 +115,6 @@ KEYWORDS = {
     'store': TokenType.STORE,
     'trigger': TokenType.TRIGGER,
     'state': TokenType.STATE,
-    'compute': TokenType.COMPUTE,
     'lookup': TokenType.LOOKUP,
     'send': TokenType.SEND,
     'broadcast': TokenType.BROADCAST,
@@ -256,9 +255,8 @@ class Lexer:
             self._add_token(TokenType.GTE, '>=', start_line, start_column)
             return
         if char == '=' and self._match('>'):
-            # Lambda arrow => - treat as two tokens for expression parsing
-            self._add_token(TokenType.EQUALS, '=', start_line, start_column)
-            self._add_token(TokenType.RANGLE, '>', start_line, start_column + 1)
+            # Lambda arrow =>
+            self._add_token(TokenType.FATARROW, '=>', start_line, start_column)
             return
 
         # Single-character tokens

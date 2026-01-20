@@ -655,9 +655,6 @@ class Parser:
         while not self._check(TokenType.RPAREN) and not self._at_end():
             if self._check(TokenType.STORE):
                 actions.append(self._parse_store_action())
-            elif self._check(TokenType.COMPUTE):
-                # Legacy: compute x = expr (still supported for backwards compat)
-                actions.append(self._parse_compute_action())
             elif self._check(TokenType.LOOKUP):
                 actions.append(self._parse_lookup_action())
             elif self._check(TokenType.SEND):
@@ -671,7 +668,7 @@ class Parser:
             elif self._check(TokenType.COMMENT):
                 self._advance()
             elif self._check(TokenType.IDENTIFIER) and self._peek_at(1).type == TokenType.EQUALS:
-                # Bare assignment: x = expr (preferred over compute x = expr)
+                # Bare assignment: x = expr
                 actions.append(self._parse_assignment_action())
             else:
                 raise ParseError(f"Unexpected action: {self._peek().value}", self._peek())
@@ -710,16 +707,6 @@ class Parser:
             action.fields = [first_id]
 
         return action
-
-    def _parse_compute_action(self) -> ComputeAction:
-        """Parse: compute NAME = expr (legacy syntax, prefer bare assignment)"""
-        token = self._expect(TokenType.COMPUTE)
-        name = self._expect(TokenType.IDENTIFIER, "Expected variable name").value
-        self._expect(TokenType.EQUALS, "Expected '=' after variable name")
-        expr = self._parse_expression()
-
-        return ComputeAction(name=name, expression=expr,
-                           line=token.line, column=token.column)
 
     def _parse_assignment_action(self) -> ComputeAction:
         """Parse: NAME = expr (bare assignment, replaces compute keyword)"""
@@ -1062,7 +1049,7 @@ class Parser:
 
         # If after ( we see an action keyword, this is an action block, not a function call
         action_keywords = {
-            TokenType.STORE, TokenType.COMPUTE, TokenType.LOOKUP,
+            TokenType.STORE, TokenType.LOOKUP,
             TokenType.SEND, TokenType.BROADCAST, TokenType.APPEND, TokenType.APPEND_BLOCK
         }
         if token.type in action_keywords:
@@ -1088,7 +1075,7 @@ class Parser:
     # Tokens that indicate we've left the expression context
     EXPR_STOP_TOKENS = {
         TokenType.NEWLINE, TokenType.COMMENT, TokenType.EOF,
-        TokenType.STORE, TokenType.COMPUTE, TokenType.LOOKUP,
+        TokenType.STORE, TokenType.LOOKUP,
         TokenType.SEND, TokenType.BROADCAST, TokenType.APPEND, TokenType.APPEND_BLOCK
     }
 
