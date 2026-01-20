@@ -96,7 +96,9 @@ TERMINAL: "terminal"
 // Transitions
 // =============================================================================
 
-transition: IDENTIFIER "->" IDENTIFIER transition_trigger guard_clause? action_block? else_clause?
+// Split into two cases: guarded transitions can have else, unguarded cannot
+transition: IDENTIFIER "->" IDENTIFIER transition_trigger guard_clause action_block? else_clause?  -> guarded_transition
+          | IDENTIFIER "->" IDENTIFIER transition_trigger action_block?                            -> simple_transition
 
 transition_trigger: "auto"                           -> auto_trigger
                   | "on" IDENTIFIER                  -> named_trigger
@@ -136,7 +138,9 @@ assignment_action: IDENTIFIER "=" expr
 // Functions
 // =============================================================================
 
-function_decl: "function" IDENTIFIER "(" function_params? ")" "->" type_expr "(" (function_body | COMMENT)* ")"
+// Note: We use + to require at least one statement/comment. A function with only comments
+// will parse but may be semantically invalid. Truly empty functions are rejected.
+function_decl: "function" IDENTIFIER "(" function_params? ")" "->" type_expr "(" COMMENT* stmt (COMMENT | stmt)* ")"
 function_params: function_param ("," function_param)*
 function_param: IDENTIFIER type_expr
 
@@ -237,7 +241,7 @@ struct_field: "..." expr                                 -> spread_field
 
 IDENTIFIER: /[a-zA-Z_][a-zA-Z0-9_]*/
 NUMBER: /\-?[0-9]+(\.[0-9]+)?/
-STRING: /"[^"]*"/
+STRING: /"[^"\n]*"/
 COMMENT: /#[^\n]*/
 
 // Whitespace handling - ignore all whitespace including newlines

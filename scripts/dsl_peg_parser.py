@@ -282,7 +282,8 @@ class DSLTransformer(Transformer):
     # Transitions
     # =========================================================================
 
-    def transition(self, from_state, to_state, trigger, *rest):
+    def _build_transition(self, from_state, to_state, trigger, *rest):
+        """Build a Transition from parsed components."""
         guard = None
         actions = []
         on_guard_fail = None
@@ -307,6 +308,14 @@ class DSLTransformer(Transformer):
             actions=actions,
             on_guard_fail=on_guard_fail
         )
+
+    def guarded_transition(self, from_state, to_state, trigger, guard, *rest):
+        """Transition with guard clause (may have else)."""
+        return self._build_transition(from_state, to_state, trigger, guard, *rest)
+
+    def simple_transition(self, from_state, to_state, trigger, *rest):
+        """Transition without guard (no else allowed)."""
+        return self._build_transition(from_state, to_state, trigger, *rest)
 
     def auto_trigger(self):
         return ("auto", None)

@@ -2750,5 +2750,93 @@ class TestRealWorldPatterns:
         assert trans.on_guard_fail is not None
 
 
+# =============================================================================
+# KNOWN BUGS / EDGE CASES
+# =============================================================================
+# These tests document known issues in the parser that should be fixed.
+# Tests marked with xfail are expected to fail until the bug is fixed.
+
+
+class TestParserValidation:
+    """Tests for parser validation that rejects invalid input."""
+
+    def test_literal_newline_in_string_rejected(self):
+        """Strings with literal newlines should be rejected."""
+        with pytest.raises(Exception):
+            parse('transaction 1 "test\nvalue"')
+
+    def test_empty_function_body_rejected(self):
+        """Function bodies must have at least one statement."""
+        with pytest.raises(Exception):
+            parse("function f() -> uint ( )")
+
+    def test_else_without_guard_rejected(self):
+        """Else clause requires a when guard."""
+        with pytest.raises(Exception):
+            parse("""
+            actor A (
+                state S initial
+                state T
+                S -> T auto else -> S
+            )
+            """)
+
+
+class TestSemanticIssues:
+    """Tests documenting semantic issues the parser accepts (by design).
+
+    These are syntactically valid but semantically questionable.
+    They would be caught by a semantic validation pass.
+    """
+
+    def test_transition_to_undefined_state_accepted(self):
+        """Parser accepts transitions to states not declared in actor."""
+        # This is valid syntax - semantic validation would catch it
+        schema = parse("""
+        actor A (
+            A -> B auto
+        )
+        """)
+        assert len(schema.actors[0].transitions) == 1
+
+    def test_duplicate_state_names_accepted(self):
+        """Parser accepts duplicate state declarations."""
+        schema = parse("""
+        actor A (
+            state S initial
+            state S terminal
+        )
+        """)
+        assert len(schema.actors[0].states) == 2
+
+    def test_multiple_initial_states_accepted(self):
+        """Parser accepts multiple initial states."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2 initial
+        )
+        """)
+        states = schema.actors[0].states
+        assert sum(1 for s in states if s.initial) == 2
+
+    def test_keyword_as_type_name_accepted(self):
+        """Parser accepts keywords like 'function' as type names."""
+        # 'function' is not reserved in type context
+        schema = parse("function f() -> function ( return 1 )")
+        assert schema.functions[0].return_type.name == "function"
+
+    def test_call_on_literal_accepted(self):
+        """Parser accepts calling literals directly (would fail at runtime)."""
+        schema = parse("function f() -> uint ( return 1() )")
+        assert schema.functions[0] is not None
+
+        schema = parse('function f() -> uint ( return "test"() )')
+        assert schema.functions[0] is not None
+
+        schema = parse("function f() -> uint ( return [1, 2]() )")
+        assert schema.functions[0] is not None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
