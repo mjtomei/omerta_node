@@ -474,9 +474,9 @@ class TestTransitions:
             state S2
             S1 -> S2 auto (
                 data = {
-                    session_id: session_id,
-                    provider: peer_id,
-                    timestamp: current_time
+                    session_id session_id,
+                    provider peer_id,
+                    timestamp current_time
                 }
             )
         )
@@ -1043,8 +1043,8 @@ class TestParenthesesHandling:
             state S2
             S1 -> S2 auto (
                 data = {
-                    total: (base + extra),
-                    ratio: (count / max)
+                    total (base + extra),
+                    ratio (count / max)
                 }
             )
         )
@@ -1399,7 +1399,7 @@ class TestDifficultParsingCases:
         actor A (
             state S1 initial
             state S2 terminal
-            S1 -> S2 auto when result == { status: "OK" } (
+            S1 -> S2 auto when result == {status "OK"} (
                 store x
             )
         )

@@ -127,9 +127,9 @@ function build_lock_result() -> LockResult (
     consensus = LOAD(consensus_direction)
     status = IF consensus == "ACCEPT" THEN LockStatus.ACCEPTED ELSE LockStatus.REJECTED
     RETURN {
-        session_id: LOAD(session_id),
-        status: status,
-        timestamp: NOW()
+        session_id LOAD(session_id),
+        status status,
+        timestamp NOW()
     }
 )
 ```
@@ -140,7 +140,7 @@ Function bodies support these statement types:
 
 - **Assignment**: `name = expression`
 - **Return**: `RETURN expression`
-- **For loop**: `FOR var IN iterable: statements`
+- **For loop**: `FOR var IN iterable statements`
 
 Statements are delimited by their starting patterns (no semicolons needed):
 - `RETURN` keyword starts a return statement
@@ -194,7 +194,7 @@ This restriction encourages expressing control flow through state machine transi
 FOR loops support multi-statement bodies using parentheses:
 
 ```
-FOR item IN items: (
+FOR item IN items (
     total = total + item.value
     count = count + 1
 )
@@ -202,7 +202,7 @@ FOR item IN items: (
 
 Single statements don't require parentheses:
 ```
-FOR item IN items: total = total + item.value
+FOR item IN items total = total + item.value
 ```
 
 ### Native Functions
@@ -516,7 +516,7 @@ Note: `chain` refers to the actor's own chain. For peer chain data, use `READ(pe
 ### Compute
 - `IF condition THEN value ELSE value` - conditional expression (ternary)
 - `NOT condition`, `AND`, `OR` - boolean operators
-- `FOR item IN list: ...` - iteration
+- `FOR item IN list ...` - iteration
 - `NOW() → timestamp` - current time
 - `ABORT(reason)` - exit state machine with error
 
@@ -537,9 +537,9 @@ Additional helper functions are defined in `shared/common.omt` and can be import
 
 **Dynamic field access:**
 ```
-value = record.{field_name}   # Access field by variable name
+value = record.[field_name]   # Access field by variable name
 ```
-The `{...}` syntax allows accessing a field whose name is stored in a variable.
+The `.[expr]` syntax allows accessing a field whose name is computed from an expression.
 
 **Lambda expressions:**
 ```
@@ -591,15 +591,21 @@ Access message fields with `message.field` or `message.payload.field`.
 
 ## Struct Literals
 
-Create inline objects:
+Create inline objects using curly braces with field-value pairs (no colons):
 
 ```
-{ session_id: LOAD(session_id), status: ACCEPTED, timestamp: NOW() }
+{session_id LOAD(session_id), status ACCEPTED, timestamp NOW()}
 ```
 
-Spread syntax for extending:
+Empty struct:
 ```
-{ ...pending_result, consumer_signature: signature }
+{}
+```
+
+**Spread syntax** copies all fields from an existing struct into a new one, optionally adding or overriding fields:
+
+```
+{...pending_result, consumer_signature signature}
 ```
 
 ---

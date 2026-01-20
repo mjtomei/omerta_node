@@ -248,11 +248,11 @@ message TOPUP_VOTE from Witness to [Witness] signed (
 # =============================================================================
 
 function COMPUTE_ESCROW_CONSENSUS(preliminaries list<dict>) -> string (
-    # Start with this witness's own verdict
+    # Start with this witness's own verdict (enum comparison)
     my_verdict = LOAD(verdict)
-    accept_count = IF my_verdict == "ACCEPT" THEN 1 ELSE 0
-    # Count verdicts from other witnesses
-    FOR p IN preliminaries:
+    accept_count = IF my_verdict == WitnessVerdict.ACCEPT THEN 1 ELSE 0
+    # Count verdicts from other witnesses (serialized as string)
+    FOR p IN preliminaries
         accept_count = IF p.verdict == "ACCEPT" THEN accept_count + 1 ELSE accept_count
     # Need threshold for acceptance
     RETURN IF accept_count >= WITNESS_THRESHOLD THEN "ACCEPT" ELSE "REJECT"
@@ -264,16 +264,16 @@ function BUILD_LOCK_RESULT() -> LockResult (
     votes = LOAD(votes)
     signatures = MAP(votes, v => v.signature)
     RETURN {
-        session_id: LOAD(session_id),
-        consumer: LOAD(consumer),
-        provider: LOAD(provider),
-        amount: LOAD(amount),
-        status: status,
-        observed_balance: LOAD(observed_balance),
-        witnesses: LOAD(witnesses),
-        witness_signatures: signatures,
-        consumer_signature: null,
-        timestamp: NOW()
+        session_id LOAD(session_id),
+        consumer LOAD(consumer),
+        provider LOAD(provider),
+        amount LOAD(amount),
+        status status,
+        observed_balance LOAD(observed_balance),
+        witnesses LOAD(witnesses),
+        witness_signatures signatures,
+        consumer_signature null,
+        timestamp NOW()
     }
 )
 
@@ -283,17 +283,17 @@ function BUILD_TOPUP_RESULT() -> TopUpResult (
     votes = LOAD(topup_votes)
     signatures = MAP(votes, v => v.signature)
     RETURN {
-        session_id: LOAD(session_id),
-        consumer: LOAD(consumer),
-        provider: LOAD(provider),
-        previous_total: LOAD(total_escrowed),
-        additional_amount: LOAD(topup_intent).additional_amount,
-        new_total: LOAD(total_escrowed) + LOAD(topup_intent).additional_amount,
-        observed_balance: LOAD(topup_observed_balance),
-        witnesses: LOAD(witnesses),
-        witness_signatures: signatures,
-        consumer_signature: null,
-        timestamp: NOW()
+        session_id LOAD(session_id),
+        consumer LOAD(consumer),
+        provider LOAD(provider),
+        previous_total LOAD(total_escrowed),
+        additional_amount LOAD(topup_intent).additional_amount,
+        new_total LOAD(total_escrowed) + LOAD(topup_intent).additional_amount,
+        observed_balance LOAD(topup_observed_balance),
+        witnesses LOAD(witnesses),
+        witness_signatures signatures,
+        consumer_signature null,
+        timestamp NOW()
     }
 )
 
@@ -468,7 +468,7 @@ actor Consumer "Party paying for service" (
 
     SIGNING_RESULT -> LOCKED auto (
         consumer_signature = SIGN(pending_result)
-        STORE(lock_result, { ...pending_result, consumer_signature })
+        STORE(lock_result, {...pending_result, consumer_signature consumer_signature})
         APPEND(chain, BALANCE_LOCK)
         BROADCAST(witnesses, CONSUMER_SIGNED_LOCK)
         STORE(total_escrowed, amount)
@@ -504,7 +504,7 @@ actor Consumer "Party paying for service" (
 
     SIGNING_TOPUP -> LOCKED auto (
         consumer_signature = SIGN(pending_topup_result)
-        STORE(topup_result, { ...pending_topup_result, consumer_signature })
+        STORE(topup_result, {...pending_topup_result, consumer_signature consumer_signature})
         APPEND(chain, BALANCE_TOPUP)
         BROADCAST(witnesses, CONSUMER_SIGNED_TOPUP)
         STORE(total_escrowed, total_escrowed + additional_amount)
@@ -740,11 +740,11 @@ actor Witness "Verifies consumer balance, participates in consensus" (
         APPEND(topup_votes, message.payload)
     )
 
-    # Fast path
-    COLLECTING_TOPUP_VOTES -> BUILDING_TOPUP_RESULT auto when LENGTH(topup_votes) >= WITNESS_THRESHOLD - 1
+    # Fast path - need WITNESS_THRESHOLD total (including own vote added in VOTING_TOPUP)
+    COLLECTING_TOPUP_VOTES -> BUILDING_TOPUP_RESULT auto when LENGTH(topup_votes) >= WITNESS_THRESHOLD
 
     # Timeout fallback
-    COLLECTING_TOPUP_VOTES -> BUILDING_TOPUP_RESULT on timeout(PRELIMINARY_TIMEOUT) when LENGTH(topup_votes) >= WITNESS_THRESHOLD - 1
+    COLLECTING_TOPUP_VOTES -> BUILDING_TOPUP_RESULT on timeout(PRELIMINARY_TIMEOUT) when LENGTH(topup_votes) >= WITNESS_THRESHOLD
 
     COLLECTING_TOPUP_VOTES -> ESCROW_ACTIVE on timeout(CONSENSUS_TIMEOUT) (
         STORE(topup_failed_reason, "vote_timeout")

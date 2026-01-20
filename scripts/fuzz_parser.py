@@ -127,7 +127,7 @@ class Fuzzer:
         'function f(x uint, y uint) -> uint ( return x + y )',
         'function f() -> list<uint> ( return [1, 2, 3] )',
         'function f() -> uint ( return IF x THEN 1 ELSE 2 )',
-        'function f() -> uint ( FOR x IN list: return x )',
+        'function f() -> uint ( FOR x IN list return x )',
         'function f() -> uint ( return FILTER(list, x => x > 0) )',
         'function f() -> uint ( return {a: 1, b: 2} )',
         'function f() -> uint ( return {...base, x: 1} )',
@@ -231,8 +231,9 @@ class Fuzzer:
             return f"[{items}]"
         elif choice == 5:
             # Struct literal
-            fields = ", ".join(f"{self.random_identifier()}: {self.random_expr(depth+1)}"
-                              for _ in range(self.rng.randint(0, 3)))
+            num_fields = self.rng.randint(0, 3)
+            fields = ", ".join(f"{self.random_identifier()} {self.random_expr(depth+1)}"
+                              for _ in range(num_fields))
             return f"{{{fields}}}"
         elif choice == 6:
             # Lambda

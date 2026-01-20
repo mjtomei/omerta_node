@@ -539,9 +539,9 @@ class TestPEGTransitions:
             state S2
             S1 -> S2 auto (
                 data = {
-                    session_id: session_id,
-                    provider: peer_id,
-                    timestamp: current_time
+                    session_id session_id,
+                    provider peer_id,
+                    timestamp current_time
                 }
             )
         )
@@ -1253,8 +1253,8 @@ class TestPEGParenthesesHandling:
             state S2
             S1 -> S2 auto (
                 data = {
-                    total: (base + extra),
-                    ratio: (count / max)
+                    total (base + extra),
+                    ratio (count / max)
                 }
             )
         )
@@ -1597,7 +1597,7 @@ class TestPEGDifficultParsingCases:
         actor A (
             state S1 initial
             state S2 terminal
-            S1 -> S2 auto when result == { status: "OK" } (
+            S1 -> S2 auto when result == {status "OK"} (
                 store x
             )
         )
@@ -1845,7 +1845,7 @@ class TestBlockStatements:
         assert_ast_equal("""
         function process_items(items list<int>) -> int (
             total = 0
-            FOR item IN items: (
+            FOR item IN items (
                 total = total + item
                 count = count + 1
             )
@@ -1858,7 +1858,7 @@ class TestBlockStatements:
         assert_ast_equal("""
         function sum_items(items list<int>) -> int (
             total = 0
-            FOR item IN items: total = total + item
+            FOR item IN items total = total + item
             RETURN total
         )
         """)
@@ -1868,8 +1868,8 @@ class TestBlockStatements:
         assert_ast_equal("""
         function matrix_sum(rows list<list<int>>) -> int (
             total = 0
-            FOR row IN rows: (
-                FOR cell IN row: (
+            FOR row IN rows (
+                FOR cell IN row (
                     total = total + cell
                 )
             )
@@ -2290,9 +2290,9 @@ class TestStressDeepNesting:
         schema = parse("""
         function f(matrix list<list<list<int>>>) -> int (
             total = 0
-            FOR plane IN matrix: (
-                FOR row IN plane: (
-                    FOR cell IN row:
+            FOR plane IN matrix (
+                FOR row IN plane (
+                    FOR cell IN row
                         total = total + cell
                 )
             )
@@ -2660,7 +2660,7 @@ class TestRealWorldPatterns:
             state S1 initial
             state S2
             S1 -> S2 auto (
-                result = { status: "OK", timestamp: NOW() }
+                result = {status "OK", timestamp NOW()}
             )
         )
         """)
@@ -2674,7 +2674,7 @@ class TestRealWorldPatterns:
             state S1 initial
             state S2
             S1 -> S2 auto (
-                result = { ...base, extra: value }
+                result = {...base, extra value}
             )
         )
         """)
@@ -2724,7 +2724,7 @@ class TestRealWorldPatterns:
         """Dynamic field access with variable key."""
         schema = parse("""
         function f(record dict, field string) -> any (
-            RETURN record.{field}
+            RETURN record.[field]
         )
         """)
         assert schema.functions[0] is not None

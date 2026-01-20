@@ -22,7 +22,7 @@ function COMPUTE_CONSENSUS(verdicts list<WitnessVerdict>, threshold uint) -> str
 )
 
 function EXTRACT_FIELD(records list<T>, field string) -> list<U> (
-    RETURN MAP(records, r => r.{field})
+    RETURN MAP(records, r => r.[field])
 )
 
 function COUNT_MATCHING(items list<T>, predicate T) -> uint (
@@ -54,6 +54,6 @@ function MAX(a int, b int) -> int (
 
 function GET(d dict, key string, default any) -> any (
     # Get value from dict with default if key not found or dict is null
-    RETURN IF HAS_KEY(d, key) THEN d.{key} ELSE default
+    RETURN IF HAS_KEY(d, key) THEN d.[key] ELSE default
 )
 

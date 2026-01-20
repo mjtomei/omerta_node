@@ -151,7 +151,7 @@ function count_positive_votes(votes list<dict>) -> uint (
 
 function build_cabal_votes_map(votes list<dict>) -> map<peer_id, bool> (
     result = {}
-    FOR v IN votes:
+    FOR v IN votes
         result[v.witness] = v.can_reach_vm
     RETURN result
 )
@@ -218,7 +218,7 @@ actor Provider "Allocates VM, notifies cabal, handles termination" (
 
     # Notify cabal and consumer
     NOTIFYING_CABAL -> WAITING_FOR_VERIFICATION auto (
-        vm_allocated_msg = { session_id: LOAD(session_id), provider: peer_id, consumer: LOAD(consumer), vm_info: LOAD(vm_info), allocated_at: LOAD(vm_allocated_at), lock_result_hash: HASH(LOAD(lock_result)), timestamp: NOW() }
+        vm_allocated_msg = {session_id LOAD(session_id), provider peer_id, consumer LOAD(consumer), vm_info LOAD(vm_info), allocated_at LOAD(vm_allocated_at), lock_result_hash HASH(LOAD(lock_result)), timestamp NOW()}
         BROADCAST(witnesses, VM_ALLOCATED)
         SEND(consumer, VM_READY)
         STORE(notified_at, NOW())
@@ -269,7 +269,7 @@ actor Provider "Allocates VM, notifies cabal, handles termination" (
 
     # Send cancellation to cabal
     SENDING_CANCELLATION -> WAITING_FOR_ATTESTATION auto (
-        vm_cancelled_msg = { session_id: LOAD(session_id), provider: peer_id, cancelled_at: LOAD(cancelled_at), reason: LOAD(termination_reason), actual_duration_seconds: LOAD(cancelled_at) - LOAD(vm_allocated_at), timestamp: NOW() }
+        vm_cancelled_msg = {session_id LOAD(session_id), provider peer_id, cancelled_at LOAD(cancelled_at), reason LOAD(termination_reason), actual_duration_seconds LOAD(cancelled_at) - LOAD(vm_allocated_at), timestamp NOW()}
         BROADCAST(witnesses, VM_CANCELLED)
         SEND(consumer, SESSION_TERMINATED)
         STORE(cancellation_sent_at, NOW())
@@ -342,9 +342,9 @@ actor Witness "Verifies VM accessibility, monitors session, creates attestation"
         can_reach_vm = check_vm_connectivity(vm_allocated_msg.consumer_wireguard_endpoint)
         can_see_consumer_connected = check_consumer_connected(session_id)
         STORE(witness, peer_id)
-        vote_data = { session_id: LOAD(session_id), witness: peer_id, can_reach_vm: LOAD(can_reach_vm), can_see_consumer_connected: LOAD(can_see_consumer_connected), timestamp: NOW() }
+        vote_data = {session_id LOAD(session_id), witness peer_id, can_reach_vm LOAD(can_reach_vm), can_see_consumer_connected LOAD(can_see_consumer_connected), timestamp NOW()}
         vote_signature = SIGN(LOAD(vote_data))
-        my_connectivity_vote = { ...LOAD(vote_data), signature: LOAD(vote_signature) }
+        my_connectivity_vote = {...LOAD(vote_data), signature LOAD(vote_signature)}
         BROADCAST(other_witnesses, VM_CONNECTIVITY_VOTE)
         SEND(provider, VM_CONNECTIVITY_VOTE)
         STORE(connectivity_votes, [LOAD(my_connectivity_vote)])
@@ -395,9 +395,9 @@ actor Witness "Verifies VM accessibility, monitors session, creates attestation"
 
     # Send abort vote
     VOTING_ABORT -> COLLECTING_ABORT_VOTES auto (
-        abort_vote_data = { session_id: LOAD(session_id), witness: peer_id, reason: LOAD(abort_reason), timestamp: NOW() }
+        abort_vote_data = {session_id LOAD(session_id), witness peer_id, reason LOAD(abort_reason), timestamp NOW()}
         abort_vote_signature = SIGN(LOAD(abort_vote_data))
-        my_abort_vote = { ...LOAD(abort_vote_data), signature: LOAD(abort_vote_signature) }
+        my_abort_vote = {...LOAD(abort_vote_data), signature LOAD(abort_vote_signature)}
         BROADCAST(other_witnesses, ABORT_VOTE)
         STORE(abort_votes, [LOAD(my_abort_vote)])
         STORE(abort_votes_sent_at, NOW())
@@ -425,9 +425,9 @@ actor Witness "Verifies VM accessibility, monitors session, creates attestation"
 
     # Create attestation
     ATTESTING -> COLLECTING_ATTESTATION_SIGS auto (
-        attestation = { session_id: LOAD(session_id), vm_allocated_hash: HASH(LOAD(vm_allocated_msg)), vm_cancelled_hash: HASH(LOAD(vm_cancelled_msg)), connectivity_verified: LOAD(connectivity_verified), actual_duration_seconds: LOAD(actual_duration_seconds), termination_reason: LOAD(termination_reason), cabal_votes: LOAD(connectivity_votes), cabal_signatures: [], created_at: NOW() }
+        attestation = {session_id LOAD(session_id), vm_allocated_hash HASH(LOAD(vm_allocated_msg)), vm_cancelled_hash HASH(LOAD(vm_cancelled_msg)), connectivity_verified LOAD(connectivity_verified), actual_duration_seconds LOAD(actual_duration_seconds), termination_reason LOAD(termination_reason), cabal_votes LOAD(connectivity_votes), cabal_signatures [], created_at NOW()}
         my_signature = SIGN(LOAD(attestation))
-        STORE(attestation_signatures, [{ witness: peer_id, signature: LOAD(my_signature) }])
+        STORE(attestation_signatures, [{witness peer_id, signature LOAD(my_signature)}])
         BROADCAST(other_witnesses, ATTESTATION_SHARE)
         STORE(attestation_sent_at, NOW())
     )
@@ -442,7 +442,7 @@ actor Witness "Verifies VM accessibility, monitors session, creates attestation"
 
     # Send attestation to parties
     PROPAGATING_ATTESTATION -> DONE auto (
-        final_attestation = { ...LOAD(attestation), cabal_signatures: LOAD(attestation_signatures) }
+        final_attestation = {...LOAD(attestation), cabal_signatures LOAD(attestation_signatures)}
         SEND(consumer, ATTESTATION_RESULT)
         SEND(provider, ATTESTATION_RESULT)
         APPEND(chain, ATTESTATION)
