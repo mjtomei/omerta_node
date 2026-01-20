@@ -336,20 +336,55 @@ APPEND(votes, message.payload)
 
 **Append block to chain:**
 ```
-APPEND(my_chain, BALANCE_LOCK)
+APPEND(chain, BALANCE_LOCK)
 ```
+
+---
+
+## Reserved Keywords
+
+The following identifiers have special meaning and cannot be used as variable names:
+
+| Keyword | Context | Meaning |
+|---------|---------|---------|
+| `chain` | Any expression | The actor's own blockchain (`self.chain`) |
+| `peer_id` | Any expression | The actor's own peer identifier |
+| `current_time` | Any expression | Current simulation/real time |
+| `message` | Message transitions | The incoming message being processed |
+| `null` | Any expression | Null/None value |
+
+### Accessing Message Fields
+
+In message-triggered transitions, use `message.field` to access fields from the incoming message:
+
+```
+WAITING -> PROCESSING on RESPONSE_MESSAGE (
+    STORE(result, message.payload)
+    STORE(sender, message.sender)
+)
+
+WAITING -> DONE on RESULT when message.status == "OK" (
+    STORE(data, message.data)
+)
+```
+
+Available message properties:
+- `message.sender` - peer ID of the message sender
+- `message.<field>` - access payload field by name
 
 ---
 
 ## Primitive Operations
 
 ### Chain Operations
-- `APPEND(my_chain, BLOCK_TYPE)` - add block to my chain
-- `READ(chain, query) → value` - read from a chain (mine or cached copy of peer's)
+- `APPEND(chain, BLOCK_TYPE)` - add block to actor's chain
+- `READ(peer_id, query) → value` - read from a peer's cached chain data
 - `CHAIN_STATE_AT(chain, hash) → state` - extract chain state at a specific block hash
 - `CHAIN_CONTAINS_HASH(chain, hash) → bool` - check if hash exists in chain
 - `CHAIN_SEGMENT(chain, hash) → list` - extract portion of chain up to hash
 - `VERIFY_CHAIN_SEGMENT(segment) → bool` - verify chain segment validity
+
+Note: `chain` refers to the actor's own chain. For peer chain data, use `READ(peer_id, query)` which accesses cached chain information received via gossip.
 
 ### Local State Operations
 - `STORE(key, value)` - save to local peer state (not on chain)

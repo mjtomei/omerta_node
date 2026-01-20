@@ -12,7 +12,17 @@ try:
         Schema, Transaction, Import, Parameter, EnumDecl, EnumValue,
         Field, MessageDecl, BlockDecl, ActorDecl, TriggerDecl, TriggerParam, StateDecl,
         Transition, OnGuardFail, StoreAction, ComputeAction, LookupAction, SendAction,
-        BroadcastAction, AppendAction, AppendBlockAction, FunctionDecl, FunctionParam, Action
+        BroadcastAction, AppendAction, AppendBlockAction, FunctionDecl, FunctionParam, Action,
+        AssignmentStmt, ReturnStmt, ForStmt, IfStmt, FunctionStatement,
+        # Expression AST
+        Expr, Identifier, Literal, BinaryExpr, UnaryExpr, IfExpr,
+        FunctionCallExpr, FieldAccessExpr, DynamicFieldAccessExpr, IndexAccessExpr,
+        LambdaExpr, StructLiteralExpr, ListLiteralExpr, EnumRefExpr,
+        BinaryOperator, UnaryOperator,
+        # Type AST
+        TypeExpr, SimpleType, ListType, MapType,
+        # Trigger AST
+        TriggerExpr, MessageTrigger, TimeoutTrigger, NamedTrigger
     )
 except ImportError:
     from dsl_lexer import Token, TokenType, tokenize, LexerError
@@ -20,7 +30,17 @@ except ImportError:
         Schema, Transaction, Import, Parameter, EnumDecl, EnumValue,
         Field, MessageDecl, BlockDecl, ActorDecl, TriggerDecl, TriggerParam, StateDecl,
         Transition, OnGuardFail, StoreAction, ComputeAction, LookupAction, SendAction,
-        BroadcastAction, AppendAction, AppendBlockAction, FunctionDecl, FunctionParam, Action
+        BroadcastAction, AppendAction, AppendBlockAction, FunctionDecl, FunctionParam, Action,
+        AssignmentStmt, ReturnStmt, ForStmt, IfStmt, FunctionStatement,
+        # Expression AST
+        Expr, Identifier, Literal, BinaryExpr, UnaryExpr, IfExpr,
+        FunctionCallExpr, FieldAccessExpr, DynamicFieldAccessExpr, IndexAccessExpr,
+        LambdaExpr, StructLiteralExpr, ListLiteralExpr, EnumRefExpr,
+        BinaryOperator, UnaryOperator,
+        # Type AST
+        TypeExpr, SimpleType, ListType, MapType,
+        # Trigger AST
+        TriggerExpr, MessageTrigger, TimeoutTrigger, NamedTrigger
     )
 
 
@@ -29,6 +49,127 @@ class ParseError(Exception):
     def __init__(self, message: str, token: Token):
         self.token = token
         super().__init__(f"Line {token.line}, column {token.column}: {message}")
+
+
+def _type_to_str(type_expr: TypeExpr) -> str:
+    """Convert a TypeExpr back to string representation."""
+    if isinstance(type_expr, SimpleType):
+        return type_expr.name
+    elif isinstance(type_expr, ListType):
+        return f"list<{_type_to_str(type_expr.element_type)}>"
+    elif isinstance(type_expr, MapType):
+        return f"map<{_type_to_str(type_expr.key_type)}, {_type_to_str(type_expr.value_type)}>"
+    else:
+        return str(type_expr)
+
+
+# Side-effect operations that are only allowed in transition actions, not function bodies
+SIDE_EFFECT_OPERATIONS = {'SEND', 'BROADCAST', 'APPEND', 'APPEND_BLOCK'}
+
+
+def _find_side_effects_in_expr(expr: Expr) -> Optional[str]:
+    """Find side-effect function calls in an expression AST.
+
+    Returns the name of the side-effect operation if found, None otherwise.
+    """
+    if isinstance(expr, FunctionCallExpr):
+        if expr.name.upper() in SIDE_EFFECT_OPERATIONS:
+            return expr.name.upper()
+        # Check arguments
+        for arg in expr.args:
+            result = _find_side_effects_in_expr(arg)
+            if result:
+                return result
+    elif isinstance(expr, BinaryExpr):
+        result = _find_side_effects_in_expr(expr.left)
+        if result:
+            return result
+        return _find_side_effects_in_expr(expr.right)
+    elif isinstance(expr, UnaryExpr):
+        return _find_side_effects_in_expr(expr.operand)
+    elif isinstance(expr, IfExpr):
+        result = _find_side_effects_in_expr(expr.condition)
+        if result:
+            return result
+        result = _find_side_effects_in_expr(expr.then_expr)
+        if result:
+            return result
+        return _find_side_effects_in_expr(expr.else_expr)
+    elif isinstance(expr, FieldAccessExpr):
+        return _find_side_effects_in_expr(expr.object)
+    elif isinstance(expr, DynamicFieldAccessExpr):
+        result = _find_side_effects_in_expr(expr.object)
+        if result:
+            return result
+        return _find_side_effects_in_expr(expr.key_expr)
+    elif isinstance(expr, IndexAccessExpr):
+        result = _find_side_effects_in_expr(expr.object)
+        if result:
+            return result
+        return _find_side_effects_in_expr(expr.index)
+    elif isinstance(expr, LambdaExpr):
+        return _find_side_effects_in_expr(expr.body)
+    elif isinstance(expr, StructLiteralExpr):
+        for value in expr.fields.values():
+            result = _find_side_effects_in_expr(value)
+            if result:
+                return result
+        if expr.spread:
+            return _find_side_effects_in_expr(expr.spread)
+    elif isinstance(expr, ListLiteralExpr):
+        for elem in expr.elements:
+            result = _find_side_effects_in_expr(elem)
+            if result:
+                return result
+    # Identifier, Literal, EnumRefExpr have no sub-expressions
+    return None
+
+
+def _check_function_purity(statements: List[FunctionStatement], func_name: str, line: int, col: int) -> None:
+    """Check that function body contains no side-effect operations.
+
+    Functions must be pure - side effects (SEND, BROADCAST, APPEND, APPEND_BLOCK)
+    are only allowed in transition actions.
+
+    Raises ParseError if side effects are found.
+    """
+    for stmt in statements:
+        # Get expression(s) to check from this statement
+        expressions_to_check = []
+        if isinstance(stmt, AssignmentStmt):
+            expressions_to_check.append(stmt.expression)
+        elif isinstance(stmt, ReturnStmt):
+            expressions_to_check.append(stmt.expression)
+        elif isinstance(stmt, ForStmt):
+            expressions_to_check.append(stmt.iterable)
+            # Recursively check body
+            _check_function_purity(stmt.body, func_name, line, col)
+        elif isinstance(stmt, IfStmt):
+            expressions_to_check.append(stmt.condition)
+            # Recursively check both branches
+            _check_function_purity(stmt.then_body, func_name, line, col)
+            _check_function_purity(stmt.else_body, func_name, line, col)
+
+        # Check each expression for side-effect function calls
+        for expr in expressions_to_check:
+            # Handle both string (legacy) and Expr AST
+            if isinstance(expr, str):
+                import re
+                for op in SIDE_EFFECT_OPERATIONS:
+                    if re.search(rf'\b{op}\s*\(', expr, re.IGNORECASE):
+                        raise ParseError(
+                            f"Side effect '{op}' not allowed in function '{func_name}'. "
+                            f"Side effects are only allowed in transition actions.",
+                            Token(TokenType.IDENTIFIER, op, line, col)
+                        )
+            else:
+                side_effect = _find_side_effects_in_expr(expr)
+                if side_effect:
+                    raise ParseError(
+                        f"Side effect '{side_effect}' not allowed in function '{func_name}'. "
+                        f"Side effects are only allowed in transition actions.",
+                        Token(TokenType.IDENTIFIER, side_effect, line, col)
+                    )
 
 
 class Parser:
@@ -449,18 +590,24 @@ class Parser:
         return OnGuardFail(target=target, actions=actions,
                          line=token.line, column=token.column)
 
-    def _parse_trigger_spec(self) -> str:
+    def _parse_trigger_spec(self) -> TriggerExpr:
         """Parse trigger specification: NAME or timeout(PARAM)"""
-        name = self._expect(TokenType.IDENTIFIER, "Expected trigger name").value
+        token = self._expect(TokenType.IDENTIFIER, "Expected trigger name")
+        name = token.value
 
         # Check for timeout(PARAM) syntax - only if name is 'timeout'
-        if name == 'timeout' and self._check(TokenType.LPAREN):
+        if name.lower() == 'timeout' and self._check(TokenType.LPAREN):
             self._advance()
             param = self._expect(TokenType.IDENTIFIER, "Expected timeout parameter").value
             self._expect(TokenType.RPAREN, "Expected ')' after timeout parameter")
-            return f"timeout({param})"
+            return TimeoutTrigger(param, token.line, token.column)
 
-        return name
+        # Check if this is a message trigger (uppercase convention) or named trigger
+        # We'll use a heuristic: all-uppercase names are message triggers
+        if name.isupper():
+            return MessageTrigger(name, token.line, token.column)
+        else:
+            return NamedTrigger(name, token.line, token.column)
 
     # =========================================================================
     # Actions parsing
@@ -624,14 +771,18 @@ class Parser:
         self._expect(TokenType.ARROW, "Expected '->' for return type")
         return_type = self._parse_type()
 
-        # Body
+        # Body - parse into statements
         self._skip_whitespace()
         self._expect(TokenType.LPAREN, "Expected '(' for function body")
-        body = self._parse_function_body()
+        statements = self._parse_function_body_statements()
         self._expect(TokenType.RPAREN, "Expected ')' to close function")
 
+        # Validate function purity - no side effects allowed
+        _check_function_purity(statements, name, token.line, token.column)
+
         return FunctionDecl(
-            name=name, params=params, return_type=return_type, body=body,
+            name=name, params=params, return_type=return_type,
+            statements=statements,
             line=token.line, column=token.column
         )
 
@@ -676,244 +827,531 @@ class Parser:
 
         return params
 
-    def _parse_function_body(self) -> str:
-        """Parse function body - collect tokens until closing paren."""
-        body_parts = []
-        paren_depth = 1  # We've already consumed the opening paren
-        brace_depth = 0
+    def _parse_function_body_statements(self) -> List[FunctionStatement]:
+        """Parse function body into a list of statements.
 
-        while paren_depth > 0 and not self._at_end():
-            token = self._peek()
-            if token.type == TokenType.LPAREN:
-                paren_depth += 1
-                body_parts.append('(')
-                self._advance()
-            elif token.type == TokenType.RPAREN:
-                paren_depth -= 1
-                if paren_depth > 0:
-                    body_parts.append(')')
-                    self._advance()
-            elif token.type == TokenType.LBRACE:
-                brace_depth += 1
-                body_parts.append('{')
-                self._advance()
-            elif token.type == TokenType.RBRACE:
-                brace_depth -= 1
-                body_parts.append('}')
-                self._advance()
-            elif token.type == TokenType.NEWLINE:
-                body_parts.append('\n')
-                self._advance()
-            elif token.type == TokenType.COMMENT:
-                body_parts.append(token.value)
-                self._advance()
-            elif token.type == TokenType.STRING:
-                body_parts.append(f'"{token.value}"')
-                self._advance()
-            else:
-                body_parts.append(token.value)
-                self._advance()
-                # Add space after most tokens
-                if token.type not in (TokenType.LPAREN, TokenType.DOT, TokenType.LBRACE):
-                    next_tok = self._peek()
-                    if next_tok.type not in (TokenType.RPAREN, TokenType.COMMA, TokenType.DOT, TokenType.COLON,
-                                             TokenType.RBRACE, TokenType.NEWLINE, TokenType.EOF):
-                        body_parts.append(' ')
+        Statement types:
+        - Assignment: IDENTIFIER '=' expression
+        - Return: 'RETURN' expression
+        - For loop: 'FOR' IDENTIFIER 'IN' expression ':' statements
 
-        return ''.join(body_parts).strip()
-
-    # =========================================================================
-    # Expression parsing
-    # =========================================================================
-
-    def _parse_guard_expression(self) -> str:
-        """Parse a guard expression - stops at LPAREN that starts actions block.
-
-        Disambiguation between function calls and actions blocks:
-        - Look at the first token inside the parentheses
-        - If it's an action keyword (store, compute, lookup, send, append, append_block),
-          then the LPAREN starts the actions block
-        - Otherwise, it's a function call or grouping expression
+        Statement boundaries are detected by recognizing starting patterns,
+        not by newlines or semicolons.
         """
-        # Action keywords that indicate start of actions block
+        statements = []
+
+        while not self._at_end() and not self._check(TokenType.RPAREN):
+            self._skip_whitespace()
+
+            if self._check(TokenType.RPAREN):
+                break
+
+            stmt = self._parse_function_statement()
+            if stmt:
+                statements.append(stmt)
+
+        return statements
+
+    def _parse_function_statement(self, stop_at_else: bool = False) -> Optional[FunctionStatement]:
+        """Parse a single function body statement.
+
+        Args:
+            stop_at_else: If True, stop parsing when ELSE is encountered (used in IF then-body)
+        """
+        self._skip_whitespace()
+
+        token = self._peek()
+
+        # Check for ELSE if we should stop there
+        if stop_at_else and token.type == TokenType.ELSE:
+            return None
+
+        # RETURN statement
+        if token.type == TokenType.RETURN:
+            return self._parse_return_statement()
+
+        # IF statement (as control flow, not expression)
+        if token.type == TokenType.IDENTIFIER and token.value.upper() == 'IF':
+            return self._parse_if_statement()
+
+        # FOR loop
+        if token.type == TokenType.IDENTIFIER and token.value.upper() == 'FOR':
+            return self._parse_for_statement()
+
+        # Assignment: IDENTIFIER = expression
+        if token.type == TokenType.IDENTIFIER:
+            # Look ahead to see if this is an assignment
+            next_tok = self._peek_at(1)
+            if next_tok and next_tok.type == TokenType.EQUALS:
+                return self._parse_assignment_statement()
+
+        # Skip unknown tokens (comments, newlines, etc.)
+        if token.type in (TokenType.NEWLINE, TokenType.COMMENT):
+            self._advance()
+            return None
+
+        # Unexpected token - skip it
+        self._advance()
+        return None
+
+    def _parse_return_statement(self) -> ReturnStmt:
+        """Parse: RETURN expression"""
+        token = self._expect(TokenType.RETURN)
+        expr = self._parse_expr()
+        return ReturnStmt(expression=expr, line=token.line, column=token.column)
+
+    def _parse_assignment_statement(self) -> AssignmentStmt:
+        """Parse: IDENTIFIER = expression"""
+        name_token = self._expect(TokenType.IDENTIFIER)
+        self._expect(TokenType.EQUALS)
+        expr = self._parse_expr()
+        return AssignmentStmt(name=name_token.value, expression=expr,
+                              line=name_token.line, column=name_token.column)
+
+    def _parse_if_statement(self) -> IfStmt:
+        """Parse: IF condition THEN statements ELSE statements"""
+        token = self._advance()  # consume IF
+
+        # Parse condition using expression parser
+        condition = self._parse_expr()
+
+        # Expect THEN
+        then_token = self._peek()
+        if then_token.type != TokenType.IDENTIFIER or then_token.value.upper() != 'THEN':
+            raise ParseError(f"Expected 'THEN', got '{then_token.value}'", then_token)
+        self._advance()
+
+        # Parse then-body statements until ELSE or end
+        then_body = []
+        while not self._at_end() and not self._check(TokenType.RPAREN):
+            self._skip_whitespace()
+            if self._check(TokenType.RPAREN):
+                break
+            # Check for ELSE
+            peek = self._peek()
+            if peek.type == TokenType.ELSE:
+                break
+            stmt = self._parse_function_statement(stop_at_else=True)
+            if stmt:
+                then_body.append(stmt)
+            else:
+                break  # Couldn't parse a statement, might be at ELSE
+
+        # Parse else-body if present
+        else_body = []
+        peek = self._peek()
+        if peek.type == TokenType.ELSE:
+            self._advance()  # consume ELSE
+            while not self._at_end() and not self._check(TokenType.RPAREN):
+                self._skip_whitespace()
+                if self._check(TokenType.RPAREN):
+                    break
+                stmt = self._parse_function_statement()
+                if stmt:
+                    else_body.append(stmt)
+
+        return IfStmt(condition=condition, then_body=then_body, else_body=else_body,
+                      line=token.line, column=token.column)
+    def _parse_for_statement(self) -> ForStmt:
+        """Parse: FOR IDENTIFIER IN expression : statements"""
+        token = self._advance()  # consume FOR
+        var_token = self._expect(TokenType.IDENTIFIER, "Expected loop variable")
+
+        # Expect 'IN' keyword
+        self._expect(TokenType.IN, "Expected 'IN'")
+
+        # Parse iterable expression - it naturally stops at colon since colon isn't a valid expression continuation
+        iterable = self._parse_expr()
+        self._expect(TokenType.COLON, "Expected ':' after FOR iterable")
+
+        # Parse body statements - FOR loop body is a single statement
+        # The statement is parsed and the body ends
+        body = []
+        self._skip_whitespace()
+        if not self._at_end() and not self._check(TokenType.RPAREN) and not self._check(TokenType.RETURN):
+            stmt = self._parse_function_statement()
+            if stmt:
+                body.append(stmt)
+
+        return ForStmt(var_name=var_token.value, iterable=iterable, body=body,
+                       line=token.line, column=token.column)
+
+    def _is_function_call_context(self) -> bool:
+        """Check if current LPAREN starts a function call (not an action block).
+
+        Returns False if after ( there's a newline followed by an action keyword,
+        which indicates this is an action block, not a function call.
+        """
+        # We're at LPAREN, peek ahead
+        i = 1
+        token = self._peek(i)
+
+        # Skip whitespace/newlines to find first content after (
+        while token.type in (TokenType.NEWLINE, TokenType.COMMENT):
+            i += 1
+            token = self._peek(i)
+            if token.type == TokenType.EOF:
+                return False
+
+        # If after ( we see an action keyword, this is an action block, not a function call
         action_keywords = {
             TokenType.STORE, TokenType.COMPUTE, TokenType.LOOKUP,
             TokenType.SEND, TokenType.BROADCAST, TokenType.APPEND, TokenType.APPEND_BLOCK
         }
+        if token.type in action_keywords:
+            return False
 
-        # Delimiters that end a guard expression
-        delimiters = {TokenType.NEWLINE, TokenType.COMMENT} | action_keywords
+        return True
 
-        parts = []
-        paren_depth = 0
-        last_token = None
+    def _peek_at(self, offset: int) -> Optional[Token]:
+        """Peek at a token at a given offset from current position."""
+        pos = self.pos + offset
+        # Skip newlines when peeking
+        while pos < len(self.tokens) and self.tokens[pos].type == TokenType.NEWLINE:
+            pos += 1
+            offset += 1
+        if pos < len(self.tokens):
+            return self.tokens[pos]
+        return None
 
-        while not self._at_end():
-            token = self._peek()
+    # =========================================================================
+    # Expression parsing (recursive descent with proper precedence)
+    # =========================================================================
 
-            # Handle LPAREN - could be function call, grouping, or actions block
-            if token.type == TokenType.LPAREN:
-                is_part_of_expression = False
+    # Tokens that indicate we've left the expression context
+    EXPR_STOP_TOKENS = {
+        TokenType.NEWLINE, TokenType.COMMENT, TokenType.EOF,
+        TokenType.STORE, TokenType.COMPUTE, TokenType.LOOKUP,
+        TokenType.SEND, TokenType.BROADCAST, TokenType.APPEND, TokenType.APPEND_BLOCK
+    }
 
-                # LPAREN is part of expression if:
-                # 1. We're already inside parentheses (nested)
-                # 2. The first token inside is NOT an action keyword (function call or grouping)
+    def _parse_expr(self) -> Expr:
+        """Parse an expression - entry point."""
+        return self._parse_or_expr()
 
-                if paren_depth > 0:
-                    # Already inside parens, this is nested grouping
-                    is_part_of_expression = True
-                else:
-                    # Check what's inside the parens (skip whitespace/newlines)
-                    offset = 1
-                    while self._peek(offset).type in (TokenType.NEWLINE, TokenType.COMMENT):
-                        offset += 1
-                    token_after_lparen = self._peek(offset)
+    def _parse_or_expr(self) -> Expr:
+        """Parse OR expression (lowest precedence)."""
+        left = self._parse_and_expr()
+        while self._check(TokenType.OR):
+            token = self._advance()
+            right = self._parse_and_expr()
+            left = BinaryExpr(left, BinaryOperator.OR, right, token.line, token.column)
+        return left
 
-                    if token_after_lparen.type in action_keywords:
-                        # First token inside is an action keyword - this is the actions block
-                        is_part_of_expression = False
-                    elif token_after_lparen.type == TokenType.RPAREN:
-                        # Empty parens () - could be zero-arg function call or empty actions
-                        # Treat as function call if preceded by identifier, else actions block
-                        is_part_of_expression = (last_token and last_token.type == TokenType.IDENTIFIER)
-                    elif last_token is None:
-                        # LPAREN is first token - it's the actions block
-                        is_part_of_expression = False
-                    else:
-                        # Content inside is an expression - this is a function call or grouping
-                        is_part_of_expression = True
+    def _parse_and_expr(self) -> Expr:
+        """Parse AND expression."""
+        left = self._parse_not_expr()
+        while self._check(TokenType.AND):
+            token = self._advance()
+            right = self._parse_not_expr()
+            left = BinaryExpr(left, BinaryOperator.AND, right, token.line, token.column)
+        return left
 
-                if is_part_of_expression:
-                    paren_depth += 1
-                else:
-                    # This is the start of the actions block
-                    break
-            elif token.type == TokenType.RPAREN:
-                if paren_depth == 0:
-                    break
-                paren_depth -= 1
+    def _parse_not_expr(self) -> Expr:
+        """Parse NOT expression (unary)."""
+        if self._check(TokenType.NOT):
+            token = self._advance()
+            operand = self._parse_not_expr()
+            return UnaryExpr(UnaryOperator.NOT, operand, token.line, token.column)
+        return self._parse_comparison_expr()
 
-            # Stop at delimiters (unless nested)
-            if token.type in delimiters and paren_depth == 0:
-                break
+    def _parse_comparison_expr(self) -> Expr:
+        """Parse comparison expressions (==, !=, <, >, <=, >=)."""
+        left = self._parse_additive_expr()
 
-            # Handle 'and' and 'or' keywords in expressions
-            if token.type == TokenType.AND:
-                parts.append(' and ')
-                last_token = token
-                self._advance()
-                continue
-            if token.type == TokenType.OR:
-                parts.append(' or ')
-                last_token = token
-                self._advance()
-                continue
-
-            # Collect token
-            if token.type == TokenType.STRING:
-                parts.append(f'"{token.value}"')
-            else:
-                parts.append(token.value)
-            last_token = token
-            self._advance()
-
-            # Add spacing
-            next_tok = self._peek()
-            if token.type not in (TokenType.DOT, TokenType.LPAREN):
-                if next_tok.type not in (TokenType.COMMA, TokenType.DOT, TokenType.RPAREN,
-                                         TokenType.NEWLINE, TokenType.EOF) and \
-                   next_tok.type not in delimiters:
-                    parts.append(' ')
-
-        return ''.join(parts).strip()
-
-    def _parse_expression(self) -> str:
-        """Parse an expression - collect tokens until we hit a delimiter."""
-        # Delimiters that end an expression
-        # Note: RPAREN, RBRACKET, RBRACE are handled separately by nesting logic
-        delimiters = {
-            TokenType.NEWLINE, TokenType.COMMENT,
-            TokenType.STORE, TokenType.COMPUTE, TokenType.SEND,
-            TokenType.APPEND, TokenType.APPEND_BLOCK
+        comparison_ops = {
+            TokenType.EQ: BinaryOperator.EQ,
+            TokenType.NEQ: BinaryOperator.NEQ,
+            TokenType.LANGLE: BinaryOperator.LT,
+            TokenType.RANGLE: BinaryOperator.GT,
+            TokenType.LTE: BinaryOperator.LTE,
+            TokenType.GTE: BinaryOperator.GTE,
         }
 
-        parts = []
-        paren_depth = 0
-        bracket_depth = 0
-        brace_depth = 0
+        while self._peek().type in comparison_ops:
+            token = self._advance()
+            op = comparison_ops[token.type]
+            right = self._parse_additive_expr()
+            left = BinaryExpr(left, op, right, token.line, token.column)
 
-        while not self._at_end():
-            token = self._peek()
+        return left
 
-            # Track nesting
-            if token.type == TokenType.LPAREN:
-                paren_depth += 1
-            elif token.type == TokenType.RPAREN:
-                if paren_depth == 0:
-                    break
-                paren_depth -= 1
-            elif token.type == TokenType.LBRACKET:
-                bracket_depth += 1
-            elif token.type == TokenType.RBRACKET:
-                if bracket_depth == 0:
-                    break
-                bracket_depth -= 1
-            elif token.type == TokenType.LBRACE:
-                brace_depth += 1
-            elif token.type == TokenType.RBRACE:
-                if brace_depth == 0:
-                    break
-                brace_depth -= 1
+    def _parse_additive_expr(self) -> Expr:
+        """Parse additive expressions (+, -)."""
+        left = self._parse_multiplicative_expr()
 
-            # Stop at delimiters (unless nested)
-            if token.type in delimiters and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0:
+        while self._check(TokenType.PLUS) or self._check(TokenType.MINUS):
+            token = self._advance()
+            op = BinaryOperator.ADD if token.type == TokenType.PLUS else BinaryOperator.SUB
+            right = self._parse_multiplicative_expr()
+            left = BinaryExpr(left, op, right, token.line, token.column)
+
+        return left
+
+    def _parse_multiplicative_expr(self) -> Expr:
+        """Parse multiplicative expressions (*, /)."""
+        left = self._parse_unary_expr()
+
+        while self._check(TokenType.STAR) or self._check(TokenType.SLASH):
+            token = self._advance()
+            op = BinaryOperator.MUL if token.type == TokenType.STAR else BinaryOperator.DIV
+            right = self._parse_unary_expr()
+            left = BinaryExpr(left, op, right, token.line, token.column)
+
+        return left
+
+    def _parse_unary_expr(self) -> Expr:
+        """Parse unary minus."""
+        if self._check(TokenType.MINUS):
+            token = self._advance()
+            operand = self._parse_unary_expr()
+            return UnaryExpr(UnaryOperator.NEG, operand, token.line, token.column)
+        return self._parse_postfix_expr()
+
+    def _parse_postfix_expr(self) -> Expr:
+        """Parse postfix expressions (function calls, field access, index access)."""
+        expr = self._parse_primary_expr()
+
+        while True:
+            if self._check(TokenType.LPAREN):
+                # Function call - but only if expr is an identifier
+                # Also check that what follows ( looks like function arguments, not an action block
+                # Action blocks start with newline followed by action keywords
+                if isinstance(expr, Identifier) and self._is_function_call_context():
+                    expr = self._parse_function_call(expr.name, expr.line, expr.column)
+                else:
+                    break
+            elif self._check(TokenType.DOT):
+                self._advance()
+                if self._check(TokenType.LBRACE):
+                    # Dynamic field access: obj.{key}
+                    self._advance()
+                    key_expr = self._parse_expr()
+                    self._expect(TokenType.RBRACE, "Expected '}' after dynamic field key")
+                    expr = DynamicFieldAccessExpr(expr, key_expr, expr.line, expr.column)
+                else:
+                    # Static field access: obj.field
+                    field_token = self._expect(TokenType.IDENTIFIER, "Expected field name after '.'")
+                    expr = FieldAccessExpr(expr, field_token.value, expr.line, expr.column)
+            elif self._check(TokenType.LBRACKET):
+                # Index access: obj[index]
+                self._advance()
+                index = self._parse_expr()
+                self._expect(TokenType.RBRACKET, "Expected ']' after index")
+                expr = IndexAccessExpr(expr, index, expr.line, expr.column)
+            else:
                 break
 
-            # Handle 'and' and 'or' keywords in expressions
-            if token.type == TokenType.AND:
-                parts.append(' and ')
-                self._advance()
-                continue
-            if token.type == TokenType.OR:
-                parts.append(' or ')
-                self._advance()
-                continue
-
-            # Collect token
-            if token.type == TokenType.STRING:
-                parts.append(f'"{token.value}"')
-            else:
-                parts.append(token.value)
+        # Check for lambda: identifier => body
+        if isinstance(expr, Identifier) and self._check(TokenType.FATARROW):
             self._advance()
+            body = self._parse_expr()
+            return LambdaExpr(expr.name, body, expr.line, expr.column)
 
-            # Add spacing
-            next_tok = self._peek()
-            if token.type not in (TokenType.LPAREN, TokenType.DOT, TokenType.LBRACKET, TokenType.LBRACE):
-                if next_tok.type not in (TokenType.RPAREN, TokenType.COMMA, TokenType.DOT, TokenType.COLON,
-                                         TokenType.RBRACKET, TokenType.RBRACE, TokenType.NEWLINE, TokenType.EOF,
-                                         TokenType.LBRACKET, TokenType.LPAREN, TokenType.LBRACE) and \
-                   next_tok.type not in delimiters:
-                    parts.append(' ')
+        return expr
 
-        return ''.join(parts).strip()
+    def _parse_function_call(self, name: str, line: int, column: int) -> FunctionCallExpr:
+        """Parse function call arguments."""
+        self._expect(TokenType.LPAREN, "Expected '(' for function call")
+        args = []
+
+        if not self._check(TokenType.RPAREN):
+            args.append(self._parse_expr())
+            while self._match(TokenType.COMMA):
+                args.append(self._parse_expr())
+
+        self._expect(TokenType.RPAREN, "Expected ')' after function arguments")
+        return FunctionCallExpr(name, args, line, column)
+
+    def _parse_primary_expr(self) -> Expr:
+        """Parse primary expressions (literals, identifiers, grouped, if, struct, list)."""
+        token = self._peek()
+
+        # IF expression
+        if token.value.upper() == 'IF' and token.type == TokenType.IDENTIFIER:
+            return self._parse_if_expr()
+
+        # Struct literal: { ... }
+        if self._check(TokenType.LBRACE):
+            return self._parse_struct_literal()
+
+        # List literal: [ ... ]
+        if self._check(TokenType.LBRACKET):
+            return self._parse_list_literal()
+
+        # Grouped expression: ( ... )
+        if self._check(TokenType.LPAREN):
+            self._advance()
+            expr = self._parse_expr()
+            self._expect(TokenType.RPAREN, "Expected ')' after grouped expression")
+            return expr
+
+        # String literal
+        if self._check(TokenType.STRING):
+            token = self._advance()
+            return Literal(token.value, "string", token.line, token.column)
+
+        # Number literal
+        if self._check(TokenType.NUMBER):
+            token = self._advance()
+            value = float(token.value) if '.' in token.value else int(token.value)
+            return Literal(value, "number", token.line, token.column)
+
+        # Boolean literals (true, false) and null
+        if self._check(TokenType.IDENTIFIER):
+            if token.value.lower() == 'true':
+                self._advance()
+                return Literal(True, "bool", token.line, token.column)
+            elif token.value.lower() == 'false':
+                self._advance()
+                return Literal(False, "bool", token.line, token.column)
+            elif token.value.lower() == 'null':
+                self._advance()
+                return Literal(None, "null", token.line, token.column)
+
+        # Identifier (variable or enum reference)
+        if self._check(TokenType.IDENTIFIER):
+            token = self._advance()
+            name = token.value
+
+            # Check for enum reference: EnumName.VALUE
+            if self._check(TokenType.DOT):
+                # Peek ahead to see if it's an identifier (enum value) vs brace (dynamic access)
+                if self._peek(1).type == TokenType.IDENTIFIER:
+                    self._advance()  # consume .
+                    value_token = self._advance()
+                    return EnumRefExpr(name, value_token.value, token.line, token.column)
+
+            return Identifier(name, token.line, token.column)
+
+        # MESSAGE keyword can be used as an identifier (e.g., message.sender, message.payload)
+        if self._check(TokenType.MESSAGE):
+            token = self._advance()
+            return Identifier(token.value, token.line, token.column)
+
+        raise ParseError(f"Unexpected token in expression: {token.value}", token)
+
+    def _parse_if_expr(self) -> IfExpr:
+        """Parse IF condition THEN expr ELSE expr."""
+        token = self._advance()  # consume 'IF'
+        condition = self._parse_expr()
+
+        # Expect THEN - can be either IDENTIFIER 'THEN' or a dedicated token
+        then_token = self._peek()
+        is_then = (then_token.type == TokenType.IDENTIFIER and then_token.value.upper() == 'THEN')
+        if not is_then:
+            raise ParseError("Expected 'THEN' after IF condition", then_token)
+        self._advance()
+
+        then_expr = self._parse_expr()
+
+        # Expect ELSE - can be either TokenType.ELSE or IDENTIFIER 'ELSE'
+        else_token = self._peek()
+        is_else = (else_token.type == TokenType.ELSE or
+                   (else_token.type == TokenType.IDENTIFIER and else_token.value.upper() == 'ELSE'))
+        if not is_else:
+            raise ParseError("Expected 'ELSE' after THEN expression", else_token)
+        self._advance()
+
+        else_expr = self._parse_expr()
+
+        return IfExpr(condition, then_expr, else_expr, token.line, token.column)
+
+    def _parse_struct_literal(self) -> StructLiteralExpr:
+        """Parse struct literal: { field: value, ... } or { ...spread, field: value }."""
+        token = self._expect(TokenType.LBRACE, "Expected '{'")
+        fields = {}
+        spread = None
+
+        self._skip_whitespace()
+        while not self._check(TokenType.RBRACE) and not self._at_end():
+            # Check for spread: ...expr
+            if self._check(TokenType.DOT):
+                # Check for ... (three dots)
+                if self._peek(1).type == TokenType.DOT and self._peek(2).type == TokenType.DOT:
+                    self._advance()  # first .
+                    self._advance()  # second .
+                    self._advance()  # third .
+                    spread = self._parse_expr()
+                    if self._check(TokenType.COMMA):
+                        self._advance()
+                    self._skip_whitespace()
+                    continue
+
+            # Regular field: name: value OR shorthand: name (equivalent to name: name)
+            field_token = self._expect(TokenType.IDENTIFIER, "Expected field name")
+            if self._check(TokenType.COLON):
+                self._advance()  # consume :
+                value = self._parse_expr()
+            else:
+                # Shorthand syntax: just identifier means identifier: identifier
+                value = Identifier(field_token.value, field_token.line, field_token.column)
+            fields[field_token.value] = value
+
+            if self._check(TokenType.COMMA):
+                self._advance()
+            self._skip_whitespace()
+
+        self._expect(TokenType.RBRACE, "Expected '}' to close struct literal")
+        return StructLiteralExpr(fields, spread, token.line, token.column)
+
+    def _parse_list_literal(self) -> ListLiteralExpr:
+        """Parse list literal: [a, b, c]."""
+        token = self._expect(TokenType.LBRACKET, "Expected '['")
+        elements = []
+
+        self._skip_whitespace()
+        if not self._check(TokenType.RBRACKET):
+            elements.append(self._parse_expr())
+            while self._match(TokenType.COMMA):
+                self._skip_whitespace()
+                if self._check(TokenType.RBRACKET):
+                    break  # Allow trailing comma
+                elements.append(self._parse_expr())
+
+        self._expect(TokenType.RBRACKET, "Expected ']' to close list literal")
+        return ListLiteralExpr(elements, token.line, token.column)
+
+    def _parse_guard_expression(self) -> Expr:
+        """Parse a guard expression - returns an Expr AST node."""
+        return self._parse_expr()
+
+    def _parse_expression(self) -> Expr:
+        """Parse an expression - returns an Expr AST node."""
+        return self._parse_expr()
 
     # =========================================================================
     # Type parsing
     # =========================================================================
 
-    def _parse_type(self) -> str:
-        """Parse a type: NAME or NAME<TYPE, TYPE>"""
-        name = self._expect(TokenType.IDENTIFIER, "Expected type name").value
+    def _parse_type(self) -> TypeExpr:
+        """Parse a type: NAME or list<TYPE> or map<KEY, VALUE>"""
+        token = self._expect(TokenType.IDENTIFIER, "Expected type name")
+        name = token.value
 
         if self._match(TokenType.LANGLE):
-            # Generic type
-            type_params = [self._parse_type()]
-            while self._match(TokenType.COMMA):
-                type_params.append(self._parse_type())
-            self._expect(TokenType.RANGLE, "Expected '>' to close generic type")
-            return f"{name}<{', '.join(type_params)}>"
+            # Generic type: list<T> or map<K, V>
+            if name.lower() == 'list':
+                element_type = self._parse_type()
+                self._expect(TokenType.RANGLE, "Expected '>' to close list type")
+                return ListType(element_type, token.line, token.column)
+            elif name.lower() == 'map':
+                key_type = self._parse_type()
+                self._expect(TokenType.COMMA, "Expected ',' in map type")
+                value_type = self._parse_type()
+                self._expect(TokenType.RANGLE, "Expected '>' to close map type")
+                return MapType(key_type, value_type, token.line, token.column)
+            else:
+                # Unknown generic - treat as simple type with generic suffix for now
+                type_params = [self._parse_type()]
+                while self._match(TokenType.COMMA):
+                    type_params.append(self._parse_type())
+                self._expect(TokenType.RANGLE, "Expected '>' to close generic type")
+                # Fallback: create simple type with generic syntax preserved
+                param_strs = [_type_to_str(tp) for tp in type_params]
+                return SimpleType(f"{name}<{', '.join(param_strs)}>", token.line, token.column)
 
-        return name
+        return SimpleType(name, token.line, token.column)
 
     # =========================================================================
     # Utility parsing

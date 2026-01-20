@@ -445,7 +445,7 @@ actor Witness "Verifies VM accessibility, monitors session, creates attestation"
         compute final_attestation = { ...LOAD(attestation), cabal_signatures: LOAD(attestation_signatures) }
         SEND(consumer, ATTESTATION_RESULT)
         SEND(provider, ATTESTATION_RESULT)
-        APPEND(my_chain, ATTESTATION)
+        APPEND(chain, ATTESTATION)
     )
 )
 

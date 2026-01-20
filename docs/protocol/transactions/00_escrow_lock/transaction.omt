@@ -37,6 +37,7 @@ parameters (
     MAX_RECRUITMENT_ROUNDS = 3 count "Max times to recruit more witnesses"
     MIN_HIGH_TRUST_WITNESSES = 2 count "Minimum high-trust witnesses for fairness"
     MAX_PRIOR_INTERACTIONS = 5 count "Max prior interactions with consumer for fairness"
+    HIGH_TRUST_THRESHOLD = 1.0 fraction "Trust score threshold for high-trust classification"
 )
 
 # =============================================================================
@@ -246,6 +247,17 @@ message TOPUP_VOTE from Witness to [Witness] signed (
 # FUNCTIONS (Transaction-specific)
 # =============================================================================
 
+function COMPUTE_ESCROW_CONSENSUS(preliminaries list<dict>) -> string (
+    # Start with this witness's own verdict
+    my_verdict = LOAD(verdict)
+    accept_count = IF my_verdict == "ACCEPT" THEN 1 ELSE 0
+    # Count verdicts from other witnesses
+    FOR p IN preliminaries:
+        accept_count = IF p.verdict == "ACCEPT" THEN accept_count + 1 ELSE accept_count
+    # Need threshold for acceptance
+    RETURN IF accept_count >= WITNESS_THRESHOLD THEN "ACCEPT" ELSE "REJECT"
+)
+
 function BUILD_LOCK_RESULT() -> LockResult (
     consensus = LOAD(consensus_direction)
     status = IF consensus == "ACCEPT" THEN LockStatus.ACCEPTED ELSE LockStatus.REJECTED
@@ -283,6 +295,61 @@ function BUILD_TOPUP_RESULT() -> TopUpResult (
         consumer_signature: null,
         timestamp: NOW()
     }
+)
+
+function VALIDATE_LOCK_RESULT(result dict, expected_session_id hash, expected_amount uint) -> bool (
+    # Validate lock result matches expected values and has ACCEPTED status
+    valid_session = result != null AND result.session_id == expected_session_id
+    valid_amount = result != null AND result.amount == expected_amount
+    valid_status = result != null AND (result.status == LockStatus.ACCEPTED OR result.status == "ACCEPTED")
+    has_sigs = result != null AND LENGTH(result.witness_signatures) > 0
+    RETURN valid_session AND valid_amount AND valid_status AND has_sigs
+)
+
+function VALIDATE_TOPUP_RESULT(result dict, expected_session_id hash, expected_additional_amount uint) -> bool (
+    # Validate topup result matches expected values
+    valid_session = result != null AND result.session_id == expected_session_id
+    valid_amount = result != null AND result.additional_amount == expected_additional_amount
+    has_sigs = result != null AND LENGTH(result.witness_signatures) > 0
+    RETURN valid_session AND valid_amount AND has_sigs
+)
+
+function VERIFY_WITNESS_SELECTION(proposed_witnesses list<peer_id>, chain_state dict, session_id hash, provider_nonce bytes, consumer_nonce bytes) -> bool (
+    # Recompute expected witnesses from seed and compare
+    seed = HASH(session_id, provider_nonce, consumer_nonce)
+    expected = SELECT_WITNESSES(seed, chain_state)
+    RETURN SET_EQUALS(proposed_witnesses, expected)
+)
+
+function SELECT_WITNESSES(seed bytes, chain_state dict) -> list<peer_id> (
+    # Get candidates from chain state, excluding self, consumer, provider
+    known_peers = chain_state.known_peers
+    consumer = LOAD(consumer)
+    provider = LOAD(provider)
+    candidates = FILTER(known_peers, p => p != peer_id AND p != consumer AND p != provider)
+
+    # Sort deterministically
+    candidates = SORT(candidates)
+
+    # Separate by trust level
+    trust_scores = chain_state.trust_scores
+    high_trust = FILTER(candidates, c => GET(trust_scores, c, 0) >= HIGH_TRUST_THRESHOLD)
+    low_trust = FILTER(candidates, c => GET(trust_scores, c, 0) < HIGH_TRUST_THRESHOLD)
+
+    # Seeded selection
+    rng = SEEDED_RNG(seed)
+    selected = []
+
+    # Select required high-trust witnesses
+    ht_sample = MIN(MIN_HIGH_TRUST_WITNESSES, LENGTH(high_trust))
+    selected = SEEDED_SAMPLE(rng, high_trust, ht_sample)
+
+    # Fill remaining slots from all candidates
+    remaining = FILTER(candidates, c => NOT CONTAINS(selected, c))
+    needed = WITNESS_COUNT - LENGTH(selected)
+    additional = SEEDED_SAMPLE(rng, remaining, needed)
+
+    RETURN CONCAT(selected, additional)
 )
 
 # =============================================================================
@@ -338,12 +405,12 @@ actor Consumer "Party paying for service" (
     state SIGNING_TOPUP "Counter-signing top-up"
 
     # Initial lock flow
-    IDLE -> SENDING_LOCK_INTENT on initiate_lock when has_provider_checkpoint (
+    IDLE -> SENDING_LOCK_INTENT on initiate_lock when provider_chain_checkpoint != null (
         store provider, amount
         STORE(consumer, peer_id)
         compute session_id = HASH(peer_id + provider + NOW())
         compute consumer_nonce = RANDOM_BYTES(32)
-        lookup provider_chain_checkpoint = chain.get_peer_hash(provider)
+        compute provider_chain_checkpoint = READ(provider, "head_hash")
     ) else -> FAILED (
         store provider, amount
         STORE(consumer, peer_id)
@@ -395,10 +462,14 @@ actor Consumer "Party paying for service" (
 
     REVIEWING_RESULT -> SIGNING_RESULT auto when result_valid_and_accepted
 
+    REVIEWING_RESULT -> FAILED auto when NOT result_valid_and_accepted (
+        STORE(reject_reason, "lock_rejected")
+    )
+
     SIGNING_RESULT -> LOCKED auto (
         compute consumer_signature = SIGN(pending_result)
         STORE(lock_result, { ...pending_result, consumer_signature })
-        APPEND(my_chain, BALANCE_LOCK)
+        APPEND(chain, BALANCE_LOCK)
         BROADCAST(witnesses, CONSUMER_SIGNED_LOCK)
         STORE(total_escrowed, amount)
     )
@@ -434,7 +505,7 @@ actor Consumer "Party paying for service" (
     SIGNING_TOPUP -> LOCKED auto (
         compute consumer_signature = SIGN(pending_topup_result)
         STORE(topup_result, { ...pending_topup_result, consumer_signature })
-        APPEND(my_chain, BALANCE_TOPUP)
+        APPEND(chain, BALANCE_TOPUP)
         BROADCAST(witnesses, CONSUMER_SIGNED_TOPUP)
         STORE(total_escrowed, total_escrowed + additional_amount)
     )
@@ -472,9 +543,9 @@ actor Provider "Party providing service, selects witnesses" (
         compute provider_nonce = RANDOM_BYTES(32)
     )
 
-    VALIDATING_CHECKPOINT -> SELECTING_WITNESSES auto when checkpoint_exists_in_chain (
-        compute chain_state_at_checkpoint = chain.get_state_at(requested_checkpoint)
-        compute provider_chain_segment = chain.to_segment(requested_checkpoint)
+    VALIDATING_CHECKPOINT -> SELECTING_WITNESSES auto when CHAIN_CONTAINS_HASH(chain, requested_checkpoint) (
+        compute chain_state_at_checkpoint = CHAIN_STATE_AT(chain, requested_checkpoint)
+        compute provider_chain_segment = CHAIN_SEGMENT(chain, requested_checkpoint)
     ) else -> SENDING_REJECTION (
         STORE(reason, "unknown_checkpoint")
     )
@@ -602,12 +673,12 @@ actor Witness "Verifies consumer balance, participates in consensus" (
 
     # Fast path: advance when enough preliminaries collected
     COLLECTING_PRELIMINARIES -> VOTING auto when LENGTH(preliminaries) >= WITNESS_THRESHOLD - 1 (
-        compute consensus_direction = compute_consensus(preliminaries)
+        compute consensus_direction = COMPUTE_ESCROW_CONSENSUS(preliminaries)
     )
 
     # Timeout fallback
     COLLECTING_PRELIMINARIES -> VOTING on timeout(PRELIMINARY_TIMEOUT) (
-        compute consensus_direction = compute_consensus(preliminaries)
+        compute consensus_direction = COMPUTE_ESCROW_CONSENSUS(preliminaries)
     )
 
     VOTING -> COLLECTING_VOTES auto (
@@ -625,7 +696,7 @@ actor Witness "Verifies consumer balance, participates in consensus" (
     COLLECTING_VOTES -> BUILDING_RESULT on timeout(CONSENSUS_TIMEOUT) when LENGTH(votes) >= WITNESS_THRESHOLD
 
     BUILDING_RESULT -> SIGNING_RESULT auto (
-        compute result = build_lock_result()
+        compute result = BUILD_LOCK_RESULT()
     )
 
     SIGNING_RESULT -> PROPAGATING_RESULT auto (
@@ -636,7 +707,7 @@ actor Witness "Verifies consumer balance, participates in consensus" (
     PROPAGATING_RESULT -> ESCROW_ACTIVE on CONSUMER_SIGNED_LOCK (
         STORE(consumer_signature, message.signature)
         STORE(total_escrowed, amount)
-        APPEND(my_chain, WITNESS_COMMITMENT)
+        APPEND(chain, WITNESS_COMMITMENT)
         SEND(provider, BALANCE_UPDATE_BROADCAST)
     )
 
@@ -680,7 +751,7 @@ actor Witness "Verifies consumer balance, participates in consensus" (
     )
 
     BUILDING_TOPUP_RESULT -> PROPAGATING_TOPUP auto (
-        compute topup_result = build_topup_result()
+        compute topup_result = BUILD_TOPUP_RESULT()
         SEND(consumer, TOPUP_RESULT_FOR_SIGNATURE)
     )
 

@@ -122,11 +122,11 @@ class ExpressionTranslator:
                     return value  # Already fully-qualified
         return None
 
-    def translate(self, expr: str, local_vars: Set[str] = None) -> str:
+    def translate(self, expr, local_vars: Set[str] = None) -> str:
         """Translate a DSL expression to Python code.
 
         Args:
-            expr: The DSL expression to translate
+            expr: The DSL expression to translate (string or Expr AST)
             local_vars: Set of variable names that are local (e.g., lambda params)
                        These won't be translated to self.load()
         """
@@ -134,6 +134,10 @@ class ExpressionTranslator:
             return "True"
 
         self._local_vars = local_vars or set()
+
+        # Convert Expr AST to string if needed
+        if not isinstance(expr, str):
+            expr = expr_to_python(expr)
 
         # Normalize whitespace
         expr = " ".join(expr.split())
@@ -493,20 +497,6 @@ class ExpressionTranslator:
                     i = j
                     continue
 
-                # Handle store.X prefix
-                if token == 'store' and rest.startswith('.'):
-                    # Find the attribute name
-                    k = j + 1  # skip the dot
-                    while k < len(expr) and expr[k].isspace():
-                        k += 1
-                    m = k
-                    while m < len(expr) and (expr[m].isalnum() or expr[m] == '_'):
-                        m += 1
-                    attr = expr[k:m]
-                    result.append(f'self.load("{attr}")')
-                    i = m
-                    continue
-
                 # Handle keyword arguments: identifier followed by = (but not ==)
                 if rest.startswith('=') and not rest.startswith('=='):
                     # This is a keyword argument name - keep it as-is
@@ -786,6 +776,25 @@ class ExpressionTranslator:
                         i = m
                         continue
 
+                # Handle 'message' keyword - refers to incoming message in transitions
+                if token == 'message' and rest.startswith('.'):
+                    # message.X -> _msg.payload.get("X") or _msg.sender
+                    k = j + 1  # skip the dot
+                    while k < len(expr) and expr[k].isspace():
+                        k += 1
+                    m = k
+                    while m < len(expr) and (expr[m].isalnum() or expr[m] == '_'):
+                        m += 1
+                    attr = expr[k:m]
+                    if attr == 'sender':
+                        result.append('_msg.sender')
+                    elif attr == 'payload':
+                        result.append('_msg.payload')
+                    else:
+                        result.append(f'_msg.payload.get("{attr}")')
+                    i = m
+                    continue
+
                 # Handle attribute access on variables (e.g., pending_result.session_id)
                 if rest.startswith('.'):
                     # Consume the variable and all attribute accesses
@@ -839,12 +848,6 @@ class ExpressionTranslator:
                 # Handle actor properties
                 if token in self.ACTOR_PROPS:
                     result.append(f'self.{token}')
-                    i = j
-                    continue
-
-                # Special case: my_chain refers to self.chain
-                if token == 'my_chain':
-                    result.append('self.chain')
                     i = j
                     continue
 
@@ -1131,7 +1134,7 @@ def _format_action_for_md(action) -> str:
     elif isinstance(action, AppendAction):
         return f"APPEND({action.list_name}, {action.value})"
     elif isinstance(action, AppendBlockAction):
-        return f"APPEND(my_chain, {action.block_type})"
+        return f"APPEND(chain, {action.block_type})"
     return str(action)
 
 
@@ -1163,8 +1166,26 @@ def generate_markdown(tx_dir: Path, output_path: Path = None) -> str:
 # PYTHON CODE GENERATION
 # =============================================================================
 
-def python_type(dsl_type: str) -> str:
-    """Convert DSL type to Python type hint."""
+def python_type(dsl_type) -> str:
+    """Convert DSL type to Python type hint.
+
+    Accepts either a string (legacy) or TypeExpr (new AST).
+    """
+    # Handle TypeExpr AST nodes using duck typing to avoid module path issues
+    # Check class name instead of isinstance since module paths may differ
+    type_class = type(dsl_type).__name__
+
+    if type_class == 'ListType':
+        inner_type = python_type(dsl_type.element_type)
+        return f"List[{inner_type}]"
+    if type_class == 'MapType':
+        key_type = python_type(dsl_type.key_type)
+        val_type = python_type(dsl_type.value_type)
+        return f"Dict[{key_type}, {val_type}]"
+    if type_class == 'SimpleType':
+        dsl_type = dsl_type.name
+
+    # Now dsl_type should be a string
     type_map = {
         "hash": "str",
         "peer_id": "str",
@@ -1221,6 +1242,127 @@ def python_type(dsl_type: str) -> str:
         return "str"
 
     return "Any"
+
+
+def trigger_name(trigger) -> str:
+    """Extract the trigger name from a trigger (string or TriggerExpr AST).
+
+    Returns:
+        - For string: returns the string
+        - For MessageTrigger: returns the message_type
+        - For TimeoutTrigger: returns "timeout(param)"
+        - For NamedTrigger: returns the name
+    """
+    if trigger is None:
+        return ""
+    if isinstance(trigger, str):
+        return trigger
+
+    # Use duck typing to handle TriggerExpr AST nodes
+    type_class = type(trigger).__name__
+    if type_class == 'MessageTrigger':
+        return trigger.message_type
+    if type_class == 'TimeoutTrigger':
+        return f"timeout({trigger.parameter})"
+    if type_class == 'NamedTrigger':
+        return trigger.name
+
+    # Fallback to str conversion
+    return str(trigger)
+
+
+def is_timeout_trigger(trigger) -> bool:
+    """Check if a trigger is a timeout trigger."""
+    if trigger is None:
+        return False
+    if isinstance(trigger, str):
+        return trigger.startswith("timeout(")
+
+    type_class = type(trigger).__name__
+    return type_class == 'TimeoutTrigger'
+
+
+def expr_to_python(expr) -> str:
+    """Convert an expression AST node to Python code.
+
+    Accepts both strings (legacy) and Expr AST nodes.
+    """
+    if expr is None:
+        return "None"
+    if isinstance(expr, str):
+        return expr
+
+    type_class = type(expr).__name__
+
+    if type_class == 'Identifier':
+        return expr.name
+    elif type_class == 'Literal':
+        if expr.type == 'string':
+            return f'"{expr.value}"'
+        elif expr.type == 'bool':
+            return 'True' if expr.value else 'False'
+        elif expr.type == 'null':
+            return 'None'
+        else:
+            return str(expr.value)
+    elif type_class == 'BinaryExpr':
+        left = expr_to_python(expr.left)
+        right = expr_to_python(expr.right)
+        op_map = {
+            'ADD': '+', 'SUB': '-', 'MUL': '*', 'DIV': '/',
+            'EQ': '==', 'NEQ': '!=', 'LT': '<', 'GT': '>',
+            'LTE': '<=', 'GTE': '>=', 'AND': 'and', 'OR': 'or'
+        }
+        op = op_map.get(expr.op.name, str(expr.op.name))
+        return f"({left} {op} {right})"
+    elif type_class == 'UnaryExpr':
+        operand = expr_to_python(expr.operand)
+        if expr.op.name == 'NOT':
+            return f"(not {operand})"
+        elif expr.op.name == 'NEG':
+            return f"(-{operand})"
+        return operand
+    elif type_class == 'IfExpr':
+        cond = expr_to_python(expr.condition)
+        then_e = expr_to_python(expr.then_expr)
+        else_e = expr_to_python(expr.else_expr)
+        return f"({then_e} if {cond} else {else_e})"
+    elif type_class == 'FunctionCallExpr':
+        args = ", ".join(expr_to_python(a) for a in expr.args)
+        return f"{expr.name}({args})"
+    elif type_class == 'FieldAccessExpr':
+        obj = expr_to_python(expr.object)
+        return f"{obj}.{expr.field}"
+    elif type_class == 'DynamicFieldAccessExpr':
+        obj = expr_to_python(expr.object)
+        key = expr_to_python(expr.key_expr)
+        return f"{obj}[{key}]"
+    elif type_class == 'IndexAccessExpr':
+        obj = expr_to_python(expr.object)
+        index = expr_to_python(expr.index)
+        return f"{obj}[{index}]"
+    elif type_class == 'LambdaExpr':
+        # Use DSL arrow syntax (v => body) for translator compatibility
+        body = expr_to_python(expr.body)
+        return f"{expr.param} => {body}"
+    elif type_class == 'StructLiteralExpr':
+        # Generate DSL-compatible syntax for the translator
+        # Use DSL spread syntax (...var) not Python (**var)
+        parts = []
+        if expr.spread:
+            spread = expr_to_python(expr.spread)
+            parts.append(f"...{spread}")
+        for k, v in expr.fields.items():
+            parts.append(f"{k}: {expr_to_python(v)}")
+        return "{ " + ", ".join(parts) + " }"
+    elif type_class == 'ListLiteralExpr':
+        elements = [expr_to_python(e) for e in expr.elements]
+        return "[" + ", ".join(elements) + "]"
+    elif type_class == 'EnumRefExpr':
+        return f"{expr.enum_name}.{expr.value}"
+    else:
+        # Fallback to str conversion
+        return str(expr)
 
 
 def generate_parameters_python(schema: Schema) -> str:
@@ -1438,49 +1580,13 @@ class PythonActorGenerator:
 
         if isinstance(action, StoreAction):
             if action.assignments:
-                # Store with explicit key=value assignments
+                # Store with explicit key=value assignments: STORE(key, value)
                 for key, val in action.assignments.items():
-                    if isinstance(val, str):
-                        # Check for special patterns
-                        if val == "message" and msg_var:
-                            # Store the entire message payload
-                            lines.append(f'{ind}self.store("{key}", {msg_var}.payload)')
-                        elif val.startswith("message."):
-                            # Expression referencing message
-                            msg_attr = val[8:]  # Remove "message." prefix
-                            msg = msg_var or "msg"
-                            if msg_attr == "payload":
-                                # Store the entire payload
-                                lines.append(f'{ind}self.store("{key}", {msg}.payload)')
-                            elif msg_attr.startswith("payload."):
-                                payload_field = msg_attr[8:]
-                                lines.append(f'{ind}self.store("{key}", {msg}.payload.get("{payload_field}"))')
-                            elif msg_attr == "sender":
-                                # Access sender attribute directly
-                                lines.append(f'{ind}self.store("{key}", {msg}.sender)')
-                            else:
-                                # Access other message fields via payload
-                                lines.append(f'{ind}self.store("{key}", {msg}.payload.get("{msg_attr}"))')
-                        elif val in ExpressionTranslator.ACTOR_PROPS:
-                            lines.append(f'{ind}self.store("{key}", self.{val})')
-                        elif val in self.store_vars:
-                            lines.append(f'{ind}self.store("{key}", self.load("{val}"))')
-                        else:
-                            enum_ref = self.expr_translator.get_enum_reference(val)
-                            if enum_ref:
-                                lines.append(f'{ind}self.store("{key}", {enum_ref})')
-                            elif self._is_expression(val):
-                                translated = self.expr_translator.translate(val)
-                                lines.append(f'{ind}self.store("{key}", {translated})')
-                            else:
-                                # Strip outer quotes if present (DSL string literals)
-                                stripped = val
-                                if len(val) >= 2 and ((val.startswith('"') and val.endswith('"')) or
-                                                       (val.startswith("'") and val.endswith("'"))):
-                                    stripped = val[1:-1]
-                                lines.append(f'{ind}self.store("{key}", {repr(stripped)})')
-                    else:
-                        lines.append(f'{ind}self.store("{key}", {repr(val)})')
+                    # Convert to string if AST node
+                    val_str = expr_to_python(val) if not isinstance(val, str) else val
+                    # Translate the expression - handles message.X, store vars, etc.
+                    translated = self.expr_translator.translate(val_str)
+                    lines.append(f'{ind}self.store("{key}", {translated})')
             elif action.fields:
                 # Store fields from params (function arguments) or message
                 for field in action.fields:
@@ -1501,10 +1607,12 @@ class PythonActorGenerator:
         elif isinstance(action, LookupAction):
             var_name = action.name
             from_expr = action.expression
+            # Convert to string for pattern matching
+            from_expr_str = expr_to_python(from_expr) if not isinstance(from_expr, str) else from_expr
 
             # Special handling for chain.get_peer_hash
-            if "get_peer_hash" in from_expr:
-                peer_match = re.search(r'get_peer_hash\((\w+)\)', from_expr)
+            if "get_peer_hash" in from_expr_str:
+                peer_match = re.search(r'get_peer_hash\((\w+)\)', from_expr_str)
                 peer_var = peer_match.group(1) if peer_match else "peer"
                 lines.append(f'{ind}_lookup_block = self.chain.get_peer_hash(self.load("{peer_var}"))')
                 lines.append(f'{ind}if _lookup_block:')
@@ -1517,16 +1625,9 @@ class PythonActorGenerator:
         elif isinstance(action, SendAction):
             msg_type = action.message
             to_target = action.target
-
-            # Handle dotted expressions like message.sender
-            if to_target.startswith("message."):
-                attr = to_target[8:]  # e.g., "sender"
-                msg = msg_var or "msg"
-                recipient_expr = f'{msg}.{attr}'
-            elif to_target in self.store_vars:
-                recipient_expr = f'self.load("{to_target}")'
-            else:
-                recipient_expr = f'self.load("{to_target}")'
+            # Convert to string and translate
+            to_target_str = expr_to_python(to_target) if not isinstance(to_target, str) else to_target
+            recipient_expr = self.expr_translator.translate(to_target_str)
 
             lines.append(f'{ind}msg_payload = self._build_{msg_type.lower()}_payload()')
             lines.append(f'{ind}outgoing.append(Message(')
@@ -1540,8 +1641,10 @@ class PythonActorGenerator:
         elif isinstance(action, BroadcastAction):
             msg_type = action.message
             target_list = action.target_list
+            # Convert to string if expression AST
+            target_list_str = expr_to_python(target_list) if not isinstance(target_list, str) else target_list
 
-            lines.append(f'{ind}for recipient in self.load("{target_list}", []):')
+            lines.append(f'{ind}for recipient in self.load("{target_list_str}", []):')
             lines.append(f'{ind}    msg_payload = self._build_{msg_type.lower()}_payload()')
             lines.append(f'{ind}    outgoing.append(Message(')
             lines.append(f'{ind}        msg_type=MessageType.{msg_type},')
@@ -1553,6 +1656,9 @@ class PythonActorGenerator:
 
         elif isinstance(action, AppendBlockAction):
             block_type = action.block_type
+            # Convert to string if expression AST
+            if not isinstance(block_type, str):
+                block_type = expr_to_python(block_type)
             lines.append(f'{ind}self.chain.append(')
             lines.append(f'{ind}    BlockType.{block_type},')
             lines.append(f'{ind}    self._build_{block_type.lower()}_payload(),')
@@ -1562,62 +1668,45 @@ class PythonActorGenerator:
         elif isinstance(action, AppendAction):
             list_name = action.list_name
             value = action.value
+            # Convert value to string if expression AST
+            value_str = expr_to_python(value) if not isinstance(value, str) else value
 
-            # Special case: APPEND(my_chain, BLOCK_TYPE) is a chain append
-            if list_name == "my_chain":
-                block_type = value
+            # Special case: APPEND(chain, BLOCK_TYPE) is a chain append
+            if list_name == "chain":
+                block_type = value_str
                 lines.append(f'{ind}self.chain.append(')
                 lines.append(f'{ind}    BlockType.{block_type},')
                 lines.append(f'{ind}    self._build_{block_type.lower()}_payload(),')
                 lines.append(f'{ind}    current_time,')
                 lines.append(f'{ind})')
-            elif isinstance(value, str):
-                if value.startswith("message."):
-                    msg_attr = value[8:]
-                    msg = msg_var or "msg"
-                    lines.append(f'{ind}_list = self.load("{list_name}") or []')
-                    if msg_attr.startswith("payload."):
-                        payload_field = msg_attr[8:]
-                        lines.append(f'{ind}_list.append({msg}.payload.get("{payload_field}"))')
-                    elif msg_attr == "payload":
-                        lines.append(f'{ind}_list.append({msg}.payload)')
-                    else:
-                        lines.append(f'{ind}_list.append({msg}.{msg_attr})')
-                    lines.append(f'{ind}self.store("{list_name}", _list)')
-                elif value in self.store_vars:
-                    lines.append(f'{ind}_list = self.load("{list_name}") or []')
-                    lines.append(f'{ind}_list.append(self.load("{value}"))')
-                    lines.append(f'{ind}self.store("{list_name}", _list)')
-                else:
-                    lines.append(f'{ind}_list = self.load("{list_name}") or []')
-                    lines.append(f'{ind}_list.append({repr(value)})')
-                    lines.append(f'{ind}self.store("{list_name}", _list)')
             else:
+                # Use translator for the value - handles message.X, store vars, etc.
+                translated_value = self.expr_translator.translate(value_str)
                 lines.append(f'{ind}_list = self.load("{list_name}") or []')
-                lines.append(f'{ind}_list.append({repr(value)})')
+                lines.append(f'{ind}_list.append({translated_value})')
                 lines.append(f'{ind}self.store("{list_name}", _list)')
 
         return lines
 
     def _generate_external_trigger(self, trigger: TriggerDecl) -> str:
         """Generate external trigger method."""
-        trigger_name = trigger.name
+        trig_name = trigger.name
         param_list = ", ".join(f"{p.name}: {python_type(p.type)}" for p in trigger.params)
         allowed_in = trigger.allowed_in
 
-        lines = [f"    def {trigger_name}(self{', ' + param_list if param_list else ''}):"]
+        lines = [f"    def {trig_name}(self{', ' + param_list if param_list else ''}):"]
         if trigger.description:
             lines.append(f'        """{trigger.description}"""')
 
         if allowed_in:
             allowed_states = ", ".join(f"{self.actor_name}State.{s}" for s in allowed_in)
             lines.append(f"        if self.state not in ({allowed_states},):")
-            lines.append(f'            raise ValueError(f"Cannot {trigger_name} in state {{self.state}}")')
+            lines.append(f'            raise ValueError(f"Cannot {trig_name} in state {{self.state}}")')
             lines.append("")
 
         # Find transitions triggered by this external trigger
         for trans in self.actor.transitions:
-            if trans.trigger == trigger_name and trans.from_state in allowed_in:
+            if trigger_name(trans.trigger) == trig_name and trans.from_state in allowed_in:
                 guard = trans.guard
 
                 # Execute actions first
@@ -1700,37 +1789,44 @@ class PythonActorGenerator:
         auto_trans = [t for t in transitions if t.auto]
         msg_trans = [t for t in transitions if not t.auto
                      and t.trigger is not None
-                     and not str(t.trigger).startswith("timeout(")
-                     and t.trigger not in external_trigger_names]
-        timeout_trans = [t for t in transitions if t.trigger and str(t.trigger).startswith("timeout(")]
+                     and not is_timeout_trigger(t.trigger)
+                     and trigger_name(t.trigger) not in external_trigger_names]
+        timeout_trans = [t for t in transitions if t.trigger and is_timeout_trigger(t.trigger)]
 
         # Handle message triggers first (check queue)
         for trans in msg_trans:
-            trigger = trans.trigger
+            trig = trans.trigger
             # Skip if it's an external trigger
-            if trigger in external_trigger_names:
+            trig_name = trigger_name(trig)
+            if trig_name in external_trigger_names:
                 continue
 
-            msg_type = trigger
+            msg_type = trig_name
             lines.append(f"            # Check for {msg_type}")
             lines.append(f"            msgs = self.get_messages(MessageType.{msg_type})")
             lines.append("            if msgs:")
-            lines.append("                msg = msgs[0]")
-            lines.extend(self._generate_transition_code(trans, indent_level=4, msg_var="msg"))
-            lines.append("                self.message_queue.remove(msg)  # Only remove processed message")
+            lines.append("                _msg = msgs[0]")
+            lines.extend(self._generate_transition_code(trans, indent_level=4, msg_var="_msg"))
+            lines.append("                self.message_queue.remove(_msg)  # Only remove processed message")
             lines.append("")
 
         # Handle timeout transitions
         for trans in timeout_trans:
-            trigger = trans.trigger
-            # Extract timeout parameter name: timeout(PARAM_NAME)
-            if trigger.startswith("timeout(") and trigger.endswith(")"):
-                param_name = trigger[8:-1]
-                # Use state_entered_at which is automatically set by transition_to()
-                lines.append(f"            # Timeout check")
-                lines.append(f"            if self.current_time - self.load('state_entered_at', 0) > {param_name}:")
-                lines.extend(self._generate_transition_code(trans, indent_level=4))
-                lines.append("")
+            trig = trans.trigger
+            # Extract timeout parameter name from TimeoutTrigger or string
+            type_class = type(trig).__name__
+            if type_class == 'TimeoutTrigger':
+                param_name = trig.parameter
+            elif isinstance(trig, str) and trig.startswith("timeout(") and trig.endswith(")"):
+                param_name = trig[8:-1]
+            else:
+                continue
+
+            # Use state_entered_at which is automatically set by transition_to()
+            lines.append(f"            # Timeout check")
+            lines.append(f"            if self.current_time - self.load('state_entered_at', 0) > {param_name}:")
+            lines.extend(self._generate_transition_code(trans, indent_level=4))
+            lines.append("")
 
         # Handle auto transitions (immediate)
         # Track whether we've seen a guarded transition to use elif for subsequent ones
@@ -1777,14 +1873,27 @@ class PythonActorGenerator:
 
         return lines
 
-    def _generate_guard_check(self, guard_name: str) -> str:
-        """Generate Python code for a guard check."""
-        sanitized = sanitize_guard_name(guard_name)
+    def _generate_guard_check(self, guard) -> str:
+        """Generate Python code for a guard check.
+
+        Args:
+            guard: Either a string (legacy) or Expr AST node
+        """
+        # Convert expression AST to string if needed
+        guard_str = expr_to_python(guard) if not isinstance(guard, str) else guard
+        sanitized = sanitize_guard_name(guard_str)
         return f"self._check_{sanitized}()"
 
-def sanitize_guard_name(guard_name: str) -> str:
-    """Convert an expression or guard name into a valid Python identifier."""
+def sanitize_guard_name(guard_name) -> str:
+    """Convert an expression or guard name into a valid Python identifier.
+
+    Args:
+        guard_name: Either a string or Expr AST node
+    """
     import re
+    # Convert expression AST to string if needed
+    if not isinstance(guard_name, str):
+        guard_name = expr_to_python(guard_name)
     # If it's already a valid identifier (named guard), use it directly
     if guard_name.isidentifier():
         return guard_name
@@ -1936,8 +2045,9 @@ def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
 
     # Generate guard methods
     for guard_name, (desc, expr) in all_guards.items():
-        # Normalize and translate expression
-        expr_oneline = " ".join(str(expr).split())
+        # Normalize and translate expression - use expr_to_python for AST nodes
+        expr_str = expr_to_python(expr) if not isinstance(expr, str) else expr
+        expr_oneline = " ".join(expr_str.split())
         translated = translator.translate(expr_oneline)
 
         lines.append(f"    def _check_{guard_name}(self) -> bool:")
@@ -1961,7 +2071,9 @@ def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
         if from_expr:
             # Translate the expression
             translated = translator.translate(from_expr)
-            lines.append(f"        # Schema: {from_expr[:60]}...")
+            # Convert to string for comment (expr_to_python handles both string and AST)
+            from_expr_str = expr_to_python(from_expr) if not isinstance(from_expr, str) else from_expr
+            lines.append(f"        # Schema: {from_expr_str[:60]}...")
             lines.append(f"        return {translated}")
         else:
             lines.append("        # No expression provided")
@@ -1974,11 +2086,13 @@ def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
         for action in trans.actions:
             if isinstance(action, AppendBlockAction):
                 if action.block_type:
-                    block_types_to_build.add(action.block_type)
+                    bt = expr_to_python(action.block_type) if not isinstance(action.block_type, str) else action.block_type
+                    block_types_to_build.add(bt)
             elif isinstance(action, AppendAction):
-                # APPEND(my_chain, BLOCK_TYPE) is a chain append
-                if action.list_name == "my_chain" and action.value:
-                    block_types_to_build.add(action.value)
+                # APPEND(chain, BLOCK_TYPE) is a chain append
+                if action.list_name == "chain" and action.value:
+                    bt = expr_to_python(action.value) if not isinstance(action.value, str) else action.value
+                    block_types_to_build.add(bt)
 
     # Generate block payload builders
     for block_type in block_types_to_build:
@@ -2003,7 +2117,7 @@ def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
     # _read_chain - READ(chain, query)
     lines.append("    def _read_chain(self, chain: Any, query: str) -> Any:")
     lines.append('        """READ: Read from a chain (own or cached peer chain)."""')
-    lines.append("        if chain == 'my_chain' or chain is self.chain:")
+    lines.append("        if chain is self.chain:")
     lines.append("            chain_obj = self.chain")
     lines.append("        elif isinstance(chain, str):")
     lines.append("            # It's a peer_id - look up in cached_chains")
@@ -2038,7 +2152,7 @@ def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
     # _chain_segment - CHAIN_SEGMENT(chain, hash)
     lines.append("    def _chain_segment(self, chain: Any, target_hash: str) -> List[dict]:")
     lines.append('        """CHAIN_SEGMENT: Extract chain segment up to target hash."""')
-    lines.append("        if chain == 'my_chain' or chain is self.chain:")
+    lines.append("        if chain is self.chain:")
     lines.append("            chain_obj = self.chain")
     lines.append("        elif hasattr(chain, 'to_segment'):")
     lines.append("            chain_obj = chain")
@@ -2278,13 +2392,20 @@ def generate_python(tx_dir: Path, output_path: Path = None) -> str:
     lines.append("")
     lines.append("    @staticmethod")
     lines.append("    def _to_hashable(*args) -> dict:")
-    lines.append('        """Convert arguments to a hashable dict."""')
+    lines.append('        """Convert arguments to a hashable dict, recursively handling bytes."""')
+    lines.append("        def convert(val):")
+    lines.append("            if isinstance(val, bytes):")
+    lines.append("                return val.hex()")
+    lines.append("            if isinstance(val, (list, tuple)):")
+    lines.append("                return [convert(v) for v in val]")
+    lines.append("            if isinstance(val, dict):")
+    lines.append("                return {k: convert(v) for k, v in val.items()}")
+    lines.append("            if isinstance(val, Enum):")
+    lines.append("                return val.name")
+    lines.append("            return val")
     lines.append("        result = {}")
     lines.append("        for i, arg in enumerate(args):")
-    lines.append("            if isinstance(arg, bytes):")
-    lines.append("                result[f'_{i}'] = arg.hex()")
-    lines.append("            else:")
-    lines.append("                result[f'_{i}'] = arg")
+    lines.append("            result[f'_{i}'] = convert(arg)")
     lines.append("        return result")
     lines.append("")
     lines.append("    @staticmethod")

@@ -4,6 +4,226 @@ AST node definitions for the transaction DSL.
 
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Union
+from enum import Enum, auto
+
+
+# =============================================================================
+# Expression AST nodes
+# =============================================================================
+
+class BinaryOperator(Enum):
+    """Binary operators."""
+    # Arithmetic
+    ADD = auto()       # +
+    SUB = auto()       # -
+    MUL = auto()       # *
+    DIV = auto()       # /
+    # Comparison
+    EQ = auto()        # ==
+    NEQ = auto()       # !=
+    LT = auto()        # <
+    GT = auto()        # >
+    LTE = auto()       # <=
+    GTE = auto()       # >=
+    # Boolean
+    AND = auto()       # and
+    OR = auto()        # or
+
+
+class UnaryOperator(Enum):
+    """Unary operators."""
+    NOT = auto()       # not
+    NEG = auto()       # - (unary minus)
+
+
+@dataclass
+class Identifier:
+    """Variable or name reference."""
+    name: str
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class Literal:
+    """Literal value (string, number, bool, null)."""
+    value: Any
+    type: str  # "string", "number", "bool", "null"
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class BinaryExpr:
+    """Binary operation: left op right."""
+    left: 'Expr'
+    op: BinaryOperator
+    right: 'Expr'
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class UnaryExpr:
+    """Unary operation: op operand."""
+    op: UnaryOperator
+    operand: 'Expr'
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class IfExpr:
+    """Conditional expression: IF cond THEN then_expr ELSE else_expr."""
+    condition: 'Expr'
+    then_expr: 'Expr'
+    else_expr: 'Expr'
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class FunctionCallExpr:
+    """Function call: func(arg1, arg2, ...)."""
+    name: str
+    args: List['Expr'] = field(default_factory=list)
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class FieldAccessExpr:
+    """Field access: object.field."""
+    object: 'Expr'
+    field: str
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class DynamicFieldAccessExpr:
+    """Dynamic field access: object.{key_expr}."""
+    object: 'Expr'
+    key_expr: 'Expr'
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class IndexAccessExpr:
+    """Index access: object[index]."""
+    object: 'Expr'
+    index: 'Expr'
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class LambdaExpr:
+    """Lambda expression: param => body."""
+    param: str
+    body: 'Expr'
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class StructLiteralExpr:
+    """Struct literal: { field: value, ... } with optional spread."""
+    fields: Dict[str, 'Expr'] = field(default_factory=dict)
+    spread: Optional['Expr'] = None  # For { ...base, field: value }
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class ListLiteralExpr:
+    """List literal: [a, b, c]."""
+    elements: List['Expr'] = field(default_factory=list)
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class EnumRefExpr:
+    """Enum reference: EnumName.VALUE."""
+    enum_name: str
+    value: str
+    line: int = 0
+    column: int = 0
+
+
+# Union type for all expressions
+Expr = Union[
+    Identifier, Literal, BinaryExpr, UnaryExpr, IfExpr,
+    FunctionCallExpr, FieldAccessExpr, DynamicFieldAccessExpr, IndexAccessExpr,
+    LambdaExpr, StructLiteralExpr, ListLiteralExpr, EnumRefExpr
+]
+
+
+# =============================================================================
+# Type AST nodes
+# =============================================================================
+
+@dataclass
+class SimpleType:
+    """Simple type: peer_id, uint, string, hash, etc."""
+    name: str
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class ListType:
+    """List type: list<element_type>."""
+    element_type: 'TypeExpr'
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class MapType:
+    """Map type: map<key_type, value_type>."""
+    key_type: 'TypeExpr'
+    value_type: 'TypeExpr'
+    line: int = 0
+    column: int = 0
+
+
+# Union type for all types
+TypeExpr = Union[SimpleType, ListType, MapType]
+
+
+# =============================================================================
+# Trigger AST nodes
+# =============================================================================
+
+@dataclass
+class MessageTrigger:
+    """Trigger on message receipt: on MESSAGE_NAME."""
+    message_type: str
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class TimeoutTrigger:
+    """Trigger on timeout: on timeout(PARAM)."""
+    parameter: str
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class NamedTrigger:
+    """Trigger on named external trigger: on trigger_name."""
+    name: str
+    line: int = 0
+    column: int = 0
+
+
+# Union type for all triggers
+TriggerExpr = Union[MessageTrigger, TimeoutTrigger, NamedTrigger]
 
 
 # =============================================================================
@@ -56,7 +276,7 @@ class EnumDecl:
 @dataclass
 class Field:
     name: str
-    type: str  # Type string including generics like "list<peer_id>"
+    type: Union[str, 'TypeExpr']  # Type (string for legacy, TypeExpr for new parser)
     line: int = 0
     column: int = 0
 
@@ -89,7 +309,7 @@ class BlockDecl:
 class TriggerParam:
     """Typed trigger parameter."""
     name: str
-    type: str
+    type: Union[str, 'TypeExpr']  # Type (string for legacy, TypeExpr for new parser)
     line: int = 0
     column: int = 0
 
@@ -122,7 +342,7 @@ class StateDecl:
 class StoreAction:
     """store x, y, z  OR  store x = expr"""
     fields: List[str] = field(default_factory=list)  # For: store x, y, z
-    assignments: Dict[str, str] = field(default_factory=dict)  # For: store x = expr
+    assignments: Dict[str, Union[str, 'Expr']] = field(default_factory=dict)  # For: STORE(key, value)
     line: int = 0
     column: int = 0
 
@@ -131,7 +351,7 @@ class StoreAction:
 class ComputeAction:
     """compute x = expr"""
     name: str
-    expression: str
+    expression: Union[str, 'Expr']  # Expression (string for legacy, Expr for new parser)
     line: int = 0
     column: int = 0
 
@@ -140,7 +360,7 @@ class ComputeAction:
 class LookupAction:
     """lookup x = expr (lookup value from chain)"""
     name: str
-    expression: str
+    expression: Union[str, 'Expr']  # Expression (string for legacy, Expr for new parser)
     line: int = 0
     column: int = 0
 
@@ -149,7 +369,7 @@ class LookupAction:
 class SendAction:
     """SEND(target, MESSAGE)"""
     message: str
-    target: str  # e.g., "consumer", "provider", "message.sender"
+    target: Union[str, 'Expr']  # Target expression (string for legacy, Expr for new parser)
     line: int = 0
     column: int = 0
 
@@ -158,7 +378,7 @@ class SendAction:
 class BroadcastAction:
     """BROADCAST(list, MESSAGE)"""
     message: str
-    target_list: str  # e.g., "witnesses", "other_witnesses"
+    target_list: Union[str, 'Expr']  # Target list expression
     line: int = 0
     column: int = 0
 
@@ -167,7 +387,7 @@ class BroadcastAction:
 class AppendAction:
     """append list <- value"""
     list_name: str
-    value: str
+    value: Union[str, 'Expr']  # Value expression
     line: int = 0
     column: int = 0
 
@@ -200,9 +420,9 @@ class OnGuardFail:
 class Transition:
     from_state: str
     to_state: str
-    trigger: Optional[str] = None  # None for 'auto'
+    trigger: Optional[Union[str, 'TriggerExpr']] = None  # None for 'auto', TriggerExpr for new parser
     auto: bool = False
-    guard: Optional[str] = None
+    guard: Optional[Union[str, 'Expr']] = None  # Guard expression
     actions: List[Action] = field(default_factory=list)
     on_guard_fail: Optional[OnGuardFail] = None
     line: int = 0
@@ -232,17 +452,63 @@ class ActorDecl:
 @dataclass
 class FunctionParam:
     name: str
-    type: str
+    type: Union[str, 'TypeExpr']  # Type (string for legacy, TypeExpr for new parser)
     line: int = 0
     column: int = 0
+
+
+# =============================================================================
+# Function body statements
+# =============================================================================
+
+@dataclass
+class AssignmentStmt:
+    """Assignment statement: name = expression"""
+    name: str
+    expression: Union[str, 'Expr']  # Expression (string for legacy, Expr for new parser)
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class ReturnStmt:
+    """Return statement: RETURN expression"""
+    expression: Union[str, 'Expr']  # Expression (string for legacy, Expr for new parser)
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class ForStmt:
+    """For loop: FOR var IN iterable: body"""
+    var_name: str
+    iterable: Union[str, 'Expr']  # Iterable expression
+    body: List['FunctionStatement'] = field(default_factory=list)
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class IfStmt:
+    """If statement: IF condition THEN body ELSE else_body"""
+    condition: Union[str, 'Expr']  # Condition expression
+    then_body: List['FunctionStatement'] = field(default_factory=list)
+    else_body: List['FunctionStatement'] = field(default_factory=list)
+    line: int = 0
+    column: int = 0
+
+
+# Union type for function body statements
+FunctionStatement = Union[AssignmentStmt, ReturnStmt, ForStmt, IfStmt]
 
 
 @dataclass
 class FunctionDecl:
     name: str
     params: List[FunctionParam] = field(default_factory=list)
-    return_type: str = "void"
-    body: str = ""  # Raw body text for now
+    return_type: Union[str, 'TypeExpr'] = "void"  # Return type
+    body: str = ""  # Raw body text (for backwards compatibility)
+    statements: List[FunctionStatement] = field(default_factory=list)  # Parsed statements
     is_native: bool = False  # Whether this is a native function
     library_path: str = ""  # Library path for native functions
     line: int = 0
