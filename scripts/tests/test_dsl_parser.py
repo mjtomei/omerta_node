@@ -1,5 +1,5 @@
 """
-Tests for the transaction DSL parser.
+Tests for the transaction DSL parser (PEG-based).
 """
 
 import pytest
@@ -9,17 +9,17 @@ from pathlib import Path
 # Add scripts directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from dsl_lexer import Lexer, Token, TokenType, tokenize, LexerError
 from dsl_ast import (
     Schema, Transaction, Parameter, EnumDecl, MessageDecl, BlockDecl,
     ActorDecl, StateDecl, Transition, StoreAction, ComputeAction,
     SendAction, BroadcastAction, AppendAction, FunctionDecl,
     SimpleType, ListType, MapType,
     MessageTrigger, TimeoutTrigger, NamedTrigger,
-    Identifier
+    Identifier, StructLiteralExpr, BinaryExpr, BinaryOperator, UnaryExpr, UnaryOperator,
+    FunctionCallExpr, Literal
 )
-from dsl_parser import Parser, parse, ParseError
-from dsl_converter import ast_to_dict, convert_dsl_source
+from dsl_peg_parser import parse
+from dsl_ast import expr_to_string
 
 
 def type_to_str(type_expr) -> str:
@@ -59,9 +59,7 @@ def guard_to_str(guard) -> str:
     elif isinstance(guard, str):
         return guard
     else:
-        # Use the converter's _expr_to_string function
-        from dsl_converter import _expr_to_string
-        return _expr_to_string(guard)
+        return expr_to_string(guard)
 
 
 def expr_to_str(expr) -> str:
@@ -71,8 +69,7 @@ def expr_to_str(expr) -> str:
     elif isinstance(expr, str):
         return expr
     else:
-        from dsl_converter import _expr_to_string
-        return _expr_to_string(expr)
+        return expr_to_string(expr)
 
 
 def assignments_to_str(assignments: dict) -> dict:
@@ -83,79 +80,6 @@ def assignments_to_str(assignments: dict) -> dict:
 # =============================================================================
 # Lexer Tests
 # =============================================================================
-
-class TestLexer:
-    """Tests for the lexer."""
-
-    def test_empty_input(self):
-        tokens = tokenize("")
-        assert len(tokens) == 1
-        assert tokens[0].type == TokenType.EOF
-
-    def test_keywords(self):
-        tokens = tokenize("transaction enum message actor")
-        types = [t.type for t in tokens if t.type != TokenType.EOF]
-        assert types == [
-            TokenType.TRANSACTION, TokenType.ENUM,
-            TokenType.MESSAGE, TokenType.ACTOR
-        ]
-
-    def test_identifiers(self):
-        tokens = tokenize("foo Bar BAZ_123 _private")
-        ids = [t.value for t in tokens if t.type == TokenType.IDENTIFIER]
-        assert ids == ["foo", "Bar", "BAZ_123", "_private"]
-
-    def test_numbers(self):
-        tokens = tokenize("42 3.14 0.5 100")
-        nums = [t.value for t in tokens if t.type == TokenType.NUMBER]
-        assert nums == ["42", "3.14", "0.5", "100"]
-
-    def test_strings(self):
-        tokens = tokenize('"hello" "world with spaces" "escape\\"quote"')
-        strings = [t.value for t in tokens if t.type == TokenType.STRING]
-        assert strings == ["hello", "world with spaces", 'escape"quote']
-
-    def test_operators(self):
-        tokens = tokenize("-> <- = == != <= >= + - * /")
-        types = [t.type for t in tokens if t.type != TokenType.EOF]
-        assert types == [
-            TokenType.ARROW, TokenType.LARROW, TokenType.EQUALS,
-            TokenType.EQ, TokenType.NEQ, TokenType.LTE, TokenType.GTE,
-            TokenType.PLUS, TokenType.MINUS, TokenType.STAR, TokenType.SLASH
-        ]
-
-    def test_brackets(self):
-        tokens = tokenize("( ) [ ] < >")
-        types = [t.type for t in tokens if t.type != TokenType.EOF]
-        assert types == [
-            TokenType.LPAREN, TokenType.RPAREN,
-            TokenType.LBRACKET, TokenType.RBRACKET,
-            TokenType.LANGLE, TokenType.RANGLE
-        ]
-
-    def test_comments(self):
-        tokens = tokenize("foo # this is a comment\nbar")
-        assert any(t.type == TokenType.COMMENT for t in tokens)
-        ids = [t.value for t in tokens if t.type == TokenType.IDENTIFIER]
-        assert ids == ["foo", "bar"]
-
-    def test_line_tracking(self):
-        tokens = tokenize("line1\nline2\nline3")
-        lines = [t.line for t in tokens if t.type == TokenType.IDENTIFIER]
-        assert lines == [1, 2, 3]
-
-    def test_unterminated_string(self):
-        with pytest.raises(LexerError):
-            tokenize('"unclosed string')
-
-    def test_generic_type(self):
-        tokens = tokenize("list<peer_id>")
-        types = [t.type for t in tokens if t.type != TokenType.EOF]
-        assert types == [
-            TokenType.IDENTIFIER, TokenType.LANGLE,
-            TokenType.IDENTIFIER, TokenType.RANGLE
-        ]
-
 
 # =============================================================================
 # Parser Tests
@@ -549,18 +473,17 @@ class TestTransitions:
             state S1 initial
             state S2
             S1 -> S2 auto (
-                data = (
-                    session_id = session_id
-                    provider = peer_id
-                    timestamp = current_time
-                )
+                data = {
+                    session_id: session_id,
+                    provider: peer_id,
+                    timestamp: current_time
+                }
             )
         )
         """)
         action = schema.actors[0].transitions[0].actions[0]
         assert isinstance(action, ComputeAction)
-        expr_str = expr_to_str(action.expression)
-        assert "session_id = session_id" in expr_str
+        assert isinstance(action.expression, StructLiteralExpr)
 
 
 class TestFunctions:
@@ -592,93 +515,6 @@ class TestFunctions:
         func = schema.functions[0]
         assert func.params == []
         assert type_to_str(func.return_type) == "bool"
-
-
-# =============================================================================
-# Schema Conversion Tests
-# =============================================================================
-
-class TestSchemaConversion:
-    """Tests for converting AST to schema dict."""
-
-    def test_transaction_conversion(self):
-        schema = parse('transaction 01 "Test Transaction"')
-        result = ast_to_dict(schema)
-        assert result['transaction']['id'] == '01'
-        assert result['transaction']['name'] == 'Test Transaction'
-
-    def test_parameter_conversion(self):
-        schema = parse("""
-        parameters (
-            TIMEOUT = 300 seconds "Wait time"
-        )
-        """)
-        result = ast_to_dict(schema)
-        assert 'parameters' in result
-        assert result['parameters']['TIMEOUT']['value'] == 300
-        assert result['parameters']['TIMEOUT']['unit'] == 'seconds'
-
-    def test_enum_conversion(self):
-        schema = parse("""
-        enum Status (
-            PENDING
-            DONE
-        )
-        """)
-        result = ast_to_dict(schema)
-        assert 'enums' in result
-        assert result['enums']['Status']['values'] == ['PENDING', 'DONE']
-
-    def test_message_conversion(self):
-        schema = parse("""
-        message TEST from A to [B, C] signed (
-            id   hash
-            data list<string>
-        )
-        """)
-        result = ast_to_dict(schema)
-        msg = result['messages']['TEST']
-        assert msg['sender'] == 'A'
-        assert msg['recipients'] == ['B', 'C']
-        assert msg['signed_by'] == 'a'
-        assert msg['fields']['data']['type'] == 'list[string]'  # Converted brackets
-
-    def test_actor_conversion(self):
-        schema = parse("""
-        actor Provider "Provides service" (
-            store (
-                session_id hash
-            )
-            trigger start(id hash) in [IDLE]
-            state IDLE initial
-            state RUNNING
-            IDLE -> RUNNING on start (
-                store session_id
-            )
-        )
-        """)
-        result = ast_to_dict(schema)
-        actor = result['actors']['Provider']
-        assert actor['description'] == 'Provides service'
-        assert actor['store_schema']['session_id'] == 'hash'
-        assert actor['initial_state'] == 'IDLE'
-        assert len(actor['transitions']) == 1
-
-    def test_type_conversion(self):
-        """Test that angle brackets are converted to square brackets."""
-        schema = parse("""
-        actor A (
-            store (
-                items list<string>
-                mapping map<peer_id, bool>
-            )
-            state S initial
-        )
-        """)
-        result = ast_to_dict(schema)
-        store = result['actors']['A']['store_schema']
-        assert store['items'] == 'list[string]'
-        assert store['mapping'] == 'map[peer_id, bool]'
 
 
 # =============================================================================
@@ -756,15 +592,6 @@ class TestIntegration:
         assert len(schema.messages) == 2
         assert len(schema.actors) == 2
         assert len(schema.functions) == 1
-
-        # Convert to dict
-        result = ast_to_dict(schema)
-        assert 'transaction' in result
-        assert 'parameters' in result
-        assert 'enums' in result
-        assert 'messages' in result
-        assert 'actors' in result
-        assert 'functions' in result
 
 
 # =============================================================================
@@ -1215,15 +1042,14 @@ class TestParenthesesHandling:
             state S1 initial
             state S2
             S1 -> S2 auto (
-                data = (
-                    total = (base + extra)
-                    ratio = (count / max)
-                )
+                data = {
+                    total: (base + extra),
+                    ratio: (count / max)
+                }
             )
         )
         """)
         action = schema.actors[0].transitions[0].actions[0]
-        from dsl_ast import StructLiteralExpr
 
         expr = action.expression
         assert isinstance(expr, StructLiteralExpr)
@@ -1621,11 +1447,14 @@ class TestDifficultParsingCases:
 # Error Handling Tests
 # =============================================================================
 
+# Import Lark exceptions for error handling tests
+from lark.exceptions import UnexpectedCharacters, UnexpectedToken, UnexpectedEOF
+
 class TestErrorHandling:
     """Tests for error handling."""
 
     def test_missing_paren(self):
-        with pytest.raises(ParseError):
+        with pytest.raises((UnexpectedCharacters, UnexpectedToken, UnexpectedEOF)):
             parse("""
             parameters (
                 X = 1
@@ -1633,11 +1462,11 @@ class TestErrorHandling:
             """)
 
     def test_unexpected_token(self):
-        with pytest.raises(ParseError):
+        with pytest.raises((UnexpectedCharacters, UnexpectedToken)):
             parse("invalid_top_level_keyword foo")
 
     def test_missing_arrow_in_transition(self):
-        with pytest.raises(ParseError):
+        with pytest.raises((UnexpectedCharacters, UnexpectedToken)):
             parse("""
             actor A (
                 state S1 initial

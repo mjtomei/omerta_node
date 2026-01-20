@@ -532,3 +532,62 @@ class Schema:
     functions: List[FunctionDecl] = field(default_factory=list)
     line: int = 0
     column: int = 0
+
+
+# =============================================================================
+# Expression to String Conversion
+# =============================================================================
+
+def expr_to_string(expr) -> str:
+    """Convert an Expr AST node to string representation."""
+    if isinstance(expr, str):
+        return expr
+    elif isinstance(expr, Identifier):
+        return expr.name
+    elif isinstance(expr, Literal):
+        if expr.type == "string":
+            return f'"{expr.value}"'
+        elif expr.type == "null":
+            return "null"
+        elif expr.type == "bool":
+            return "true" if expr.value else "false"
+        else:
+            return str(expr.value)
+    elif isinstance(expr, BinaryExpr):
+        op_map = {
+            BinaryOperator.ADD: '+', BinaryOperator.SUB: '-',
+            BinaryOperator.MUL: '*', BinaryOperator.DIV: '/',
+            BinaryOperator.EQ: '==', BinaryOperator.NEQ: '!=',
+            BinaryOperator.LT: '<', BinaryOperator.GT: '>',
+            BinaryOperator.LTE: '<=', BinaryOperator.GTE: '>=',
+            BinaryOperator.AND: 'and', BinaryOperator.OR: 'or',
+        }
+        op_str = op_map.get(expr.op, str(expr.op))
+        return f"{expr_to_string(expr.left)} {op_str} {expr_to_string(expr.right)}"
+    elif isinstance(expr, UnaryExpr):
+        op_map = {UnaryOperator.NOT: 'not ', UnaryOperator.NEG: '-'}
+        op_str = op_map.get(expr.op, str(expr.op))
+        return f"{op_str}{expr_to_string(expr.operand)}"
+    elif isinstance(expr, FunctionCallExpr):
+        args = ', '.join(expr_to_string(arg) for arg in expr.args)
+        return f"{expr.name}({args})"
+    elif isinstance(expr, FieldAccessExpr):
+        return f"{expr_to_string(expr.object)}.{expr.field}"
+    elif isinstance(expr, EnumRefExpr):
+        return f"{expr.enum_name}.{expr.value}"
+    elif isinstance(expr, LambdaExpr):
+        return f"{expr.param} => {expr_to_string(expr.body)}"
+    elif isinstance(expr, IfExpr):
+        return f"IF {expr_to_string(expr.condition)} THEN {expr_to_string(expr.then_expr)} ELSE {expr_to_string(expr.else_expr)}"
+    elif isinstance(expr, StructLiteralExpr):
+        fields = ', '.join(f"{k}: {expr_to_string(v)}" for k, v in expr.fields.items())
+        return f"{{{fields}}}"
+    elif isinstance(expr, ListLiteralExpr):
+        elements = ', '.join(expr_to_string(e) for e in expr.elements)
+        return f"[{elements}]"
+    elif isinstance(expr, IndexAccessExpr):
+        return f"{expr_to_string(expr.object)}[{expr_to_string(expr.index)}]"
+    elif isinstance(expr, DynamicFieldAccessExpr):
+        return f"{expr_to_string(expr.object)}.{{{expr_to_string(expr.key_expr)}}}"
+    else:
+        return str(expr)

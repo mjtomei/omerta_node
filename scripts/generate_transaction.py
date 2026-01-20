@@ -17,7 +17,7 @@ from pathlib import Path
 from textwrap import dedent, indent
 from typing import Dict, List, Any, Optional, Set
 
-from dsl_converter import load_transaction_ast
+from dsl_peg_parser import load_transaction_ast
 from dsl_ast import (
     Schema, Transaction, Parameter, EnumDecl, MessageDecl, BlockDecl,
     ActorDecl, TriggerDecl, StateDecl, Transition, FunctionDecl,
@@ -28,17 +28,103 @@ from dsl_ast import (
 
 
 # =============================================================================
-# EXPRESSION TRANSLATOR
+# AST VALIDATION - Ensure we're using AST nodes, not string manipulation
 # =============================================================================
 
-class ExpressionTranslator:
-    """Translate DSL expressions to Python code."""
+# Forbidden patterns in expression handling code.
+# If any of these patterns are found in the generator (outside of allowed contexts),
+# the module will refuse to load. This prevents string-based expression handling
+# from being accidentally added.
+_FORBIDDEN_PATTERNS = [
+    # Regex on expressions
+    (r're\.search\([^)]*expr', "Don't use regex to parse expressions - use AST nodes"),
+    (r're\.match\([^)]*expr', "Don't use regex to parse expressions - use AST nodes"),
+    (r're\.findall\([^)]*expr', "Don't use regex to parse expressions - use AST nodes"),
+    (r're\.sub\([^)]*expr', "Don't use regex to transform expressions - use AST nodes"),
+    # String splitting on expressions
+    (r'expr[^=]*\.split\(', "Don't split expression strings - use AST nodes"),
+    # String contains checks for operators (outside of validation code)
+    (r'if ["\'][\+\-\*/].*in.*expr', "Don't check for operators in expression strings - use AST nodes"),
+]
+
+# Allowed contexts where string processing is OK (line number ranges or function names)
+_ALLOWED_CONTEXTS = [
+    'assert_is_ast_node',  # Validation function can check strings
+    'sanitize_guard_name',  # Converting guard names to identifiers is OK
+    'expr_to_python',  # The expr_to_python function itself
+    '_translate_literal',  # String literal escaping is OK
+    '# Schema:',  # Comments are OK
+    'for_comment',  # Formatting for comments is OK
+]
+
+
+def _validate_no_string_expression_handling():
+    """Scan this module's source for forbidden string-processing patterns.
+
+    This runs at module load time to catch accidental string-based expression handling.
+    """
+    import inspect
+    source_file = inspect.getfile(inspect.currentframe())
+
+    try:
+        with open(source_file, 'r') as f:
+            lines = f.readlines()
+    except (IOError, OSError):
+        return  # Can't read source, skip validation
+
+    for line_num, line in enumerate(lines, 1):
+        # Skip allowed contexts
+        if any(ctx in line for ctx in _ALLOWED_CONTEXTS):
+            continue
+
+        # Check forbidden patterns
+        for pattern, message in _FORBIDDEN_PATTERNS:
+            if re.search(pattern, line, re.IGNORECASE):
+                raise RuntimeError(
+                    f"Forbidden string-processing pattern detected at line {line_num}:\n"
+                    f"  {line.strip()}\n"
+                    f"  {message}\n"
+                    f"  Pattern: {pattern}"
+                )
+
+
+def assert_is_ast_node(value, context: str = ""):
+    """Assert that a value is an AST node, not a string expression.
+
+    This guard prevents string-based expression handling from creeping back in.
+    Use this when receiving expression values that should be AST nodes.
+    """
+    if isinstance(value, str):
+        # Allow None-ish values
+        if not value or value in ('None', 'null', 'true', 'false'):
+            return
+        # Reject strings that look like expressions (contain operators, parens, dots)
+        suspicious_patterns = [' + ', ' - ', ' * ', ' / ', ' == ', ' != ', ' >= ', ' <= ',
+                              ' > ', ' < ', ' and ', ' or ', '(', ')', '.']
+        for pattern in suspicious_patterns:
+            if pattern in value:
+                raise ValueError(
+                    f"String expression found where AST node expected{' in ' + context if context else ''}: {value!r}. "
+                    "Use proper AST nodes instead of string manipulation."
+                )
+
+
+# Run validation at module load time
+_validate_no_string_expression_handling()
+
+
+# =============================================================================
+# AST TRANSLATOR - Direct AST to Python translation
+# =============================================================================
+
+class ASTTranslator:
+    """Translate DSL AST nodes directly to Python code."""
 
     # Built-in actor properties (accessed as self.X)
-    ACTOR_PROPS = {'peer_id', 'current_time', 'chain', 'state', 'cached_chains'}
+    ACTOR_PROPS = {'peer_id', 'chain', 'state', 'cached_chains'}
 
-    # Built-in functions that map directly (from FORMAT.md)
-    BUILTIN_FUNCS = {
+    # DSL function -> Python function mapping
+    FUNC_MAP = {
         # Cryptographic
         'HASH': 'hash_data',
         'VERIFY_SIG': 'verify_sig',
@@ -47,880 +133,406 @@ class ExpressionTranslator:
         'GENERATE_ID': 'generate_id',
         # Compute
         'LENGTH': 'len',
-        'NOW': 'self.current_time',  # Special case - property not function
-        # Keep lowercase aliases for compatibility
+        'CONCAT': 'self._concat',
+        'SORT': 'self._sort',
+        'HAS_KEY': 'self._has_key',
+        'ABS': 'abs',
+        'MIN': 'min',
+        'MAX': 'max',
+        # Lowercase aliases
         'hash': 'hash_data',
         'verify_sig': 'verify_sig',
         'random_bytes': 'random_bytes',
         'len': 'len',
     }
 
-    # Functions that need special expansion (implicit arguments)
+    # Functions that need special expansion
     SPECIAL_FUNCS = {
-        # SIGN(data) -> sign(self.chain.private_key, hash_data(data))
-        'SIGN': 'sign(self.chain.private_key, hash_data({}))',
-        'sign': 'sign(self.chain.private_key, hash_data({}))',
+        'SIGN': lambda args: f'sign(self.chain.private_key, hash_data({args}))',
+        'NOW': lambda args: 'self.current_time',
     }
 
-    # Functions where argument is a literal key name (not translated)
-    LITERAL_KEY_FUNCS = {
-        # LOAD(key) -> self.load("key")
-        'LOAD': 'self.load("{}")',
-    }
-
-    # Functions that need self prefix (protocol-specific built-ins)
-    # These require runtime primitives that can't be expressed in pure DSL
-    SELF_FUNCS = {
-        # Chain operations (need chain object internals)
-        'READ': '_read_chain',
-        'CHAIN_SEGMENT': '_chain_segment',
-        'VERIFY_CHAIN_SEGMENT': '_verify_chain_segment',
+    # Functions that become self._method calls
+    SELF_METHODS = {
         'CHAIN_CONTAINS_HASH': '_chain_contains_hash',
         'CHAIN_STATE_AT': '_chain_state_at',
-        # Seeded random (need Python's random module)
+        'CHAIN_SEGMENT': '_chain_segment',
+        'VERIFY_CHAIN_SEGMENT': '_verify_chain_segment',
         'SEEDED_RNG': '_seeded_rng',
         'SEEDED_SAMPLE': '_seeded_sample',
-        # Utilities (need Python primitives or null-safety)
-        'SORT': '_sort',
-        'ABORT': '_abort',
-        'CONCAT': '_concat',
-        'HAS_KEY': '_has_key',  # Null-safe dict key check
-        # Internal helpers
-        '_to_hashable': '_to_hashable',
+        'READ': '_read_chain',
+        'GET': '_GET',
+        'CONTAINS': '_CONTAINS',
+        'REMOVE': '_REMOVE',
+        'SET_EQUALS': '_SET_EQUALS',
+        'EXTRACT_FIELD': '_EXTRACT_FIELD',
+        'COUNT_MATCHING': '_COUNT_MATCHING',
+        'SELECT_WITNESSES': '_SELECT_WITNESSES',
+        'VERIFY_WITNESS_SELECTION': '_VERIFY_WITNESS_SELECTION',
+        'VALIDATE_LOCK_RESULT': '_VALIDATE_LOCK_RESULT',
+        'VALIDATE_TOPUP_RESULT': '_VALIDATE_TOPUP_RESULT',
     }
 
-    def __init__(self, store_vars: Set[str], parameters: Set[str], enums: Dict[str, List[str]]):
-        self.store_vars = store_vars
-        self.parameters = parameters
-        self.enums = enums  # Store full mapping for lookups
-        # Build set of enum names (like LockStatus, WitnessVerdict)
-        self.enum_names = set(enums.keys())
-        # Build set of enum values for recognition
-        self.enum_values = set()
-        # Build reverse mapping: value -> enum name
-        self.value_to_enum = {}
-        for enum_name, values in enums.items():
-            for val in values:
-                self.enum_values.add(val)
-                self.value_to_enum[val] = enum_name
+    # Functions where first arg is a literal key (not translated)
+    LITERAL_KEY_FUNCS = {'LOAD': 'self.load("{}")'}
 
-    def get_enum_reference(self, value: str) -> Optional[str]:
-        """Get enum reference for a value, e.g., 'ACCEPT' -> 'WitnessVerdict.ACCEPT'.
-
-        Also handles fully-qualified references like 'TerminationReason.CONSUMER_REQUEST'.
-        """
-        # Check for bare enum value
-        if value in self.value_to_enum:
-            return f"{self.value_to_enum[value]}.{value}"
-        # Check for fully-qualified enum reference (EnumName.VALUE)
-        if '.' in value:
-            parts = value.split('.', 1)
-            if len(parts) == 2:
-                enum_name, enum_value = parts
-                # Verify the enum and value exist
-                if enum_value in self.value_to_enum and self.value_to_enum[enum_value] == enum_name:
-                    return value  # Already fully-qualified
-        return None
+    def __init__(self, store_vars: Set[str] = None, enum_names: Set[str] = None,
+                 enum_values: Dict[str, str] = None, parameters: Set[str] = None):
+        self.store_vars = store_vars or set()
+        self.enum_names = enum_names or set()
+        self.enum_values = enum_values or {}  # value_name -> enum_type
+        self.parameters = parameters or set()
+        self._local_vars: Set[str] = set()
 
     def translate(self, expr, local_vars: Set[str] = None) -> str:
-        """Translate a DSL expression to Python code.
+        """Translate an AST expression node to Python code.
 
         Args:
-            expr: The DSL expression to translate (string or Expr AST)
-            local_vars: Set of variable names that are local (e.g., lambda params)
-                       These won't be translated to self.load()
+            expr: AST node or string (for backwards compatibility)
+            local_vars: Set of local variable names (e.g., lambda params)
         """
-        if not expr:
-            return "True"
+        if local_vars:
+            old_locals = self._local_vars
+            self._local_vars = self._local_vars | local_vars
+            result = self._translate_node(expr)
+            self._local_vars = old_locals
+            return result
+        return self._translate_node(expr)
 
-        self._local_vars = local_vars or set()
+    def _translate_node(self, expr) -> str:
+        """Recursively translate an AST node to Python."""
+        if expr is None:
+            return "None"
 
-        # Convert Expr AST to string if needed
-        if not isinstance(expr, str):
-            expr = expr_to_python(expr)
-
-        # Normalize whitespace
-        expr = " ".join(expr.split())
-
-        # Pre-process: handle struct literals with spread syntax { ...var, field }
-        expr = self._preprocess_struct_literal(expr)
-
-        # Pre-process: transform hash(a + b + c) to hash(_to_bytes(a, b, c))
-        expr = self._preprocess_hash_concat(expr)
-
-        # Pre-process: handle inline IF expressions (IF cond THEN a ELSE b -> a if cond else b)
-        expr = self._preprocess_inline_if(expr)
-
-        # Pre-process: handle FILTER and MAP with lambda expressions
-        expr = self._preprocess_filter_map(expr)
-
-        # Pre-process: handle dynamic field access X.{Y} -> X.get(Y)
-        expr = self._preprocess_dynamic_field_access(expr)
-
-        # Replace operators
-        expr = expr.replace("&&", " and ")
-        expr = expr.replace("||", " or ")
-        expr = expr.replace("null", "None")
-
-        # Translate function calls and variable references
-        result = self._translate_tokens(expr)
-
-        self._local_vars = set()
-        return result
-
-    def _preprocess_inline_if(self, expr: str) -> str:
-        """Transform DSL inline IF to Python ternary.
-
-        IF condition THEN true_val ELSE false_val -> true_val if condition else false_val
-
-        Handles nested IF expressions by processing innermost first.
-        """
-        # Process all IF expressions from left to right
-        while True:
-            # Find IF keyword (case insensitive, word boundary)
-            match = re.search(r'\bIF\b', expr, re.IGNORECASE)
-            if not match:
-                break
-
-            if_start = match.start()
-
-            # Find THEN keyword
-            then_match = re.search(r'\bTHEN\b', expr[match.end():], re.IGNORECASE)
-            if not then_match:
-                # Malformed - no THEN, leave as is
-                break
-            then_pos = match.end() + then_match.start()
-            condition = expr[match.end():then_pos].strip()
-
-            # Find ELSE keyword - need to handle nested IF/THEN/ELSE
-            # Count nested IFs to find the matching ELSE
-            search_start = then_pos + 4  # len('THEN')
-            nesting = 0
-            else_pos = -1
-            i = search_start
-            while i < len(expr):
-                # Check for IF
-                if_match = re.match(r'\bIF\b', expr[i:], re.IGNORECASE)
-                if if_match:
-                    nesting += 1
-                    i += 2
-                    continue
-                # Check for ELSE
-                else_match = re.match(r'\bELSE\b', expr[i:], re.IGNORECASE)
-                if else_match:
-                    if nesting == 0:
-                        else_pos = i
-                        break
-                    else:
-                        nesting -= 1
-                        i += 4
-                        continue
-                i += 1
-
-            if else_pos == -1:
-                # Malformed - no matching ELSE, leave as is
-                break
-
-            then_val = expr[search_start:else_pos].strip()
-            else_start = else_pos + 4  # len('ELSE')
-
-            # Find the end of the else expression - either end of string or end of current expression context
-            # For simplicity, we take everything until end or next statement boundary
-            # Check for balanced parens/brackets
-            depth = 0
-            end_pos = len(expr)
-            for j in range(else_start, len(expr)):
-                c = expr[j]
-                if c in '([{':
-                    depth += 1
-                elif c in ')]}':
-                    if depth > 0:
-                        depth -= 1
-                    else:
-                        # Unmatched close - this is our boundary
-                        end_pos = j
-                        break
-                elif c == ',' and depth == 0:
-                    # Top-level comma - boundary
-                    end_pos = j
-                    break
-
-            else_val = expr[else_start:end_pos].strip()
-
-            # Build Python ternary: true_val if condition else false_val
-            replacement = f"({then_val} if {condition} else {else_val})"
-            expr = expr[:if_start] + replacement + expr[end_pos:]
-
-        return expr
-
-    def _preprocess_filter_map(self, expr: str) -> str:
-        """Transform FILTER/MAP with lambda to Python list comprehensions.
-
-        FILTER(list, v => condition) -> __FILTER_COMP__(list, v, condition)
-        MAP(list, v => transform) -> __MAP_COMP__(list, v, transform)
-
-        These markers are then handled specially in _translate_tokens.
-        """
-        import re
-
-        result = expr
-        # Keep processing until no more matches (handles nested cases)
-        for _ in range(10):  # Safety limit
-            match = re.search(r'\b(FILTER|MAP|filter|map)\s*\(', result)
-            if not match:
-                break
-
-            func = match.group(1).upper()
-            start = match.end() - 1  # Position of opening paren
-
-            # Find the matching closing paren
-            depth = 1
-            i = start + 1
-            while i < len(result) and depth > 0:
-                if result[i] == '(':
-                    depth += 1
-                elif result[i] == ')':
-                    depth -= 1
-                i += 1
-
-            if depth != 0:
-                break  # Unbalanced
-
-            args_str = result[start+1:i-1]  # Content between parens
-
-            # Split on first comma to get list and lambda
-            comma_pos = self._find_first_comma(args_str)
-            if comma_pos == -1:
-                break
-
-            list_expr = args_str[:comma_pos].strip()
-            lambda_expr = args_str[comma_pos+1:].strip()
-
-            # Parse lambda: var => body
-            arrow_pos = lambda_expr.find('=>')
-            if arrow_pos == -1:
-                # Not a lambda - might be a predicate variable
-                break
-
-            var_name = lambda_expr[:arrow_pos].strip()
-            body = lambda_expr[arrow_pos+2:].strip()
-
-            # Create marker that will be expanded in _translate_tokens
-            if func == 'FILTER':
-                replacement = f'__FILTER_COMP__({list_expr}, {var_name}, {body})'
+        # Guard against string-based expression handling creeping back in
+        if isinstance(expr, str):
+            # Allow simple identifiers and quoted string literals
+            if expr.isidentifier() or (expr.startswith('"') and expr.endswith('"')):
+                pass  # OK - simple identifier or string literal
             else:
-                replacement = f'__MAP_COMP__({list_expr}, {var_name}, {body})'
+                raise ValueError(
+                    f"String expression passed to AST translator: {expr!r}. "
+                    "Use proper AST nodes instead of strings. "
+                    "If this is intentional, update the translator to handle this case."
+                )
+        if isinstance(expr, str):
+            # Legacy string - just return it (already Python or identifier)
+            return self._translate_identifier(expr)
 
-            result = result[:match.start()] + replacement + result[i:]
+        type_class = type(expr).__name__
 
-        return result
+        if type_class == 'Identifier':
+            return self._translate_identifier(expr.name)
 
-    def _find_first_comma(self, s: str) -> int:
-        """Find first comma at depth 0 (not inside parens/brackets)."""
-        depth = 0
-        for i, c in enumerate(s):
-            if c in '([{':
-                depth += 1
-            elif c in ')]}':
-                depth -= 1
-            elif c == ',' and depth == 0:
-                return i
-        return -1
+        elif type_class == 'Literal':
+            return self._translate_literal(expr)
 
-    def _preprocess_dynamic_field_access(self, expr: str) -> str:
-        """Transform dynamic field access X.{Y} to __DYNAMIC_GET__(X, Y).
+        elif type_class == 'BinaryExpr':
+            left = self._translate_node(expr.left)
+            right = self._translate_node(expr.right)
+            op_map = {
+                'ADD': '+', 'SUB': '-', 'MUL': '*', 'DIV': '/',
+                'EQ': '==', 'NEQ': '!=', 'LT': '<', 'GT': '>',
+                'LTE': '<=', 'GTE': '>=', 'AND': 'and', 'OR': 'or'
+            }
+            op = op_map.get(expr.op.name, str(expr.op.name))
+            return f"({left} {op} {right})"
 
-        In the DSL, r.{field} means "get field named by variable 'field' from r".
-        """
-        import re
-        # Pattern: identifier followed by .{ identifier }
-        # e.g., r.{field} -> __DYNAMIC_GET__(r, field)
-        pattern = r'(\w+)\.\{(\w+)\}'
-        return re.sub(pattern, r'__DYNAMIC_GET__(\1, \2)', expr)
+        elif type_class == 'UnaryExpr':
+            operand = self._translate_node(expr.operand)
+            if expr.op.name == 'NOT':
+                return f"(not {operand})"
+            elif expr.op.name == 'NEG':
+                return f"(-{operand})"
+            return operand
 
-    def _preprocess_struct_literal(self, expr: str) -> str:
-        """
-        Handle struct literal syntax: { ...spread_var, field1, field2: value }.
+        elif type_class == 'IfExpr':
+            cond = self._translate_node(expr.condition)
+            then_e = self._translate_node(expr.then_expr)
+            else_e = self._translate_node(expr.else_expr)
+            return f"({then_e} if {cond} else {else_e})"
 
-        Transforms:
-        - { ...base, field } → __STRUCT_SPREAD__(base, field)
-        - { a, b, c } → __STRUCT__(a, b, c)
+        elif type_class == 'FunctionCallExpr':
+            return self._translate_function_call(expr)
 
-        These markers are handled by _translate_tokens and converted to proper Python.
-        """
-        # Check if expression is a struct literal (starts with { and ends with })
-        stripped = expr.strip()
-        if not (stripped.startswith('{') and stripped.endswith('}')):
-            return expr
+        elif type_class == 'FieldAccessExpr':
+            return self._translate_field_access(expr)
 
-        # Check if it looks like a struct literal (has commas and no '=>')
-        # We need to distinguish from code blocks
-        inner = stripped[1:-1].strip()
-        if not inner or '=>' in inner:
-            return expr  # It's a lambda or something else
+        elif type_class == 'DynamicFieldAccessExpr':
+            obj = self._translate_node(expr.object)
+            key = self._translate_node(expr.key_expr)
+            return f"{obj}.get({key})"
 
-        # Parse the struct literal
-        parts = []
-        current = []
-        depth = 0
-        for char in inner:
-            if char == ',' and depth == 0:
-                parts.append(''.join(current).strip())
-                current = []
+        elif type_class == 'IndexAccessExpr':
+            obj = self._translate_node(expr.object)
+            index = self._translate_node(expr.index)
+            return f"{obj}[{index}]"
+
+        elif type_class == 'LambdaExpr':
+            # Lambdas are handled specially by FILTER/MAP
+            # If we get here standalone, convert to Python lambda
+            old_locals = self._local_vars
+            self._local_vars = self._local_vars | {expr.param}
+            body = self._translate_node(expr.body)
+            self._local_vars = old_locals
+            return f"lambda {expr.param}: {body}"
+
+        elif type_class == 'StructLiteralExpr':
+            return self._translate_struct_literal(expr)
+
+        elif type_class == 'ListLiteralExpr':
+            elements = [self._translate_node(e) for e in expr.elements]
+            return "[" + ", ".join(elements) + "]"
+
+        elif type_class == 'EnumRefExpr':
+            # Check if this is actually an enum reference or a field access
+            # Parser creates EnumRefExpr for any X.Y pattern, but if X isn't a known enum,
+            # it's really a field access
+            if expr.enum_name in self.enum_names:
+                return f"{expr.enum_name}.{expr.value}"
             else:
-                current.append(char)
-                if char in '({[':
-                    depth += 1
-                elif char in ')}]':
-                    depth -= 1
-        if current:
-            parts.append(''.join(current).strip())
+                # Treat as field access: X.Y where X is a variable
+                obj_name = expr.enum_name
+                field = expr.value
+                # Translate the object identifier
+                obj = self._translate_identifier(obj_name)
+                # Check for actor properties (self.X) - use direct attribute access
+                if obj_name in self.ACTOR_PROPS:
+                    return f'{obj}.{field}'
+                # For store loads, use .get()
+                if obj.startswith('self.load('):
+                    return f'{obj}.get("{field}")'
+                # For local variables (function params), use .get() since they're often dicts
+                if obj_name in self._local_vars:
+                    return f'{obj}.get("{field}")'
+                # Default: direct attribute access
+                return f'{obj}.{field}'
 
-        # Check for spread syntax
-        spread_var = None
-        fields = []
-        for part in parts:
-            part = part.strip()
-            if part.startswith('...'):
-                spread_var = part[3:].strip()
-            else:
-                fields.append(part)
-
-        # Build marker expression
-        if spread_var:
-            if fields:
-                return f'__STRUCT_SPREAD__({spread_var}, {", ".join(fields)})'
-            else:
-                return f'__STRUCT_SPREAD__({spread_var})'
         else:
-            return f'__STRUCT__({", ".join(fields)})'
+            # Fallback
+            return str(expr)
 
-    def _preprocess_hash_concat(self, expr: str) -> str:
-        """Transform HASH(a + b + c) to HASH(_to_hashable(a, b, c))."""
-        # Find standalone HASH(...) or hash(...) patterns and replace + inside with ,
-        result = []
-        i = 0
-        while i < len(expr):
-            # Look for 'HASH(' or 'hash(' but not as part of another word
-            if expr[i:i+5].upper() == 'HASH(':
-                # Check it's not part of another identifier (e.g., CHAIN_CONTAINS_HASH)
-                if i > 0 and (expr[i-1].isalnum() or expr[i-1] == '_'):
-                    result.append(expr[i])
-                    i += 1
-                    continue
-                result.append('HASH(_to_hashable(')
-                i += 5
-                # Find matching )
-                depth = 1
-                start = i
-                while i < len(expr) and depth > 0:
-                    if expr[i] == '(':
-                        depth += 1
-                    elif expr[i] == ')':
-                        depth -= 1
-                    i += 1
-                # Extract contents and replace + with ,
-                contents = expr[start:i-1]
-                contents = contents.replace(' + ', ', ')
-                result.append(contents)
-                result.append('))')
+    def _translate_identifier(self, name: str) -> str:
+        """Translate an identifier based on context."""
+        # Check if this is already a string literal (from expr_to_python)
+        if (name.startswith('"') and name.endswith('"')) or \
+           (name.startswith("'") and name.endswith("'")):
+            return name  # Already a string literal
+
+        # Check for reserved keywords
+        if name == 'null':
+            return 'None'
+        if name == 'true':
+            return 'True'
+        if name == 'false':
+            return 'False'
+
+        # Check local variables (lambda params, function params)
+        if name in self._local_vars:
+            return name
+
+        # Check actor properties
+        if name in self.ACTOR_PROPS:
+            return f'self.{name}'
+
+        # Check parameters (constants)
+        if name in self.parameters:
+            return name  # Keep as uppercase constant
+
+        # Check enum values
+        if name in self.enum_values:
+            enum_type = self.enum_values[name]
+            return f'{enum_type}.{name}'
+
+        # Check store variables
+        if name in self.store_vars:
+            return f'self.load("{name}")'
+
+        # Unknown lowercase identifier - treat as string literal
+        # This handles cases like STORE(verdict, accept) where 'accept' is a string value
+        if name.islower() and name.isalpha():
+            return f'"{name}"'
+
+        # Unknown - assume it's a store variable or external reference
+        return f'self.load("{name}")'
+
+    def _translate_literal(self, expr) -> str:
+        """Translate a literal value."""
+        if expr.type == 'string':
+            # Escape quotes in string
+            escaped = expr.value.replace('\\', '\\\\').replace('"', '\\"')
+            return f'"{escaped}"'
+        elif expr.type == 'bool':
+            return 'True' if expr.value else 'False'
+        elif expr.type == 'null':
+            return 'None'
+        else:
+            return str(expr.value)
+
+    def _translate_function_call(self, expr) -> str:
+        """Translate a function call."""
+        name = expr.name
+        args = expr.args
+
+        # Handle FILTER and MAP specially - convert to list comprehensions
+        if name == 'FILTER' and len(args) == 2:
+            list_expr = self._translate_node(args[0])
+            lambda_arg = args[1]
+            if type(lambda_arg).__name__ == 'LambdaExpr':
+                var = lambda_arg.param
+                old_locals = self._local_vars
+                self._local_vars = self._local_vars | {var}
+                cond = self._translate_node(lambda_arg.body)
+                self._local_vars = old_locals
+                return f"[{var} for {var} in {list_expr} if {cond}]"
+
+        if name == 'MAP' and len(args) == 2:
+            list_expr = self._translate_node(args[0])
+            lambda_arg = args[1]
+            if type(lambda_arg).__name__ == 'LambdaExpr':
+                var = lambda_arg.param
+                old_locals = self._local_vars
+                self._local_vars = self._local_vars | {var}
+                transform = self._translate_node(lambda_arg.body)
+                self._local_vars = old_locals
+                return f"[{transform} for {var} in {list_expr}]"
+
+        # Handle special functions
+        if name in self.SPECIAL_FUNCS:
+            translated_args = ", ".join(self._translate_node(a) for a in args)
+            return self.SPECIAL_FUNCS[name](translated_args)
+
+        # Handle LOAD specially - first arg is literal key
+        if name == 'LOAD':
+            if args:
+                key_arg = args[0]
+                # Extract key name from identifier
+                if type(key_arg).__name__ == 'Identifier':
+                    key = key_arg.name
+                elif isinstance(key_arg, str):
+                    key = key_arg
+                else:
+                    key = self._translate_node(key_arg)
+                    # Strip quotes if it's a string literal
+                    if key.startswith('"') and key.endswith('"'):
+                        key = key[1:-1]
+                return f'self.load("{key}")'
+            return 'self.load("")'
+
+        # Handle HASH - needs _to_hashable wrapper for multiple values
+        if name == 'HASH':
+            # Flatten ADD expressions: HASH(a + b + c) -> HASH(_to_hashable((a, b, c)))
+            if len(args) == 1 and type(args[0]).__name__ == 'BinaryExpr':
+                flattened = self._flatten_add_expr(args[0])
+                if len(flattened) > 1:
+                    translated_parts = [self._translate_node(p) for p in flattened]
+                    return f'hash_data(self._to_hashable(({", ".join(translated_parts)})))'
+            # Multiple args: HASH(a, b, c) -> HASH(_to_hashable((a, b, c)))
+            if len(args) > 1:
+                translated_args = ", ".join(self._translate_node(a) for a in args)
+                return f'hash_data(self._to_hashable(({translated_args})))'
+
+        # Handle self._ method calls
+        if name in self.SELF_METHODS:
+            method = self.SELF_METHODS[name]
+            translated_args = ", ".join(self._translate_node(a) for a in args)
+            return f'self.{method}({translated_args})'
+
+        # Handle built-in function mapping
+        if name in self.FUNC_MAP:
+            py_func = self.FUNC_MAP[name]
+            translated_args = ", ".join(self._translate_node(a) for a in args)
+            return f'{py_func}({translated_args})'
+
+        # Unknown function - assume it's a self._ method (schema-defined)
+        translated_args = ", ".join(self._translate_node(a) for a in args)
+        return f'self._{name}({translated_args})'
+
+    def _translate_field_access(self, expr) -> str:
+        """Translate field access (obj.field)."""
+        obj_node = expr.object
+        field = expr.field
+
+        # Handle 'message' keyword specially
+        if type(obj_node).__name__ == 'Identifier' and obj_node.name == 'message':
+            if field == 'sender':
+                return '_msg.sender'
+            elif field == 'payload':
+                return '_msg.payload'
             else:
-                result.append(expr[i])
-                i += 1
-        return ''.join(result)
+                return f'_msg.payload.get("{field}")'
 
-    def _translate_tokens(self, expr: str) -> str:
-        """Translate individual tokens in the expression."""
+        # Translate the object
+        obj = self._translate_node(obj_node)
+
+        # Check if this is accessing an enum
+        if type(obj_node).__name__ == 'Identifier' and obj_node.name in self.enum_names:
+            return f'{obj_node.name}.{field}'
+
+        # Check for actor properties (self.X) - use direct attribute access
+        if type(obj_node).__name__ == 'Identifier' and obj_node.name in self.ACTOR_PROPS:
+            return f'{obj}.{field}'
+
+        # Check for nested access on result of function/dict
+        # If obj ends with ) or ], it's a function call result or index - use .get()
+        if obj.endswith(')') or obj.endswith(']'):
+            return f'{obj}.get("{field}")'
+
+        # For store variables, use .get() for nested access
+        if obj.startswith('self.load('):
+            return f'{obj}.get("{field}")'
+
+        # For message payload access, use .get()
+        if obj == '_msg.payload':
+            return f'{obj}.get("{field}")'
+
+        # For local variables (function params), use .get() since they're often dicts
+        if type(obj_node).__name__ == 'Identifier' and obj_node.name in self._local_vars:
+            return f'{obj}.get("{field}")'
+
+        # Default: direct attribute access (for self.X properties, etc.)
+        return f'{obj}.{field}'
+
+    def _translate_struct_literal(self, expr) -> str:
+        """Translate struct literal to Python dict."""
+        parts = []
+
+        # Handle spread
+        if expr.spread:
+            spread = self._translate_node(expr.spread)
+            parts.append(f'**{spread}')
+
+        # Handle fields
+        for key, val in expr.fields.items():
+            translated_val = self._translate_node(val)
+            parts.append(f'"{key}": {translated_val}')
+
+        return '{' + ', '.join(parts) + '}'
+
+    def get_enum_reference(self, value_name: str) -> Optional[str]:
+        """Get full enum reference for a value name."""
+        if value_name in self.enum_values:
+            enum_type = self.enum_values[value_name]
+            return f'{enum_type}.{value_name}'
+        return None
+
+    def _flatten_add_expr(self, expr) -> list:
+        """Flatten nested ADD binary expressions into a list of operands.
+
+        Used for HASH(a + b + c) -> HASH(_to_hashable((a, b, c)))
+        """
         result = []
-        i = 0
+        type_name = type(expr).__name__
 
-        while i < len(expr):
-            # Skip whitespace
-            if expr[i].isspace():
-                result.append(expr[i])
-                i += 1
-                continue
+        if type_name == 'BinaryExpr' and hasattr(expr.op, 'name') and expr.op.name == 'ADD':
+            # Recursively flatten left and right
+            result.extend(self._flatten_add_expr(expr.left))
+            result.extend(self._flatten_add_expr(expr.right))
+        else:
+            # Not an ADD expression, just return as single item
+            result.append(expr)
 
-            # Handle operators and punctuation
-            if expr[i] in '()[]{},:+-*/<>=!':
-                # Check for multi-char operators
-                if i + 1 < len(expr) and expr[i:i+2] in ('==', '!=', '>=', '<='):
-                    result.append(expr[i:i+2])
-                    i += 2
-                else:
-                    result.append(expr[i])
-                    i += 1
-                continue
-
-            # Handle string literals
-            if expr[i] in '"\'':
-                quote = expr[i]
-                j = i + 1
-                while j < len(expr) and expr[j] != quote:
-                    if expr[j] == '\\':
-                        j += 2
-                    else:
-                        j += 1
-                result.append(expr[i:j+1])
-                i = j + 1
-                continue
-
-            # Handle numbers
-            if expr[i].isdigit():
-                j = i
-                while j < len(expr) and (expr[j].isdigit() or expr[j] == '.'):
-                    j += 1
-                result.append(expr[i:j])
-                i = j
-                continue
-
-            # Handle identifiers and keywords
-            if expr[i].isalpha() or expr[i] == '_':
-                j = i
-                while j < len(expr) and (expr[j].isalnum() or expr[j] == '_'):
-                    j += 1
-                token = expr[i:j]
-
-                # Check what follows (for function calls, attribute access)
-                rest = expr[j:].lstrip()
-
-                # Handle DSL operators that map to Python keywords (uppercase to lowercase)
-                dsl_to_python_ops = {'NOT': 'not', 'AND': 'and', 'OR': 'or'}
-                if token in dsl_to_python_ops:
-                    result.append(dsl_to_python_ops[token])
-                    i = j
-                    continue
-
-                # Handle Python keywords that should be preserved
-                if token in ('and', 'or', 'not', 'None', 'True', 'False', 'if', 'else', 'for', 'in'):
-                    result.append(token)
-                    i = j
-                    continue
-
-                # Handle keyword arguments: identifier followed by = (but not ==)
-                if rest.startswith('=') and not rest.startswith('=='):
-                    # This is a keyword argument name - keep it as-is
-                    result.append(token)
-                    i = j
-                    continue
-
-                # Handle function calls
-                if rest.startswith('('):
-                    # Handle struct literal markers from preprocessing
-                    if token == '__STRUCT__':
-                        # __STRUCT__(a, b, c) → {"a": self.load("a"), "b": self.load("b"), ...}
-                        paren_start = j
-                        while paren_start < len(expr) and expr[paren_start] != '(':
-                            paren_start += 1
-                        paren_start += 1
-                        depth = 1
-                        paren_end = paren_start
-                        while paren_end < len(expr) and depth > 0:
-                            if expr[paren_end] == '(':
-                                depth += 1
-                            elif expr[paren_end] == ')':
-                                depth -= 1
-                            paren_end += 1
-                        args = expr[paren_start:paren_end-1]
-                        # Parse comma-separated field names
-                        fields = [f.strip() for f in args.split(',') if f.strip()]
-                        dict_parts = []
-                        for field in fields:
-                            if ':' in field:
-                                # key: value pair
-                                key, val = field.split(':', 1)
-                                key = key.strip()
-                                val = val.strip()
-                                translated_val = self._translate_tokens(val)
-                                dict_parts.append(f'"{key}": {translated_val}')
-                            else:
-                                # shorthand: field → "field": self.load("field")
-                                translated_field = self._translate_tokens(field)
-                                dict_parts.append(f'"{field}": {translated_field}')
-                        result.append('{' + ', '.join(dict_parts) + '}')
-                        i = paren_end
-                        continue
-                    elif token == '__STRUCT_SPREAD__':
-                        # __STRUCT_SPREAD__(base, field1, field2) → {**self.load("base"), "field1": ..., ...}
-                        paren_start = j
-                        while paren_start < len(expr) and expr[paren_start] != '(':
-                            paren_start += 1
-                        paren_start += 1
-                        depth = 1
-                        paren_end = paren_start
-                        while paren_end < len(expr) and depth > 0:
-                            if expr[paren_end] == '(':
-                                depth += 1
-                            elif expr[paren_end] == ')':
-                                depth -= 1
-                            paren_end += 1
-                        args = expr[paren_start:paren_end-1]
-                        # First arg is spread base, rest are fields
-                        parts = [p.strip() for p in args.split(',') if p.strip()]
-                        if parts:
-                            spread_base = parts[0]
-                            fields = parts[1:]
-                            spread_translated = self._translate_tokens(spread_base)
-                            dict_parts = [f'**{spread_translated}']
-                            for field in fields:
-                                if ':' in field:
-                                    key, val = field.split(':', 1)
-                                    key = key.strip()
-                                    val = val.strip()
-                                    translated_val = self._translate_tokens(val)
-                                    dict_parts.append(f'"{key}": {translated_val}')
-                                else:
-                                    translated_field = self._translate_tokens(field)
-                                    dict_parts.append(f'"{field}": {translated_field}')
-                            result.append('{' + ', '.join(dict_parts) + '}')
-                        i = paren_end
-                        continue
-                    elif token in ('__FILTER_COMP__', '__MAP_COMP__'):
-                        # __FILTER_COMP__(list, var, condition) -> [var for var in list if condition]
-                        # __MAP_COMP__(list, var, transform) -> [transform for var in list]
-                        paren_start = j
-                        while paren_start < len(expr) and expr[paren_start] != '(':
-                            paren_start += 1
-                        paren_start += 1
-                        depth = 1
-                        paren_end = paren_start
-                        while paren_end < len(expr) and depth > 0:
-                            if expr[paren_end] == '(':
-                                depth += 1
-                            elif expr[paren_end] == ')':
-                                depth -= 1
-                            paren_end += 1
-                        args = expr[paren_start:paren_end-1]
-                        # Parse the three arguments: list, var, body
-                        comma1 = self._find_first_comma(args)
-                        if comma1 != -1:
-                            list_expr = args[:comma1].strip()
-                            rest = args[comma1+1:]
-                            comma2 = self._find_first_comma(rest)
-                            if comma2 != -1:
-                                var_name = rest[:comma2].strip()
-                                body_expr = rest[comma2+1:].strip()
-
-                                # Translate list expression (without var as local)
-                                list_translated = self._translate_tokens(list_expr)
-
-                                # Translate body expression with var as local
-                                old_locals = getattr(self, '_local_vars', set())
-                                self._local_vars = old_locals | {var_name}
-                                body_translated = self._translate_tokens(body_expr)
-                                self._local_vars = old_locals
-
-                                if token == '__FILTER_COMP__':
-                                    result.append(f'[{var_name} for {var_name} in {list_translated} if {body_translated}]')
-                                else:  # __MAP_COMP__
-                                    result.append(f'[{body_translated} for {var_name} in {list_translated}]')
-                                i = paren_end
-                                continue
-                        # Fallback if parsing failed
-                        result.append(token)
-                        i = j
-                        continue
-                    elif token == '__DYNAMIC_GET__':
-                        # __DYNAMIC_GET__(obj, field) -> obj.get(field)
-                        paren_start = j
-                        while paren_start < len(expr) and expr[paren_start] != '(':
-                            paren_start += 1
-                        paren_start += 1
-                        depth = 1
-                        paren_end = paren_start
-                        while paren_end < len(expr) and depth > 0:
-                            if expr[paren_end] == '(':
-                                depth += 1
-                            elif expr[paren_end] == ')':
-                                depth -= 1
-                            paren_end += 1
-                        args = expr[paren_start:paren_end-1]
-                        comma_pos = self._find_first_comma(args)
-                        if comma_pos != -1:
-                            obj_expr = args[:comma_pos].strip()
-                            field_expr = args[comma_pos+1:].strip()
-                            obj_translated = self._translate_tokens(obj_expr)
-                            field_translated = self._translate_tokens(field_expr)
-                            result.append(f'{obj_translated}.get({field_translated})')
-                            i = paren_end
-                            continue
-                        result.append(token)
-                        i = j
-                        continue
-                    # Check for literal key functions (argument is NOT translated)
-                    elif token in self.LITERAL_KEY_FUNCS:
-                        # Find the matching closing paren
-                        paren_start = j
-                        while paren_start < len(expr) and expr[paren_start] != '(':
-                            paren_start += 1
-                        if paren_start < len(expr):
-                            paren_start += 1  # skip '('
-                            depth = 1
-                            paren_end = paren_start
-                            while paren_end < len(expr) and depth > 0:
-                                if expr[paren_end] == '(':
-                                    depth += 1
-                                elif expr[paren_end] == ')':
-                                    depth -= 1
-                                paren_end += 1
-                            # Extract argument WITHOUT translation (keep as literal key)
-                            arg_expr = expr[paren_start:paren_end-1].strip()
-                            # Apply the template with literal key
-                            template = self.LITERAL_KEY_FUNCS[token]
-                            result.append(template.format(arg_expr))
-                            i = paren_end
-                            continue
-                    # Check for special functions that need argument expansion
-                    elif token in self.SPECIAL_FUNCS:
-                        # Find the matching closing paren
-                        paren_start = j
-                        while paren_start < len(expr) and expr[paren_start] != '(':
-                            paren_start += 1
-                        if paren_start < len(expr):
-                            paren_start += 1  # skip '('
-                            depth = 1
-                            paren_end = paren_start
-                            while paren_end < len(expr) and depth > 0:
-                                if expr[paren_end] == '(':
-                                    depth += 1
-                                elif expr[paren_end] == ')':
-                                    depth -= 1
-                                paren_end += 1
-                            # Extract and translate the argument
-                            arg_expr = expr[paren_start:paren_end-1]
-                            translated_arg = self._translate_tokens(arg_expr)
-                            # Apply the template
-                            template = self.SPECIAL_FUNCS[token]
-                            result.append(template.format(translated_arg))
-                            i = paren_end
-                            continue
-                    elif token in self.BUILTIN_FUNCS:
-                        translated = self.BUILTIN_FUNCS[token]
-                        # Special case: NOW() -> self.current_time (property, not method)
-                        # We need to consume the () but not include them in output
-                        if token == 'NOW':
-                            # Find and skip the () - NOW is always called as NOW()
-                            paren_start = j
-                            while paren_start < len(expr) and expr[paren_start] != '(':
-                                paren_start += 1
-                            if paren_start < len(expr):
-                                paren_start += 1  # skip '('
-                                depth = 1
-                                paren_end = paren_start
-                                while paren_end < len(expr) and depth > 0:
-                                    if expr[paren_end] == '(':
-                                        depth += 1
-                                    elif expr[paren_end] == ')':
-                                        depth -= 1
-                                    paren_end += 1
-                                # Skip past the closing paren
-                                i = paren_end
-                            result.append(translated)
-                            continue
-                        # Special case: HASH with multiple args -> wrap with _to_hashable
-                        if token == 'HASH':
-                            paren_start = j
-                            while paren_start < len(expr) and expr[paren_start] != '(':
-                                paren_start += 1
-                            if paren_start < len(expr):
-                                paren_start += 1  # skip '('
-                                depth = 1
-                                paren_end = paren_start
-                                while paren_end < len(expr) and depth > 0:
-                                    if expr[paren_end] == '(':
-                                        depth += 1
-                                    elif expr[paren_end] == ')':
-                                        depth -= 1
-                                    paren_end += 1
-                                args = expr[paren_start:paren_end-1]
-                                # Check if multiple args (comma at depth 0)
-                                depth = 0
-                                has_comma = False
-                                for c in args:
-                                    if c == '(':
-                                        depth += 1
-                                    elif c == ')':
-                                        depth -= 1
-                                    elif c == ',' and depth == 0:
-                                        has_comma = True
-                                        break
-                                if has_comma:
-                                    # Translate args and wrap with _to_hashable
-                                    translated_args = self._translate_tokens(args)
-                                    result.append(f'hash_data(self._to_hashable({translated_args}))')
-                                    i = paren_end
-                                    continue
-                        result.append(translated)
-                    elif token in self.SELF_FUNCS:
-                        result.append(f'self.{self.SELF_FUNCS[token]}')
-                    else:
-                        # Unknown function - keep as is but add self prefix
-                        result.append(f'self._{token}')
-                    i = j
-                    continue
-
-                # Handle enum names followed by .VALUE (e.g., LockStatus.ACCEPTED)
-                # Must check before general attribute access
-                if token in self.enum_names and rest.startswith('.'):
-                    # Get the full enum reference: EnumName.VALUE
-                    k = j + 1  # skip the dot
-                    while k < len(expr) and expr[k].isspace():
-                        k += 1
-                    m = k
-                    while m < len(expr) and (expr[m].isalnum() or expr[m] == '_'):
-                        m += 1
-                    if m > k:
-                        enum_value = expr[k:m]
-                        # Keep as-is: EnumName.VALUE
-                        result.append(f'{token}.{enum_value}')
-                        i = m
-                        continue
-
-                # Handle 'message' keyword - refers to incoming message in transitions
-                if token == 'message' and rest.startswith('.'):
-                    # message.X -> _msg.payload.get("X") or _msg.sender
-                    k = j + 1  # skip the dot
-                    while k < len(expr) and expr[k].isspace():
-                        k += 1
-                    m = k
-                    while m < len(expr) and (expr[m].isalnum() or expr[m] == '_'):
-                        m += 1
-                    attr = expr[k:m]
-                    if attr == 'sender':
-                        result.append('_msg.sender')
-                    elif attr == 'payload':
-                        result.append('_msg.payload')
-                    else:
-                        result.append(f'_msg.payload.get("{attr}")')
-                    i = m
-                    continue
-
-                # Handle attribute access on variables (e.g., pending_result.session_id)
-                if rest.startswith('.'):
-                    # Consume the variable and all attribute accesses
-                    # Check local vars first, then actor props, then store vars
-                    if hasattr(self, '_local_vars') and token in self._local_vars:
-                        base = token
-                    elif token in self.ACTOR_PROPS:
-                        base = f'self.{token}'
-                    else:
-                        base = f'self.load("{token}")'
-                    k = j
-                    # Process chain of .attribute accesses
-                    while k < len(expr):
-                        # Skip whitespace
-                        while k < len(expr) and expr[k].isspace():
-                            k += 1
-                        # Check for .attribute
-                        if k < len(expr) and expr[k] == '.':
-                            k += 1  # skip the dot
-                            while k < len(expr) and expr[k].isspace():
-                                k += 1
-                            # Get attribute name
-                            m = k
-                            while m < len(expr) and (expr[m].isalnum() or expr[m] == '_'):
-                                m += 1
-                            if m > k:
-                                attr = expr[k:m]
-                                base = f'{base}.get("{attr}")'
-                                k = m
-                            else:
-                                break
-                        else:
-                            break
-                    result.append(base)
-                    i = k
-                    continue
-
-                # Handle parameters (constants)
-                if token in self.parameters:
-                    result.append(token)  # Keep as uppercase constant
-                    i = j
-                    continue
-
-                # Handle enum values - convert to full enum reference
-                if token in self.enum_values:
-                    enum_ref = self.get_enum_reference(token)
-                    result.append(enum_ref if enum_ref else token)
-                    i = j
-                    continue
-
-                # Handle actor properties
-                if token in self.ACTOR_PROPS:
-                    result.append(f'self.{token}')
-                    i = j
-                    continue
-
-                # Handle local variables (lambda params, function params)
-                if hasattr(self, '_local_vars') and token in self._local_vars:
-                    result.append(token)
-                    i = j
-                    continue
-
-                # Handle store variables
-                if token in self.store_vars:
-                    result.append(f'self.load("{token}")')
-                    i = j
-                    continue
-
-                # Handle boolean literals
-                if token.lower() == 'true':
-                    result.append('True')
-                    i = j
-                    continue
-                if token.lower() == 'false':
-                    result.append('False')
-                    i = j
-                    continue
-
-                # Unknown identifier - check if it's a local variable first
-                if hasattr(self, '_local_vars') and token in self._local_vars:
-                    result.append(token)
-                else:
-                    # Assume it's a store variable
-                    result.append(f'self.load("{token}")')
-                i = j
-                continue
-
-            # Handle '.' followed by identifier as attribute access on dict/object
-            if expr[i] == '.':
-                # Check if followed by identifier
-                j = i + 1
-                while j < len(expr) and expr[j].isspace():
-                    j += 1
-                if j < len(expr) and (expr[j].isalpha() or expr[j] == '_'):
-                    # Get the attribute name
-                    k = j
-                    while k < len(expr) and (expr[k].isalnum() or expr[k] == '_'):
-                        k += 1
-                    attr = expr[j:k]
-
-                    # Check what precedes - if previous result ends with ')' or ']',
-                    # it's a function call or index result (returns dict/object)
-                    # Use .get() for dict-like access
-                    result_so_far = ''.join(result).rstrip()
-                    if result_so_far and result_so_far.endswith((')' , ']')):
-                        result.append(f'.get("{attr}")')
-                        i = k
-                        continue
-
-            # Default: keep character as-is
-            result.append(expr[i])
-            i += 1
-
-        return ''.join(result)
-
-    def translate_attribute_access(self, expr: str) -> str:
-        """Translate X.Y attribute access to dict/object access."""
-        # Pattern: identifier.attribute
-        pattern = r'(self\.load\("[^"]+"\))\.(\w+)'
-
-        def replace_attr(match):
-            base = match.group(1)
-            attr = match.group(2)
-            return f'{base}.get("{attr}")'
-
-        return re.sub(pattern, replace_attr, expr)
+        return result
 
 
 def load_transaction(tx_dir: Path) -> Schema:
@@ -1455,10 +1067,14 @@ class PythonActorGenerator:
         # Collect all known store variable names
         self.store_vars = {field.name for field in actor.store}
 
-        # Create expression translator
+        # Create AST translator
         parameters = {param.name for param in schema.parameters}
-        enums = {enum.name: [v.name for v in enum.values] for enum in schema.enums}
-        self.expr_translator = ExpressionTranslator(self.store_vars, parameters, enums)
+        enum_names = {enum.name for enum in schema.enums}
+        enum_values = {}  # value_name -> enum_type
+        for enum in schema.enums:
+            for v in enum.values:
+                enum_values[v.name] = enum.name
+        self.expr_translator = ASTTranslator(self.store_vars, enum_names, enum_values, parameters)
 
     def generate(self) -> str:
         """Generate complete actor class."""
@@ -1492,71 +1108,6 @@ class PythonActorGenerator:
 
         return "\n".join(lines)
 
-    def _is_expression(self, val: str) -> bool:
-        """
-        Determine if a string value is an expression that should be translated,
-        or a literal string that should be stored as-is.
-
-        Expressions include:
-        - Arithmetic: "a + b", "x - y", "count * 2"
-        - Comparisons: "a >= b", "x == y"
-        - Struct literals: "{ a, b, c }"
-        - Function calls: "HASH(data)"
-        - Variable references: "some_variable"
-
-        String literals include:
-        - Error messages with common patterns: "insufficient_balance", "provider_timeout"
-        - Status strings: "accept", "reject"
-        """
-        # Empty string is not an expression
-        if not val or not val.strip():
-            return False
-
-        val = val.strip()
-
-        # Struct literals start with {
-        if val.startswith('{'):
-            return True
-
-        # Contains arithmetic/comparison operators (with spaces around them)
-        expression_operators = [' + ', ' - ', ' * ', ' / ', ' >= ', ' <= ', ' > ', ' < ', ' == ', ' != ', ' && ', ' || ']
-        for op in expression_operators:
-            if op in val:
-                return True
-
-        # Contains function call syntax
-        if '(' in val and ')' in val:
-            return True
-
-        # Contains array indexing
-        if '[' in val and ']' in val:
-            return True
-
-        # Contains dot notation (attribute access)
-        if '.' in val:
-            return True
-
-        # Check for common error message patterns (these are literal strings)
-        # Error messages typically have patterns like: *_timeout, *_mismatch, *_invalid, etc.
-        error_suffixes = ('_timeout', '_mismatch', '_invalid', '_error', '_failed', '_rejected', '_missing')
-        error_prefixes = ('no_', 'invalid_', 'unknown_', 'insufficient_', 'missing_')
-        if any(val.endswith(suffix) for suffix in error_suffixes):
-            return False
-        if any(val.startswith(prefix) for prefix in error_prefixes):
-            return False
-
-        # Simple status words are literals
-        status_literals = {'accept', 'reject', 'pending', 'success', 'failure', 'ok', 'error', 'timeout'}
-        if val.lower() in status_literals:
-            return False
-
-        # If it's a simple identifier (alphanumeric with underscores), treat as expression
-        # Variable names include: pending_result, consumer_signature, total_escrowed, etc.
-        if val.replace('_', '').isalnum() and val[0].isalpha():
-            return True
-
-        return False
-
     def _generate_state_enum(self) -> str:
         """Generate state enum."""
         lines = [f"class {self.actor_name}State(Enum):"]
@@ -1582,10 +1133,10 @@ class PythonActorGenerator:
             if action.assignments:
                 # Store with explicit key=value assignments: STORE(key, value)
                 for key, val in action.assignments.items():
-                    # Convert to string if AST node
-                    val_str = expr_to_python(val) if not isinstance(val, str) else val
-                    # Translate the expression - handles message.X, store vars, etc.
-                    translated = self.expr_translator.translate(val_str)
+                    # Guard: ensure val is AST node, not string expression
+                    assert_is_ast_node(val, f"StoreAction assignment for '{key}'")
+                    # Translate the AST expression directly
+                    translated = self.expr_translator.translate(val)
                     lines.append(f'{ind}self.store("{key}", {translated})')
             elif action.fields:
                 # Store fields from params (function arguments) or message
@@ -1600,34 +1151,26 @@ class PythonActorGenerator:
         elif isinstance(action, ComputeAction):
             var_name = action.name
             from_expr = action.expression
-            from_expr_oneline = " ".join(str(from_expr).split())
-            lines.append(f'{ind}# Compute: {var_name} = {from_expr_oneline}')
+            from_expr_for_comment = " ".join(str(from_expr).split())  # for_comment - formatting only
+            lines.append(f'{ind}# Compute: {var_name} = {from_expr_for_comment}')
             lines.append(f'{ind}self.store("{var_name}", self._compute_{var_name}())')
 
         elif isinstance(action, LookupAction):
             var_name = action.name
             from_expr = action.expression
-            # Convert to string for pattern matching
-            from_expr_str = expr_to_python(from_expr) if not isinstance(from_expr, str) else from_expr
-
-            # Special handling for chain.get_peer_hash
-            if "get_peer_hash" in from_expr_str:
-                peer_match = re.search(r'get_peer_hash\((\w+)\)', from_expr_str)
-                peer_var = peer_match.group(1) if peer_match else "peer"
-                lines.append(f'{ind}_lookup_block = self.chain.get_peer_hash(self.load("{peer_var}"))')
-                lines.append(f'{ind}if _lookup_block:')
-                lines.append(f'{ind}    self.store("{var_name}", _lookup_block.payload.get("hash"))')
-                lines.append(f'{ind}    self.store("{var_name}_timestamp", _lookup_block.timestamp)')
-            else:
-                translated = self.expr_translator.translate(from_expr)
-                lines.append(f'{ind}self.store("{var_name}", {translated})')
+            # Guard: ensure expression is AST node
+            assert_is_ast_node(from_expr, f"LookupAction expression for '{var_name}'")
+            # Translate the AST expression directly
+            translated = self.expr_translator.translate(from_expr)
+            lines.append(f'{ind}self.store("{var_name}", {translated})')
 
         elif isinstance(action, SendAction):
             msg_type = action.message
             to_target = action.target
-            # Convert to string and translate
-            to_target_str = expr_to_python(to_target) if not isinstance(to_target, str) else to_target
-            recipient_expr = self.expr_translator.translate(to_target_str)
+            # Guard: ensure target is AST node
+            assert_is_ast_node(to_target, f"SendAction target for '{msg_type}'")
+            # Translate the AST expression directly
+            recipient_expr = self.expr_translator.translate(to_target)
 
             lines.append(f'{ind}msg_payload = self._build_{msg_type.lower()}_payload()')
             lines.append(f'{ind}outgoing.append(Message(')
@@ -1641,10 +1184,10 @@ class PythonActorGenerator:
         elif isinstance(action, BroadcastAction):
             msg_type = action.message
             target_list = action.target_list
-            # Convert to string if expression AST
-            target_list_str = expr_to_python(target_list) if not isinstance(target_list, str) else target_list
+            # Extract the variable name from AST or string
+            target_list_name = target_list.name if hasattr(target_list, 'name') else str(target_list)
 
-            lines.append(f'{ind}for recipient in self.load("{target_list_str}", []):')
+            lines.append(f'{ind}for recipient in self.load("{target_list_name}", []):')
             lines.append(f'{ind}    msg_payload = self._build_{msg_type.lower()}_payload()')
             lines.append(f'{ind}    outgoing.append(Message(')
             lines.append(f'{ind}        msg_type=MessageType.{msg_type},')
@@ -1656,9 +1199,8 @@ class PythonActorGenerator:
 
         elif isinstance(action, AppendBlockAction):
             block_type = action.block_type
-            # Convert to string if expression AST
-            if not isinstance(block_type, str):
-                block_type = expr_to_python(block_type)
+            # Extract the block type name from AST or string
+            block_type = block_type.name if hasattr(block_type, 'name') else str(block_type)
             lines.append(f'{ind}self.chain.append(')
             lines.append(f'{ind}    BlockType.{block_type},')
             lines.append(f'{ind}    self._build_{block_type.lower()}_payload(),')
@@ -1668,20 +1210,19 @@ class PythonActorGenerator:
         elif isinstance(action, AppendAction):
             list_name = action.list_name
             value = action.value
-            # Convert value to string if expression AST
-            value_str = expr_to_python(value) if not isinstance(value, str) else value
 
             # Special case: APPEND(chain, BLOCK_TYPE) is a chain append
             if list_name == "chain":
-                block_type = value_str
+                # For chain append, need the block type name as a string
+                block_type = value.name if hasattr(value, 'name') else str(value)
                 lines.append(f'{ind}self.chain.append(')
                 lines.append(f'{ind}    BlockType.{block_type},')
                 lines.append(f'{ind}    self._build_{block_type.lower()}_payload(),')
                 lines.append(f'{ind}    current_time,')
                 lines.append(f'{ind})')
             else:
-                # Use translator for the value - handles message.X, store vars, etc.
-                translated_value = self.expr_translator.translate(value_str)
+                # Translate the AST expression directly
+                translated_value = self.expr_translator.translate(value)
                 lines.append(f'{ind}_list = self.load("{list_name}") or []')
                 lines.append(f'{ind}_list.append({translated_value})')
                 lines.append(f'{ind}self.store("{list_name}", _list)')
@@ -1926,7 +1467,7 @@ def sanitize_guard_name(guard_name) -> str:
 def _generate_function_statements(
     statements: List[FunctionStatement],
     lines: List[str],
-    translator: 'ExpressionTranslator',
+    translator: 'ASTTranslator',
     local_vars: set,
     indent: int = 2
 ) -> None:
@@ -1935,7 +1476,7 @@ def _generate_function_statements(
     Args:
         statements: List of parsed statement AST nodes
         lines: Output list to append generated lines
-        translator: ExpressionTranslator for DSL->Python conversion
+        translator: ASTTranslator for DSL->Python conversion
         local_vars: Set of local variable names (function params + assigned vars)
         indent: Indentation level (number of 4-space units)
     """
@@ -1988,11 +1529,15 @@ def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
     messages = {msg.name: msg for msg in schema.messages}
     blocks = {block.name: block for block in schema.blocks}
 
-    # Create expression translator
+    # Create AST translator
     store_vars = {field.name for field in actor.store}
     parameters = {param.name for param in schema.parameters}
-    enums = {enum.name: [v.name for v in enum.values] for enum in schema.enums}
-    translator = ExpressionTranslator(store_vars, parameters, enums)
+    enum_names = {enum.name for enum in schema.enums}
+    enum_values = {}
+    for enum in schema.enums:
+        for v in enum.values:
+            enum_values[v.name] = enum.name
+    translator = ASTTranslator(store_vars, enum_names, enum_values, parameters)
 
     # Collect all message types we need to build
     msg_types_to_build = set()
@@ -2045,15 +1590,18 @@ def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
 
     # Generate guard methods
     for guard_name, (desc, expr) in all_guards.items():
-        # Normalize and translate expression - use expr_to_python for AST nodes
+        # Guard: ensure expression is AST node
+        assert_is_ast_node(expr, f"guard expression '{guard_name}'")
+        # Translate AST expression directly
+        translated = translator.translate(expr)
+        # Get string repr for comment
         expr_str = expr_to_python(expr) if not isinstance(expr, str) else expr
-        expr_oneline = " ".join(expr_str.split())
-        translated = translator.translate(expr_oneline)
+        expr_for_comment = " ".join(expr_str.split())  # for_comment - formatting only
 
         lines.append(f"    def _check_{guard_name}(self) -> bool:")
         if desc:
             lines.append(f'        """{desc}"""')
-        lines.append(f"        # Schema: {expr_oneline[:60]}...")
+        lines.append(f"        # Schema: {expr_for_comment[:60]}...")
         lines.append(f"        return {translated}")
         lines.append("")
 
@@ -2069,6 +1617,8 @@ def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
         lines.append(f"    def _compute_{var_name}(self) -> Any:")
         lines.append(f'        """Compute {var_name}."""')
         if from_expr:
+            # Guard: ensure expression is AST node
+            assert_is_ast_node(from_expr, f"compute expression for '{var_name}'")
             # Translate the expression
             translated = translator.translate(from_expr)
             # Convert to string for comment (expr_to_python handles both string and AST)
@@ -2086,12 +1636,12 @@ def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
         for action in trans.actions:
             if isinstance(action, AppendBlockAction):
                 if action.block_type:
-                    bt = expr_to_python(action.block_type) if not isinstance(action.block_type, str) else action.block_type
+                    bt = action.block_type.name if hasattr(action.block_type, 'name') else str(action.block_type)
                     block_types_to_build.add(bt)
             elif isinstance(action, AppendAction):
                 # APPEND(chain, BLOCK_TYPE) is a chain append
                 if action.list_name == "chain" and action.value:
-                    bt = expr_to_python(action.value) if not isinstance(action.value, str) else action.value
+                    bt = action.value.name if hasattr(action.value, 'name') else str(action.value)
                     block_types_to_build.add(bt)
 
     # Generate block payload builders
@@ -2274,11 +1824,16 @@ def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
         # Include schema parameters and enums for proper translation
         param_names = {p.name for p in params}
         schema_params = {p.name for p in schema.parameters}
-        schema_enums = {enum.name: [v.name for v in enum.values] for enum in schema.enums}
-        func_translator = ExpressionTranslator(
+        enum_names = {enum.name for enum in schema.enums}
+        enum_values = {}
+        for enum in schema.enums:
+            for v in enum.values:
+                enum_values[v.name] = enum.name
+        func_translator = ASTTranslator(
             store_vars=set(),  # Function params are local, not store vars
-            parameters=schema_params,
-            enums=schema_enums
+            enum_names=enum_names,
+            enum_values=enum_values,
+            parameters=schema_params
         )
 
         # Generate body from parsed statements

@@ -1,9 +1,8 @@
 """
 PEG-based parser for the transaction DSL using Lark.
 
-This is an alternative implementation to the hand-written recursive descent
-parser in dsl_parser.py. It uses a formal grammar definition and Lark's
-parsing infrastructure.
+Uses a formal grammar definition (dsl_grammar.lark) and Lark's Earley parser
+to produce AST nodes defined in dsl_ast.py.
 """
 
 from pathlib import Path
@@ -632,6 +631,92 @@ def parse_file(path: str) -> Schema:
     """Parse a DSL file into an AST Schema."""
     with open(path) as f:
         return parse(f.read())
+
+
+# =============================================================================
+# Import Resolution
+# =============================================================================
+
+def load_transaction_ast(tx_path, base_dir=None) -> Schema:
+    """
+    Load a DSL transaction file with import resolution.
+
+    Args:
+        tx_path: Path to the .omt file
+        base_dir: Base directory for resolving imports (defaults to docs/protocol/)
+
+    Returns:
+        Merged Schema AST with all imports resolved
+    """
+    tx_path = Path(tx_path)
+    if base_dir is None:
+        # Default base dir is docs/protocol/ relative to the transaction file
+        base_dir = tx_path.parent
+        while base_dir.name != 'protocol' and base_dir.parent != base_dir:
+            base_dir = base_dir.parent
+        if base_dir.name != 'protocol':
+            base_dir = tx_path.parent
+    else:
+        base_dir = Path(base_dir)
+
+    loaded = set()
+    return _load_ast_with_imports(tx_path, base_dir, loaded)
+
+
+def _load_ast_with_imports(tx_path: Path, base_dir: Path, loaded: set) -> Schema:
+    """Load transaction file and recursively resolve imports at AST level."""
+    tx_path = Path(tx_path).resolve()
+    if str(tx_path) in loaded:
+        return Schema()  # Already loaded (circular import protection)
+    loaded.add(str(tx_path))
+
+    # Read and parse the transaction
+    source = tx_path.read_text()
+    ast = parse(source)
+
+    # Start with empty merged schema
+    merged = Schema()
+
+    # First, resolve all imports
+    for imp in ast.imports:
+        import_path = base_dir / f"{imp.path}.omt"
+        if not import_path.exists():
+            import_path = base_dir / imp.path
+            if not import_path.exists():
+                raise FileNotFoundError(f"Import not found: {imp.path} (tried {import_path})")
+
+        imported = _load_ast_with_imports(import_path, base_dir, loaded)
+        _merge_schemas(merged, imported)
+
+    # Merge our own AST on top
+    _merge_schemas(merged, ast)
+
+    return merged
+
+
+def _merge_schemas(target: Schema, source: Schema):
+    """Merge source Schema into target Schema."""
+    # Transaction - source overwrites
+    if source.transaction:
+        target.transaction = source.transaction
+
+    # Lists - extend with source items (avoid duplicates by name)
+    def merge_by_name(target_list, source_list, get_name):
+        existing = {get_name(item) for item in target_list}
+        for item in source_list:
+            if get_name(item) not in existing:
+                target_list.append(item)
+                existing.add(get_name(item))
+
+    merge_by_name(target.parameters, source.parameters, lambda p: p.name)
+    merge_by_name(target.enums, source.enums, lambda e: e.name)
+    merge_by_name(target.messages, source.messages, lambda m: m.name)
+    merge_by_name(target.blocks, source.blocks, lambda b: b.name)
+    merge_by_name(target.actors, source.actors, lambda a: a.name)
+    merge_by_name(target.functions, source.functions, lambda f: f.name)
+
+    # Imports - just extend
+    target.imports.extend(source.imports)
 
 
 if __name__ == "__main__":

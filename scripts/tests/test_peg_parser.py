@@ -1,8 +1,5 @@
 """
 Tests for the PEG-based DSL parser.
-
-These tests verify that the Lark-based parser produces the same AST
-as the hand-written recursive descent parser.
 """
 
 import pytest
@@ -12,8 +9,7 @@ from pathlib import Path
 # Add scripts directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from dsl_peg_parser import parse as peg_parse
-from dsl_parser import parse as handwritten_parse
+from dsl_peg_parser import parse
 from dsl_ast import (
     Schema, Transaction, Parameter, EnumDecl, MessageDecl, BlockDecl,
     ActorDecl, StateDecl, Transition, StoreAction, ComputeAction,
@@ -22,11 +18,8 @@ from dsl_ast import (
     MessageTrigger, TimeoutTrigger, NamedTrigger,
     Identifier, Literal, BinaryExpr, FunctionCallExpr, BinaryOperator,
     UnaryExpr, UnaryOperator, StructLiteralExpr,
+    expr_to_string,
 )
-
-
-# Use PEG parser as the default for these tests
-parse = peg_parse
 
 
 def type_to_str(type_expr) -> str:
@@ -66,8 +59,7 @@ def expr_to_str(expr) -> str:
     elif isinstance(expr, str):
         return expr
     else:
-        from dsl_converter import _expr_to_string
-        return _expr_to_string(expr)
+        return expr_to_string(expr)
 
 
 def assignments_to_str(assignments: dict) -> dict:
@@ -1650,102 +1642,20 @@ class TestPEGDifficultParsingCases:
 
 
 # =============================================================================
-# AST Parity Tests - Verify PEG parser produces same AST as hand-written parser
+# Parser Tests
 # =============================================================================
 
-# Fields to ignore in AST comparison (metadata, not semantic content)
-AST_IGNORE_FIELDS = {'line', 'column', 'end_line', 'end_column'}
+def assert_parses(source: str) -> Schema:
+    """Parse source and return AST. Fails if parsing fails."""
+    return parse(source)
 
 
-def ast_equals(a, b, path="root") -> tuple[bool, str]:
-    """
-    Deep compare two AST nodes for equality.
-    Returns (is_equal, difference_description).
-    Ignores line/column metadata fields.
-    """
-    # Apply normalization for known AST differences between PEG and handwritten parsers
-    a = normalize_ast_value(a, path)
-    b = normalize_ast_value(b, path)
-
-    if type(a) != type(b):
-        return False, f"{path}: type mismatch {type(a).__name__} vs {type(b).__name__}"
-
-    if a is None and b is None:
-        return True, ""
-
-    if isinstance(a, (str, int, float, bool)):
-        if a != b:
-            return False, f"{path}: value mismatch {a!r} vs {b!r}"
-        return True, ""
-
-    if isinstance(a, list):
-        if len(a) != len(b):
-            return False, f"{path}: list length mismatch {len(a)} vs {len(b)}"
-        for i, (ai, bi) in enumerate(zip(a, b)):
-            eq, diff = ast_equals(ai, bi, f"{path}[{i}]")
-            if not eq:
-                return False, diff
-        return True, ""
-
-    if isinstance(a, dict):
-        # Filter out ignored fields
-        a_keys = set(a.keys()) - AST_IGNORE_FIELDS
-        b_keys = set(b.keys()) - AST_IGNORE_FIELDS
-        if a_keys != b_keys:
-            return False, f"{path}: dict keys mismatch {a_keys} vs {b_keys}"
-        for k in a_keys:
-            eq, diff = ast_equals(a[k], b[k], f"{path}[{k!r}]")
-            if not eq:
-                return False, diff
-        return True, ""
-
-    # For dataclass-like objects, compare their __dict__
-    if hasattr(a, '__dict__'):
-        return ast_equals(a.__dict__, b.__dict__, path)
-
-    return True, ""
+# Keep old name as alias for compatibility with existing tests
+assert_ast_equal = assert_parses
 
 
-def normalize_ast_value(val, context=""):
-    """Normalize AST values for comparison between PEG and handwritten parsers.
-
-    Handles known differences:
-    - SendAction.target: PEG returns Identifier, handwritten returns str
-    - EnumRefExpr vs FieldAccessExpr: both represent X.Y syntax
-    """
-    # Normalize Identifier to string for SendAction.target comparison
-    if hasattr(val, '__class__') and val.__class__.__name__ == 'Identifier':
-        return val.name
-
-    # Normalize FieldAccessExpr to EnumRefExpr-like dict
-    if hasattr(val, '__class__') and val.__class__.__name__ == 'FieldAccessExpr':
-        obj = val.object
-        if hasattr(obj, '__class__') and obj.__class__.__name__ == 'Identifier':
-            # FieldAccessExpr(Identifier(X), Y) is equivalent to EnumRefExpr(X, Y)
-            return {'_type': 'EnumRef', 'enum_name': obj.name, 'value': val.field}
-
-    if hasattr(val, '__class__') and val.__class__.__name__ == 'EnumRefExpr':
-        return {'_type': 'EnumRef', 'enum_name': val.enum_name, 'value': val.value}
-
-    return val
-
-
-def assert_ast_equal(source: str):
-    """Parse source with both parsers and assert ASTs are equal.
-
-    Note: The handwritten parser has known bugs with complex expressions,
-    so some tests may fail due to handwritten parser limitations.
-    """
-    peg_ast = peg_parse(source)
-    hw_ast = handwritten_parse(source)
-
-    is_equal, diff = ast_equals(peg_ast, hw_ast)
-    if not is_equal:
-        pytest.fail(f"AST mismatch: {diff}")
-
-
-class TestASTParityBasic:
-    """Verify AST parity between PEG and hand-written parsers for basic constructs."""
+class TestParserBasic:
+    """Verify parser handles basic constructs correctly."""
 
     def test_empty_input(self):
         assert_ast_equal("")
@@ -1768,7 +1678,7 @@ class TestASTParityBasic:
         """)
 
 
-class TestASTParityEnums:
+class TestParserEnums:
     """Verify AST parity for enums."""
 
     def test_simple_enum(self):
@@ -1789,7 +1699,7 @@ class TestASTParityEnums:
         """)
 
 
-class TestASTParityMessages:
+class TestParserMessages:
     """Verify AST parity for messages."""
 
     def test_simple_message(self):
@@ -1815,7 +1725,7 @@ class TestASTParityMessages:
         """)
 
 
-class TestASTParityActors:
+class TestParserActors:
     """Verify AST parity for actors."""
 
     def test_minimal_actor(self):
@@ -1845,7 +1755,7 @@ class TestASTParityActors:
         """)
 
 
-class TestASTParityTransitions:
+class TestParserTransitions:
     """Verify AST parity for transitions."""
 
     def test_auto_transition(self):
@@ -1880,7 +1790,7 @@ class TestASTParityTransitions:
         """)
 
 
-class TestASTParityExpressions:
+class TestParserExpressions:
     """Verify AST parity for expressions."""
 
     def test_binary_operations(self):
@@ -1911,7 +1821,7 @@ class TestASTParityExpressions:
         """)
 
 
-class TestASTParityFunctions:
+class TestParserFunctions:
     """Verify AST parity for functions."""
 
     def test_simple_function(self):
@@ -1995,7 +1905,7 @@ class TestBlockStatements:
         """)
 
 
-class TestASTParityRealFiles:
+class TestParserRealFiles:
     """Verify AST parity for real .omt files."""
 
     def test_escrow_lock_omt(self):

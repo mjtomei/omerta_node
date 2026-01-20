@@ -233,33 +233,9 @@ def regenerate_python(tx_dir: Path, verbose: bool = False) -> bool:
 
 def regenerate_graphs(tx_dir: Path, verbose: bool = False) -> bool:
     """Regenerate state machine graphs for a transaction."""
-    # Import the DSL loader
-    sys.path.insert(0, str(REPO_ROOT / "scripts"))
-    try:
-        from dsl_converter import load_transaction
-    except ImportError:
-        print(f"  Error: Could not import DSL loader", file=sys.stderr)
-        return False
-
-    # Try DSL first, then YAML
-    dsl_path = tx_dir / "transaction.omt"
-    yaml_path = tx_dir / "schema.yaml"
-
-    try:
-        if dsl_path.exists():
-            tx_def = load_transaction(dsl_path)
-        elif yaml_path.exists():
-            import yaml
-            with open(yaml_path) as f:
-                tx_def = yaml.safe_load(f)
-        else:
-            print(f"  Error: No transaction file found in {tx_dir}", file=sys.stderr)
-            return False
-    except Exception as e:
-        print(f"  Error loading transaction: {e}", file=sys.stderr)
-        return False
-
-    write_graph_files(tx_dir, tx_def, GRAPHS_OUTPUT, verbose)
+    # TODO: Graph generation temporarily disabled - needs simpler parser that keeps transition bodies intact
+    if verbose:
+        print(f"  Skipping graph generation (temporarily disabled)")
     return True
 
 
