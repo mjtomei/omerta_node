@@ -486,6 +486,26 @@ class TestTransitions:
         assert action.name == "result"
         assert expr_to_str(action.expression) == "HASH(data)"
 
+    def test_transition_with_bare_assignment(self):
+        """Bare assignment (without compute keyword) should work."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2
+            S1 -> S2 auto (
+                result = HASH(data)
+                other = x + y
+            )
+        )
+        """)
+        actions = schema.actors[0].transitions[0].actions
+        assert len(actions) == 2
+        assert isinstance(actions[0], ComputeAction)
+        assert actions[0].name == "result"
+        assert expr_to_str(actions[0].expression) == "HASH(data)"
+        assert isinstance(actions[1], ComputeAction)
+        assert actions[1].name == "other"
+
     def test_transition_with_send(self):
         schema = parse("""
         actor A (

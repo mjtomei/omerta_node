@@ -656,6 +656,7 @@ class Parser:
             if self._check(TokenType.STORE):
                 actions.append(self._parse_store_action())
             elif self._check(TokenType.COMPUTE):
+                # Legacy: compute x = expr (still supported for backwards compat)
                 actions.append(self._parse_compute_action())
             elif self._check(TokenType.LOOKUP):
                 actions.append(self._parse_lookup_action())
@@ -669,6 +670,9 @@ class Parser:
                 actions.append(self._parse_append_action())
             elif self._check(TokenType.COMMENT):
                 self._advance()
+            elif self._check(TokenType.IDENTIFIER) and self._peek_at(1).type == TokenType.EQUALS:
+                # Bare assignment: x = expr (preferred over compute x = expr)
+                actions.append(self._parse_assignment_action())
             else:
                 raise ParseError(f"Unexpected action: {self._peek().value}", self._peek())
             self._skip_whitespace()
@@ -708,9 +712,19 @@ class Parser:
         return action
 
     def _parse_compute_action(self) -> ComputeAction:
-        """Parse: compute NAME = expr"""
+        """Parse: compute NAME = expr (legacy syntax, prefer bare assignment)"""
         token = self._expect(TokenType.COMPUTE)
         name = self._expect(TokenType.IDENTIFIER, "Expected variable name").value
+        self._expect(TokenType.EQUALS, "Expected '=' after variable name")
+        expr = self._parse_expression()
+
+        return ComputeAction(name=name, expression=expr,
+                           line=token.line, column=token.column)
+
+    def _parse_assignment_action(self) -> ComputeAction:
+        """Parse: NAME = expr (bare assignment, replaces compute keyword)"""
+        token = self._expect(TokenType.IDENTIFIER, "Expected variable name")
+        name = token.value
         self._expect(TokenType.EQUALS, "Expected '=' after variable name")
         expr = self._parse_expression()
 

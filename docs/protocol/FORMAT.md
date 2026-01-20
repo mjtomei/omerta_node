@@ -311,11 +311,11 @@ STORE(key, value)
 STORE(reject_reason, "insufficient_balance")
 ```
 
-**Compute and store:**
+**Assign computed value:**
 ```
-compute session_id = HASH(peer_id + provider + NOW())
-compute signature = SIGN(result)
-compute rng = SEEDED_RNG(seed)
+session_id = HASH(peer_id + provider + NOW())
+signature = SIGN(result)
+rng = SEEDED_RNG(seed)
 ```
 
 **Send message:**
@@ -382,13 +382,14 @@ The following words are part of the DSL syntax and cannot be used as identifiers
 
 | Keyword | Usage |
 |---------|-------|
-| `compute` | Compute and store expression |
 | `lookup` | Lookup value from chain |
 | `send` | Send message to peer |
 | `broadcast` | Broadcast message to list |
 | `append` | Append to list/chain |
 | `append_block` | Append block (legacy) |
 | `return` | Return from function |
+
+Note: Assignment (`x = expr`) uses bare identifier syntax, not a keyword.
 
 ### Modifier Keywords
 

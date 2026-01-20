@@ -408,9 +408,9 @@ actor Consumer "Party paying for service" (
     IDLE -> SENDING_LOCK_INTENT on initiate_lock when provider_chain_checkpoint != null (
         store provider, amount
         STORE(consumer, peer_id)
-        compute session_id = HASH(peer_id + provider + NOW())
-        compute consumer_nonce = RANDOM_BYTES(32)
-        compute provider_chain_checkpoint = READ(provider, "head_hash")
+        session_id = HASH(peer_id + provider + NOW())
+        consumer_nonce = RANDOM_BYTES(32)
+        provider_chain_checkpoint = READ(provider, "head_hash")
     ) else -> FAILED (
         store provider, amount
         STORE(consumer, peer_id)
@@ -425,7 +425,7 @@ actor Consumer "Party paying for service" (
     WAITING_FOR_WITNESS_COMMITMENT -> VERIFYING_PROVIDER_CHAIN on WITNESS_SELECTION_COMMITMENT (
         store provider_nonce, provider_chain_segment, selection_inputs
         STORE(proposed_witnesses, message.witnesses)
-        compute chain_segment_valid_and_contains_checkpoint = VERIFY_CHAIN_SEGMENT(provider_chain_segment) AND CHAIN_CONTAINS_HASH(provider_chain_segment, provider_chain_checkpoint)
+        chain_segment_valid_and_contains_checkpoint = VERIFY_CHAIN_SEGMENT(provider_chain_segment) AND CHAIN_CONTAINS_HASH(provider_chain_segment, provider_chain_checkpoint)
     )
 
     WAITING_FOR_WITNESS_COMMITMENT -> FAILED on LOCK_REJECTED (
@@ -437,8 +437,8 @@ actor Consumer "Party paying for service" (
     )
 
     VERIFYING_PROVIDER_CHAIN -> VERIFYING_WITNESSES auto when chain_segment_valid_and_contains_checkpoint (
-        compute verified_chain_state = CHAIN_STATE_AT(provider_chain_segment, provider_chain_checkpoint)
-        compute witness_selection_valid = VERIFY_WITNESS_SELECTION(proposed_witnesses, selection_inputs, session_id, provider_nonce, consumer_nonce)
+        verified_chain_state = CHAIN_STATE_AT(provider_chain_segment, provider_chain_checkpoint)
+        witness_selection_valid = VERIFY_WITNESS_SELECTION(proposed_witnesses, selection_inputs, session_id, provider_nonce, consumer_nonce)
     )
 
     VERIFYING_WITNESSES -> SENDING_REQUESTS auto when witness_selection_valid (
@@ -453,7 +453,7 @@ actor Consumer "Party paying for service" (
     WAITING_FOR_RESULT -> REVIEWING_RESULT on LOCK_RESULT_FOR_SIGNATURE (
         STORE(pending_result, message.result)
         STORE(result_sender, message.sender)
-        compute result_valid_and_accepted = VALIDATE_LOCK_RESULT(pending_result, session_id, amount)
+        result_valid_and_accepted = VALIDATE_LOCK_RESULT(pending_result, session_id, amount)
     )
 
     WAITING_FOR_RESULT -> FAILED on timeout(RECRUITMENT_TIMEOUT) (
@@ -467,7 +467,7 @@ actor Consumer "Party paying for service" (
     )
 
     SIGNING_RESULT -> LOCKED auto (
-        compute consumer_signature = SIGN(pending_result)
+        consumer_signature = SIGN(pending_result)
         STORE(lock_result, { ...pending_result, consumer_signature })
         APPEND(chain, BALANCE_LOCK)
         BROADCAST(witnesses, CONSUMER_SIGNED_LOCK)
@@ -482,7 +482,7 @@ actor Consumer "Party paying for service" (
 
     LOCKED -> SENDING_TOPUP on initiate_topup (
         store additional_amount
-        compute current_lock_hash = HASH(lock_result)
+        current_lock_hash = HASH(lock_result)
     )
 
     # Top-up flow
@@ -493,7 +493,7 @@ actor Consumer "Party paying for service" (
 
     WAITING_FOR_TOPUP_RESULT -> REVIEWING_TOPUP_RESULT on TOPUP_RESULT_FOR_SIGNATURE (
         STORE(pending_topup_result, message.topup_result)
-        compute topup_result_valid = VALIDATE_TOPUP_RESULT(pending_topup_result, session_id, additional_amount)
+        topup_result_valid = VALIDATE_TOPUP_RESULT(pending_topup_result, session_id, additional_amount)
     )
 
     WAITING_FOR_TOPUP_RESULT -> LOCKED on timeout(CONSENSUS_TIMEOUT) (
@@ -503,7 +503,7 @@ actor Consumer "Party paying for service" (
     REVIEWING_TOPUP_RESULT -> SIGNING_TOPUP auto when topup_result_valid
 
     SIGNING_TOPUP -> LOCKED auto (
-        compute consumer_signature = SIGN(pending_topup_result)
+        consumer_signature = SIGN(pending_topup_result)
         STORE(topup_result, { ...pending_topup_result, consumer_signature })
         APPEND(chain, BALANCE_TOPUP)
         BROADCAST(witnesses, CONSUMER_SIGNED_TOPUP)
@@ -540,12 +540,12 @@ actor Provider "Party providing service, selects witnesses" (
     IDLE -> VALIDATING_CHECKPOINT on LOCK_INTENT (
         store consumer, amount, session_id, consumer_nonce
         STORE(requested_checkpoint, message.provider_chain_checkpoint)
-        compute provider_nonce = RANDOM_BYTES(32)
+        provider_nonce = RANDOM_BYTES(32)
     )
 
     VALIDATING_CHECKPOINT -> SELECTING_WITNESSES auto when CHAIN_CONTAINS_HASH(chain, requested_checkpoint) (
-        compute chain_state_at_checkpoint = CHAIN_STATE_AT(chain, requested_checkpoint)
-        compute provider_chain_segment = CHAIN_SEGMENT(chain, requested_checkpoint)
+        chain_state_at_checkpoint = CHAIN_STATE_AT(chain, requested_checkpoint)
+        provider_chain_segment = CHAIN_SEGMENT(chain, requested_checkpoint)
     ) else -> SENDING_REJECTION (
         STORE(reason, "unknown_checkpoint")
     )
@@ -555,7 +555,7 @@ actor Provider "Party providing service, selects witnesses" (
     )
 
     SELECTING_WITNESSES -> SENDING_COMMITMENT auto (
-        compute witnesses = SELECT_WITNESSES(HASH(session_id + provider_nonce + consumer_nonce), chain_state_at_checkpoint)
+        witnesses = SELECT_WITNESSES(HASH(session_id + provider_nonce + consumer_nonce), chain_state_at_checkpoint)
         STORE(selection_inputs, chain_state_at_checkpoint)
     )
 
@@ -640,7 +640,7 @@ actor Witness "Verifies consumer balance, participates in consensus" (
     IDLE -> CHECKING_CHAIN_KNOWLEDGE on WITNESS_REQUEST (
         store consumer, provider, amount, session_id, my_chain_head, witnesses
         STORE(consumer, message.sender)
-        compute other_witnesses = REMOVE(witnesses, peer_id)
+        other_witnesses = REMOVE(witnesses, peer_id)
         STORE(preliminaries, [])
         STORE(votes, [])
         STORE(signatures, [])
@@ -648,7 +648,7 @@ actor Witness "Verifies consumer balance, participates in consensus" (
     )
 
     CHECKING_CHAIN_KNOWLEDGE -> CHECKING_BALANCE auto (
-        compute observed_balance = peer_balances[consumer]
+        observed_balance = peer_balances[consumer]
     )
 
     CHECKING_BALANCE -> CHECKING_EXISTING_LOCKS auto when observed_balance >= amount
@@ -673,12 +673,12 @@ actor Witness "Verifies consumer balance, participates in consensus" (
 
     # Fast path: advance when enough preliminaries collected
     COLLECTING_PRELIMINARIES -> VOTING auto when LENGTH(preliminaries) >= WITNESS_THRESHOLD - 1 (
-        compute consensus_direction = COMPUTE_ESCROW_CONSENSUS(preliminaries)
+        consensus_direction = COMPUTE_ESCROW_CONSENSUS(preliminaries)
     )
 
     # Timeout fallback
     COLLECTING_PRELIMINARIES -> VOTING on timeout(PRELIMINARY_TIMEOUT) (
-        compute consensus_direction = COMPUTE_ESCROW_CONSENSUS(preliminaries)
+        consensus_direction = COMPUTE_ESCROW_CONSENSUS(preliminaries)
     )
 
     VOTING -> COLLECTING_VOTES auto (
@@ -696,7 +696,7 @@ actor Witness "Verifies consumer balance, participates in consensus" (
     COLLECTING_VOTES -> BUILDING_RESULT on timeout(CONSENSUS_TIMEOUT) when LENGTH(votes) >= WITNESS_THRESHOLD
 
     BUILDING_RESULT -> SIGNING_RESULT auto (
-        compute result = BUILD_LOCK_RESULT()
+        result = BUILD_LOCK_RESULT()
     )
 
     SIGNING_RESULT -> PROPAGATING_RESULT auto (
@@ -717,7 +717,7 @@ actor Witness "Verifies consumer balance, participates in consensus" (
 
     ESCROW_ACTIVE -> CHECKING_TOPUP_BALANCE on TOPUP_INTENT (
         STORE(topup_intent, message)
-        compute topup_observed_balance = peer_balances[consumer]
+        topup_observed_balance = peer_balances[consumer]
     )
 
     # Top-up balance check - accept if sufficient free balance
@@ -751,7 +751,7 @@ actor Witness "Verifies consumer balance, participates in consensus" (
     )
 
     BUILDING_TOPUP_RESULT -> PROPAGATING_TOPUP auto (
-        compute topup_result = BUILD_TOPUP_RESULT()
+        topup_result = BUILD_TOPUP_RESULT()
         SEND(consumer, TOPUP_RESULT_FOR_SIGNATURE)
     )
 
