@@ -463,9 +463,10 @@ class FunctionParam:
 
 @dataclass
 class AssignmentStmt:
-    """Assignment statement: name = expression"""
+    """Assignment statement: name = expression or name[index] = expression"""
     name: str
     expression: Union[str, 'Expr']  # Expression (string for legacy, Expr for new parser)
+    index: Optional['Expr'] = None  # Index for indexed assignment (e.g., result[key] = value)
     line: int = 0
     column: int = 0
 

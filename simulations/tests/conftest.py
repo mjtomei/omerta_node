@@ -24,7 +24,17 @@ def pytest_configure(config):
             if omt_files:
                 transaction_dirs.append(item)
 
+    # Delete old generated code before regeneration
+    for tx_dir in sorted(transaction_dirs):
+        tx_name = tx_dir.name
+        # Find and delete generated Python files for this transaction
+        generated_file = output_dir / f"{tx_name}_generated.py"
+        if generated_file.exists():
+            generated_file.unlink()
+            print(f"Deleted old generated code: {generated_file.name}")
+
     # Regenerate each transaction
+    failed = []
     for tx_dir in sorted(transaction_dirs):
         cmd = [
             sys.executable,
@@ -35,7 +45,13 @@ def pytest_configure(config):
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            print(f"Warning: Failed to regenerate {tx_dir.name}")
-            print(result.stderr)
+            failed.append((tx_dir.name, result.stderr))
         else:
             print(f"Regenerated: {tx_dir.name}")
+
+    # Fail if any regeneration failed
+    if failed:
+        error_msg = "Code regeneration failed:\n"
+        for name, stderr in failed:
+            error_msg += f"\n=== {name} ===\n{stderr}"
+        raise RuntimeError(error_msg)

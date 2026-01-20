@@ -760,23 +760,25 @@ class Parser:
         return BroadcastAction(message=message, target_list=target_list,
                               line=token.line, column=token.column)
 
-    def _parse_send_target(self) -> str:
+    def _parse_send_target(self) -> Expr:
         """Parse send target: identifier or dotted expression like message.sender"""
         # Allow MESSAGE token since "message.sender" is a common target
         if self._check(TokenType.MESSAGE):
-            name = self._advance().value
+            token = self._advance()
+            expr = Identifier(token.value, token.line, token.column)
         elif self._check(TokenType.IDENTIFIER):
-            name = self._advance().value
+            token = self._advance()
+            expr = Identifier(token.value, token.line, token.column)
         else:
             raise ParseError("Expected target", self._peek())
 
         # Handle dotted expressions like message.sender
         while self._check(TokenType.DOT):
             self._advance()  # consume the dot
-            next_part = self._expect(TokenType.IDENTIFIER, "Expected identifier after dot").value
-            name = f"{name}.{next_part}"
+            field_token = self._expect(TokenType.IDENTIFIER, "Expected identifier after dot")
+            expr = FieldAccessExpr(expr, field_token.value, expr.line, expr.column)
 
-        return name
+        return expr
 
     def _parse_append_action(self) -> AppendAction:
         """Parse: APPEND(list, value) - for both list appends and chain appends (my_chain)"""
@@ -888,6 +890,7 @@ class Parser:
         - Assignment: IDENTIFIER '=' expression
         - Return: 'RETURN' expression
         - For loop: 'FOR' IDENTIFIER 'IN' expression ':' statements
+        - Block: '(' statements ')'
 
         Statement boundaries are detected by recognizing starting patterns,
         not by newlines or semicolons.
@@ -902,7 +905,11 @@ class Parser:
 
             stmt = self._parse_function_statement()
             if stmt:
-                statements.append(stmt)
+                # Block statements return lists
+                if isinstance(stmt, list):
+                    statements.extend(stmt)
+                else:
+                    statements.append(stmt)
 
         return statements
 
@@ -932,12 +939,19 @@ class Parser:
         if token.type == TokenType.IDENTIFIER and token.value.upper() == 'FOR':
             return self._parse_for_statement()
 
-        # Assignment: IDENTIFIER = expression
+        # Block statement: ( stmt+ )
+        if token.type == TokenType.LPAREN:
+            return self._parse_block_statement()
+
+        # Assignment: IDENTIFIER = expression or IDENTIFIER[index] = expression
         if token.type == TokenType.IDENTIFIER:
             # Look ahead to see if this is an assignment
             next_tok = self._peek_at(1)
             if next_tok and next_tok.type == TokenType.EQUALS:
                 return self._parse_assignment_statement()
+            # Check for indexed assignment: IDENTIFIER[index] = expression
+            if next_tok and next_tok.type == TokenType.LBRACKET:
+                return self._parse_indexed_assignment_statement()
 
         # Skip unknown tokens (comments, newlines, etc.)
         if token.type in (TokenType.NEWLINE, TokenType.COMMENT):
@@ -960,6 +974,18 @@ class Parser:
         self._expect(TokenType.EQUALS)
         expr = self._parse_expr()
         return AssignmentStmt(name=name_token.value, expression=expr,
+                              line=name_token.line, column=name_token.column)
+
+    def _parse_indexed_assignment_statement(self) -> AssignmentStmt:
+        """Parse: IDENTIFIER[index] = expression"""
+        name_token = self._expect(TokenType.IDENTIFIER)
+        self._expect(TokenType.LBRACKET)
+        index_expr = self._parse_expr()
+        self._expect(TokenType.RBRACKET)
+        self._expect(TokenType.EQUALS)
+        value_expr = self._parse_expr()
+        return AssignmentStmt(name=name_token.value, expression=value_expr,
+                              index=index_expr,
                               line=name_token.line, column=name_token.column)
 
     def _parse_if_statement(self) -> IfStmt:
@@ -987,7 +1013,11 @@ class Parser:
                 break
             stmt = self._parse_function_statement(stop_at_else=True)
             if stmt:
-                then_body.append(stmt)
+                # Block statements return lists
+                if isinstance(stmt, list):
+                    then_body.extend(stmt)
+                else:
+                    then_body.append(stmt)
             else:
                 break  # Couldn't parse a statement, might be at ELSE
 
@@ -1002,12 +1032,16 @@ class Parser:
                     break
                 stmt = self._parse_function_statement()
                 if stmt:
-                    else_body.append(stmt)
+                    # Block statements return lists
+                    if isinstance(stmt, list):
+                        else_body.extend(stmt)
+                    else:
+                        else_body.append(stmt)
 
         return IfStmt(condition=condition, then_body=then_body, else_body=else_body,
                       line=token.line, column=token.column)
     def _parse_for_statement(self) -> ForStmt:
-        """Parse: FOR IDENTIFIER IN expression : statements"""
+        """Parse: FOR IDENTIFIER IN expression : statement (or block)"""
         token = self._advance()  # consume FOR
         var_token = self._expect(TokenType.IDENTIFIER, "Expected loop variable")
 
@@ -1018,23 +1052,46 @@ class Parser:
         iterable = self._parse_expr()
         self._expect(TokenType.COLON, "Expected ':' after FOR iterable")
 
-        # Parse body statements - FOR loop body is a single statement
-        # The statement is parsed and the body ends
+        # Parse body - single statement or block statement (which returns a list)
         body = []
         self._skip_whitespace()
         if not self._at_end() and not self._check(TokenType.RPAREN) and not self._check(TokenType.RETURN):
             stmt = self._parse_function_statement()
             if stmt:
-                body.append(stmt)
+                # Block statements return a list
+                if isinstance(stmt, list):
+                    body.extend(stmt)
+                else:
+                    body.append(stmt)
 
         return ForStmt(var_name=var_token.value, iterable=iterable, body=body,
                        line=token.line, column=token.column)
 
+    def _parse_block_statement(self) -> List[FunctionStatement]:
+        """Parse: ( stmt+ ) - returns a list of statements."""
+        self._expect(TokenType.LPAREN)
+        statements = []
+        self._skip_whitespace()
+
+        while not self._at_end() and not self._check(TokenType.RPAREN):
+            stmt = self._parse_function_statement()
+            if stmt:
+                # Nested block statements return lists
+                if isinstance(stmt, list):
+                    statements.extend(stmt)
+                else:
+                    statements.append(stmt)
+            self._skip_whitespace()
+
+        self._expect(TokenType.RPAREN, "Expected ')' to close block statement")
+        return statements
+
     def _is_function_call_context(self) -> bool:
         """Check if current LPAREN starts a function call (not an action block).
 
-        Returns False if after ( there's a newline followed by an action keyword,
-        which indicates this is an action block, not a function call.
+        Returns False if after ( there's a newline followed by an action keyword
+        or a bare assignment (IDENTIFIER = expr), which indicates this is an
+        action block, not a function call.
         """
         # We're at LPAREN, peek ahead
         i = 1
@@ -1054,6 +1111,13 @@ class Parser:
         }
         if token.type in action_keywords:
             return False
+
+        # If after ( we see IDENTIFIER followed by EQUALS (but not ==), this is a bare
+        # assignment in an action block, not a function call
+        if token.type == TokenType.IDENTIFIER:
+            next_token = self._peek(i + 1)
+            if next_token.type == TokenType.EQUALS:
+                return False
 
         return True
 

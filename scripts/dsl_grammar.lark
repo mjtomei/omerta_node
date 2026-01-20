@@ -7,7 +7,7 @@
 // Top-level structure
 // =============================================================================
 
-start: _NL* (declaration _NL*)*
+start: (declaration | COMMENT)*
 
 declaration: transaction_decl
            | imports_decl
@@ -36,28 +36,28 @@ import_path: IDENTIFIER ("/" IDENTIFIER)*
 // Parameters
 // =============================================================================
 
-parameters_block: "parameters" "(" _NL* (parameter _NL*)* ")"
+parameters_block: "parameters" "(" (parameter | COMMENT)* ")"
 parameter: IDENTIFIER "=" (NUMBER | IDENTIFIER) IDENTIFIER? STRING?
 
 // =============================================================================
 // Enums
 // =============================================================================
 
-enum_decl: "enum" IDENTIFIER STRING? "(" _NL* (enum_value _NL*)* ")"
+enum_decl: "enum" IDENTIFIER STRING? "(" enum_value* ")"
 enum_value: IDENTIFIER COMMENT?
 
 // =============================================================================
 // Messages
 // =============================================================================
 
-message_decl: "message" IDENTIFIER "from" IDENTIFIER "to" "[" identifier_list "]" SIGNED? "(" _NL* (field _NL*)* ")"
+message_decl: "message" IDENTIFIER "from" IDENTIFIER "to" "[" identifier_list "]" SIGNED? "(" field* ")"
 SIGNED: "signed"
 
 // =============================================================================
 // Blocks
 // =============================================================================
 
-block_decl: "block" IDENTIFIER "by" "[" identifier_list "]" "(" _NL* (field _NL*)* ")"
+block_decl: "block" IDENTIFIER "by" "[" identifier_list "]" "(" field* ")"
 
 // =============================================================================
 // Fields and types
@@ -74,15 +74,14 @@ identifier_list: IDENTIFIER ("," IDENTIFIER)*
 // Actors
 // =============================================================================
 
-actor_decl: "actor" IDENTIFIER STRING? "(" _NL* actor_body* ")"
+actor_decl: "actor" IDENTIFIER STRING? "(" (actor_body | COMMENT)* ")"
 
-actor_body: store_block _NL*
-          | trigger_decl _NL*
-          | state_decl _NL*
-          | transition _NL*
-          | COMMENT _NL*
+actor_body: store_block
+          | trigger_decl
+          | state_decl
+          | transition
 
-store_block: "store" "(" _NL* (field _NL*)* ")"
+store_block: "store" "(" field* ")"
 
 trigger_decl: "trigger" IDENTIFIER "(" trigger_params? ")" "in" "[" identifier_list "]" STRING?
 trigger_params: trigger_param ("," trigger_param)*
@@ -105,7 +104,7 @@ transition_trigger: "auto"                           -> auto_trigger
 
 guard_clause: "when" expr
 
-action_block: "(" _NL* action* ")"
+action_block: "(" action* ")"
 
 else_clause: "else" "->" IDENTIFIER action_block?
 
@@ -113,14 +112,13 @@ else_clause: "else" "->" IDENTIFIER action_block?
 // Actions
 // =============================================================================
 
-action: store_action _NL*
-      | lookup_action _NL*
-      | send_action _NL*
-      | broadcast_action _NL*
-      | append_action _NL*
-      | append_block_action _NL*
-      | assignment_action _NL*
-      | COMMENT _NL*
+action: store_action
+      | lookup_action
+      | send_action
+      | broadcast_action
+      | append_action
+      | append_block_action
+      | assignment_action
 
 store_action: "store" IDENTIFIER ("," IDENTIFIER)*        -> store_fields
             | "STORE" "(" IDENTIFIER "," expr ")"         -> store_assign
@@ -141,20 +139,31 @@ assignment_action: IDENTIFIER "=" expr
 // Functions
 // =============================================================================
 
-function_decl: "function" IDENTIFIER "(" function_params? ")" "->" type_expr "(" _NL* function_body* ")"
+function_decl: "function" IDENTIFIER "(" function_params? ")" "->" type_expr "(" (function_body | COMMENT)* ")"
 function_params: function_param ("," function_param)*
 function_param: IDENTIFIER type_expr
 
 native_function_decl: "native" "function" IDENTIFIER "(" function_params? ")" "->" type_expr STRING
 
-function_body: return_stmt _NL*
-             | assignment_stmt _NL*
-             | for_stmt _NL*
-             | COMMENT _NL*
+// Generic statement type used in function bodies, loops, conditionals
+// ? prefix makes these inline (transparent) - they pass through their child directly
+?stmt: return_stmt
+     | assignment_stmt
+     | for_stmt
+     | if_stmt
+     | block_stmt
 
 return_stmt: "return"i expr
-assignment_stmt: IDENTIFIER "=" expr
-for_stmt: "FOR"i IDENTIFIER "IN"i expr ":" _NL* function_body*
+assignment_stmt: IDENTIFIER "[" expr "]" "=" expr  -> index_assignment
+               | IDENTIFIER "=" expr
+for_stmt: "FOR"i IDENTIFIER "IN"i expr ":" stmt
+if_stmt: "IF"i expr "THEN"i if_then_body "ELSE"i if_else_body
+if_then_body: stmt+
+if_else_body: stmt+
+block_stmt: "(" stmt+ ")"
+
+// Alias for clarity in function declarations
+?function_body: stmt
 
 // =============================================================================
 // Expressions
@@ -171,40 +180,47 @@ for_stmt: "FOR"i IDENTIFIER "IN"i expr ":" _NL* function_body*
 // 8. postfix (call, field access, index)
 // 9. primary (literals, identifiers, grouped)
 
-?expr: or_expr
+?expr: lambda_level
 
-?or_expr: and_expr "or"i or_expr                         -> binary_or
+// Lambda has lowest precedence - captures everything to the right
+?lambda_level: IDENTIFIER "=>" lambda_level               -> lambda_expr
+             | or_expr
+
+?or_expr: or_expr "or"i and_expr                         -> binary_or
         | and_expr
-?and_expr: not_expr "and"i and_expr                      -> binary_and
+?and_expr: and_expr "and"i not_expr                      -> binary_and
          | not_expr
 ?not_expr: "not"i not_expr                               -> unary_not
+         | if_level
+
+// IF expression has lower precedence than comparison, so branches capture full comparisons
+?if_level: "IF"i expr "THEN"i if_level "ELSE"i if_level  -> if_expr
          | comparison
 
 ?comparison: additive COMP_OP additive                   -> binary_comp
            | additive
 COMP_OP: "==" | "!=" | "<=" | ">=" | "<" | ">"
 
-?additive: multiplicative "+" additive                   -> binary_add
-         | multiplicative "-" additive                   -> binary_sub
+?additive: additive "+" multiplicative                   -> binary_add
+         | additive "-" multiplicative                   -> binary_sub
          | multiplicative
-?multiplicative: unary "*" multiplicative                -> binary_mul
-               | unary "/" multiplicative                -> binary_div
+?multiplicative: multiplicative "*" unary                -> binary_mul
+               | multiplicative "/" unary                -> binary_div
                | unary
 
 ?unary: "-" unary                                        -> unary_neg
       | postfix
 
+// Postfix operations: func call, field access, index access
 ?postfix: postfix "(" args? ")"                          -> func_call
         | postfix "." "{" expr "}"                       -> dynamic_field
         | postfix "." IDENTIFIER                         -> field_access
         | postfix "[" expr "]"                           -> index_access
         | primary
 
-?primary: "(" _NL* expr _NL* ")"                         -> grouped
-        | "[" _NL* args? _NL* "]"                         -> list_literal
-        | "{" _NL* struct_fields? _NL* "}"               -> struct_literal
-        | "IF"i expr "THEN"i expr "ELSE"i expr           -> if_expr
-        | IDENTIFIER "=>" expr                           -> lambda_expr
+?primary: "(" expr ")"                                   -> grouped
+        | "[" args? "]"                                   -> list_literal
+        | "{" struct_fields? "}"                          -> struct_literal
         | IDENTIFIER "." IDENTIFIER                      -> enum_ref
         | NUMBER                                         -> number
         | STRING                                         -> string
@@ -213,9 +229,9 @@ COMP_OP: "==" | "!=" | "<=" | ">=" | "<" | ">"
         | "null"i                                        -> null_lit
         | IDENTIFIER                                     -> identifier
 
-args: expr ("," _NL* expr)*
+args: expr ("," expr)*
 
-struct_fields: struct_field ("," _NL* struct_field)*
+struct_fields: struct_field ("," struct_field)*
 struct_field: "..." expr                                 -> spread_field
             | IDENTIFIER ":" expr                        -> named_field
             | IDENTIFIER                                 -> shorthand_field
@@ -229,8 +245,7 @@ NUMBER: /\-?[0-9]+(\.[0-9]+)?/
 STRING: /"[^"]*"/
 COMMENT: /#[^\n]*/
 
-// Whitespace handling
-%import common.WS_INLINE
-%ignore WS_INLINE
-_NL: /\n/+
-%ignore COMMENT
+// Whitespace handling - ignore all whitespace including newlines
+// NOTE: We don't ignore COMMENT because we need to capture it in enum values
+%import common.WS
+%ignore WS

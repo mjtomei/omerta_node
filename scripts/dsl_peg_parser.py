@@ -16,7 +16,7 @@ from dsl_ast import (
     TriggerParam, Transition, StoreAction, ComputeAction, LookupAction,
     SendAction, BroadcastAction, AppendAction, AppendBlockAction,
     OnGuardFail, FunctionDecl, FunctionParam, ReturnStmt, AssignmentStmt,
-    ForStmt,
+    ForStmt, IfStmt,
     # Expression AST
     Identifier, Literal, BinaryExpr, UnaryExpr, FunctionCallExpr,
     FieldAccessExpr, DynamicFieldAccessExpr, IndexAccessExpr,
@@ -41,11 +41,16 @@ class DSLTransformer(Transformer):
     # Top-level
     # =========================================================================
 
-    def start(self, *declarations):
+    def start(self, *items):
+        from lark import Token
         schema = Schema()
-        for decl in declarations:
-            if decl is None:
+        for item in items:
+            if item is None:
                 continue
+            # Skip comments at top level
+            if isinstance(item, Token) and item.type == 'COMMENT':
+                continue
+            decl = item
             if isinstance(decl, Transaction):
                 schema.transaction = decl
             elif isinstance(decl, Import):
@@ -347,6 +352,7 @@ class DSLTransformer(Transformer):
         return LookupAction(name=str(name), expression=expr)
 
     def send_action(self, target, message):
+        # Keep target as AST node for generator compatibility
         return SendAction(message=str(message), target=target)
 
     def broadcast_action(self, target_list, message):
@@ -369,14 +375,18 @@ class DSLTransformer(Transformer):
         params = []
         return_type = SimpleType(name="void")
         statements = []
+        stmt_types = (ReturnStmt, AssignmentStmt, ForStmt, IfStmt)
 
         for item in rest:
             if isinstance(item, list) and item and isinstance(item[0], FunctionParam):
                 params = item
             elif isinstance(item, (SimpleType, ListType, MapType)):
                 return_type = item
-            elif isinstance(item, (ReturnStmt, AssignmentStmt, ForStmt)):
+            elif isinstance(item, stmt_types):
                 statements.append(item)
+            elif isinstance(item, list):
+                # Block statement - flatten it
+                statements.extend(s for s in item if isinstance(s, stmt_types))
 
         return FunctionDecl(
             name=str(name),
@@ -421,12 +431,42 @@ class DSLTransformer(Transformer):
     def assignment_stmt(self, name, expr):
         return AssignmentStmt(name=str(name), expression=expr)
 
-    def for_stmt(self, var, iterable, *body):
-        return ForStmt(
-            var_name=str(var),
-            iterable=iterable,
-            body=[b for b in body if isinstance(b, (ReturnStmt, AssignmentStmt, ForStmt))]
-        )
+    def index_assignment(self, name, index, expr):
+        return AssignmentStmt(name=str(name), expression=expr, index=index)
+
+    def for_stmt(self, var, iterable, body_stmt):
+        # body_stmt could be a single statement or a list (from block_stmt)
+        if isinstance(body_stmt, list):
+            body = body_stmt
+        elif isinstance(body_stmt, (ReturnStmt, AssignmentStmt, ForStmt, IfStmt)):
+            body = [body_stmt]
+        else:
+            body = []
+        return ForStmt(var_name=str(var), iterable=iterable, body=body)
+
+    def if_stmt(self, condition, then_body, else_body):
+        return IfStmt(condition=condition, then_body=then_body, else_body=else_body)
+
+    def if_then_body(self, *items):
+        return self._flatten_stmts(items)
+
+    def if_else_body(self, *items):
+        return self._flatten_stmts(items)
+
+    def block_stmt(self, *items):
+        return self._flatten_stmts(items)
+
+    def _flatten_stmts(self, items):
+        """Flatten statement list, expanding any block_stmt lists."""
+        stmt_types = (ReturnStmt, AssignmentStmt, ForStmt, IfStmt)
+        result = []
+        for item in items:
+            if isinstance(item, list):
+                # Nested block_stmt - flatten it
+                result.extend(s for s in item if isinstance(s, stmt_types))
+            elif isinstance(item, stmt_types):
+                result.append(item)
+        return result
 
     # =========================================================================
     # Expressions

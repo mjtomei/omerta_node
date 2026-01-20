@@ -15,7 +15,8 @@ from dsl_ast import (
     ActorDecl, StateDecl, Transition, StoreAction, ComputeAction,
     SendAction, BroadcastAction, AppendAction, FunctionDecl,
     SimpleType, ListType, MapType,
-    MessageTrigger, TimeoutTrigger, NamedTrigger
+    MessageTrigger, TimeoutTrigger, NamedTrigger,
+    Identifier
 )
 from dsl_parser import Parser, parse, ParseError
 from dsl_converter import ast_to_dict, convert_dsl_source
@@ -1293,7 +1294,8 @@ class TestWhitespaceTolerance:
         """)
         action = schema.actors[0].transitions[0].actions[0]
         assert isinstance(action, SendAction)
-        assert action.target == "provider"
+        assert isinstance(action.target, Identifier)
+        assert action.target.name == "provider"
         assert action.message == "LOCK_INTENT"
 
     def test_send_action_multiline(self):
@@ -1312,7 +1314,8 @@ class TestWhitespaceTolerance:
         """)
         action = schema.actors[0].transitions[0].actions[0]
         assert isinstance(action, SendAction)
-        assert action.target == "provider"
+        assert isinstance(action.target, Identifier)
+        assert action.target.name == "provider"
         assert action.message == "LOCK_INTENT"
 
     def test_broadcast_action_with_whitespace(self):
