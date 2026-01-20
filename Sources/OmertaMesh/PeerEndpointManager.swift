@@ -18,7 +18,10 @@ public struct MachineEndpoints: Codable, Sendable {
         self.lastActivity = lastActivity
     }
 
-    public var bestEndpoint: String? { endpoints.first }
+    /// Best endpoint - prefers IPv6 if available, otherwise first available
+    public var bestEndpoint: String? {
+        EndpointUtils.preferredEndpoint(from: endpoints)
+    }
 
     public var isStale: Bool {
         Date().timeIntervalSince(lastActivity) > 86400  // 24 hours
@@ -237,13 +240,13 @@ public actor PeerEndpointManager {
     }
 
     /// Get the best endpoint for a specific machine
-    /// Returns nil if no valid endpoints
+    /// Returns nil if no valid endpoints. Prefers IPv6 if available.
     public func getBestEndpoint(peerId: PeerId, machineId: MachineId) -> String? {
-        getEndpoints(peerId: peerId, machineId: machineId).first
+        EndpointUtils.preferredEndpoint(from: getEndpoints(peerId: peerId, machineId: machineId))
     }
 
     /// Get all endpoints for all machines with this peerId (for broadcast)
-    /// Filters out invalid endpoints
+    /// Filters out invalid endpoints. Sorted with IPv6 first.
     public func getAllEndpoints(peerId: PeerId) -> [String] {
         var endpoints: [String] = []
         for (key, machine) in machines {
@@ -255,7 +258,9 @@ public actor PeerEndpointManager {
         let validEndpoints = EndpointValidator.filterValid(endpoints, mode: validationMode)
         // Deduplicate while preserving order
         var seen = Set<String>()
-        return validEndpoints.filter { seen.insert($0).inserted }
+        let deduped = validEndpoints.filter { seen.insert($0).inserted }
+        // Sort with IPv6 first
+        return EndpointUtils.sortPreferringIPv6(deduped)
     }
 
     /// Get all machines with this peerId
