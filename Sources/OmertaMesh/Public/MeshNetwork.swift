@@ -691,6 +691,8 @@ public actor MeshNetwork {
 
         logger.info("Connecting to \(config.bootstrapPeers.count) bootstrap peer(s): \(config.bootstrapPeers)")
 
+        // First, add all bootstrap peer endpoints
+        var bootstrapPeerIds: [PeerId] = []
         for peer in config.bootstrapPeers {
             // Parse peer as "peerId@endpoint" or just "endpoint"
             let parts = peer.split(separator: "@", maxSplits: 1)
@@ -706,14 +708,18 @@ public actor MeshNetwork {
                     endpoint: endpoint,
                     viaBootstrap: true
                 ))
-
-                // Send ping to bootstrap peer (public key is embedded in message)
-                // This establishes the connection and gets peer list via recentPeers
-                logger.info("Bootstrap: sending ping to \(endpoint)")
-                await meshNode?.requestPeers()
+                bootstrapPeerIds.append(bootstrapPeerId)
             } else {
                 logger.warning("Bootstrap: invalid peer format '\(peer)' - expected peerId@endpoint")
             }
+        }
+
+        // Send ping to each bootstrap peer using sendPing which establishes keepalive
+        // This is done in parallel since sendPing handles its own timeout
+        for peerId in bootstrapPeerIds {
+            logger.info("Bootstrap: sending ping to \(peerId.prefix(16))...")
+            // sendPing uses sendPingWithDetails which adds to keepalive monitoring on success
+            _ = await meshNode?.sendPing(to: peerId)
         }
     }
 }

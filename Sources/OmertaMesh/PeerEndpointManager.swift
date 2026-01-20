@@ -263,9 +263,22 @@ public actor PeerEndpointManager {
         machines.values.filter { $0.peerId == peerId }
     }
 
-    /// Get all known peer IDs
+    /// Get all known peer IDs, ordered by most recent activity first
+    /// This ensures gossip prioritizes recently active peers
     public var allPeerIds: [PeerId] {
-        Array(Set(machines.values.map { $0.peerId }))
+        // Group machines by peerId and get max lastActivity for each
+        var peerActivity: [PeerId: Date] = [:]
+        for machine in machines.values {
+            if let existing = peerActivity[machine.peerId] {
+                if machine.lastActivity > existing {
+                    peerActivity[machine.peerId] = machine.lastActivity
+                }
+            } else {
+                peerActivity[machine.peerId] = machine.lastActivity
+            }
+        }
+        // Sort by most recent activity first
+        return peerActivity.sorted { $0.value > $1.value }.map { $0.key }
     }
 
     /// Check if we have any endpoints for a peer

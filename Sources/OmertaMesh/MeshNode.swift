@@ -634,7 +634,7 @@ public actor MeshNode {
 
         case .pong(let recentPeers, let yourEndpoint, let theirNATType):
             // Pong sender is already recorded in handleIncomingData via endpointManager.recordMessageReceived
-            logger.info("Received pong from: \(peerId.prefix(8))... at \(endpoint)")
+            logger.info("Received pong from: \(peerId.prefix(8))... at \(endpoint) with \(recentPeers.count) peers")
 
             // Track sender's NAT type
             await endpointManager.updateNATType(peerId: peerId, natType: theirNATType)
@@ -648,8 +648,12 @@ public actor MeshNode {
                 let existingEndpoints = await endpointManager.getAllEndpoints(peerId: peerInfo.peerId)
                 let isNewlyLearnedPeer = existingEndpoints.isEmpty
 
-                if !existingEndpoints.contains(peerInfo.endpoint) {
-                    logger.info("Learned about peer \(peerInfo.peerId.prefix(16))... at \(peerInfo.endpoint) from pong")
+                if isNewlyLearnedPeer {
+                    logger.info("Learned NEW peer \(peerInfo.peerId.prefix(16))... at \(peerInfo.endpoint) from pong")
+                } else if !existingEndpoints.contains(peerInfo.endpoint) {
+                    logger.info("Learned NEW endpoint for \(peerInfo.peerId.prefix(16))...: \(peerInfo.endpoint) (had: \(existingEndpoints.first ?? "none"))")
+                } else {
+                    logger.debug("Refreshed endpoint for \(peerInfo.peerId.prefix(16))...: \(peerInfo.endpoint)")
                 }
 
                 // Record in endpointManager (handles deduplication and priority)
@@ -1315,15 +1319,37 @@ public actor MeshNode {
         let startTime = Date()
         do {
             let response = try await sendAndReceive(ping, to: endpoint, timeout: timeout)
-            if case .pong(let receivedPeers, _, _) = response {
+            if case .pong(let receivedPeers, let yourEndpoint, let theirNATType) = response {
                 let latencyMs = Int(Date().timeIntervalSince(startTime) * 1000)
-                logger.debug("sendPing: Got pong from \(targetPeerId) in \(latencyMs)ms")
+                logger.info("Received pong from \(targetPeerId.prefix(8))... with \(receivedPeers.count) peers, ourEndpoint=\(yourEndpoint)")
 
-                // Find new peers (ones we didn't know about)
+                // Update our observed endpoint for NAT prediction
+                await updateObservedEndpoint(yourEndpoint, reportedBy: targetPeerId)
+
+                // Track sender's NAT type
+                await endpointManager.updateNATType(peerId: targetPeerId, natType: theirNATType)
+
+                // Learn new peers from gossip
                 var newPeers: [PeerEndpointInfo] = []
-                for peerInfo in receivedPeers {
+                for peerInfo in receivedPeers where peerInfo.peerId != identity.peerId {
                     let existingEndpoints = await endpointManager.getAllEndpoints(peerId: peerInfo.peerId)
-                    if !existingEndpoints.contains(peerInfo.endpoint) && peerInfo.peerId != identity.peerId {
+                    let isNewlyLearnedPeer = existingEndpoints.isEmpty
+
+                    // Record this peer's endpoint
+                    await endpointManager.recordMessageReceived(
+                        from: peerInfo.peerId,
+                        machineId: peerInfo.machineId,
+                        endpoint: peerInfo.endpoint
+                    )
+
+                    // Track their NAT type from gossip
+                    await endpointManager.updateNATType(peerId: peerInfo.peerId, natType: peerInfo.natType)
+
+                    if isNewlyLearnedPeer {
+                        logger.info("Learned NEW peer \(peerInfo.peerId.prefix(16))... at \(peerInfo.endpoint) from pong")
+                        newPeers.append(peerInfo)
+                    } else if !existingEndpoints.contains(peerInfo.endpoint) {
+                        logger.info("Learned NEW endpoint for \(peerInfo.peerId.prefix(16))...: \(peerInfo.endpoint) (had: \(existingEndpoints.first ?? "none"))")
                         newPeers.append(peerInfo)
                     }
                 }
