@@ -179,8 +179,12 @@ class DSLTransformer(Transformer):
     def generic_type(self, name, *type_args):
         name_str = str(name)
         if name_str.lower() == "list":
+            if len(type_args) != 1:
+                raise ValueError(f"list<> requires exactly 1 type argument, got {len(type_args)}")
             return ListType(element_type=type_args[0])
         elif name_str.lower() == "map":
+            if len(type_args) != 2:
+                raise ValueError(f"map<> requires exactly 2 type arguments, got {len(type_args)}")
             return MapType(key_type=type_args[0], value_type=type_args[1])
         else:
             # Generic type we don't specially handle

@@ -2781,6 +2781,16 @@ class TestParserValidation:
             )
             """)
 
+    def test_map_requires_two_type_args(self):
+        """map<> requires exactly 2 type arguments."""
+        with pytest.raises(Exception):
+            parse("function f() -> map<uint> ( return {} )")
+
+    def test_list_requires_one_type_arg(self):
+        """list<> requires exactly 1 type argument."""
+        with pytest.raises(Exception):
+            parse("function f() -> list<uint, string> ( return [] )")
+
 
 class TestSemanticIssues:
     """Tests documenting semantic issues the parser accepts (by design).
