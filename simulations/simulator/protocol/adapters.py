@@ -20,8 +20,8 @@ from typing import Any, Dict, List, Optional
 from ..agents.base import Agent, AgentContext
 from ..engine import Action, Message
 
-# Import protocol actors
-from ...transactions.escrow_lock import (
+# Import protocol actors from generated code
+from ...transactions.escrow_lock_generated import (
     Actor as ProtocolActor,
     Consumer, Provider, Witness,
     ConsumerState, ProviderState, WitnessState,
@@ -196,8 +196,18 @@ class WitnessAgent(ProtocolAgent):
             raise TypeError("WitnessAgent requires a Witness protocol actor")
 
     def set_cached_chain(self, peer_id: str, chain_data: Dict[str, Any]):
-        """Set cached chain data for a peer."""
-        self.protocol_actor.cached_chains[peer_id] = chain_data
+        """Set cached chain data for a peer.
+
+        Updates both cached_chains (for chain data) and peer_balances (for balance lookup).
+        """
+        cached_chains = self.protocol_actor.load("cached_chains", {})
+        cached_chains[peer_id] = chain_data
+        self.protocol_actor.store("cached_chains", cached_chains)
+        # Also update peer_balances for generated code compatibility
+        peer_balances = self.protocol_actor.load("peer_balances", {})
+        if "balance" in chain_data:
+            peer_balances[peer_id] = chain_data["balance"]
+            self.protocol_actor.store("peer_balances", peer_balances)
 
     @property
     def is_escrow_active(self) -> bool:
@@ -220,7 +230,6 @@ def create_protocol_agent(
     agent_id: str,
     role: str,
     chain: Chain,
-    network: Any = None,
 ) -> ProtocolAgent:
     """
     Factory function to create the appropriate protocol agent.
@@ -229,7 +238,6 @@ def create_protocol_agent(
         agent_id: Unique identifier for the agent
         role: One of "consumer", "provider", "witness"
         chain: The agent's local chain
-        network: Optional network reference (needed for provider)
 
     Returns:
         The appropriate ProtocolAgent subclass
@@ -241,7 +249,7 @@ def create_protocol_agent(
         return ConsumerAgent(agent_id=agent_id, protocol_actor=actor)
 
     elif role == "provider":
-        actor = Provider(peer_id=agent_id, chain=chain, network=network)
+        actor = Provider(peer_id=agent_id, chain=chain)
         return ProviderAgent(agent_id=agent_id, protocol_actor=actor)
 
     elif role == "witness":

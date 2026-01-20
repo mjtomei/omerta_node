@@ -46,7 +46,7 @@ from simulations.simulator.protocol.setup import (
     infer_roles_from_trace,
 )
 from simulations.chain.primitives import Chain
-from simulations.transactions.escrow_lock import (
+from simulations.transactions.escrow_lock_generated import (
     Consumer, Provider, Witness,
     ConsumerState, ProviderState, WitnessState,
 )
@@ -183,7 +183,7 @@ class TestProtocolAdapters:
 
         agent.set_cached_chain("consumer", {"balance": 100.0, "head_hash": "abc123"})
 
-        assert agent.protocol_actor.cached_chains["consumer"]["balance"] == 100.0
+        assert agent.protocol_actor.load("cached_chains", {})["consumer"]["balance"] == 100.0
 
 
 # =============================================================================

@@ -140,6 +140,10 @@ class Actor:
         self.state_history.append((self.current_time, new_state))
         self.store('state_entered_at', self.current_time)
 
+    def in_state(self, state_name: str) -> bool:
+        """Check if actor is in a named state."""
+        return self.state.name == state_name
+
     def tick(self, current_time: float) -> List[Message]:
         raise NotImplementedError
 
@@ -329,13 +333,17 @@ class Provider(Actor):
 
         return outgoing
 
-    def _build_vm_ready_payload(self) -> Dict[str, Any]:
-        """Build payload for VM_READY message."""
+    def _build_vm_cancelled_payload(self) -> Dict[str, Any]:
+        """Build payload for VM_CANCELLED message."""
         payload = {
             "session_id": self._serialize_value(self.load("session_id")),
-            "vm_info": self._serialize_value(self.load("vm_info")),
+            "provider": self._serialize_value(self.load("provider")),
+            "cancelled_at": self._serialize_value(self.load("cancelled_at")),
+            "reason": self._serialize_value(self.load("reason")),
+            "actual_duration_seconds": self._serialize_value(self.load("actual_duration_seconds")),
             "timestamp": self.current_time,
         }
+        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
     def _build_session_terminated_payload(self) -> Dict[str, Any]:
@@ -363,17 +371,13 @@ class Provider(Actor):
         payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
-    def _build_vm_cancelled_payload(self) -> Dict[str, Any]:
-        """Build payload for VM_CANCELLED message."""
+    def _build_vm_ready_payload(self) -> Dict[str, Any]:
+        """Build payload for VM_READY message."""
         payload = {
             "session_id": self._serialize_value(self.load("session_id")),
-            "provider": self._serialize_value(self.load("provider")),
-            "cancelled_at": self._serialize_value(self.load("cancelled_at")),
-            "reason": self._serialize_value(self.load("reason")),
-            "actual_duration_seconds": self._serialize_value(self.load("actual_duration_seconds")),
+            "vm_info": self._serialize_value(self.load("vm_info")),
             "timestamp": self.current_time,
         }
-        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
     def _check_LENGTH_connectivity_votes_gte_LENGTH_witnesses_and_count_pos(self) -> bool:
@@ -402,6 +406,51 @@ class Provider(Actor):
         # Schema: {session_id: LOAD(session_id), provider: peer_id, cancelled_...
         return {"session_id": self.load("session_id"), "provider": self.peer_id, "cancelled_at": self.load("cancelled_at"), "reason": self.load("termination_reason"), "actual_duration_seconds": self.load("cancelled_at") - self.load("vm_allocated_at"), "timestamp": self.current_time}
 
+    def _read_chain(self, chain: Any, query: str) -> Any:
+        """READ: Read from a chain (own or cached peer chain)."""
+        if chain == 'my_chain' or chain is self.chain:
+            chain_obj = self.chain
+        elif isinstance(chain, str):
+            # It's a peer_id - look up in cached_chains
+            cached = self.load('cached_chains', {}).get(chain)
+            if cached:
+                # Return from cache based on query
+                if query == 'head' or query == 'head_hash':
+                    return cached.get('head_hash')
+                elif query == 'balance':
+                    return cached.get('balance', 0)
+                return cached.get(query)
+            # Fall back to chain's peer hash records
+            if query == 'head' or query == 'head_hash':
+                peer_block = self.chain.get_peer_hash(chain)
+                if peer_block:
+                    return peer_block.payload.get('hash')
+            return None
+        else:
+            chain_obj = chain
+        # Query the chain object
+        if query == 'head' or query == 'head_hash':
+            return chain_obj.head_hash if hasattr(chain_obj, 'head_hash') else None
+        elif query == 'balance':
+            return getattr(chain_obj, 'balance', 0)
+        elif hasattr(chain_obj, query):
+            return getattr(chain_obj, query)
+        elif hasattr(chain_obj, 'get_' + query):
+            return getattr(chain_obj, 'get_' + query)()
+        return None
+
+    def _chain_segment(self, chain: Any, target_hash: str) -> List[dict]:
+        """CHAIN_SEGMENT: Extract chain segment up to target hash."""
+        if chain == 'my_chain' or chain is self.chain:
+            chain_obj = self.chain
+        elif hasattr(chain, 'to_segment'):
+            chain_obj = chain
+        else:
+            return []
+        if hasattr(chain_obj, 'to_segment'):
+            return chain_obj.to_segment(target_hash)
+        return []
+
     def _verify_chain_segment(self, segment: List[dict]) -> bool:
         """VERIFY_CHAIN_SEGMENT: Verify a chain segment is valid."""
         if not segment:
@@ -428,157 +477,12 @@ class Provider(Actor):
     def _chain_state_at(self, chain_or_segment: Any, target_hash: str) -> Optional[Dict[str, Any]]:
         """CHAIN_STATE_AT: Extract chain state at a specific block hash."""
         if isinstance(chain_or_segment, list):
-            # It's a segment - find the block and build state
-            target_idx = None
-            for i, block in enumerate(chain_or_segment):
-                if block.get('block_hash') == target_hash:
-                    target_idx = i
-                    break
-            if target_idx is None:
-                return None
-            # Build state from blocks up to target
-            state = {
-                "known_peers": set(),
-                "peer_hashes": {},
-                "balance_locks": [],
-                "block_hash": target_hash,
-                "sequence": target_idx,
-            }
-            for block in chain_or_segment[:target_idx + 1]:
-                if block.get('block_type') == 'peer_hash':
-                    peer = block.get('payload', {}).get('peer')
-                    if peer:
-                        state["known_peers"].add(peer)
-                        state["peer_hashes"][peer] = block.get("payload", {}).get("hash")
-                elif block.get('block_type') == 'balance_lock':
-                    state["balance_locks"].append(block.get("payload", {}))
-            state["known_peers"] = list(state["known_peers"])
-            return state
+            # It's a segment - delegate to Chain.state_from_segment
+            return Chain.state_from_segment(chain_or_segment, target_hash)
         elif hasattr(chain_or_segment, 'get_state_at'):
             # It's a Chain object
             return chain_or_segment.get_state_at(target_hash)
         return None
-
-    def _select_witnesses(
-        self,
-        seed: bytes,
-        chain_state: dict,
-        count: int = WITNESS_COUNT,
-        exclude: List[str] = None,
-        min_high_trust: int = MIN_HIGH_TRUST_WITNESSES,
-        max_prior_interactions: int = MAX_PRIOR_INTERACTIONS,
-        interaction_with: str = None,
-    ) -> List[str]:
-        """SELECT_WITNESSES: Deterministically select witnesses from seed and chain state."""
-        import random as _random
-        exclude = exclude or []
-        # Always exclude self, consumer, and provider from witness selection
-        auto_exclude = {self.peer_id, self.load('consumer'), self.load('provider')}
-        exclude = set(exclude) | {x for x in auto_exclude if x}
-        
-        # Get candidates from chain state
-        known_peers = chain_state.get("known_peers", [])
-        candidates = [p for p in known_peers if p not in exclude]
-        
-        if not candidates:
-            return []
-        
-        # Sort deterministically
-        candidates = sorted(candidates)
-        
-        # Filter by interaction count if available
-        if interaction_with and "interaction_counts" in chain_state:
-            counts = chain_state["interaction_counts"]
-            candidates = [
-                c for c in candidates
-                if counts.get(c, 0) <= max_prior_interactions
-            ]
-        
-        # Separate by trust level
-        trust_scores = chain_state.get("trust_scores", {})
-        HIGH_TRUST_THRESHOLD = 1.0
-        
-        high_trust = sorted([c for c in candidates if trust_scores.get(c, 0) >= HIGH_TRUST_THRESHOLD])
-        low_trust = sorted([c for c in candidates if trust_scores.get(c, 0) < HIGH_TRUST_THRESHOLD])
-        
-        # Seeded selection
-        rng = _random.Random(seed)
-        
-        selected = []
-        
-        # Select required high-trust witnesses
-        if high_trust:
-            ht_sample = min(min_high_trust, len(high_trust))
-            selected.extend(rng.sample(high_trust, ht_sample))
-        
-        # Fill remaining slots from all candidates
-        remaining = [c for c in candidates if c not in selected]
-        needed = count - len(selected)
-        if remaining and needed > 0:
-            selected.extend(rng.sample(remaining, min(needed, len(remaining))))
-        
-        return selected
-
-    def _verify_witness_selection(
-        self,
-        proposed_witnesses: List[str],
-        chain_state: dict,
-        session_id: Any,
-        provider_nonce: bytes,
-        consumer_nonce: bytes,
-    ) -> bool:
-        """VERIFY_WITNESS_SELECTION: Verify that proposed witnesses were correctly selected."""
-        # Recompute the seed and selection
-        seed = hash_data(self._to_hashable(session_id, provider_nonce, consumer_nonce))
-        expected = self._select_witnesses(seed, chain_state)
-        # Compare - order matters for deterministic selection
-        return set(proposed_witnesses) == set(expected)
-
-    def _validate_lock_result(
-        self,
-        result: dict,
-        expected_session_id: str,
-        expected_amount: float,
-    ) -> bool:
-        """VALIDATE_LOCK_RESULT: Validate a lock result matches expected values and has ACCEPTED status."""
-        if not result:
-            return False
-        # Check session_id matches
-        if result.get("session_id") != expected_session_id:
-            return False
-        # Check amount matches
-        if result.get("amount") != expected_amount:
-            return False
-        # Check status is ACCEPTED (as string from serialization)
-        status = result.get("status")
-        if status not in ("ACCEPTED", LockStatus.ACCEPTED):
-            return False
-        # Check we have witness signatures (at least one)
-        signatures = result.get("witness_signatures", [])
-        if not signatures:
-            return False
-        return True
-
-    def _validate_topup_result(
-        self,
-        result: dict,
-        expected_session_id: str,
-        expected_additional_amount: float,
-    ) -> bool:
-        """VALIDATE_TOPUP_RESULT: Validate a top-up result matches expected values."""
-        if not result:
-            return False
-        # Check session_id matches
-        if result.get("session_id") != expected_session_id:
-            return False
-        # Check additional_amount matches
-        if result.get("additional_amount") != expected_additional_amount:
-            return False
-        # Check we have witness signatures (at least one)
-        signatures = result.get("witness_signatures", [])
-        if not signatures:
-            return False
-        return True
 
     def _seeded_rng(self, seed: bytes) -> Any:
         """SEEDED_RNG: Create a seeded random number generator."""
@@ -591,10 +495,6 @@ class Provider(Actor):
             return []
         return rng.sample(lst, min(n, len(lst)))
 
-    def _remove(self, lst: list, item: Any) -> list:
-        """REMOVE: Remove item from list and return new list."""
-        return [x for x in lst if x != item] if lst else []
-
     def _sort(self, lst: list, key_fn: str = None) -> list:
         """SORT: Sort list by key."""
         return sorted(lst) if lst else []
@@ -603,34 +503,68 @@ class Provider(Actor):
         """ABORT: Exit state machine with error."""
         raise RuntimeError(f"ABORT: {reason}")
 
+    def _concat(self, a: list, b: list) -> list:
+        """CONCAT: Concatenate two lists."""
+        return (a or []) + (b or [])
+
+    def _has_key(self, d: dict, key: Any) -> bool:
+        """HAS_KEY: Check if dict contains key (null-safe)."""
+        if d is None:
+            return False
+        return key in d if isinstance(d, dict) else False
+
     def _COMPUTE_CONSENSUS(self, verdicts: List[str], threshold: int) -> str:
         """Compute COMPUTE_CONSENSUS."""
-        # TODO: Implement - accept_count = LENGTH (FILTER (verdicts, v = > v =...
-        return None
+        accept_count = len ([v for v in verdicts if v == self.load("ACCEPT")])
+        if accept_count >= threshold:
+            return "ACCEPT"
+        else:
+            return "REJECT"
 
     def _EXTRACT_FIELD(self, records: List[Any], field: str) -> List[Any]:
         """Compute EXTRACT_FIELD."""
-        # TODO: Implement - RETURN MAP (records, r = > r.{field})...
-        return None
+        return [r.get(field) for r in records]
 
     def _COUNT_MATCHING(self, items: List[Any], predicate: Any) -> int:
         """Compute COUNT_MATCHING."""
-        # TODO: Implement - RETURN LENGTH (FILTER (items, predicate))...
-        return None
+        return len (self._FILTER (items, predicate))
 
     def _CONTAINS(self, items: List[Any], item: Any) -> bool:
         """Compute CONTAINS."""
-        # TODO: Implement - RETURN LENGTH (FILTER (items, x = > x == item))> 0...
-        return None
+        return len ([x for x in items if x == item]) > 0
+
+    def _REMOVE(self, items: List[Any], item: Any) -> List[Any]:
+        """Compute REMOVE."""
+        return [x for x in items if x != item]
+
+    def _SET_EQUALS(self, a: List[Any], b: List[Any]) -> bool:
+        """Compute SET_EQUALS."""
+        a_not_in_b = len ([x for x in a if not self._CONTAINS (b, x)])
+        b_not_in_a = len ([x for x in b if not self._CONTAINS (a, x)])
+        return a_not_in_b == 0 and b_not_in_a == 0
+
+    def _MIN(self, a: int, b: int) -> int:
+        """Compute MIN."""
+        return (a if a < b else b)
+
+    def _MAX(self, a: int, b: int) -> int:
+        """Compute MAX."""
+        return (a if a > b else b)
+
+    def _GET(self, d: Dict[str, Any], key: str, default: Any) -> Any:
+        """Compute GET."""
+        return (d.get(key) if self._has_key (d, key) else default)
 
     def _count_positive_votes(self, votes: List[Dict[str, Any]]) -> int:
         """Compute count_positive_votes."""
-        return len([v for v in votes if v.get('can_reach_vm') == True])
+        return len ([v for v in votes if v.get("can_reach_vm")== True])
 
     def _build_cabal_votes_map(self, votes: List[Dict[str, Any]]) -> Dict[str, bool]:
         """Compute build_cabal_votes_map."""
-        # TODO: Implement - result = {} FOR v IN votes: result [ v.witness ] =...
-        return None
+        result = {}
+        for v in votes:
+            pass
+        return result
 
     def _check_vm_connectivity(self, vm_endpoint: str) -> bool:
         """Compute check_vm_connectivity."""
@@ -666,7 +600,6 @@ class Witness(Actor):
     """Verifies VM accessibility, monitors session, creates attestation"""
 
     state: WitnessState = WitnessState.AWAITING_ALLOCATION
-    cached_chains: Dict[str, dict] = field(default_factory=dict)
 
     def setup_session(self, session_id: str, consumer: str, provider: str, other_witnesses: List[str]):
         """Initialize witness with session info after escrow lock"""
@@ -903,16 +836,12 @@ class Witness(Actor):
 
         return outgoing
 
-    def _build_vm_connectivity_vote_payload(self) -> Dict[str, Any]:
-        """Build payload for VM_CONNECTIVITY_VOTE message."""
+    def _build_attestation_result_payload(self) -> Dict[str, Any]:
+        """Build payload for ATTESTATION_RESULT message."""
         payload = {
-            "session_id": self._serialize_value(self.load("session_id")),
-            "witness": self._serialize_value(self.load("witness")),
-            "can_reach_vm": self._serialize_value(self.load("can_reach_vm")),
-            "can_see_consumer_connected": self._serialize_value(self.load("can_see_consumer_connected")),
+            "attestation": self._serialize_value(self.load("attestation")),
             "timestamp": self.current_time,
         }
-        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
     def _build_abort_vote_payload(self) -> Dict[str, Any]:
@@ -926,12 +855,16 @@ class Witness(Actor):
         payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
-    def _build_attestation_result_payload(self) -> Dict[str, Any]:
-        """Build payload for ATTESTATION_RESULT message."""
+    def _build_vm_connectivity_vote_payload(self) -> Dict[str, Any]:
+        """Build payload for VM_CONNECTIVITY_VOTE message."""
         payload = {
-            "attestation": self._serialize_value(self.load("attestation")),
+            "session_id": self._serialize_value(self.load("session_id")),
+            "witness": self._serialize_value(self.load("witness")),
+            "can_reach_vm": self._serialize_value(self.load("can_reach_vm")),
+            "can_see_consumer_connected": self._serialize_value(self.load("can_see_consumer_connected")),
             "timestamp": self.current_time,
         }
+        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
     def _build_attestation_share_payload(self) -> Dict[str, Any]:
@@ -960,11 +893,11 @@ class Witness(Actor):
 
     def _check_LOAD_misuse_accusation_evidence_neq(self) -> bool:
         # Schema: LOAD (misuse_accusation).evidence != ""...
-        return self.load("misuse_accusation").self.load("evidence") != ""
+        return self.load("misuse_accusation").get("evidence") != ""
 
     def _check_LOAD_misuse_accusation_evidence_eq(self) -> bool:
         # Schema: LOAD (misuse_accusation).evidence == ""...
-        return self.load("misuse_accusation").self.load("evidence") == ""
+        return self.load("misuse_accusation").get("evidence") == ""
 
     def _check_LENGTH_abort_votes_LENGTH_other_witnesses_1_gte_ABORT_THRESH(self) -> bool:
         # Schema: LENGTH (abort_votes) / (LENGTH (other_witnesses) + 1) >= ABO...
@@ -1044,6 +977,51 @@ class Witness(Actor):
             "timestamp": self.current_time,
         }
 
+    def _read_chain(self, chain: Any, query: str) -> Any:
+        """READ: Read from a chain (own or cached peer chain)."""
+        if chain == 'my_chain' or chain is self.chain:
+            chain_obj = self.chain
+        elif isinstance(chain, str):
+            # It's a peer_id - look up in cached_chains
+            cached = self.load('cached_chains', {}).get(chain)
+            if cached:
+                # Return from cache based on query
+                if query == 'head' or query == 'head_hash':
+                    return cached.get('head_hash')
+                elif query == 'balance':
+                    return cached.get('balance', 0)
+                return cached.get(query)
+            # Fall back to chain's peer hash records
+            if query == 'head' or query == 'head_hash':
+                peer_block = self.chain.get_peer_hash(chain)
+                if peer_block:
+                    return peer_block.payload.get('hash')
+            return None
+        else:
+            chain_obj = chain
+        # Query the chain object
+        if query == 'head' or query == 'head_hash':
+            return chain_obj.head_hash if hasattr(chain_obj, 'head_hash') else None
+        elif query == 'balance':
+            return getattr(chain_obj, 'balance', 0)
+        elif hasattr(chain_obj, query):
+            return getattr(chain_obj, query)
+        elif hasattr(chain_obj, 'get_' + query):
+            return getattr(chain_obj, 'get_' + query)()
+        return None
+
+    def _chain_segment(self, chain: Any, target_hash: str) -> List[dict]:
+        """CHAIN_SEGMENT: Extract chain segment up to target hash."""
+        if chain == 'my_chain' or chain is self.chain:
+            chain_obj = self.chain
+        elif hasattr(chain, 'to_segment'):
+            chain_obj = chain
+        else:
+            return []
+        if hasattr(chain_obj, 'to_segment'):
+            return chain_obj.to_segment(target_hash)
+        return []
+
     def _verify_chain_segment(self, segment: List[dict]) -> bool:
         """VERIFY_CHAIN_SEGMENT: Verify a chain segment is valid."""
         if not segment:
@@ -1070,157 +1048,12 @@ class Witness(Actor):
     def _chain_state_at(self, chain_or_segment: Any, target_hash: str) -> Optional[Dict[str, Any]]:
         """CHAIN_STATE_AT: Extract chain state at a specific block hash."""
         if isinstance(chain_or_segment, list):
-            # It's a segment - find the block and build state
-            target_idx = None
-            for i, block in enumerate(chain_or_segment):
-                if block.get('block_hash') == target_hash:
-                    target_idx = i
-                    break
-            if target_idx is None:
-                return None
-            # Build state from blocks up to target
-            state = {
-                "known_peers": set(),
-                "peer_hashes": {},
-                "balance_locks": [],
-                "block_hash": target_hash,
-                "sequence": target_idx,
-            }
-            for block in chain_or_segment[:target_idx + 1]:
-                if block.get('block_type') == 'peer_hash':
-                    peer = block.get('payload', {}).get('peer')
-                    if peer:
-                        state["known_peers"].add(peer)
-                        state["peer_hashes"][peer] = block.get("payload", {}).get("hash")
-                elif block.get('block_type') == 'balance_lock':
-                    state["balance_locks"].append(block.get("payload", {}))
-            state["known_peers"] = list(state["known_peers"])
-            return state
+            # It's a segment - delegate to Chain.state_from_segment
+            return Chain.state_from_segment(chain_or_segment, target_hash)
         elif hasattr(chain_or_segment, 'get_state_at'):
             # It's a Chain object
             return chain_or_segment.get_state_at(target_hash)
         return None
-
-    def _select_witnesses(
-        self,
-        seed: bytes,
-        chain_state: dict,
-        count: int = WITNESS_COUNT,
-        exclude: List[str] = None,
-        min_high_trust: int = MIN_HIGH_TRUST_WITNESSES,
-        max_prior_interactions: int = MAX_PRIOR_INTERACTIONS,
-        interaction_with: str = None,
-    ) -> List[str]:
-        """SELECT_WITNESSES: Deterministically select witnesses from seed and chain state."""
-        import random as _random
-        exclude = exclude or []
-        # Always exclude self, consumer, and provider from witness selection
-        auto_exclude = {self.peer_id, self.load('consumer'), self.load('provider')}
-        exclude = set(exclude) | {x for x in auto_exclude if x}
-        
-        # Get candidates from chain state
-        known_peers = chain_state.get("known_peers", [])
-        candidates = [p for p in known_peers if p not in exclude]
-        
-        if not candidates:
-            return []
-        
-        # Sort deterministically
-        candidates = sorted(candidates)
-        
-        # Filter by interaction count if available
-        if interaction_with and "interaction_counts" in chain_state:
-            counts = chain_state["interaction_counts"]
-            candidates = [
-                c for c in candidates
-                if counts.get(c, 0) <= max_prior_interactions
-            ]
-        
-        # Separate by trust level
-        trust_scores = chain_state.get("trust_scores", {})
-        HIGH_TRUST_THRESHOLD = 1.0
-        
-        high_trust = sorted([c for c in candidates if trust_scores.get(c, 0) >= HIGH_TRUST_THRESHOLD])
-        low_trust = sorted([c for c in candidates if trust_scores.get(c, 0) < HIGH_TRUST_THRESHOLD])
-        
-        # Seeded selection
-        rng = _random.Random(seed)
-        
-        selected = []
-        
-        # Select required high-trust witnesses
-        if high_trust:
-            ht_sample = min(min_high_trust, len(high_trust))
-            selected.extend(rng.sample(high_trust, ht_sample))
-        
-        # Fill remaining slots from all candidates
-        remaining = [c for c in candidates if c not in selected]
-        needed = count - len(selected)
-        if remaining and needed > 0:
-            selected.extend(rng.sample(remaining, min(needed, len(remaining))))
-        
-        return selected
-
-    def _verify_witness_selection(
-        self,
-        proposed_witnesses: List[str],
-        chain_state: dict,
-        session_id: Any,
-        provider_nonce: bytes,
-        consumer_nonce: bytes,
-    ) -> bool:
-        """VERIFY_WITNESS_SELECTION: Verify that proposed witnesses were correctly selected."""
-        # Recompute the seed and selection
-        seed = hash_data(self._to_hashable(session_id, provider_nonce, consumer_nonce))
-        expected = self._select_witnesses(seed, chain_state)
-        # Compare - order matters for deterministic selection
-        return set(proposed_witnesses) == set(expected)
-
-    def _validate_lock_result(
-        self,
-        result: dict,
-        expected_session_id: str,
-        expected_amount: float,
-    ) -> bool:
-        """VALIDATE_LOCK_RESULT: Validate a lock result matches expected values and has ACCEPTED status."""
-        if not result:
-            return False
-        # Check session_id matches
-        if result.get("session_id") != expected_session_id:
-            return False
-        # Check amount matches
-        if result.get("amount") != expected_amount:
-            return False
-        # Check status is ACCEPTED (as string from serialization)
-        status = result.get("status")
-        if status not in ("ACCEPTED", LockStatus.ACCEPTED):
-            return False
-        # Check we have witness signatures (at least one)
-        signatures = result.get("witness_signatures", [])
-        if not signatures:
-            return False
-        return True
-
-    def _validate_topup_result(
-        self,
-        result: dict,
-        expected_session_id: str,
-        expected_additional_amount: float,
-    ) -> bool:
-        """VALIDATE_TOPUP_RESULT: Validate a top-up result matches expected values."""
-        if not result:
-            return False
-        # Check session_id matches
-        if result.get("session_id") != expected_session_id:
-            return False
-        # Check additional_amount matches
-        if result.get("additional_amount") != expected_additional_amount:
-            return False
-        # Check we have witness signatures (at least one)
-        signatures = result.get("witness_signatures", [])
-        if not signatures:
-            return False
-        return True
 
     def _seeded_rng(self, seed: bytes) -> Any:
         """SEEDED_RNG: Create a seeded random number generator."""
@@ -1233,10 +1066,6 @@ class Witness(Actor):
             return []
         return rng.sample(lst, min(n, len(lst)))
 
-    def _remove(self, lst: list, item: Any) -> list:
-        """REMOVE: Remove item from list and return new list."""
-        return [x for x in lst if x != item] if lst else []
-
     def _sort(self, lst: list, key_fn: str = None) -> list:
         """SORT: Sort list by key."""
         return sorted(lst) if lst else []
@@ -1245,94 +1074,68 @@ class Witness(Actor):
         """ABORT: Exit state machine with error."""
         raise RuntimeError(f"ABORT: {reason}")
 
-    def _compute_consensus(self, preliminaries: list) -> str:
-        """COMPUTE_CONSENSUS: Determine consensus from preliminary verdicts."""
-        # Start with witness's own verdict
-        my_verdict = self.load('verdict')
-        accept_count = 1 if my_verdict in ('ACCEPT', 'accept', WitnessVerdict.ACCEPT) else 0
-        reject_count = 1 - accept_count
-        # Count verdicts from other witnesses
-        for p in (preliminaries or []):
-            verdict = p.get('verdict') if isinstance(p, dict) else getattr(p, 'verdict', None)
-            if verdict in ('ACCEPT', WitnessVerdict.ACCEPT):
-                accept_count += 1
-            else:
-                reject_count += 1
-        # Need threshold for acceptance
-        if accept_count >= WITNESS_THRESHOLD:
-            return "ACCEPT"
-        return "REJECT"
+    def _concat(self, a: list, b: list) -> list:
+        """CONCAT: Concatenate two lists."""
+        return (a or []) + (b or [])
 
-    def _build_lock_result(self) -> Dict[str, Any]:
-        """BUILD_LOCK_RESULT: Build the final lock result structure."""
-        consensus = self.load('consensus_direction')
-        # Use enum for type checking but store name for JSON serialization
-        status_enum = LockStatus.ACCEPTED if consensus == 'ACCEPT' else LockStatus.REJECTED
-        # Extract signatures from collected votes
-        votes = self.load('votes') or []
-        signatures = [v.get('signature') for v in votes if v.get('signature')]
-        return {
-            "session_id": self.load("session_id"),
-            "consumer": self.load("consumer"),
-            "provider": self.load("provider"),
-            "amount": self.load("amount"),
-            "status": status_enum.name,  # Use string for JSON serialization
-            "observed_balance": self.load("observed_balance"),
-            "witnesses": self.load("witnesses"),
-            "witness_signatures": signatures,
-            "timestamp": self.current_time,
-        }
-
-    def _build_topup_result(self) -> Dict[str, Any]:
-        """BUILD_TOPUP_RESULT: Build the top-up result structure."""
-        topup_intent = self.load('topup_intent') or {}
-        # Extract signatures from collected votes
-        votes = self.load('topup_votes') or []
-        signatures = [v.get('signature') for v in votes if v.get('signature')]
-        # Add our own signature
-        my_signature = sign(self.chain.private_key, hash_data({'verdict': self.load('topup_verdict'), 'session_id': self.load('session_id')}))
-        signatures.append(my_signature)
-        return {
-            "session_id": self.load("session_id"),
-            "consumer": self.load("consumer"),
-            "provider": self.load("provider"),
-            "previous_total": self.load("total_escrowed"),
-            "additional_amount": topup_intent.get("additional_amount"),
-            "new_total": self.load("total_escrowed") + topup_intent.get("additional_amount", 0),
-            "observed_balance": self.load("topup_observed_balance"),
-            "witnesses": self.load("witnesses"),
-            "witness_signatures": signatures,
-            "timestamp": self.current_time,
-        }
+    def _has_key(self, d: dict, key: Any) -> bool:
+        """HAS_KEY: Check if dict contains key (null-safe)."""
+        if d is None:
+            return False
+        return key in d if isinstance(d, dict) else False
 
     def _COMPUTE_CONSENSUS(self, verdicts: List[str], threshold: int) -> str:
         """Compute COMPUTE_CONSENSUS."""
-        # TODO: Implement - accept_count = LENGTH (FILTER (verdicts, v = > v =...
-        return None
+        accept_count = len ([v for v in verdicts if v == self.load("ACCEPT")])
+        if accept_count >= threshold:
+            return "ACCEPT"
+        else:
+            return "REJECT"
 
     def _EXTRACT_FIELD(self, records: List[Any], field: str) -> List[Any]:
         """Compute EXTRACT_FIELD."""
-        # TODO: Implement - RETURN MAP (records, r = > r.{field})...
-        return None
+        return [r.get(field) for r in records]
 
     def _COUNT_MATCHING(self, items: List[Any], predicate: Any) -> int:
         """Compute COUNT_MATCHING."""
-        # TODO: Implement - RETURN LENGTH (FILTER (items, predicate))...
-        return None
+        return len (self._FILTER (items, predicate))
 
     def _CONTAINS(self, items: List[Any], item: Any) -> bool:
         """Compute CONTAINS."""
-        # TODO: Implement - RETURN LENGTH (FILTER (items, x = > x == item))> 0...
-        return None
+        return len ([x for x in items if x == item]) > 0
+
+    def _REMOVE(self, items: List[Any], item: Any) -> List[Any]:
+        """Compute REMOVE."""
+        return [x for x in items if x != item]
+
+    def _SET_EQUALS(self, a: List[Any], b: List[Any]) -> bool:
+        """Compute SET_EQUALS."""
+        a_not_in_b = len ([x for x in a if not self._CONTAINS (b, x)])
+        b_not_in_a = len ([x for x in b if not self._CONTAINS (a, x)])
+        return a_not_in_b == 0 and b_not_in_a == 0
+
+    def _MIN(self, a: int, b: int) -> int:
+        """Compute MIN."""
+        return (a if a < b else b)
+
+    def _MAX(self, a: int, b: int) -> int:
+        """Compute MAX."""
+        return (a if a > b else b)
+
+    def _GET(self, d: Dict[str, Any], key: str, default: Any) -> Any:
+        """Compute GET."""
+        return (d.get(key) if self._has_key (d, key) else default)
 
     def _count_positive_votes(self, votes: List[Dict[str, Any]]) -> int:
         """Compute count_positive_votes."""
-        return len([v for v in votes if v.get('can_reach_vm') == True])
+        return len ([v for v in votes if v.get("can_reach_vm")== True])
 
     def _build_cabal_votes_map(self, votes: List[Dict[str, Any]]) -> Dict[str, bool]:
         """Compute build_cabal_votes_map."""
-        # TODO: Implement - result = {} FOR v IN votes: result [ v.witness ] =...
-        return None
+        result = {}
+        for v in votes:
+            pass
+        return result
 
     def _check_vm_connectivity(self, vm_endpoint: str) -> bool:
         """Compute check_vm_connectivity."""
@@ -1361,21 +1164,6 @@ class Consumer(Actor):
     """Connects to VM, uses service"""
 
     state: ConsumerState = ConsumerState.WAITING_FOR_VM
-
-    @property
-    def is_locked(self) -> bool:
-        """Check if consumer is in LOCKED state."""
-        return self.state == ConsumerState.LOCKED
-
-    @property
-    def is_failed(self) -> bool:
-        """Check if consumer is in FAILED state."""
-        return self.state == ConsumerState.FAILED
-
-    @property
-    def total_escrowed(self) -> float:
-        """Get total escrowed amount."""
-        return self.load("total_escrowed", 0.0)
 
     def setup_session(self, session_id: str, provider: str):
         """Initialize consumer with session info"""
@@ -1465,6 +1253,51 @@ class Consumer(Actor):
         payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
+    def _read_chain(self, chain: Any, query: str) -> Any:
+        """READ: Read from a chain (own or cached peer chain)."""
+        if chain == 'my_chain' or chain is self.chain:
+            chain_obj = self.chain
+        elif isinstance(chain, str):
+            # It's a peer_id - look up in cached_chains
+            cached = self.load('cached_chains', {}).get(chain)
+            if cached:
+                # Return from cache based on query
+                if query == 'head' or query == 'head_hash':
+                    return cached.get('head_hash')
+                elif query == 'balance':
+                    return cached.get('balance', 0)
+                return cached.get(query)
+            # Fall back to chain's peer hash records
+            if query == 'head' or query == 'head_hash':
+                peer_block = self.chain.get_peer_hash(chain)
+                if peer_block:
+                    return peer_block.payload.get('hash')
+            return None
+        else:
+            chain_obj = chain
+        # Query the chain object
+        if query == 'head' or query == 'head_hash':
+            return chain_obj.head_hash if hasattr(chain_obj, 'head_hash') else None
+        elif query == 'balance':
+            return getattr(chain_obj, 'balance', 0)
+        elif hasattr(chain_obj, query):
+            return getattr(chain_obj, query)
+        elif hasattr(chain_obj, 'get_' + query):
+            return getattr(chain_obj, 'get_' + query)()
+        return None
+
+    def _chain_segment(self, chain: Any, target_hash: str) -> List[dict]:
+        """CHAIN_SEGMENT: Extract chain segment up to target hash."""
+        if chain == 'my_chain' or chain is self.chain:
+            chain_obj = self.chain
+        elif hasattr(chain, 'to_segment'):
+            chain_obj = chain
+        else:
+            return []
+        if hasattr(chain_obj, 'to_segment'):
+            return chain_obj.to_segment(target_hash)
+        return []
+
     def _verify_chain_segment(self, segment: List[dict]) -> bool:
         """VERIFY_CHAIN_SEGMENT: Verify a chain segment is valid."""
         if not segment:
@@ -1491,157 +1324,12 @@ class Consumer(Actor):
     def _chain_state_at(self, chain_or_segment: Any, target_hash: str) -> Optional[Dict[str, Any]]:
         """CHAIN_STATE_AT: Extract chain state at a specific block hash."""
         if isinstance(chain_or_segment, list):
-            # It's a segment - find the block and build state
-            target_idx = None
-            for i, block in enumerate(chain_or_segment):
-                if block.get('block_hash') == target_hash:
-                    target_idx = i
-                    break
-            if target_idx is None:
-                return None
-            # Build state from blocks up to target
-            state = {
-                "known_peers": set(),
-                "peer_hashes": {},
-                "balance_locks": [],
-                "block_hash": target_hash,
-                "sequence": target_idx,
-            }
-            for block in chain_or_segment[:target_idx + 1]:
-                if block.get('block_type') == 'peer_hash':
-                    peer = block.get('payload', {}).get('peer')
-                    if peer:
-                        state["known_peers"].add(peer)
-                        state["peer_hashes"][peer] = block.get("payload", {}).get("hash")
-                elif block.get('block_type') == 'balance_lock':
-                    state["balance_locks"].append(block.get("payload", {}))
-            state["known_peers"] = list(state["known_peers"])
-            return state
+            # It's a segment - delegate to Chain.state_from_segment
+            return Chain.state_from_segment(chain_or_segment, target_hash)
         elif hasattr(chain_or_segment, 'get_state_at'):
             # It's a Chain object
             return chain_or_segment.get_state_at(target_hash)
         return None
-
-    def _select_witnesses(
-        self,
-        seed: bytes,
-        chain_state: dict,
-        count: int = WITNESS_COUNT,
-        exclude: List[str] = None,
-        min_high_trust: int = MIN_HIGH_TRUST_WITNESSES,
-        max_prior_interactions: int = MAX_PRIOR_INTERACTIONS,
-        interaction_with: str = None,
-    ) -> List[str]:
-        """SELECT_WITNESSES: Deterministically select witnesses from seed and chain state."""
-        import random as _random
-        exclude = exclude or []
-        # Always exclude self, consumer, and provider from witness selection
-        auto_exclude = {self.peer_id, self.load('consumer'), self.load('provider')}
-        exclude = set(exclude) | {x for x in auto_exclude if x}
-        
-        # Get candidates from chain state
-        known_peers = chain_state.get("known_peers", [])
-        candidates = [p for p in known_peers if p not in exclude]
-        
-        if not candidates:
-            return []
-        
-        # Sort deterministically
-        candidates = sorted(candidates)
-        
-        # Filter by interaction count if available
-        if interaction_with and "interaction_counts" in chain_state:
-            counts = chain_state["interaction_counts"]
-            candidates = [
-                c for c in candidates
-                if counts.get(c, 0) <= max_prior_interactions
-            ]
-        
-        # Separate by trust level
-        trust_scores = chain_state.get("trust_scores", {})
-        HIGH_TRUST_THRESHOLD = 1.0
-        
-        high_trust = sorted([c for c in candidates if trust_scores.get(c, 0) >= HIGH_TRUST_THRESHOLD])
-        low_trust = sorted([c for c in candidates if trust_scores.get(c, 0) < HIGH_TRUST_THRESHOLD])
-        
-        # Seeded selection
-        rng = _random.Random(seed)
-        
-        selected = []
-        
-        # Select required high-trust witnesses
-        if high_trust:
-            ht_sample = min(min_high_trust, len(high_trust))
-            selected.extend(rng.sample(high_trust, ht_sample))
-        
-        # Fill remaining slots from all candidates
-        remaining = [c for c in candidates if c not in selected]
-        needed = count - len(selected)
-        if remaining and needed > 0:
-            selected.extend(rng.sample(remaining, min(needed, len(remaining))))
-        
-        return selected
-
-    def _verify_witness_selection(
-        self,
-        proposed_witnesses: List[str],
-        chain_state: dict,
-        session_id: Any,
-        provider_nonce: bytes,
-        consumer_nonce: bytes,
-    ) -> bool:
-        """VERIFY_WITNESS_SELECTION: Verify that proposed witnesses were correctly selected."""
-        # Recompute the seed and selection
-        seed = hash_data(self._to_hashable(session_id, provider_nonce, consumer_nonce))
-        expected = self._select_witnesses(seed, chain_state)
-        # Compare - order matters for deterministic selection
-        return set(proposed_witnesses) == set(expected)
-
-    def _validate_lock_result(
-        self,
-        result: dict,
-        expected_session_id: str,
-        expected_amount: float,
-    ) -> bool:
-        """VALIDATE_LOCK_RESULT: Validate a lock result matches expected values and has ACCEPTED status."""
-        if not result:
-            return False
-        # Check session_id matches
-        if result.get("session_id") != expected_session_id:
-            return False
-        # Check amount matches
-        if result.get("amount") != expected_amount:
-            return False
-        # Check status is ACCEPTED (as string from serialization)
-        status = result.get("status")
-        if status not in ("ACCEPTED", LockStatus.ACCEPTED):
-            return False
-        # Check we have witness signatures (at least one)
-        signatures = result.get("witness_signatures", [])
-        if not signatures:
-            return False
-        return True
-
-    def _validate_topup_result(
-        self,
-        result: dict,
-        expected_session_id: str,
-        expected_additional_amount: float,
-    ) -> bool:
-        """VALIDATE_TOPUP_RESULT: Validate a top-up result matches expected values."""
-        if not result:
-            return False
-        # Check session_id matches
-        if result.get("session_id") != expected_session_id:
-            return False
-        # Check additional_amount matches
-        if result.get("additional_amount") != expected_additional_amount:
-            return False
-        # Check we have witness signatures (at least one)
-        signatures = result.get("witness_signatures", [])
-        if not signatures:
-            return False
-        return True
 
     def _seeded_rng(self, seed: bytes) -> Any:
         """SEEDED_RNG: Create a seeded random number generator."""
@@ -1654,10 +1342,6 @@ class Consumer(Actor):
             return []
         return rng.sample(lst, min(n, len(lst)))
 
-    def _remove(self, lst: list, item: Any) -> list:
-        """REMOVE: Remove item from list and return new list."""
-        return [x for x in lst if x != item] if lst else []
-
     def _sort(self, lst: list, key_fn: str = None) -> list:
         """SORT: Sort list by key."""
         return sorted(lst) if lst else []
@@ -1666,34 +1350,68 @@ class Consumer(Actor):
         """ABORT: Exit state machine with error."""
         raise RuntimeError(f"ABORT: {reason}")
 
+    def _concat(self, a: list, b: list) -> list:
+        """CONCAT: Concatenate two lists."""
+        return (a or []) + (b or [])
+
+    def _has_key(self, d: dict, key: Any) -> bool:
+        """HAS_KEY: Check if dict contains key (null-safe)."""
+        if d is None:
+            return False
+        return key in d if isinstance(d, dict) else False
+
     def _COMPUTE_CONSENSUS(self, verdicts: List[str], threshold: int) -> str:
         """Compute COMPUTE_CONSENSUS."""
-        # TODO: Implement - accept_count = LENGTH (FILTER (verdicts, v = > v =...
-        return None
+        accept_count = len ([v for v in verdicts if v == self.load("ACCEPT")])
+        if accept_count >= threshold:
+            return "ACCEPT"
+        else:
+            return "REJECT"
 
     def _EXTRACT_FIELD(self, records: List[Any], field: str) -> List[Any]:
         """Compute EXTRACT_FIELD."""
-        # TODO: Implement - RETURN MAP (records, r = > r.{field})...
-        return None
+        return [r.get(field) for r in records]
 
     def _COUNT_MATCHING(self, items: List[Any], predicate: Any) -> int:
         """Compute COUNT_MATCHING."""
-        # TODO: Implement - RETURN LENGTH (FILTER (items, predicate))...
-        return None
+        return len (self._FILTER (items, predicate))
 
     def _CONTAINS(self, items: List[Any], item: Any) -> bool:
         """Compute CONTAINS."""
-        # TODO: Implement - RETURN LENGTH (FILTER (items, x = > x == item))> 0...
-        return None
+        return len ([x for x in items if x == item]) > 0
+
+    def _REMOVE(self, items: List[Any], item: Any) -> List[Any]:
+        """Compute REMOVE."""
+        return [x for x in items if x != item]
+
+    def _SET_EQUALS(self, a: List[Any], b: List[Any]) -> bool:
+        """Compute SET_EQUALS."""
+        a_not_in_b = len ([x for x in a if not self._CONTAINS (b, x)])
+        b_not_in_a = len ([x for x in b if not self._CONTAINS (a, x)])
+        return a_not_in_b == 0 and b_not_in_a == 0
+
+    def _MIN(self, a: int, b: int) -> int:
+        """Compute MIN."""
+        return (a if a < b else b)
+
+    def _MAX(self, a: int, b: int) -> int:
+        """Compute MAX."""
+        return (a if a > b else b)
+
+    def _GET(self, d: Dict[str, Any], key: str, default: Any) -> Any:
+        """Compute GET."""
+        return (d.get(key) if self._has_key (d, key) else default)
 
     def _count_positive_votes(self, votes: List[Dict[str, Any]]) -> int:
         """Compute count_positive_votes."""
-        return len([v for v in votes if v.get('can_reach_vm') == True])
+        return len ([v for v in votes if v.get("can_reach_vm")== True])
 
     def _build_cabal_votes_map(self, votes: List[Dict[str, Any]]) -> Dict[str, bool]:
         """Compute build_cabal_votes_map."""
-        # TODO: Implement - result = {} FOR v IN votes: result [ v.witness ] =...
-        return None
+        result = {}
+        for v in votes:
+            pass
+        return result
 
     def _check_vm_connectivity(self, vm_endpoint: str) -> bool:
         """Compute check_vm_connectivity."""

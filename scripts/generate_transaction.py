@@ -22,7 +22,8 @@ from dsl_ast import (
     Schema, Transaction, Parameter, EnumDecl, MessageDecl, BlockDecl,
     ActorDecl, TriggerDecl, StateDecl, Transition, FunctionDecl,
     StoreAction, ComputeAction, LookupAction, SendAction, BroadcastAction, AppendAction, AppendBlockAction,
-    Field, OnGuardFail
+    Field, OnGuardFail,
+    AssignmentStmt, ReturnStmt, ForStmt, IfStmt, FunctionStatement
 )
 
 
@@ -67,37 +68,33 @@ class ExpressionTranslator:
         'LOAD': 'self.load("{}")',
     }
 
-    # Functions that need self prefix (protocol-specific, from FORMAT.md)
+    # Functions that need self prefix (protocol-specific built-ins)
+    # These require runtime primitives that can't be expressed in pure DSL
     SELF_FUNCS = {
-        # Chain operations
+        # Chain operations (need chain object internals)
+        'READ': '_read_chain',
+        'CHAIN_SEGMENT': '_chain_segment',
         'VERIFY_CHAIN_SEGMENT': '_verify_chain_segment',
         'CHAIN_CONTAINS_HASH': '_chain_contains_hash',
         'CHAIN_STATE_AT': '_chain_state_at',
-        # Selection
-        'SELECT_WITNESSES': '_select_witnesses',
-        'VERIFY_WITNESS_SELECTION': '_verify_witness_selection',
-        'VALIDATE_LOCK_RESULT': '_validate_lock_result',
-        'VALIDATE_TOPUP_RESULT': '_validate_topup_result',
+        # Seeded random (need Python's random module)
         'SEEDED_RNG': '_seeded_rng',
         'SEEDED_SAMPLE': '_seeded_sample',
-        # Compute
-        'REMOVE': '_remove',
+        # Utilities (need Python primitives or null-safety)
         'SORT': '_sort',
         'ABORT': '_abort',
+        'CONCAT': '_concat',
+        'HAS_KEY': '_has_key',  # Null-safe dict key check
         # Internal helpers
         '_to_hashable': '_to_hashable',
-        # Lowercase aliases for compatibility
-        'verify_chain_segment': '_verify_chain_segment',
-        'chain_contains_hash': '_chain_contains_hash',
-        'chain_state_at': '_chain_state_at',
-        'select_witnesses': '_select_witnesses',
-        'remove': '_remove',
     }
 
     def __init__(self, store_vars: Set[str], parameters: Set[str], enums: Dict[str, List[str]]):
         self.store_vars = store_vars
         self.parameters = parameters
         self.enums = enums  # Store full mapping for lookups
+        # Build set of enum names (like LockStatus, WitnessVerdict)
+        self.enum_names = set(enums.keys())
         # Build set of enum values for recognition
         self.enum_values = set()
         # Build reverse mapping: value -> enum name
@@ -125,10 +122,18 @@ class ExpressionTranslator:
                     return value  # Already fully-qualified
         return None
 
-    def translate(self, expr: str) -> str:
-        """Translate a DSL expression to Python code."""
+    def translate(self, expr: str, local_vars: Set[str] = None) -> str:
+        """Translate a DSL expression to Python code.
+
+        Args:
+            expr: The DSL expression to translate
+            local_vars: Set of variable names that are local (e.g., lambda params)
+                       These won't be translated to self.load()
+        """
         if not expr:
             return "True"
+
+        self._local_vars = local_vars or set()
 
         # Normalize whitespace
         expr = " ".join(expr.split())
@@ -139,6 +144,15 @@ class ExpressionTranslator:
         # Pre-process: transform hash(a + b + c) to hash(_to_bytes(a, b, c))
         expr = self._preprocess_hash_concat(expr)
 
+        # Pre-process: handle inline IF expressions (IF cond THEN a ELSE b -> a if cond else b)
+        expr = self._preprocess_inline_if(expr)
+
+        # Pre-process: handle FILTER and MAP with lambda expressions
+        expr = self._preprocess_filter_map(expr)
+
+        # Pre-process: handle dynamic field access X.{Y} -> X.get(Y)
+        expr = self._preprocess_dynamic_field_access(expr)
+
         # Replace operators
         expr = expr.replace("&&", " and ")
         expr = expr.replace("||", " or ")
@@ -147,7 +161,178 @@ class ExpressionTranslator:
         # Translate function calls and variable references
         result = self._translate_tokens(expr)
 
+        self._local_vars = set()
         return result
+
+    def _preprocess_inline_if(self, expr: str) -> str:
+        """Transform DSL inline IF to Python ternary.
+
+        IF condition THEN true_val ELSE false_val -> true_val if condition else false_val
+
+        Handles nested IF expressions by processing innermost first.
+        """
+        # Process all IF expressions from left to right
+        while True:
+            # Find IF keyword (case insensitive, word boundary)
+            match = re.search(r'\bIF\b', expr, re.IGNORECASE)
+            if not match:
+                break
+
+            if_start = match.start()
+
+            # Find THEN keyword
+            then_match = re.search(r'\bTHEN\b', expr[match.end():], re.IGNORECASE)
+            if not then_match:
+                # Malformed - no THEN, leave as is
+                break
+            then_pos = match.end() + then_match.start()
+            condition = expr[match.end():then_pos].strip()
+
+            # Find ELSE keyword - need to handle nested IF/THEN/ELSE
+            # Count nested IFs to find the matching ELSE
+            search_start = then_pos + 4  # len('THEN')
+            nesting = 0
+            else_pos = -1
+            i = search_start
+            while i < len(expr):
+                # Check for IF
+                if_match = re.match(r'\bIF\b', expr[i:], re.IGNORECASE)
+                if if_match:
+                    nesting += 1
+                    i += 2
+                    continue
+                # Check for ELSE
+                else_match = re.match(r'\bELSE\b', expr[i:], re.IGNORECASE)
+                if else_match:
+                    if nesting == 0:
+                        else_pos = i
+                        break
+                    else:
+                        nesting -= 1
+                        i += 4
+                        continue
+                i += 1
+
+            if else_pos == -1:
+                # Malformed - no matching ELSE, leave as is
+                break
+
+            then_val = expr[search_start:else_pos].strip()
+            else_start = else_pos + 4  # len('ELSE')
+
+            # Find the end of the else expression - either end of string or end of current expression context
+            # For simplicity, we take everything until end or next statement boundary
+            # Check for balanced parens/brackets
+            depth = 0
+            end_pos = len(expr)
+            for j in range(else_start, len(expr)):
+                c = expr[j]
+                if c in '([{':
+                    depth += 1
+                elif c in ')]}':
+                    if depth > 0:
+                        depth -= 1
+                    else:
+                        # Unmatched close - this is our boundary
+                        end_pos = j
+                        break
+                elif c == ',' and depth == 0:
+                    # Top-level comma - boundary
+                    end_pos = j
+                    break
+
+            else_val = expr[else_start:end_pos].strip()
+
+            # Build Python ternary: true_val if condition else false_val
+            replacement = f"({then_val} if {condition} else {else_val})"
+            expr = expr[:if_start] + replacement + expr[end_pos:]
+
+        return expr
+
+    def _preprocess_filter_map(self, expr: str) -> str:
+        """Transform FILTER/MAP with lambda to Python list comprehensions.
+
+        FILTER(list, v => condition) -> __FILTER_COMP__(list, v, condition)
+        MAP(list, v => transform) -> __MAP_COMP__(list, v, transform)
+
+        These markers are then handled specially in _translate_tokens.
+        """
+        import re
+
+        result = expr
+        # Keep processing until no more matches (handles nested cases)
+        for _ in range(10):  # Safety limit
+            match = re.search(r'\b(FILTER|MAP|filter|map)\s*\(', result)
+            if not match:
+                break
+
+            func = match.group(1).upper()
+            start = match.end() - 1  # Position of opening paren
+
+            # Find the matching closing paren
+            depth = 1
+            i = start + 1
+            while i < len(result) and depth > 0:
+                if result[i] == '(':
+                    depth += 1
+                elif result[i] == ')':
+                    depth -= 1
+                i += 1
+
+            if depth != 0:
+                break  # Unbalanced
+
+            args_str = result[start+1:i-1]  # Content between parens
+
+            # Split on first comma to get list and lambda
+            comma_pos = self._find_first_comma(args_str)
+            if comma_pos == -1:
+                break
+
+            list_expr = args_str[:comma_pos].strip()
+            lambda_expr = args_str[comma_pos+1:].strip()
+
+            # Parse lambda: var => body
+            arrow_pos = lambda_expr.find('=>')
+            if arrow_pos == -1:
+                # Not a lambda - might be a predicate variable
+                break
+
+            var_name = lambda_expr[:arrow_pos].strip()
+            body = lambda_expr[arrow_pos+2:].strip()
+
+            # Create marker that will be expanded in _translate_tokens
+            if func == 'FILTER':
+                replacement = f'__FILTER_COMP__({list_expr}, {var_name}, {body})'
+            else:
+                replacement = f'__MAP_COMP__({list_expr}, {var_name}, {body})'
+
+            result = result[:match.start()] + replacement + result[i:]
+
+        return result
+
+    def _find_first_comma(self, s: str) -> int:
+        """Find first comma at depth 0 (not inside parens/brackets)."""
+        depth = 0
+        for i, c in enumerate(s):
+            if c in '([{':
+                depth += 1
+            elif c in ')]}':
+                depth -= 1
+            elif c == ',' and depth == 0:
+                return i
+        return -1
+
+    def _preprocess_dynamic_field_access(self, expr: str) -> str:
+        """Transform dynamic field access X.{Y} to __DYNAMIC_GET__(X, Y).
+
+        In the DSL, r.{field} means "get field named by variable 'field' from r".
+        """
+        import re
+        # Pattern: identifier followed by .{ identifier }
+        # e.g., r.{field} -> __DYNAMIC_GET__(r, field)
+        pattern = r'(\w+)\.\{(\w+)\}'
+        return re.sub(pattern, r'__DYNAMIC_GET__(\1, \2)', expr)
 
     def _preprocess_struct_literal(self, expr: str) -> str:
         """
@@ -295,8 +480,15 @@ class ExpressionTranslator:
                 # Check what follows (for function calls, attribute access)
                 rest = expr[j:].lstrip()
 
-                # Handle 'and', 'or', 'not', 'None', 'True', 'False'
-                if token in ('and', 'or', 'not', 'None', 'True', 'False'):
+                # Handle DSL operators that map to Python keywords (uppercase to lowercase)
+                dsl_to_python_ops = {'NOT': 'not', 'AND': 'and', 'OR': 'or'}
+                if token in dsl_to_python_ops:
+                    result.append(dsl_to_python_ops[token])
+                    i = j
+                    continue
+
+                # Handle Python keywords that should be preserved
+                if token in ('and', 'or', 'not', 'None', 'True', 'False', 'if', 'else', 'for', 'in'):
                     result.append(token)
                     i = j
                     continue
@@ -314,28 +506,6 @@ class ExpressionTranslator:
                     result.append(f'self.load("{attr}")')
                     i = m
                     continue
-
-                # Handle chain.method(...) - consume entire chain call
-                if token == 'chain' and rest.startswith('.'):
-                    # Find and consume .method_name
-                    k = j
-                    while k < len(expr) and expr[k].isspace():
-                        k += 1
-                    if k < len(expr) and expr[k] == '.':
-                        k += 1  # skip the dot
-                        while k < len(expr) and expr[k].isspace():
-                            k += 1
-                        m = k
-                        while m < len(expr) and (expr[m].isalnum() or expr[m] == '_'):
-                            m += 1
-                        method_name = expr[k:m]
-                        result.append(f'self.chain.{method_name}')
-                        i = m
-                        continue
-                    else:
-                        result.append('self.chain')
-                        i = j
-                        continue
 
                 # Handle keyword arguments: identifier followed by = (but not ==)
                 if rest.startswith('=') and not rest.startswith('=='):
@@ -415,6 +585,78 @@ class ExpressionTranslator:
                             result.append('{' + ', '.join(dict_parts) + '}')
                         i = paren_end
                         continue
+                    elif token in ('__FILTER_COMP__', '__MAP_COMP__'):
+                        # __FILTER_COMP__(list, var, condition) -> [var for var in list if condition]
+                        # __MAP_COMP__(list, var, transform) -> [transform for var in list]
+                        paren_start = j
+                        while paren_start < len(expr) and expr[paren_start] != '(':
+                            paren_start += 1
+                        paren_start += 1
+                        depth = 1
+                        paren_end = paren_start
+                        while paren_end < len(expr) and depth > 0:
+                            if expr[paren_end] == '(':
+                                depth += 1
+                            elif expr[paren_end] == ')':
+                                depth -= 1
+                            paren_end += 1
+                        args = expr[paren_start:paren_end-1]
+                        # Parse the three arguments: list, var, body
+                        comma1 = self._find_first_comma(args)
+                        if comma1 != -1:
+                            list_expr = args[:comma1].strip()
+                            rest = args[comma1+1:]
+                            comma2 = self._find_first_comma(rest)
+                            if comma2 != -1:
+                                var_name = rest[:comma2].strip()
+                                body_expr = rest[comma2+1:].strip()
+
+                                # Translate list expression (without var as local)
+                                list_translated = self._translate_tokens(list_expr)
+
+                                # Translate body expression with var as local
+                                old_locals = getattr(self, '_local_vars', set())
+                                self._local_vars = old_locals | {var_name}
+                                body_translated = self._translate_tokens(body_expr)
+                                self._local_vars = old_locals
+
+                                if token == '__FILTER_COMP__':
+                                    result.append(f'[{var_name} for {var_name} in {list_translated} if {body_translated}]')
+                                else:  # __MAP_COMP__
+                                    result.append(f'[{body_translated} for {var_name} in {list_translated}]')
+                                i = paren_end
+                                continue
+                        # Fallback if parsing failed
+                        result.append(token)
+                        i = j
+                        continue
+                    elif token == '__DYNAMIC_GET__':
+                        # __DYNAMIC_GET__(obj, field) -> obj.get(field)
+                        paren_start = j
+                        while paren_start < len(expr) and expr[paren_start] != '(':
+                            paren_start += 1
+                        paren_start += 1
+                        depth = 1
+                        paren_end = paren_start
+                        while paren_end < len(expr) and depth > 0:
+                            if expr[paren_end] == '(':
+                                depth += 1
+                            elif expr[paren_end] == ')':
+                                depth -= 1
+                            paren_end += 1
+                        args = expr[paren_start:paren_end-1]
+                        comma_pos = self._find_first_comma(args)
+                        if comma_pos != -1:
+                            obj_expr = args[:comma_pos].strip()
+                            field_expr = args[comma_pos+1:].strip()
+                            obj_translated = self._translate_tokens(obj_expr)
+                            field_translated = self._translate_tokens(field_expr)
+                            result.append(f'{obj_translated}.get({field_translated})')
+                            i = paren_end
+                            continue
+                        result.append(token)
+                        i = j
+                        continue
                     # Check for literal key functions (argument is NOT translated)
                     elif token in self.LITERAL_KEY_FUNCS:
                         # Find the matching closing paren
@@ -485,6 +727,39 @@ class ExpressionTranslator:
                                 i = paren_end
                             result.append(translated)
                             continue
+                        # Special case: HASH with multiple args -> wrap with _to_hashable
+                        if token == 'HASH':
+                            paren_start = j
+                            while paren_start < len(expr) and expr[paren_start] != '(':
+                                paren_start += 1
+                            if paren_start < len(expr):
+                                paren_start += 1  # skip '('
+                                depth = 1
+                                paren_end = paren_start
+                                while paren_end < len(expr) and depth > 0:
+                                    if expr[paren_end] == '(':
+                                        depth += 1
+                                    elif expr[paren_end] == ')':
+                                        depth -= 1
+                                    paren_end += 1
+                                args = expr[paren_start:paren_end-1]
+                                # Check if multiple args (comma at depth 0)
+                                depth = 0
+                                has_comma = False
+                                for c in args:
+                                    if c == '(':
+                                        depth += 1
+                                    elif c == ')':
+                                        depth -= 1
+                                    elif c == ',' and depth == 0:
+                                        has_comma = True
+                                        break
+                                if has_comma:
+                                    # Translate args and wrap with _to_hashable
+                                    translated_args = self._translate_tokens(args)
+                                    result.append(f'hash_data(self._to_hashable({translated_args}))')
+                                    i = paren_end
+                                    continue
                         result.append(translated)
                     elif token in self.SELF_FUNCS:
                         result.append(f'self.{self.SELF_FUNCS[token]}')
@@ -494,10 +769,33 @@ class ExpressionTranslator:
                     i = j
                     continue
 
+                # Handle enum names followed by .VALUE (e.g., LockStatus.ACCEPTED)
+                # Must check before general attribute access
+                if token in self.enum_names and rest.startswith('.'):
+                    # Get the full enum reference: EnumName.VALUE
+                    k = j + 1  # skip the dot
+                    while k < len(expr) and expr[k].isspace():
+                        k += 1
+                    m = k
+                    while m < len(expr) and (expr[m].isalnum() or expr[m] == '_'):
+                        m += 1
+                    if m > k:
+                        enum_value = expr[k:m]
+                        # Keep as-is: EnumName.VALUE
+                        result.append(f'{token}.{enum_value}')
+                        i = m
+                        continue
+
                 # Handle attribute access on variables (e.g., pending_result.session_id)
                 if rest.startswith('.'):
                     # Consume the variable and all attribute accesses
-                    base = f'self.load("{token}")' if token not in self.ACTOR_PROPS else f'self.{token}'
+                    # Check local vars first, then actor props, then store vars
+                    if hasattr(self, '_local_vars') and token in self._local_vars:
+                        base = token
+                    elif token in self.ACTOR_PROPS:
+                        base = f'self.{token}'
+                    else:
+                        base = f'self.load("{token}")'
                     k = j
                     # Process chain of .attribute accesses
                     while k < len(expr):
@@ -544,6 +842,18 @@ class ExpressionTranslator:
                     i = j
                     continue
 
+                # Special case: my_chain refers to self.chain
+                if token == 'my_chain':
+                    result.append('self.chain')
+                    i = j
+                    continue
+
+                # Handle local variables (lambda params, function params)
+                if hasattr(self, '_local_vars') and token in self._local_vars:
+                    result.append(token)
+                    i = j
+                    continue
+
                 # Handle store variables
                 if token in self.store_vars:
                     result.append(f'self.load("{token}")')
@@ -560,10 +870,36 @@ class ExpressionTranslator:
                     i = j
                     continue
 
-                # Unknown identifier - assume it's a store variable
-                result.append(f'self.load("{token}")')
+                # Unknown identifier - check if it's a local variable first
+                if hasattr(self, '_local_vars') and token in self._local_vars:
+                    result.append(token)
+                else:
+                    # Assume it's a store variable
+                    result.append(f'self.load("{token}")')
                 i = j
                 continue
+
+            # Handle '.' followed by identifier as attribute access on dict/object
+            if expr[i] == '.':
+                # Check if followed by identifier
+                j = i + 1
+                while j < len(expr) and expr[j].isspace():
+                    j += 1
+                if j < len(expr) and (expr[j].isalpha() or expr[j] == '_'):
+                    # Get the attribute name
+                    k = j
+                    while k < len(expr) and (expr[k].isalnum() or expr[k] == '_'):
+                        k += 1
+                    attr = expr[j:k]
+
+                    # Check what precedes - if previous result ends with ')' or ']',
+                    # it's a function call or index result (returns dict/object)
+                    # Use .get() for dict-like access
+                    result_so_far = ''.join(result).rstrip()
+                    if result_so_far and result_so_far.endswith((')' , ']')):
+                        result.append(f'.get("{attr}")')
+                        i = k
+                        continue
 
             # Default: keep character as-is
             result.append(expr[i])
@@ -1002,28 +1338,7 @@ class PythonActorGenerator:
         initial = next((s.name for s in self.actor.states if s.initial), "IDLE")
         lines.append(f"    state: {self.actor_name}State = {self.actor_name}State.{initial}")
 
-        # Actor-specific attributes
-        if self.actor_name == "Witness":
-            lines.append("    cached_chains: Dict[str, dict] = field(default_factory=dict)")
         lines.append("")
-
-        # Actor-specific properties
-        if self.actor_name == "Consumer":
-            lines.append("    @property")
-            lines.append("    def is_locked(self) -> bool:")
-            lines.append('        """Check if consumer is in LOCKED state."""')
-            lines.append(f"        return self.state == {self.actor_name}State.LOCKED")
-            lines.append("")
-            lines.append("    @property")
-            lines.append("    def is_failed(self) -> bool:")
-            lines.append('        """Check if consumer is in FAILED state."""')
-            lines.append(f"        return self.state == {self.actor_name}State.FAILED")
-            lines.append("")
-            lines.append("    @property")
-            lines.append("    def total_escrowed(self) -> float:")
-            lines.append('        """Get total escrowed amount."""')
-            lines.append('        return self.load("total_escrowed", 0.0)')
-            lines.append("")
 
         # External trigger methods
         for trigger in self.actor.triggers:
@@ -1516,6 +1831,61 @@ def sanitize_guard_name(guard_name: str) -> str:
     return sanitized
 
 
+def _generate_function_statements(
+    statements: List[FunctionStatement],
+    lines: List[str],
+    translator: 'ExpressionTranslator',
+    local_vars: set,
+    indent: int = 2
+) -> None:
+    """Generate Python code from function body statements.
+
+    Args:
+        statements: List of parsed statement AST nodes
+        lines: Output list to append generated lines
+        translator: ExpressionTranslator for DSL->Python conversion
+        local_vars: Set of local variable names (function params + assigned vars)
+        indent: Indentation level (number of 4-space units)
+    """
+    prefix = "    " * indent
+
+    for stmt in statements:
+        if isinstance(stmt, AssignmentStmt):
+            # name = expression
+            translated_expr = translator.translate(stmt.expression, local_vars=local_vars)
+            lines.append(f"{prefix}{stmt.name} = {translated_expr}")
+            # Add assigned variable to local vars for subsequent statements
+            local_vars = local_vars | {stmt.name}
+
+        elif isinstance(stmt, ReturnStmt):
+            # return expression
+            translated_expr = translator.translate(stmt.expression, local_vars=local_vars)
+            lines.append(f"{prefix}return {translated_expr}")
+
+        elif isinstance(stmt, ForStmt):
+            # for var in iterable: body
+            translated_iter = translator.translate(stmt.iterable, local_vars=local_vars)
+            lines.append(f"{prefix}for {stmt.var_name} in {translated_iter}:")
+            # Add loop variable to local vars for body
+            body_local_vars = local_vars | {stmt.var_name}
+            if stmt.body:
+                _generate_function_statements(stmt.body, lines, translator, body_local_vars, indent + 1)
+            else:
+                lines.append(f"{prefix}    pass")
+
+        elif isinstance(stmt, IfStmt):
+            # if condition: then_body else: else_body
+            translated_cond = translator.translate(stmt.condition, local_vars=local_vars)
+            lines.append(f"{prefix}if {translated_cond}:")
+            if stmt.then_body:
+                _generate_function_statements(stmt.then_body, lines, translator, local_vars, indent + 1)
+            else:
+                lines.append(f"{prefix}    pass")
+            if stmt.else_body:
+                lines.append(f"{prefix}else:")
+                _generate_function_statements(stmt.else_body, lines, translator, local_vars, indent + 1)
+
+
 def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
     """Generate helper methods for an actor (payload builders, guards, etc.)."""
     lines = []
@@ -1585,33 +1955,6 @@ def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
     for guard_name, (desc, expr) in all_guards.items():
         # Normalize and translate expression
         expr_oneline = " ".join(str(expr).split())
-
-        # Handle special semantic guards that need custom implementation
-        if guard_name == "has_provider_checkpoint":
-            # Check if there's a peer hash record for the provider in the chain
-            lines.append(f"    def _check_{guard_name}(self) -> bool:")
-            lines.append(f'        """Check if we have a prior checkpoint/record of the provider."""')
-            lines.append(f"        provider = self.load('provider')")
-            lines.append(f"        if not provider:")
-            lines.append(f"            return False")
-            lines.append(f"        return self.chain.get_peer_hash(provider) is not None")
-            lines.append("")
-            continue
-        elif guard_name == "checkpoint_exists_in_chain":
-            # Check if a requested checkpoint exists in our chain
-            lines.append(f"    def _check_{guard_name}(self) -> bool:")
-            lines.append(f'        """Check if the requested checkpoint exists in our chain."""')
-            lines.append(f"        checkpoint = self.load('requested_checkpoint')")
-            lines.append(f"        if not checkpoint:")
-            lines.append(f"            return False")
-            lines.append(f"        # Check if we have a block with this hash")
-            lines.append(f"        for block in self.chain.blocks:")
-            lines.append(f"            if block.block_hash == checkpoint:")
-            lines.append(f"                return True")
-            lines.append(f"        return False")
-            lines.append("")
-            continue
-
         translated = translator.translate(expr_oneline)
 
         lines.append(f"    def _check_{guard_name}(self) -> bool:")
@@ -1674,6 +2017,55 @@ def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
     # Generate protocol function implementations (matching FORMAT.md primitives)
     # These are fully functional, not placeholders
 
+    # _read_chain - READ(chain, query)
+    lines.append("    def _read_chain(self, chain: Any, query: str) -> Any:")
+    lines.append('        """READ: Read from a chain (own or cached peer chain)."""')
+    lines.append("        if chain == 'my_chain' or chain is self.chain:")
+    lines.append("            chain_obj = self.chain")
+    lines.append("        elif isinstance(chain, str):")
+    lines.append("            # It's a peer_id - look up in cached_chains")
+    lines.append("            cached = self.load('cached_chains', {}).get(chain)")
+    lines.append("            if cached:")
+    lines.append("                # Return from cache based on query")
+    lines.append("                if query == 'head' or query == 'head_hash':")
+    lines.append("                    return cached.get('head_hash')")
+    lines.append("                elif query == 'balance':")
+    lines.append("                    return cached.get('balance', 0)")
+    lines.append("                return cached.get(query)")
+    lines.append("            # Fall back to chain's peer hash records")
+    lines.append("            if query == 'head' or query == 'head_hash':")
+    lines.append("                peer_block = self.chain.get_peer_hash(chain)")
+    lines.append("                if peer_block:")
+    lines.append("                    return peer_block.payload.get('hash')")
+    lines.append("            return None")
+    lines.append("        else:")
+    lines.append("            chain_obj = chain")
+    lines.append("        # Query the chain object")
+    lines.append("        if query == 'head' or query == 'head_hash':")
+    lines.append("            return chain_obj.head_hash if hasattr(chain_obj, 'head_hash') else None")
+    lines.append("        elif query == 'balance':")
+    lines.append("            return getattr(chain_obj, 'balance', 0)")
+    lines.append("        elif hasattr(chain_obj, query):")
+    lines.append("            return getattr(chain_obj, query)")
+    lines.append("        elif hasattr(chain_obj, 'get_' + query):")
+    lines.append("            return getattr(chain_obj, 'get_' + query)()")
+    lines.append("        return None")
+    lines.append("")
+
+    # _chain_segment - CHAIN_SEGMENT(chain, hash)
+    lines.append("    def _chain_segment(self, chain: Any, target_hash: str) -> List[dict]:")
+    lines.append('        """CHAIN_SEGMENT: Extract chain segment up to target hash."""')
+    lines.append("        if chain == 'my_chain' or chain is self.chain:")
+    lines.append("            chain_obj = self.chain")
+    lines.append("        elif hasattr(chain, 'to_segment'):")
+    lines.append("            chain_obj = chain")
+    lines.append("        else:")
+    lines.append("            return []")
+    lines.append("        if hasattr(chain_obj, 'to_segment'):")
+    lines.append("            return chain_obj.to_segment(target_hash)")
+    lines.append("        return []")
+    lines.append("")
+
     # _verify_chain_segment
     lines.append("    def _verify_chain_segment(self, segment: List[dict]) -> bool:")
     lines.append('        """VERIFY_CHAIN_SEGMENT: Verify a chain segment is valid."""')
@@ -1705,165 +2097,12 @@ def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
     lines.append("    def _chain_state_at(self, chain_or_segment: Any, target_hash: str) -> Optional[Dict[str, Any]]:")
     lines.append('        """CHAIN_STATE_AT: Extract chain state at a specific block hash."""')
     lines.append("        if isinstance(chain_or_segment, list):")
-    lines.append("            # It's a segment - find the block and build state")
-    lines.append("            target_idx = None")
-    lines.append("            for i, block in enumerate(chain_or_segment):")
-    lines.append("                if block.get('block_hash') == target_hash:")
-    lines.append("                    target_idx = i")
-    lines.append("                    break")
-    lines.append("            if target_idx is None:")
-    lines.append("                return None")
-    lines.append("            # Build state from blocks up to target")
-    lines.append("            state = {")
-    lines.append('                "known_peers": set(),')
-    lines.append('                "peer_hashes": {},')
-    lines.append('                "balance_locks": [],')
-    lines.append('                "block_hash": target_hash,')
-    lines.append('                "sequence": target_idx,')
-    lines.append("            }")
-    lines.append("            for block in chain_or_segment[:target_idx + 1]:")
-    lines.append("                if block.get('block_type') == 'peer_hash':")
-    lines.append("                    peer = block.get('payload', {}).get('peer')")
-    lines.append("                    if peer:")
-    lines.append('                        state["known_peers"].add(peer)')
-    lines.append('                        state["peer_hashes"][peer] = block.get("payload", {}).get("hash")')
-    lines.append("                elif block.get('block_type') == 'balance_lock':")
-    lines.append('                    state["balance_locks"].append(block.get("payload", {}))')
-    lines.append('            state["known_peers"] = list(state["known_peers"])')
-    lines.append("            return state")
+    lines.append("            # It's a segment - delegate to Chain.state_from_segment")
+    lines.append("            return Chain.state_from_segment(chain_or_segment, target_hash)")
     lines.append("        elif hasattr(chain_or_segment, 'get_state_at'):")
     lines.append("            # It's a Chain object")
     lines.append("            return chain_or_segment.get_state_at(target_hash)")
     lines.append("        return None")
-    lines.append("")
-
-    # _select_witnesses - full implementation matching network.py logic
-    lines.append("    def _select_witnesses(")
-    lines.append("        self,")
-    lines.append("        seed: bytes,")
-    lines.append("        chain_state: dict,")
-    lines.append("        count: int = WITNESS_COUNT,")
-    lines.append("        exclude: List[str] = None,")
-    lines.append("        min_high_trust: int = MIN_HIGH_TRUST_WITNESSES,")
-    lines.append("        max_prior_interactions: int = MAX_PRIOR_INTERACTIONS,")
-    lines.append("        interaction_with: str = None,")
-    lines.append("    ) -> List[str]:")
-    lines.append('        """SELECT_WITNESSES: Deterministically select witnesses from seed and chain state."""')
-    lines.append("        import random as _random")
-    lines.append("        exclude = exclude or []")
-    lines.append("        # Always exclude self, consumer, and provider from witness selection")
-    lines.append("        auto_exclude = {self.peer_id, self.load('consumer'), self.load('provider')}")
-    lines.append("        exclude = set(exclude) | {x for x in auto_exclude if x}")
-    lines.append("        ")
-    lines.append("        # Get candidates from chain state")
-    lines.append('        known_peers = chain_state.get("known_peers", [])')
-    lines.append("        candidates = [p for p in known_peers if p not in exclude]")
-    lines.append("        ")
-    lines.append("        if not candidates:")
-    lines.append("            return []")
-    lines.append("        ")
-    lines.append("        # Sort deterministically")
-    lines.append("        candidates = sorted(candidates)")
-    lines.append("        ")
-    lines.append("        # Filter by interaction count if available")
-    lines.append('        if interaction_with and "interaction_counts" in chain_state:')
-    lines.append('            counts = chain_state["interaction_counts"]')
-    lines.append("            candidates = [")
-    lines.append("                c for c in candidates")
-    lines.append("                if counts.get(c, 0) <= max_prior_interactions")
-    lines.append("            ]")
-    lines.append("        ")
-    lines.append("        # Separate by trust level")
-    lines.append('        trust_scores = chain_state.get("trust_scores", {})')
-    lines.append("        HIGH_TRUST_THRESHOLD = 1.0")
-    lines.append("        ")
-    lines.append("        high_trust = sorted([c for c in candidates if trust_scores.get(c, 0) >= HIGH_TRUST_THRESHOLD])")
-    lines.append("        low_trust = sorted([c for c in candidates if trust_scores.get(c, 0) < HIGH_TRUST_THRESHOLD])")
-    lines.append("        ")
-    lines.append("        # Seeded selection")
-    lines.append("        rng = _random.Random(seed)")
-    lines.append("        ")
-    lines.append("        selected = []")
-    lines.append("        ")
-    lines.append("        # Select required high-trust witnesses")
-    lines.append("        if high_trust:")
-    lines.append("            ht_sample = min(min_high_trust, len(high_trust))")
-    lines.append("            selected.extend(rng.sample(high_trust, ht_sample))")
-    lines.append("        ")
-    lines.append("        # Fill remaining slots from all candidates")
-    lines.append("        remaining = [c for c in candidates if c not in selected]")
-    lines.append("        needed = count - len(selected)")
-    lines.append("        if remaining and needed > 0:")
-    lines.append("            selected.extend(rng.sample(remaining, min(needed, len(remaining))))")
-    lines.append("        ")
-    lines.append("        return selected")
-    lines.append("")
-
-    # _verify_witness_selection
-    lines.append("    def _verify_witness_selection(")
-    lines.append("        self,")
-    lines.append("        proposed_witnesses: List[str],")
-    lines.append("        chain_state: dict,")
-    lines.append("        session_id: Any,")
-    lines.append("        provider_nonce: bytes,")
-    lines.append("        consumer_nonce: bytes,")
-    lines.append("    ) -> bool:")
-    lines.append('        """VERIFY_WITNESS_SELECTION: Verify that proposed witnesses were correctly selected."""')
-    lines.append("        # Recompute the seed and selection")
-    lines.append("        seed = hash_data(self._to_hashable(session_id, provider_nonce, consumer_nonce))")
-    lines.append("        expected = self._select_witnesses(seed, chain_state)")
-    lines.append("        # Compare - order matters for deterministic selection")
-    lines.append("        return set(proposed_witnesses) == set(expected)")
-    lines.append("")
-
-    # _validate_lock_result
-    lines.append("    def _validate_lock_result(")
-    lines.append("        self,")
-    lines.append("        result: dict,")
-    lines.append("        expected_session_id: str,")
-    lines.append("        expected_amount: float,")
-    lines.append("    ) -> bool:")
-    lines.append('        """VALIDATE_LOCK_RESULT: Validate a lock result matches expected values and has ACCEPTED status."""')
-    lines.append("        if not result:")
-    lines.append("            return False")
-    lines.append("        # Check session_id matches")
-    lines.append('        if result.get("session_id") != expected_session_id:')
-    lines.append("            return False")
-    lines.append("        # Check amount matches")
-    lines.append('        if result.get("amount") != expected_amount:')
-    lines.append("            return False")
-    lines.append("        # Check status is ACCEPTED (as string from serialization)")
-    lines.append('        status = result.get("status")')
-    lines.append('        if status not in ("ACCEPTED", LockStatus.ACCEPTED):')
-    lines.append("            return False")
-    lines.append("        # Check we have witness signatures (at least one)")
-    lines.append('        signatures = result.get("witness_signatures", [])')
-    lines.append("        if not signatures:")
-    lines.append("            return False")
-    lines.append("        return True")
-    lines.append("")
-
-    # _validate_topup_result
-    lines.append("    def _validate_topup_result(")
-    lines.append("        self,")
-    lines.append("        result: dict,")
-    lines.append("        expected_session_id: str,")
-    lines.append("        expected_additional_amount: float,")
-    lines.append("    ) -> bool:")
-    lines.append('        """VALIDATE_TOPUP_RESULT: Validate a top-up result matches expected values."""')
-    lines.append("        if not result:")
-    lines.append("            return False")
-    lines.append("        # Check session_id matches")
-    lines.append('        if result.get("session_id") != expected_session_id:')
-    lines.append("            return False")
-    lines.append("        # Check additional_amount matches")
-    lines.append('        if result.get("additional_amount") != expected_additional_amount:')
-    lines.append("            return False")
-    lines.append("        # Check we have witness signatures (at least one)")
-    lines.append('        signatures = result.get("witness_signatures", [])')
-    lines.append("        if not signatures:")
-    lines.append("            return False")
-    lines.append("        return True")
     lines.append("")
 
     # _seeded_rng
@@ -1881,12 +2120,6 @@ def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
     lines.append("        return rng.sample(lst, min(n, len(lst)))")
     lines.append("")
 
-    # _remove
-    lines.append("    def _remove(self, lst: list, item: Any) -> list:")
-    lines.append('        """REMOVE: Remove item from list and return new list."""')
-    lines.append("        return [x for x in lst if x != item] if lst else []")
-    lines.append("")
-
     # _sort
     lines.append("    def _sort(self, lst: list, key_fn: str = None) -> list:")
     lines.append('        """SORT: Sort list by key."""')
@@ -1899,73 +2132,19 @@ def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
     lines.append('        raise RuntimeError(f"ABORT: {reason}")')
     lines.append("")
 
-    # Witness-specific helpers (only add for Witness actor)
-    if actor_name.lower() == "witness":
-        # _compute_consensus (Witness helper)
-        lines.append("    def _compute_consensus(self, preliminaries: list) -> str:")
-        lines.append('        """COMPUTE_CONSENSUS: Determine consensus from preliminary verdicts."""')
-        lines.append("        # Start with witness's own verdict")
-        lines.append("        my_verdict = self.load('verdict')")
-        lines.append("        accept_count = 1 if my_verdict in ('ACCEPT', 'accept', WitnessVerdict.ACCEPT) else 0")
-        lines.append("        reject_count = 1 - accept_count")
-        lines.append("        # Count verdicts from other witnesses")
-        lines.append("        for p in (preliminaries or []):")
-        lines.append("            verdict = p.get('verdict') if isinstance(p, dict) else getattr(p, 'verdict', None)")
-        lines.append("            if verdict in ('ACCEPT', WitnessVerdict.ACCEPT):")
-        lines.append("                accept_count += 1")
-        lines.append("            else:")
-        lines.append("                reject_count += 1")
-        lines.append("        # Need threshold for acceptance")
-        lines.append("        if accept_count >= WITNESS_THRESHOLD:")
-        lines.append('            return "ACCEPT"')
-        lines.append('        return "REJECT"')
-        lines.append("")
+    # _concat
+    lines.append("    def _concat(self, a: list, b: list) -> list:")
+    lines.append('        """CONCAT: Concatenate two lists."""')
+    lines.append("        return (a or []) + (b or [])")
+    lines.append("")
 
-        # _build_lock_result (Witness helper)
-        lines.append("    def _build_lock_result(self) -> Dict[str, Any]:")
-        lines.append('        """BUILD_LOCK_RESULT: Build the final lock result structure."""')
-        lines.append("        consensus = self.load('consensus_direction')")
-        lines.append("        # Use enum for type checking but store name for JSON serialization")
-        lines.append("        status_enum = LockStatus.ACCEPTED if consensus == 'ACCEPT' else LockStatus.REJECTED")
-        lines.append("        # Extract signatures from collected votes")
-        lines.append("        votes = self.load('votes') or []")
-        lines.append("        signatures = [v.get('signature') for v in votes if v.get('signature')]")
-        lines.append("        return {")
-        lines.append('            "session_id": self.load("session_id"),')
-        lines.append('            "consumer": self.load("consumer"),')
-        lines.append('            "provider": self.load("provider"),')
-        lines.append('            "amount": self.load("amount"),')
-        lines.append('            "status": status_enum.name,  # Use string for JSON serialization')
-        lines.append('            "observed_balance": self.load("observed_balance"),')
-        lines.append('            "witnesses": self.load("witnesses"),')
-        lines.append('            "witness_signatures": signatures,')
-        lines.append('            "timestamp": self.current_time,')
-        lines.append("        }")
-        lines.append("")
-
-        # _build_topup_result (Witness helper for top-up consensus)
-        lines.append("    def _build_topup_result(self) -> Dict[str, Any]:")
-        lines.append('        """BUILD_TOPUP_RESULT: Build the top-up result structure."""')
-        lines.append("        topup_intent = self.load('topup_intent') or {}")
-        lines.append("        # Extract signatures from collected votes")
-        lines.append("        votes = self.load('topup_votes') or []")
-        lines.append("        signatures = [v.get('signature') for v in votes if v.get('signature')]")
-        lines.append("        # Add our own signature")
-        lines.append("        my_signature = sign(self.chain.private_key, hash_data({'verdict': self.load('topup_verdict'), 'session_id': self.load('session_id')}))")
-        lines.append("        signatures.append(my_signature)")
-        lines.append("        return {")
-        lines.append('            "session_id": self.load("session_id"),')
-        lines.append('            "consumer": self.load("consumer"),')
-        lines.append('            "provider": self.load("provider"),')
-        lines.append('            "previous_total": self.load("total_escrowed"),')
-        lines.append('            "additional_amount": topup_intent.get("additional_amount"),')
-        lines.append('            "new_total": self.load("total_escrowed") + topup_intent.get("additional_amount", 0),')
-        lines.append('            "observed_balance": self.load("topup_observed_balance"),')
-        lines.append('            "witnesses": self.load("witnesses"),')
-        lines.append('            "witness_signatures": signatures,')
-        lines.append('            "timestamp": self.current_time,')
-        lines.append("        }")
-        lines.append("")
+    # _has_key
+    lines.append("    def _has_key(self, d: dict, key: Any) -> bool:")
+    lines.append('        """HAS_KEY: Check if dict contains key (null-safe)."""')
+    lines.append("        if d is None:")
+    lines.append("            return False")
+    lines.append("        return key in d if isinstance(d, dict) else False")
+    lines.append("")
 
     # Generate methods from functions section
     for func in schema.functions:
@@ -1994,29 +2173,39 @@ def generate_actor_helpers(actor: ActorDecl, schema: Schema) -> str:
             lines.append("")
             continue
 
-        # Generate body based on common patterns
-        body_stripped = body.strip() if body else ""
+        # Create translator with function parameters as local variables (not store vars)
+        # Include schema parameters and enums for proper translation
+        param_names = {p.name for p in params}
+        schema_params = {p.name for p in schema.parameters}
+        schema_enums = {enum.name: [v.name for v in enum.values] for enum in schema.enums}
+        func_translator = ExpressionTranslator(
+            store_vars=set(),  # Function params are local, not store vars
+            parameters=schema_params,
+            enums=schema_enums
+        )
 
-        # Handle common patterns (normalize spaces for matching)
-        body_normalized = ' '.join(body_stripped.split())
-        if "RETURN LENGTH" in body_normalized and "FILTER" in body_normalized and "can_reach_vm" in body_normalized:
-            # count_positive_votes pattern
-            lines.append("        return len([v for v in votes if v.get('can_reach_vm') == True])")
-        elif "RETURN true" in body_stripped.lower() or body_stripped.lower() == "return true":
-            lines.append("        return True")
-        elif "RETURN false" in body_stripped.lower() or body_stripped.lower() == "return false":
-            lines.append("        return False")
-        elif "# In simulation" in body_stripped:
-            # Simulation hook - return default value
-            if returns == "bool":
-                lines.append("        return True")
-            else:
-                lines.append("        return None")
+        # Generate body from parsed statements
+        if func.statements:
+            # Use parsed statement AST
+            _generate_function_statements(func.statements, lines, func_translator, param_names, indent=2)
         else:
-            # Default: return None with a TODO (sanitize body for comment)
-            body_oneline = " ".join(body_stripped.split())[:50]
-            lines.append(f"        # TODO: Implement - {body_oneline}...")
-            lines.append("        return None")
+            # Fallback to raw body parsing for backwards compatibility
+            body_stripped = body.strip() if body else ""
+            body_normalized = ' '.join(body_stripped.split())
+
+            if body_normalized.upper().startswith("RETURN "):
+                expr = body_normalized[7:].strip()
+                translated = func_translator.translate(expr, local_vars=param_names)
+                lines.append(f"        return {translated}")
+            elif "# In simulation" in body_stripped:
+                if returns == "bool":
+                    lines.append("        return True")
+                else:
+                    lines.append("        return None")
+            else:
+                body_oneline = " ".join(body_stripped.split())[:50]
+                lines.append(f"        # TODO: Implement - {body_oneline}...")
+                lines.append("        return None")
         lines.append("")
 
     return "\n".join(lines)
@@ -2139,6 +2328,10 @@ def generate_python(tx_dir: Path, output_path: Path = None) -> str:
     lines.append("        self.state = new_state")
     lines.append("        self.state_history.append((self.current_time, new_state))")
     lines.append("        self.store('state_entered_at', self.current_time)")
+    lines.append("")
+    lines.append("    def in_state(self, state_name: str) -> bool:")
+    lines.append('        """Check if actor is in a named state."""')
+    lines.append("        return self.state.name == state_name")
     lines.append("")
     lines.append("    def tick(self, current_time: float) -> List[Message]:")
     lines.append("        raise NotImplementedError")

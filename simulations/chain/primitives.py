@@ -283,6 +283,49 @@ class Chain:
         state["known_peers"] = list(state["known_peers"])
         return state
 
+    @staticmethod
+    def state_from_segment(segment: List[dict], target_hash: str) -> Optional[Dict[str, Any]]:
+        """
+        Build chain state from a segment (list of serialized blocks) up to target hash.
+
+        This is used when processing chain data received from network messages.
+        """
+        if not segment:
+            return None
+
+        # Find the block with target hash
+        target_idx = None
+        for i, block in enumerate(segment):
+            if block.get("block_hash") == target_hash:
+                target_idx = i
+                break
+
+        if target_idx is None:
+            return None
+
+        # Build state from blocks up to target
+        state = {
+            "known_peers": set(),
+            "peer_hashes": {},
+            "balance_locks": [],
+            "block_hash": target_hash,
+            "sequence": target_idx,
+        }
+
+        for block in segment[:target_idx + 1]:
+            block_type = block.get("block_type")
+            # Handle both string and enum block types
+            if block_type == "peer_hash" or block_type == BlockType.PEER_HASH:
+                peer = block.get("payload", {}).get("peer")
+                if peer:
+                    state["known_peers"].add(peer)
+                    state["peer_hashes"][peer] = block.get("payload", {}).get("hash")
+            elif block_type == "balance_lock" or block_type == BlockType.BALANCE_LOCK:
+                state["balance_locks"].append(block.get("payload", {}))
+
+        state["known_peers"] = list(state["known_peers"])
+        return state
+
     def contains_hash(self, block_hash: str) -> bool:
         """Check if this chain contains a block with the given hash."""
         return any(b.block_hash == block_hash for b in self.blocks)

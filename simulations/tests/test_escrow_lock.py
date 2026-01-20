@@ -30,6 +30,7 @@ def network():
     net = Network()
 
     # Create consumer and provider
+    # Note: create_identity("consumer") creates chain with key "pk_consumer"
     net.create_identity("consumer", initial_trust=1.0)
     net.create_identity("provider", initial_trust=2.0)
 
@@ -696,22 +697,22 @@ class TestTopUp:
         )
 
         # Initial state
-        assert not consumer.is_locked
-        assert not consumer.is_failed
-        assert consumer.total_escrowed == 0.0
+        assert not consumer.in_state("LOCKED")
+        assert not consumer.in_state("FAILED")
+        assert consumer.load("total_escrowed", 0.0) == 0.0
 
         # Failed state
         consumer.store("reject_reason", "test")
         consumer.transition_to(ConsumerState.FAILED)
-        assert not consumer.is_locked
-        assert consumer.is_failed
+        assert not consumer.in_state("LOCKED")
+        assert consumer.in_state("FAILED")
 
         # Locked state
         consumer.store("total_escrowed", 50.0)
         consumer.transition_to(ConsumerState.LOCKED)
-        assert consumer.is_locked
-        assert not consumer.is_failed
-        assert consumer.total_escrowed == 50.0
+        assert consumer.in_state("LOCKED")
+        assert not consumer.in_state("FAILED")
+        assert consumer.load("total_escrowed", 0.0) == 50.0
 
 
 class TestTopUpIntegration:
@@ -738,7 +739,7 @@ class TestTopUpIntegration:
             pytest.skip("Initial lock did not succeed - skipping top-up test")
 
         # Verify initial state
-        assert consumer.total_escrowed == 10.0
+        assert consumer.load("total_escrowed", 0.0) == 10.0
         initial_chain_len = len(consumer.chain.blocks)
 
         # Phase 2: Top-up
@@ -749,14 +750,15 @@ class TestTopUpIntegration:
 
         print(f"Top-up completed in {ticks} ticks")
         print(f"Consumer state: {consumer.state}")
-        print(f"Consumer total escrowed: {consumer.total_escrowed}")
+        print(f"Consumer total escrowed: {consumer.load('total_escrowed', 0.0)}")
 
         # Consumer should still be LOCKED (returned after top-up)
         assert consumer.state == ConsumerState.LOCKED
 
         # Top-up should succeed - verify total increased
-        assert consumer.total_escrowed == 15.0, \
-            f"Top-up should increase total from 10.0 to 15.0, got {consumer.total_escrowed}"
+        total = consumer.load("total_escrowed", 0.0)
+        assert total == 15.0, \
+            f"Top-up should increase total from 10.0 to 15.0, got {total}"
 
         # Check chain has top-up block
         assert len(consumer.chain.blocks) > initial_chain_len

@@ -5,152 +5,482 @@ This document defines the format and primitives used for specifying distributed 
 **See also:**
 - [Design Philosophy](DESIGN_PHILOSOPHY.md) for comparison to other systems and our consistency model
 - [Gossip Protocol](GOSSIP.md) for how information propagates through the network
+- [Code Generation](GENERATION.md) for how schemas are translated to documentation and executable code
 
-## Actor Definition
+## Transaction Structure
 
-Each actor in a transaction is defined as a state machine:
+Each `.omt` file defines a complete transaction protocol. Sections appear in this order:
 
 ```
-ACTOR: [Name]
+transaction ID "Name" "Description"
 
-STATES: [S0, S1, S2, ...]
+imports shared/common
 
-STATE S0:
-  actions:
-    - action1
-    - action2
-    - ...
+parameters (...)
 
-  on MESSAGE_TYPE from PEER:
-    → next_state: S1
+enum EnumName "description" (...)
 
-  on OTHER_MESSAGE from PEER:
-    → next_state: S2
+block BlockType by [Actors] (...)
 
-  after(duration):
-    → next_state: S3
+message MessageName from Actor to [Recipients] signed (...)
+
+function name(params) -> ReturnType (...)
+
+native function name(params) -> ReturnType "library.path"
+
+actor ActorName "description" (...)
 ```
+
+### Transaction Header
+
+```
+transaction 00 "Escrow Lock" "Lock funds with distributed witness consensus"
+```
+
+Components:
+- **ID**: Two-digit identifier (00-99)
+- **Name**: Short name for the transaction
+- **Description**: One-line summary
+
+### Imports
+
+```
+imports shared/common
+```
+
+Import shared type definitions from another file. Path is relative to the `docs/protocol/` directory.
+
+### Parameters
+
+```
+parameters (
+    WITNESS_COUNT = 5 count "Initial witnesses to recruit"
+    LOCK_TIMEOUT = 300 seconds "Seconds for consumer to complete lock"
+    CONSENSUS_THRESHOLD = 0.67 fraction "Fraction needed to decide"
+)
+```
+
+Parameter units:
+- `count` - integer count
+- `seconds` - time duration
+- `fraction` - decimal 0.0-1.0
+
+Parameters become constants in generated code (uppercase names).
+
+### Enums
+
+```
+enum WitnessVerdict "Witness verdict on lock request" (
+    ACCEPT
+    REJECT
+    NEED_MORE_INFO   # optional comment
+)
+```
+
+Enum values are uppercase. Optional description after name.
+
+### Block Types
+
+Blocks are records written to an actor's chain:
+
+```
+block BALANCE_LOCK by [Consumer, Witness] (
+    session_id       hash
+    amount           uint
+    lock_result_hash hash
+    timestamp        timestamp
+)
+```
+
+- **by [Actors]**: Which actor types can write this block
+- Fields with types (see Data Types below)
+
+### Messages
+
+```
+message LOCK_INTENT from Consumer to [Provider] signed (
+    consumer    peer_id
+    amount      uint
+    session_id  hash
+    timestamp   timestamp
+)
+```
+
+Components:
+- **from Actor**: Sender type
+- **to [Recipients]**: One or more recipient types
+- **signed**: (optional) Message requires cryptographic signature
+- Fields with types
+
+Special recipient `[Network]` indicates broadcast to all peers.
+
+### Functions
+
+Transaction-specific helper functions:
+
+```
+function count_positive_votes(votes list<dict>) -> uint (
+    RETURN LENGTH(FILTER(votes, v => v.can_reach_vm == true))
+)
+
+function build_lock_result() -> LockResult (
+    consensus = LOAD(consensus_direction)
+    status = IF consensus == "ACCEPT" THEN LockStatus.ACCEPTED ELSE LockStatus.REJECTED
+    RETURN {
+        session_id: LOAD(session_id),
+        status: status,
+        timestamp: NOW()
+    }
+)
+```
+
+#### Function Body Statements
+
+Function bodies support these statement types:
+
+- **Assignment**: `name = expression`
+- **Return**: `RETURN expression`
+- **For loop**: `FOR var IN iterable: statements`
+
+Statements are delimited by their starting patterns (no semicolons needed):
+- `RETURN` keyword starts a return statement
+- `FOR` keyword starts a for loop
+- `identifier =` starts an assignment
+
+#### IF Expressions
+
+The `IF` syntax is used as a **ternary expression** (not a statement):
+
+```
+IF condition THEN value ELSE value
+```
+
+This can be used anywhere an expression is expected:
+- In assignments: `status = IF approved THEN "OK" ELSE "REJECTED"`
+- In return statements: `RETURN IF count >= threshold THEN "ACCEPT" ELSE "REJECT"`
+- Nested in expressions: `total = base + IF bonus THEN extra ELSE 0`
+
+#### Function Purity Restriction
+
+**Functions must be pure** - they cannot contain side effects. The following operations are only allowed in transition actions, not in function bodies:
+
+- `SEND(target, MESSAGE)` - send message to a peer
+- `BROADCAST(list, MESSAGE)` - broadcast message to peers
+- `APPEND list <- value` - append to a list
+- `APPEND_BLOCK BLOCK_TYPE` - append block to chain
+
+This restriction ensures functions are deterministic and have no observable effects other than their return value.
+
+### Native Functions
+
+Native functions have implementations provided by external libraries rather than being defined purely in the DSL. They are used for operations that require system access (SSH, network checks, hardware interaction, etc.).
+
+**Syntax:**
+```
+native function NAME(PARAMS) -> TYPE "library.path"
+```
+
+**Example:**
+```
+native function check_vm_connectivity(vm_endpoint string) -> bool "omerta.native.vm_connectivity"
+```
+
+### Actors
+
+```
+actor Consumer "Party paying for service" (
+    store (...)
+
+    trigger initiate_lock(provider peer_id, amount uint) in [IDLE] "Start a new lock"
+
+    state IDLE initial "Waiting to initiate"
+    state LOCKED terminal "Funds locked"
+    state FAILED terminal "Lock failed"
+
+    # Transitions...
+)
+```
+
+#### Store Section
+
+Local variables for the actor:
+
+```
+store (
+    provider         peer_id
+    amount           uint
+    session_id       hash
+    witnesses        list<peer_id>
+    peer_balances    map<peer_id, uint>
+)
+```
+
+#### Triggers
+
+External entry points to start protocol flows:
+
+```
+trigger initiate_lock(provider peer_id, amount uint) in [IDLE] "Start a new lock"
+trigger initiate_topup(amount uint) in [LOCKED] "Add funds to existing escrow"
+```
+
+- **Parameters**: typed parameters
+- **in [STATES]**: Valid states to call from
+- **Description**: What the trigger does
+
+#### States
+
+```
+state IDLE initial "Waiting to initiate"
+state SENDING_REQUEST "Sending request to provider"
+state LOCKED "Funds successfully locked"
+state FAILED terminal "Lock failed"
+```
+
+Modifiers:
+- `initial` - Starting state (exactly one required)
+- `terminal` - End state (no outgoing transitions)
+
+#### Transitions
+
+**On trigger with guard:**
+```
+IDLE -> SENDING_LOCK on initiate_lock when has_provider_checkpoint (
+    store provider, amount
+    compute session_id = HASH(peer_id + provider + NOW())
+) else -> FAILED (
+    STORE(reject_reason, "no_checkpoint")
+)
+```
+
+**On message:**
+```
+WAITING -> PROCESSING on RESPONSE_MESSAGE (
+    STORE(result, message.payload)
+)
+
+WAITING -> PROCESSING on RESPONSE when message.status == "OK" (
+    STORE(result, message.payload)
+)
+```
+
+**Auto transition (immediate):**
+```
+COMPUTING -> SENDING auto (
+    compute result = BUILD_RESULT()
+    SEND(consumer, RESULT_MESSAGE)
+)
+
+VERIFYING -> ACCEPTED auto when verification_passed
+```
+
+**Timeout:**
+```
+WAITING -> FAILED on timeout(LOCK_TIMEOUT) (
+    STORE(reject_reason, "timeout")
+)
+```
+
+**Self-loop:**
+```
+COLLECTING -> COLLECTING on VOTE_MESSAGE (
+    APPEND(votes, message.payload)
+)
+```
+
+**Fast path with guard:**
+```
+# Advance early when condition met
+COLLECTING -> EVALUATING auto when LENGTH(votes) >= THRESHOLD
+
+# Timeout fallback
+COLLECTING -> EVALUATING on timeout(VOTE_TIMEOUT)
+```
+
+#### Transition Actions
+
+**Store from message fields:**
+```
+store field1, field2, field3
+```
+Extracts named fields from the triggering message/trigger and stores them.
+
+**Store explicit value:**
+```
+STORE(key, value)
+STORE(reject_reason, "insufficient_balance")
+```
+
+**Compute and store:**
+```
+compute session_id = HASH(peer_id + provider + NOW())
+compute signature = SIGN(result)
+compute rng = SEEDED_RNG(seed)
+```
+
+**Send message:**
+```
+SEND(provider, LOCK_INTENT)
+SEND(message.sender, RESPONSE)
+```
+
+**Broadcast to list:**
+```
+BROADCAST(witnesses, WITNESS_REQUEST)
+```
+
+**Append to list:**
+```
+APPEND(votes, message.payload)
+```
+
+**Append block to chain:**
+```
+APPEND(my_chain, BALANCE_LOCK)
+```
+
+---
+
+## Primitive Operations
+
+### Chain Operations
+- `APPEND(my_chain, BLOCK_TYPE)` - add block to my chain
+- `READ(chain, query) → value` - read from a chain (mine or cached copy of peer's)
+- `CHAIN_STATE_AT(chain, hash) → state` - extract chain state at a specific block hash
+- `CHAIN_CONTAINS_HASH(chain, hash) → bool` - check if hash exists in chain
+- `CHAIN_SEGMENT(chain, hash) → list` - extract portion of chain up to hash
+- `VERIFY_CHAIN_SEGMENT(segment) → bool` - verify chain segment validity
+
+### Local State Operations
+- `STORE(key, value)` - save to local peer state (not on chain)
+- `LOAD(key) → value` - retrieve from local state
+
+### Communication
+- `SEND(peer, MESSAGE)` - send message to peer
+- `BROADCAST(peer_list, MESSAGE)` - send message to multiple peers
+- Messages received are handled by `on MESSAGE_TYPE` transitions
+
+### Cryptographic
+- `SIGN(data) → signature` - sign with my private key
+- `VERIFY_SIG(public_key, data, signature) → bool` - verify signature
+- `HASH(data) → hash` - cryptographic hash (SHA-256)
+- `MULTI_SIGN(data, existing_sigs) → combined_signature` - add my signature to multi-sig
+- `RANDOM_BYTES(n) → bytes` - generate n random bytes
+- `GENERATE_ID() → string` - generate unique identifier
+
+### Seeded Random
+- `SEEDED_RNG(seed) → rng` - create seeded random number generator
+- `SEEDED_SAMPLE(rng, list, n) → list` - deterministically sample n items
+
+### Compute
+- `IF condition THEN value ELSE value` - conditional expression (ternary)
+- `NOT condition`, `AND`, `OR` - boolean operators
+- `FOR item IN list: ...` - iteration
+- `NOW() → timestamp` - current time
+- `ABORT(reason)` - exit state machine with error
+
+### Collection Operations
+- `FILTER(list, predicate) → list` - filter list by lambda predicate
+- `MAP(list, transform) → list` - transform list elements by lambda
+- `LENGTH(list) → int` - list length
+- `CONCAT(list_a, list_b) → list` - concatenate two lists
+- `SORT(list) → list` - sort list (returns new list)
+- `HAS_KEY(dict, key) → bool` - check if dict contains key (null-safe)
+
+### Common Library
+
+Additional helper functions are defined in `shared/common.omt` and can be imported via `imports shared/common`. These include: `CONTAINS`, `REMOVE`, `SET_EQUALS`, `GET`, `MIN`, `MAX`, `EXTRACT_FIELD`, `COUNT_MATCHING`. See the file for full signatures.
+
+### Metaprogramming
+
+**Dynamic field access:**
+```
+value = record.{field_name}   # Access field by variable name
+```
+The `{...}` syntax allows accessing a field whose name is stored in a variable.
+
+**Lambda expressions:**
+```
+FILTER(items, x => x.status == "active")
+MAP(items, item => item.value * 2)
+```
+Lambda expressions use the `=>` arrow syntax. The left side is the parameter name, the right side is the expression to evaluate.
+
+---
+
+## Data Types
+
+| Type | Description |
+|------|-------------|
+| `hash` | Cryptographic hash (hex string) |
+| `peer_id` | Peer identifier (public key hash) |
+| `uint` | Unsigned integer |
+| `int` | Signed integer |
+| `bytes` | Raw byte sequence |
+| `timestamp` | Unix timestamp (float) |
+| `string` | UTF-8 text |
+| `bool` | Boolean (true/false) |
+| `signature` | Cryptographic signature |
+| `dict` | Key-value object |
+| `list<T>` | List of type T |
+| `map<K, V>` | Map from key type K to value type V |
+
+Custom types (defined by enums or in shared imports):
+- `WitnessVerdict`, `LockStatus`, `TerminationReason` (enums)
+- `LockResult`, `TopUpResult`, `SelectionInputs` (structs from shared)
+
+---
+
+## Guards
+
+Boolean expressions for conditional transitions:
+
+```
+when has_provider_checkpoint
+when observed_balance >= amount
+when LENGTH(votes) >= THRESHOLD
+when message.status == "OK" AND LENGTH(message.data) > 0
+when message.sender == LOAD(consumer)
+```
+
+Access message fields with `message.field` or `message.payload.field`.
+
+---
+
+## Struct Literals
+
+Create inline objects:
+
+```
+{ session_id: LOAD(session_id), status: ACCEPTED, timestamp: NOW() }
+```
+
+Spread syntax for extending:
+```
+{ ...pending_result, consumer_signature: signature }
+```
+
+---
 
 ## Semantics
 
 **Action execution:**
 - All actions in a state execute to completion before checking messages
 - Messages received during action execution are queued
-- If you need interruptibility, break into separate states with one action each
 
 **State transitions:**
 - Actions never end with "stay in this state"
-- To wait/loop, use a state with no actions (or minimal actions) and `after(duration) → same_state`
+- To wait/loop, use a state with no actions and `after(duration) → same_state`
 - Every state must have explicit transitions via messages or timeout
 
 **Message handling:**
 - Messages are checked only after all actions complete
 - If multiple messages queued, process in order received
-- Unhandled message types are ignored (or could define `on UNHANDLED:` behavior)
 
 **Timeout (`after`):**
 - `after(duration)` means: wait at least this long before transitioning
 - This is the default transition if no matching message arrives
-- Not necessarily an error - can be the happy path (e.g., "no objections received, proceed")
 - Can transition to self for waiting/polling loops
-
----
-
-## Primitive Operations
-
-### Chain operations
-- `APPEND(my_chain, record)` - add record to my chain
-- `READ(chain, query) → value` - read from a chain (mine or cached copy of peer's)
-- `CHAIN_STATE_AT(chain, hash) → state` - extract chain state at a specific block hash
-- `CHAIN_CONTAINS_HASH(chain, hash) → bool` - check if hash exists in chain
-- `CHAIN_SEGMENT(chain, from, to) → bytes` - extract portion of chain
-- `VERIFY_CHAIN_SEGMENT(segment) → bool` - verify chain segment validity
-
-### Local state operations
-- `STORE(key, value)` - save to local peer state (not on chain)
-- `LOAD(key) → value` - retrieve from local state
-
-### Communication
-- `SEND(peer, message)` - send message to peer
-- `BROADCAST(peer_list, message)` - send message to multiple peers
-- Messages received are handled by `on MESSAGE_TYPE` clauses
-
-### Cryptographic
-- `SIGN(data) → signature` - sign with my private key
-- `VERIFY_SIG(public_key, data, signature) → bool`
-- `HASH(data) → hash` - cryptographic hash (SHA-256). Also used for hashlocks: `hashlock = HASH(preimage)`, verify with `HASH(revealed) == hashlock`
-- `MULTI_SIGN(data, existing_sigs) → combined_signature` - add my signature to multi-sig
-- `RANDOM_BYTES(n) → bytes` - generate n random bytes
-- `GENERATE_ID() → string` - generate unique identifier (typically hash of random data + timestamp)
-
-### Compute
-- `COMPARE(a, b) → bool`
-- `SUM(a, b)`, `SUBTRACT(a, b)`, etc.
-- `IF(condition) THEN ... ELSE ...`
-- `FOR item in list: ...` - iteration
-- `ABORT(reason)` - exit state machine with error
-- `NOW() → timestamp` - current time
-- `LENGTH(list) → int` - list length
-- `REMOVE(list, item) → list` - remove item from list
-- `SORT(list, by) → list` - sort list by key
-
-### List operations
-- `APPEND(list, item) → list` - append item to list (returns new list)
-- `FILTER(list, predicate) → list` - keep items matching predicate
-- `MAP(list, transform) → list` - apply transform to each item
-
-**Lambda syntax for predicates and transforms:**
-```
-FILTER(votes, v => v.verdict == ACCEPT)   # keep votes where verdict is ACCEPT
-MAP(votes, v => v.signature)               # extract signature from each vote
-```
-
-### Struct literals
-Create structured records inline:
-```
-result = {
-  session_id: LOAD(session_id),
-  status: LockStatus.ACCEPTED,
-  amount: 1000,
-  witnesses: LOAD(witnesses)
-}
-```
-
-Fields are evaluated in order. Can reference variables, call functions, or use literals.
-
-### Message access
-When handling incoming messages:
-- `MESSAGE.sender` - peer_id of the message sender
-- `MESSAGE.payload` - the full message payload as a struct
-- `MESSAGE.field` - access a specific field from the message payload
-
-### Guards and conditional transitions
-Guards are boolean expressions that must be true for a transition to occur:
-```
-STATE WAITING:
-  on RESPONSE from peer:
-    guard: RESPONSE.status == "OK" && LENGTH(RESPONSE.data) > 0
-    → next_state: PROCESSING
-
-  on RESPONSE from peer:
-    guard: RESPONSE.status == "ERROR"
-    → next_state: FAILED
-```
-
-### Auto-transitions
-Transitions that occur immediately without waiting for a message:
-```
-STATE COMPUTING:
-  auto:
-    actions:
-      - result = COMPUTE_SOMETHING()
-    → next_state: SENDING_RESULT
-```
-
-### Selection
-- `SELECT_WITNESSES(seed, chain_state, criteria) → peer_list` - deterministic witness selection
-- `SEEDED_RNG(seed) → rng` - create seeded random number generator
-- `SEEDED_SAMPLE(rng, list, n) → list` - deterministically sample n items
 
 ---
 

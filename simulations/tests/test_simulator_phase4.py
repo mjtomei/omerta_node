@@ -99,9 +99,10 @@ class TestInsufficientBalance:
 
         # Check that witnesses have cached consumer balance
         for agent_id, agent in runner.agents.items():
-            if hasattr(agent, 'protocol_actor') and hasattr(agent.protocol_actor, 'cached_chains'):
-                if "consumer" in agent.protocol_actor.cached_chains:
-                    assert agent.protocol_actor.cached_chains["consumer"]["balance"] == 100.0
+            if hasattr(agent, 'protocol_actor'):
+                cached = agent.protocol_actor.load("cached_chains", {})
+                if "consumer" in cached:
+                    assert cached["consumer"]["balance"] == 100.0
 
 
 # =============================================================================

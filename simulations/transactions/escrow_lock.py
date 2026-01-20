@@ -777,9 +777,6 @@ class Witness(Actor):
 
     state: WitnessState = WitnessState.IDLE
 
-    # For accessing consumer chain data (simplified)
-    cached_chains: Dict[str, dict] = field(default_factory=dict)
-
     def tick(self, current_time: float) -> List[Message]:
         """Process one tick of the witness state machine."""
         self.current_time = current_time
@@ -888,7 +885,7 @@ class Witness(Actor):
                 balance = 100.0  # Simplified
             else:
                 # Use cached data
-                balance = self.cached_chains.get(consumer, {}).get("balance", 0.0)
+                balance = self.load("cached_chains", {}).get(consumer, {}).get("balance", 0.0)
 
             self.store("observed_balance", balance)
             self.store("observed_chain_head", self.load("synced_chain_head") or "unknown")
@@ -947,14 +944,15 @@ class Witness(Actor):
         elif self.state == WitnessState.COLLECTING_PRELIMINARIES:
             # Handle incoming sync requests while collecting
             sync_requests = self.get_messages(MessageType.WITNESS_CHAIN_SYNC_REQUEST)
+            cached_chains = self.load("cached_chains", {})
             for req in sync_requests:
                 consumer = req.payload["consumer"]
-                if consumer in self.cached_chains:
+                if consumer in cached_chains:
                     response = {
                         "session_id": req.payload["session_id"],
                         "consumer": consumer,
-                        "chain_data": self.cached_chains[consumer],
-                        "chain_head": self.cached_chains[consumer].get("head_hash", "unknown"),
+                        "chain_data": cached_chains[consumer],
+                        "chain_head": cached_chains[consumer].get("head_hash", "unknown"),
                         "timestamp": current_time,
                     }
                     response["signature"] = sign(self.chain.private_key, hash_data(response))
@@ -1210,7 +1208,7 @@ class Witness(Actor):
             current_locked = self.load("total_escrowed", 0.0)
 
             # Get balance from cached chain data
-            balance = self.cached_chains.get(consumer, {}).get("balance", 0.0)
+            balance = self.load("cached_chains", {}).get(consumer, {}).get("balance", 0.0)
             free_balance = balance - current_locked
 
             self.store("topup_observed_balance", balance)
