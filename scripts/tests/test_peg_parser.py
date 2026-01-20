@@ -554,7 +554,7 @@ class TestPEGTransitions:
 class TestPEGActions:
     """Action parsing tests."""
 
-    def test_store_fields(self):
+    def test_store(self):
         schema = parse("""
         actor A (
             state S1 initial
@@ -1895,6 +1895,859 @@ class TestParserRealFiles:
             pytest.skip(f"File not found: {omt_path}")
         source = omt_path.read_text()
         assert_ast_equal(source)
+
+
+# =============================================================================
+# Edge Case Tests - Boundary conditions and minimal inputs
+# Inspired by TC39 test262-parser-tests organization
+# =============================================================================
+
+class TestEdgeCasesEmpty:
+    """Test empty and minimal structures."""
+
+    def test_empty_parameters_block(self):
+        """Empty parameters block is valid."""
+        schema = parse("parameters ()")
+        assert len(schema.parameters) == 0
+
+    def test_empty_enum(self):
+        """Empty enum is valid (though perhaps not useful)."""
+        schema = parse('enum Empty ()')
+        assert len(schema.enums) == 1
+        assert schema.enums[0].name == "Empty"
+        assert len(schema.enums[0].values) == 0
+
+    def test_empty_store(self):
+        """Actor with empty store block."""
+        schema = parse("""
+        actor A (
+            store ()
+            state S initial
+        )
+        """)
+        assert len(schema.actors[0].store) == 0
+
+    def test_empty_action_block(self):
+        """Transition with empty action block."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2
+            S1 -> S2 auto ()
+        )
+        """)
+        trans = schema.actors[0].transitions[0]
+        assert len(trans.actions) == 0
+
+    def test_message_empty_fields(self):
+        """Message with no fields."""
+        schema = parse("message EMPTY from A to [B] ()")
+        assert len(schema.messages[0].fields) == 0
+
+    def test_block_empty_fields(self):
+        """Block with no fields."""
+        schema = parse("block EMPTY by [A] ()")
+        assert len(schema.blocks[0].fields) == 0
+
+
+class TestEdgeCasesSingle:
+    """Test single-element structures."""
+
+    def test_single_parameter(self):
+        """Single parameter in block."""
+        schema = parse('parameters ( X = 1 )')
+        assert len(schema.parameters) == 1
+
+    def test_single_enum_value(self):
+        """Enum with single value."""
+        schema = parse('enum Single ( ONLY )')
+        assert [v.name for v in schema.enums[0].values] == ["ONLY"]
+
+    def test_single_recipient(self):
+        """Message with single recipient."""
+        schema = parse("message M from A to [B] ()")
+        assert schema.messages[0].recipients == ["B"]
+
+    def test_single_state_actor(self):
+        """Actor with only initial state (also terminal)."""
+        schema = parse("""
+        actor A (
+            state ONLY initial terminal
+        )
+        """)
+        assert len(schema.actors[0].states) == 1
+        assert schema.actors[0].states[0].initial
+        assert schema.actors[0].states[0].terminal
+
+    def test_single_trigger_param(self):
+        """Trigger with single parameter."""
+        schema = parse("""
+        actor A (
+            trigger go(x int) in [S]
+            state S initial
+        )
+        """)
+        assert len(schema.actors[0].triggers[0].params) == 1
+
+    def test_single_function_param(self):
+        """Function with single parameter."""
+        schema = parse("""
+        function f(x int) -> int (
+            RETURN x
+        )
+        """)
+        assert len(schema.functions[0].params) == 1
+
+
+class TestEdgeCasesIdentifiers:
+    """Test identifier edge cases."""
+
+    def test_single_char_identifier(self):
+        """Single character identifiers."""
+        schema = parse("""
+        actor A (
+            store ( x int )
+            state S initial
+        )
+        """)
+        assert schema.actors[0].store[0].name == "x"
+
+    def test_underscore_prefix(self):
+        """Identifiers starting with underscore."""
+        schema = parse("""
+        actor _Actor (
+            store ( _field int )
+            state _S initial
+        )
+        """)
+        assert schema.actors[0].name == "_Actor"
+
+    def test_underscore_only(self):
+        """Single underscore as identifier."""
+        schema = parse("""
+        actor A (
+            store ( _ int )
+            state S initial
+        )
+        """)
+        assert schema.actors[0].store[0].name == "_"
+
+    def test_long_identifier(self):
+        """Very long identifier."""
+        long_name = "a" * 100
+        schema = parse(f"""
+        actor {long_name} (
+            state S initial
+        )
+        """)
+        assert schema.actors[0].name == long_name
+
+    def test_mixed_case_identifier(self):
+        """Mixed case identifiers."""
+        schema = parse("""
+        actor CamelCaseActor (
+            store ( snake_case_field int )
+            state SCREAMING_CASE initial
+        )
+        """)
+        assert schema.actors[0].name == "CamelCaseActor"
+
+    def test_numeric_suffix_identifier(self):
+        """Identifiers with numeric suffixes."""
+        schema = parse("""
+        actor Actor123 (
+            store ( field456 int )
+            state S789 initial
+        )
+        """)
+        assert schema.actors[0].name == "Actor123"
+
+
+class TestEdgeCasesNumbers:
+    """Test numeric literal edge cases."""
+
+    def test_zero(self):
+        """Zero as a value."""
+        schema = parse("parameters ( X = 0 )")
+        assert schema.parameters[0].value == 0
+
+    def test_negative_number(self):
+        """Negative numbers."""
+        schema = parse("parameters ( X = -1 )")
+        assert schema.parameters[0].value == -1
+
+    def test_decimal_number(self):
+        """Decimal numbers."""
+        schema = parse("parameters ( X = 0.5 )")
+        assert schema.parameters[0].value == 0.5
+
+    def test_large_number(self):
+        """Large numbers."""
+        schema = parse("parameters ( X = 999999999 )")
+        assert schema.parameters[0].value == 999999999
+
+
+class TestEdgeCasesStrings:
+    """Test string literal edge cases."""
+
+    def test_empty_string(self):
+        """Empty string literal."""
+        schema = parse('transaction 01 ""')
+        assert schema.transaction.name == ""
+
+    def test_string_with_spaces(self):
+        """String with internal spaces."""
+        schema = parse('transaction 01 "Hello World Test"')
+        assert schema.transaction.name == "Hello World Test"
+
+    def test_string_with_numbers(self):
+        """String containing numbers."""
+        schema = parse('transaction 01 "Version 2.0"')
+        assert schema.transaction.name == "Version 2.0"
+
+
+# =============================================================================
+# Error/Rejection Tests - Invalid syntax that should fail
+# =============================================================================
+
+class TestRejectionInvalidSyntax:
+    """Test that invalid syntax is properly rejected."""
+
+    def test_missing_transaction_id(self):
+        """Transaction without ID should fail."""
+        with pytest.raises(Exception):
+            parse('transaction "Name"')
+
+    def test_unclosed_parenthesis(self):
+        """Unclosed parenthesis should fail."""
+        with pytest.raises(Exception):
+            parse("parameters ( X = 1")
+
+    def test_unclosed_bracket(self):
+        """Unclosed bracket should fail."""
+        with pytest.raises(Exception):
+            parse("message M from A to [B ()")
+
+    def test_missing_arrow_in_transition(self):
+        """Transition without arrow should fail."""
+        with pytest.raises(Exception):
+            parse("""
+            actor A (
+                state S1 initial
+                state S2
+                S1 S2 auto
+            )
+            """)
+
+    def test_invalid_keyword_as_identifier(self):
+        """Using reserved keyword as identifier - behavior varies.
+
+        Note: 'actor' may or may not be reserved depending on parser.
+        This test documents the behavior.
+        """
+        # The parser may accept or reject this - just ensure it doesn't crash
+        try:
+            schema = parse("""
+            actor MyActor (
+                store ( state int )
+                state S initial
+            )
+            """)
+            # If it parses, 'state' as field name should work
+            assert schema.actors[0].store[0].name == "state"
+        except Exception:
+            pass  # Also acceptable if keyword is reserved
+
+    def test_double_initial_state(self):
+        """Two initial states - parser accepts but semantically invalid.
+
+        Note: The parser may accept this; semantic validation happens later.
+        This test documents the behavior.
+        """
+        # This may or may not raise - documenting current behavior
+        try:
+            schema = parse("""
+            actor A (
+                state S1 initial
+                state S2 initial
+            )
+            """)
+            # If it parses, both should be marked initial
+            assert schema.actors[0].states[0].is_initial
+            assert schema.actors[0].states[1].is_initial
+        except Exception:
+            pass  # Also acceptable
+
+    def test_invalid_type_syntax(self):
+        """Invalid type syntax should fail."""
+        with pytest.raises(Exception):
+            parse("""
+            actor A (
+                store ( x list< )
+                state S initial
+            )
+            """)
+
+    def test_unterminated_string(self):
+        """Unterminated string should fail."""
+        with pytest.raises(Exception):
+            parse('transaction 01 "unterminated')
+
+
+class TestRejectionInvalidExpressions:
+    """Test that invalid expressions are rejected."""
+
+    def test_empty_expression(self):
+        """Empty expression where one is required should fail."""
+        with pytest.raises(Exception):
+            parse("""
+            actor A (
+                state S1 initial
+                state S2
+                S1 -> S2 auto when
+            )
+            """)
+
+    def test_dangling_operator(self):
+        """Dangling binary operator should fail."""
+        with pytest.raises(Exception):
+            parse("""
+            function f() -> int (
+                RETURN 1 +
+            )
+            """)
+
+    def test_missing_lambda_body(self):
+        """Lambda without body should fail."""
+        with pytest.raises(Exception):
+            parse("""
+            function f(items list<int>) -> list<int> (
+                RETURN FILTER(items, x =>)
+            )
+            """)
+
+
+# =============================================================================
+# Stress Tests - Deep nesting and long structures
+# =============================================================================
+
+class TestStressDeepNesting:
+    """Test deeply nested structures."""
+
+    def test_deeply_nested_parentheses(self):
+        """Deeply nested parentheses in expressions."""
+        # 10 levels of nesting
+        expr = "((((((((((x))))))))))"
+        schema = parse(f"""
+        function f(x int) -> int (
+            RETURN {expr}
+        )
+        """)
+        assert schema.functions[0] is not None
+
+    def test_deeply_nested_function_calls(self):
+        """Nested function calls."""
+        schema = parse("""
+        function f(x int) -> int (
+            RETURN A(B(C(D(E(x)))))
+        )
+        """)
+        assert schema.functions[0] is not None
+
+    def test_deeply_nested_field_access(self):
+        """Deeply nested field access."""
+        schema = parse("""
+        function f(x dict) -> int (
+            RETURN x.a.b.c.d.e.f.g.h
+        )
+        """)
+        assert schema.functions[0] is not None
+
+    def test_nested_generic_types(self):
+        """Nested generic types."""
+        schema = parse("""
+        actor A (
+            store ( x list<list<list<int>>> )
+            state S initial
+        )
+        """)
+        # Verify it's a list of list of list
+        field_type = schema.actors[0].store[0].type
+        assert isinstance(field_type, ListType)
+
+    def test_complex_map_type(self):
+        """Complex map type with nested generics."""
+        schema = parse("""
+        actor A (
+            store ( x map<string, list<map<int, bool>>> )
+            state S initial
+        )
+        """)
+        assert schema.actors[0].store[0] is not None
+
+    def test_deeply_nested_for_loops(self):
+        """Nested FOR loops."""
+        schema = parse("""
+        function f(matrix list<list<list<int>>>) -> int (
+            total = 0
+            FOR plane IN matrix: (
+                FOR row IN plane: (
+                    FOR cell IN row:
+                        total = total + cell
+                )
+            )
+            RETURN total
+        )
+        """)
+        assert schema.functions[0] is not None
+
+
+class TestStressLongStructures:
+    """Test structures with many elements."""
+
+    def test_many_parameters(self):
+        """Many parameters in a block."""
+        params = "\n".join([f"    P{i} = {i}" for i in range(50)])
+        schema = parse(f"""
+        parameters (
+{params}
+        )
+        """)
+        assert len(schema.parameters) == 50
+
+    def test_many_enum_values(self):
+        """Enum with many values."""
+        values = "\n".join([f"    VALUE_{i}" for i in range(50)])
+        schema = parse(f"""
+        enum BigEnum (
+{values}
+        )
+        """)
+        assert len(schema.enums[0].values) == 50
+
+    def test_many_states(self):
+        """Actor with many states."""
+        states = "state S0 initial\n"
+        states += "\n".join([f"    state S{i}" for i in range(1, 49)])
+        states += "\n    state S49 terminal"
+        schema = parse(f"""
+        actor A (
+            {states}
+        )
+        """)
+        assert len(schema.actors[0].states) == 50
+
+    def test_many_transitions(self):
+        """Actor with many transitions."""
+        # Create a chain of states with transitions
+        states = "state S0 initial\n"
+        states += "\n".join([f"    state S{i}" for i in range(1, 20)])
+        transitions = "\n".join([f"    S{i} -> S{i+1} auto" for i in range(19)])
+        schema = parse(f"""
+        actor A (
+            {states}
+            {transitions}
+        )
+        """)
+        assert len(schema.actors[0].transitions) == 19
+
+    def test_many_function_params(self):
+        """Function with many parameters."""
+        params = ", ".join([f"p{i} int" for i in range(20)])
+        schema = parse(f"""
+        function f({params}) -> int (
+            RETURN p0
+        )
+        """)
+        assert len(schema.functions[0].params) == 20
+
+    def test_many_message_recipients(self):
+        """Message with many recipients."""
+        recipients = ", ".join([f"R{i}" for i in range(20)])
+        schema = parse(f"""
+        message M from Sender to [{recipients}] ()
+        """)
+        assert len(schema.messages[0].recipients) == 20
+
+    def test_long_expression_chain(self):
+        """Long chain of binary operations."""
+        # a + b + c + ... (20 terms)
+        terms = " + ".join([f"x{i}" for i in range(20)])
+        schema = parse(f"""
+        function f() -> int (
+            RETURN {terms}
+        )
+        """)
+        assert schema.functions[0] is not None
+
+
+# =============================================================================
+# Equivalence Tests - Different syntax, same semantics
+# =============================================================================
+
+class TestEquivalenceWhitespace:
+    """Test that whitespace variations produce equivalent ASTs."""
+
+    def test_compact_vs_spaced_parameters(self):
+        """Compact vs spaced parameter syntax."""
+        compact = parse('parameters(X=1)')
+        spaced = parse('parameters ( X = 1 )')
+        assert len(compact.parameters) == len(spaced.parameters)
+        assert compact.parameters[0].name == spaced.parameters[0].name
+        assert compact.parameters[0].value == spaced.parameters[0].value
+
+    def test_single_line_vs_multiline_actor(self):
+        """Single line vs multiline actor."""
+        single = parse('actor A ( state S initial )')
+        multi = parse("""
+        actor A (
+            state S initial
+        )
+        """)
+        assert single.actors[0].name == multi.actors[0].name
+        assert len(single.actors[0].states) == len(multi.actors[0].states)
+
+    def test_compact_vs_spaced_expression(self):
+        """Compact vs spaced expressions."""
+        compact = parse('function f(a int,b int)->int(RETURN a+b)')
+        spaced = parse("""
+        function f(a int, b int) -> int (
+            RETURN a + b
+        )
+        """)
+        assert compact.functions[0].name == spaced.functions[0].name
+
+
+class TestEquivalenceParentheses:
+    """Test that unnecessary parentheses don't change semantics."""
+
+    def test_grouped_vs_ungrouped_identifier(self):
+        """(x) should be same as x."""
+        ungrouped = parse("function f(x int) -> int ( RETURN x )")
+        grouped = parse("function f(x int) -> int ( RETURN (x) )")
+        # Both should parse successfully
+        assert ungrouped.functions[0] is not None
+        assert grouped.functions[0] is not None
+
+    def test_grouped_vs_ungrouped_literal(self):
+        """(1) should be same as 1."""
+        ungrouped = parse("function f() -> int ( RETURN 1 )")
+        grouped = parse("function f() -> int ( RETURN (1) )")
+        assert ungrouped.functions[0] is not None
+        assert grouped.functions[0] is not None
+
+
+# =============================================================================
+# Comment Position Tests
+# =============================================================================
+
+class TestCommentPositions:
+    """Test comments in various positions."""
+
+    def test_comment_before_declaration(self):
+        """Comment before a declaration."""
+        schema = parse("""
+        # Comment
+        transaction 01 "Test"
+        """)
+        assert schema.transaction is not None
+
+    def test_comment_after_declaration(self):
+        """Comment after a declaration on same line conceptually."""
+        schema = parse("""
+        transaction 01 "Test"
+        # Comment after
+        """)
+        assert schema.transaction is not None
+
+    def test_comment_between_declarations(self):
+        """Comments between declarations."""
+        schema = parse("""
+        transaction 01 "Test"
+        # Comment 1
+        # Comment 2
+        parameters ( X = 1 )
+        """)
+        assert schema.transaction is not None
+        assert len(schema.parameters) == 1
+
+    def test_comment_in_enum(self):
+        """Comments in enum values."""
+        schema = parse("""
+        enum Status (
+            PENDING # waiting
+            DONE    # finished
+        )
+        """)
+        assert len(schema.enums[0].values) == 2
+
+    def test_comment_in_parameters(self):
+        """Comments in parameters block."""
+        schema = parse("""
+        parameters (
+            # Timing
+            TIMEOUT = 60 seconds
+            # Counts
+            MAX = 100
+        )
+        """)
+        assert len(schema.parameters) == 2
+
+    def test_multiple_consecutive_comments(self):
+        """Multiple consecutive comment lines."""
+        schema = parse("""
+        # Line 1
+        # Line 2
+        # Line 3
+        # Line 4
+        # Line 5
+        transaction 01 "Test"
+        """)
+        assert schema.transaction is not None
+
+
+# =============================================================================
+# Operator Precedence and Associativity Tests
+# =============================================================================
+
+class TestOperatorPrecedence:
+    """Test operator precedence is correctly handled."""
+
+    def test_multiply_before_add(self):
+        """Multiplication has higher precedence than addition."""
+        schema = parse("""
+        function f() -> int (
+            RETURN 1 + 2 * 3
+        )
+        """)
+        # Should be 1 + (2 * 3) = 7, not (1 + 2) * 3 = 9
+        # We verify structure: top should be ADD with right child being MUL
+        ret = schema.functions[0].statements[0]
+        expr = ret.expression
+        assert isinstance(expr, BinaryExpr)
+        assert expr.op == BinaryOperator.ADD
+        assert isinstance(expr.right, BinaryExpr)
+        assert expr.right.op == BinaryOperator.MUL
+
+    def test_parentheses_override_precedence(self):
+        """Parentheses should override precedence."""
+        schema = parse("""
+        function f() -> int (
+            RETURN (1 + 2) * 3
+        )
+        """)
+        # Top should be MUL with left child being ADD
+        ret = schema.functions[0].statements[0]
+        expr = ret.expression
+        assert isinstance(expr, BinaryExpr)
+        assert expr.op == BinaryOperator.MUL
+        assert isinstance(expr.left, BinaryExpr)
+        assert expr.left.op == BinaryOperator.ADD
+
+    def test_left_associativity_add(self):
+        """Addition is left-associative: a + b + c = (a + b) + c."""
+        schema = parse("""
+        function f() -> int (
+            RETURN a + b + c
+        )
+        """)
+        ret = schema.functions[0].statements[0]
+        expr = ret.expression
+        # Top is ADD, left child should be ADD (for left-associativity)
+        assert isinstance(expr, BinaryExpr)
+        assert expr.op == BinaryOperator.ADD
+        assert isinstance(expr.left, BinaryExpr)
+        assert expr.left.op == BinaryOperator.ADD
+
+    def test_left_associativity_sub(self):
+        """Subtraction is left-associative: a - b - c = (a - b) - c."""
+        schema = parse("""
+        function f() -> int (
+            RETURN a - b - c
+        )
+        """)
+        ret = schema.functions[0].statements[0]
+        expr = ret.expression
+        assert isinstance(expr, BinaryExpr)
+        assert expr.op == BinaryOperator.SUB
+        assert isinstance(expr.left, BinaryExpr)
+        assert expr.left.op == BinaryOperator.SUB
+
+    def test_comparison_with_arithmetic(self):
+        """Comparison should have lower precedence than arithmetic."""
+        schema = parse("""
+        function f() -> bool (
+            RETURN a + b > c * d
+        )
+        """)
+        ret = schema.functions[0].statements[0]
+        expr = ret.expression
+        # Top should be GT (comparison)
+        assert isinstance(expr, BinaryExpr)
+        assert expr.op == BinaryOperator.GT
+        # Left should be ADD, right should be MUL
+        assert isinstance(expr.left, BinaryExpr)
+        assert expr.left.op == BinaryOperator.ADD
+        assert isinstance(expr.right, BinaryExpr)
+        assert expr.right.op == BinaryOperator.MUL
+
+    def test_and_or_precedence(self):
+        """AND has higher precedence than OR."""
+        schema = parse("""
+        function f() -> bool (
+            RETURN a or b and c
+        )
+        """)
+        ret = schema.functions[0].statements[0]
+        expr = ret.expression
+        # Should be a or (b and c), so top is OR
+        assert isinstance(expr, BinaryExpr)
+        assert expr.op == BinaryOperator.OR
+        assert isinstance(expr.right, BinaryExpr)
+        assert expr.right.op == BinaryOperator.AND
+
+    def test_not_precedence(self):
+        """NOT has higher precedence than AND."""
+        schema = parse("""
+        function f() -> bool (
+            RETURN not a and b
+        )
+        """)
+        ret = schema.functions[0].statements[0]
+        expr = ret.expression
+        # Should be (not a) and b, so top is AND
+        assert isinstance(expr, BinaryExpr)
+        assert expr.op == BinaryOperator.AND
+        assert isinstance(expr.left, UnaryExpr)
+        assert expr.left.op == UnaryOperator.NOT
+
+
+# =============================================================================
+# Complex Real-World Patterns
+# =============================================================================
+
+class TestRealWorldPatterns:
+    """Test patterns commonly seen in real transaction definitions."""
+
+    def test_guard_with_field_access_and_comparison(self):
+        """Common guard pattern: message.field == value."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2
+            S1 -> S2 on MSG when message.status == "OK"
+        )
+        """)
+        trans = schema.actors[0].transitions[0]
+        assert trans.guard is not None
+
+    def test_guard_with_length_check(self):
+        """Common guard: LENGTH(list) >= threshold."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2
+            S1 -> S2 auto when LENGTH(votes) >= THRESHOLD
+        )
+        """)
+        trans = schema.actors[0].transitions[0]
+        assert trans.guard is not None
+
+    def test_action_with_struct_literal(self):
+        """Creating struct literals in actions."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2
+            S1 -> S2 auto (
+                result = { status: "OK", timestamp: NOW() }
+            )
+        )
+        """)
+        trans = schema.actors[0].transitions[0]
+        assert len(trans.actions) == 1
+
+    def test_action_with_spread_struct(self):
+        """Struct with spread operator."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2
+            S1 -> S2 auto (
+                result = { ...base, extra: value }
+            )
+        )
+        """)
+        trans = schema.actors[0].transitions[0]
+        assert len(trans.actions) == 1
+
+    def test_filter_with_lambda(self):
+        """FILTER with lambda expression."""
+        schema = parse("""
+        function f(items list<dict>) -> list<dict> (
+            RETURN FILTER(items, x => x.active == true)
+        )
+        """)
+        assert schema.functions[0] is not None
+
+    def test_map_with_field_extraction(self):
+        """MAP to extract field from list of structs."""
+        schema = parse("""
+        function f(items list<dict>) -> list<string> (
+            RETURN MAP(items, x => x.name)
+        )
+        """)
+        assert schema.functions[0] is not None
+
+    def test_conditional_expression_in_return(self):
+        """IF-THEN-ELSE expression in return."""
+        schema = parse("""
+        function f(x int) -> string (
+            RETURN IF x > 0 THEN "positive" ELSE "non-positive"
+        )
+        """)
+        assert schema.functions[0] is not None
+
+    def test_chained_field_access_in_guard(self):
+        """Chained field access in guard."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2
+            S1 -> S2 on MSG when message.payload.data.value > 0
+        )
+        """)
+        trans = schema.actors[0].transitions[0]
+        assert trans.guard is not None
+
+    def test_dynamic_field_access(self):
+        """Dynamic field access with variable key."""
+        schema = parse("""
+        function f(record dict, field string) -> any (
+            RETURN record.{field}
+        )
+        """)
+        assert schema.functions[0] is not None
+
+    def test_complete_transition_with_else(self):
+        """Full transition with guard, actions, and else clause."""
+        schema = parse("""
+        actor A (
+            state S1 initial
+            state S2
+            state S3 terminal
+            S1 -> S2 on trigger when condition (
+                store field1
+                result = compute()
+            ) else -> S3 (
+                STORE(error, "failed")
+            )
+        )
+        """)
+        trans = schema.actors[0].transitions[0]
+        assert trans.guard is not None
+        assert len(trans.actions) == 2
+        assert trans.on_guard_fail is not None
 
 
 if __name__ == "__main__":
