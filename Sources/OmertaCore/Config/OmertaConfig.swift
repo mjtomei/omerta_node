@@ -159,9 +159,6 @@ public struct MeshConfigOptions: Codable, Sendable {
     /// Bootstrap peers for initial discovery (format: "peerId@host:port")
     public var bootstrapPeers: [String]
 
-    /// STUN servers for NAT detection
-    public var stunServers: [String]
-
     /// Whether this node can act as a relay for other peers
     public var canRelay: Bool
 
@@ -179,7 +176,6 @@ public struct MeshConfigOptions: Codable, Sendable {
         peerId: String? = nil,
         port: Int = 0,
         bootstrapPeers: [String] = [],
-        stunServers: [String] = MeshConfigOptions.defaultSTUNServers,
         canRelay: Bool = false,
         canCoordinateHolePunch: Bool = false,
         keepaliveInterval: Double = 15,
@@ -189,18 +185,11 @@ public struct MeshConfigOptions: Codable, Sendable {
         self.peerId = peerId
         self.port = port
         self.bootstrapPeers = bootstrapPeers
-        self.stunServers = stunServers
         self.canRelay = canRelay
         self.canCoordinateHolePunch = canCoordinateHolePunch
         self.keepaliveInterval = keepaliveInterval
         self.connectionTimeout = connectionTimeout
     }
-
-    /// Default STUN servers (Omerta STUN servers for NAT detection)
-    public static let defaultSTUNServers = [
-        "stun1.omerta.run:3478",
-        "stun2.omerta.run:3478"
-    ]
 
     /// Default configuration (mesh disabled)
     public static let `default` = MeshConfigOptions()
@@ -230,9 +219,6 @@ public struct MeshConfigOptions: Codable, Sendable {
 
 /// Configuration for NAT traversal
 public struct NATConfig: Codable, Sendable {
-    /// STUN servers for NAT type detection
-    public var stunServers: [String]
-
     /// Prefer direct connections over relay
     public var preferDirect: Bool
 
@@ -246,24 +232,16 @@ public struct NATConfig: Codable, Sendable {
     public var localPort: UInt16
 
     public init(
-        stunServers: [String] = NATConfig.defaultSTUNServers,
         preferDirect: Bool = true,
         holePunchTimeout: Int = 5000,
         probeCount: Int = 5,
         localPort: UInt16 = 0
     ) {
-        self.stunServers = stunServers
         self.preferDirect = preferDirect
         self.holePunchTimeout = holePunchTimeout
         self.probeCount = probeCount
         self.localPort = localPort
     }
-
-    /// Default STUN servers (Omerta STUN servers for NAT detection)
-    public static let defaultSTUNServers = [
-        "stun1.omerta.run:3478",
-        "stun2.omerta.run:3478"
-    ]
 
     /// Timeout as TimeInterval
     public var timeoutInterval: TimeInterval {

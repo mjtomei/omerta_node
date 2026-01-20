@@ -113,28 +113,15 @@ public actor Bootstrap {
             }
         }
 
-        // Detect NAT type if we contacted any nodes
-        var natType: NATType? = nil
-        var publicEndpoint: String? = nil
-
-        if nodesContacted > 0 {
-            do {
-                let detector = NATDetector()
-                let result = try await detector.detect(timeout: config.timeout)
-                natType = result.type
-                publicEndpoint = result.publicEndpoint
-                logger.info("NAT detection: \(result.type), endpoint: \(result.publicEndpoint ?? "unknown")")
-            } catch {
-                logger.warning("NAT detection failed: \(error)")
-            }
-        }
+        // NAT type is now detected automatically via peer pong responses
+        // The NATPredictor in MeshNode will determine the NAT type from observations
 
         let result = BootstrapResult(
             peersDiscovered: peersDiscovered,
             nodesContacted: nodesContacted,
             failedEndpoints: failedEndpoints,
-            natType: natType,
-            publicEndpoint: publicEndpoint
+            natType: nil,
+            publicEndpoint: nil
         )
 
         if result.isSuccessful {
@@ -149,8 +136,9 @@ public actor Bootstrap {
     /// Bootstrap from a single node
     private func bootstrapFromNode(_ endpoint: String) async throws -> [PeerAnnouncement] {
         // Send ping to discover the node
+        let myNATType = await node.getPredictedNATType().type
         let response = try await node.sendAndReceive(
-            .ping(recentPeers: []),
+            .ping(recentPeers: [], myNATType: myNATType),
             to: endpoint,
             timeout: config.timeout
         )
@@ -167,7 +155,7 @@ public actor Bootstrap {
         }
 
         // If we got a pong, at least we know the node is alive
-        if case .pong(let recentPeers) = response {
+        if case .pong(let recentPeers, _, _) = response {
             logger.debug("Bootstrap node \(endpoint) knows about \(recentPeers.count) peers")
         }
 
@@ -240,13 +228,14 @@ extension Bootstrap {
             }) else { continue }
 
             do {
+                let myNATType = await node.getPredictedNATType().type
                 let response = try await node.sendAndReceive(
-                    .ping(recentPeers: []),
+                    .ping(recentPeers: [], myNATType: myNATType),
                     to: endpoint,
                     timeout: 5.0
                 )
 
-                if case .pong = response {
+                if case .pong(_, _, _) = response {
                     nodesContacted += 1
                     await peerCache.insert(peer)
                     peersDiscovered += 1

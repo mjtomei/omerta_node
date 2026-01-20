@@ -60,7 +60,6 @@ public actor MeshProviderDaemon {
                 canCoordinateHolePunch: meshOptions.canCoordinateHolePunch,
                 keepaliveInterval: meshOptions.keepaliveInterval,
                 connectionTimeout: meshOptions.connectionTimeout,
-                stunServers: meshOptions.stunServers,
                 bootstrapPeers: meshOptions.bootstrapPeers
             )
 

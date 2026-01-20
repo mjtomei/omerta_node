@@ -187,7 +187,7 @@ public actor TestNode {
     /// Default message handling
     private func handleDefaultMessage(_ message: MeshMessage, from senderId: String) async {
         switch message {
-        case .ping(_):
+        case .ping(_, _):
             // Respond with pong including recent peers with endpoints
             var peerEndpointInfoList: [PeerEndpointInfo] = []
             for (peerId, contact) in recentContacts {
@@ -196,11 +196,13 @@ public actor TestNode {
                     peerEndpointInfoList.append(PeerEndpointInfo(
                         peerId: peerId,
                         machineId: "test-machine-\(peerId.prefix(8))",
-                        endpoint: endpoint
+                        endpoint: endpoint,
+                        natType: .unknown
                     ))
                 }
             }
-            await send(.pong(recentPeers: peerEndpointInfoList), to: senderId)
+            // Use senderId as yourEndpoint (in real network this would be the observed UDP source)
+            await send(.pong(recentPeers: peerEndpointInfoList, yourEndpoint: senderId, myNATType: .unknown), to: senderId)
 
         case .findPeer(let peerId):
             // Check cache and respond

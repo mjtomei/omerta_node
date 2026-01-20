@@ -1,5 +1,9 @@
 # WireGuard Roaming Design for OmertaMesh
 
+> **Note (January 2026)**: References to STUN-based NAT detection in this document have been superseded.
+> NAT type is now detected via peer-based observation (peers report endpoints in pong messages).
+> See `mesh-relay-network.md` for details.
+
 ## Overview
 
 This document describes how OmertaMesh handles device roaming transparently while using WireGuard as the underlying transport. The goal is to maintain active connections when devices:

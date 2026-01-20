@@ -104,9 +104,9 @@ public actor MeshNetwork {
             self.eventLoopGroup = elg
             self.ownsEventLoopGroup = true
 
-            // Detect NAT type
+            // NAT type will be detected from peer observations after connecting to bootstrap peers
             state = .detectingNAT
-            try await detectNAT()
+            self.natType = .unknown
 
             // Create internal mesh node
             let nodeConfig = MeshNode.Config(
@@ -147,6 +147,9 @@ public actor MeshNetwork {
             // Connect to bootstrap peers
             state = .bootstrapping
             await connectToBootstrapPeers()
+
+            // Detect NAT type from peer observations (after bootstrap pongs)
+            await detectNATFromPeers()
 
             state = .running
             await eventPublisher.publish(.started(localPeerId: peerId))
@@ -637,26 +640,43 @@ public actor MeshNetwork {
 
     // MARK: - Private Methods
 
-    private func detectNAT() async throws {
-        let detector = NATDetector(stunServers: config.stunServers)
+    /// Detect NAT type from peer endpoint observations
+    private func detectNATFromPeers() async {
+        guard let node = meshNode else { return }
 
-        do {
-            let result = try await detector.detect(timeout: config.natDetectionTimeout)
-            self.natType = result.type
-            self.publicEndpoint = result.publicEndpoint
+        // Get prediction from the node's NATPredictor (populated by pong responses)
+        let prediction = await node.getPredictedNATType()
 
-            logger.info("NAT detection complete", metadata: [
-                "type": "\(result.type.rawValue)",
-                "endpoint": "\(result.publicEndpoint ?? "none")"
+        if prediction.type != .unknown {
+            self.natType = prediction.type
+            self.publicEndpoint = prediction.publicEndpoint
+
+            logger.info("NAT prediction complete", metadata: [
+                "type": "\(prediction.type.rawValue)",
+                "endpoint": "\(prediction.publicEndpoint ?? "none")",
+                "confidence": "\(prediction.confidence)"
             ])
-
-            await eventPublisher.publish(.natDetected(type: result.type, publicEndpoint: result.publicEndpoint))
-        } catch {
-            logger.warning("NAT detection failed: \(error)")
-            // Continue with unknown NAT type
-            self.natType = .unknown
-            await eventPublisher.publish(.warning(message: "NAT detection failed: \(error.localizedDescription)"))
+        } else {
+            logger.debug("NAT type not yet determined (confidence: \(prediction.confidence))")
+            // Keep unknown type - will be updated as more observations come in
         }
+    }
+
+    /// Refresh NAT prediction from current observations
+    public func refreshNATPrediction() async -> (type: NATType, publicEndpoint: String?, confidence: Int) {
+        guard let node = meshNode else {
+            return (type: .unknown, publicEndpoint: nil, confidence: 0)
+        }
+
+        let prediction = await node.getPredictedNATType()
+
+        if prediction.type != .unknown {
+            self.natType = prediction.type
+            self.publicEndpoint = prediction.publicEndpoint
+            await eventPublisher.publish(.natDetected(type: prediction.type, publicEndpoint: prediction.publicEndpoint))
+        }
+
+        return prediction
     }
 
     private func connectToBootstrapPeers() async {

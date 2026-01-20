@@ -269,4 +269,155 @@ final class GossipTests: XCTestCase {
         let fanout = await node.gossipFanout
         XCTAssertEqual(fanout, 5, "Gossip fanout should be 5 as per protocol")
     }
+
+    // MARK: - Reconnecting Peer Detection Tests
+
+    /// Test that FreshnessManager tracks contacts correctly
+    func testFreshnessManagerTracksContacts() async throws {
+        let freshnessManager = FreshnessManager()
+
+        let testPeerId = "test-peer-\(UUID().uuidString.prefix(8))"
+
+        // Initially no recent contact
+        let hasContactBefore = await freshnessManager.hasRecentContact(testPeerId, maxAgeSeconds: 60)
+        XCTAssertFalse(hasContactBefore, "Should have no contact before recording")
+
+        // Record a contact
+        await freshnessManager.recordContact(
+            peerId: testPeerId,
+            reachability: .direct(endpoint: "192.168.1.100:9999"),
+            latencyMs: 50,
+            connectionType: .direct
+        )
+
+        // Now should have recent contact
+        let hasContactAfter = await freshnessManager.hasRecentContact(testPeerId, maxAgeSeconds: 60)
+        XCTAssertTrue(hasContactAfter, "Should have recent contact after recording")
+    }
+
+    /// Test that hasRecentContact respects maxAgeSeconds
+    func testFreshnessManagerRespectsMaxAge() async throws {
+        let freshnessManager = FreshnessManager()
+
+        let testPeerId = "test-peer-\(UUID().uuidString.prefix(8))"
+
+        // Record a contact
+        await freshnessManager.recordContact(
+            peerId: testPeerId,
+            reachability: .direct(endpoint: "192.168.1.100:9999"),
+            latencyMs: 50,
+            connectionType: .direct
+        )
+
+        // Should have recent contact with 60s window
+        let hasRecentContact = await freshnessManager.hasRecentContact(testPeerId, maxAgeSeconds: 60)
+        XCTAssertTrue(hasRecentContact, "Should have recent contact within 60s")
+
+        // Should also have recent contact with very short window (just recorded)
+        let hasVeryRecentContact = await freshnessManager.hasRecentContact(testPeerId, maxAgeSeconds: 1)
+        XCTAssertTrue(hasVeryRecentContact, "Should have recent contact within 1s (just recorded)")
+    }
+
+    /// Test that unknown peer has no recent contact
+    func testFreshnessManagerUnknownPeerNoContact() async throws {
+        let freshnessManager = FreshnessManager()
+
+        let unknownPeerId = "unknown-peer-\(UUID().uuidString.prefix(8))"
+
+        let hasContact = await freshnessManager.hasRecentContact(unknownPeerId, maxAgeSeconds: 60)
+        XCTAssertFalse(hasContact, "Unknown peer should have no recent contact")
+    }
+
+    /// Test reconnecting peer detection logic
+    /// A peer is "reconnecting" if we have their endpoint but no recent contact (60s)
+    func testReconnectingPeerDetection() async throws {
+        let node = try createTestNode()
+        try await node.start()
+        defer { Task { await node.stop() } }
+
+        let testPeerId = "test-peer-\(UUID().uuidString.prefix(8))"
+        let testMachineId = "test-machine-\(UUID().uuidString.prefix(8))"
+        let testEndpoint = "192.168.1.100:9999"
+
+        // Record endpoint (simulating previous connection)
+        await node.endpointManager.recordMessageReceived(
+            from: testPeerId,
+            machineId: testMachineId,
+            endpoint: testEndpoint
+        )
+
+        // Check we have the endpoint
+        let endpoints = await node.endpointManager.getAllEndpoints(peerId: testPeerId)
+        XCTAssertFalse(endpoints.isEmpty, "Should have endpoint recorded")
+
+        // But no recent contact (we recorded endpoint but not freshness)
+        let hasRecentContact = await node.freshnessManager.hasRecentContact(testPeerId, maxAgeSeconds: 60)
+        XCTAssertFalse(hasRecentContact, "Should have no recent contact (only endpoint, no freshness)")
+
+        // This is the reconnecting peer scenario: hasEndpoint but !hasRecentContact
+        let hasEndpoints = !endpoints.isEmpty
+        let isReconnecting = hasEndpoints && !hasRecentContact
+        XCTAssertTrue(isReconnecting, "Peer should be detected as reconnecting")
+    }
+
+    /// Test new peer detection (no endpoint, no contact)
+    func testNewPeerDetection() async throws {
+        let node = try createTestNode()
+        try await node.start()
+        defer { Task { await node.stop() } }
+
+        let unknownPeerId = "unknown-peer-\(UUID().uuidString.prefix(8))"
+
+        // No endpoints
+        let endpoints = await node.endpointManager.getAllEndpoints(peerId: unknownPeerId)
+        XCTAssertTrue(endpoints.isEmpty, "Should have no endpoints for new peer")
+
+        // No recent contact
+        let hasRecentContact = await node.freshnessManager.hasRecentContact(unknownPeerId, maxAgeSeconds: 60)
+        XCTAssertFalse(hasRecentContact, "Should have no recent contact for new peer")
+
+        // This is the new peer scenario
+        let hasEndpoints = !endpoints.isEmpty
+        let isNewOrReconnecting = !hasEndpoints || !hasRecentContact
+        XCTAssertTrue(isNewOrReconnecting, "New peer should be detected as new/reconnecting")
+    }
+
+    /// Test known peer with recent contact (normal keepalive)
+    func testKnownPeerWithRecentContact() async throws {
+        let node = try createTestNode()
+        try await node.start()
+        defer { Task { await node.stop() } }
+
+        let testPeerId = "test-peer-\(UUID().uuidString.prefix(8))"
+        let testMachineId = "test-machine-\(UUID().uuidString.prefix(8))"
+        let testEndpoint = "192.168.1.100:9999"
+
+        // Record endpoint
+        await node.endpointManager.recordMessageReceived(
+            from: testPeerId,
+            machineId: testMachineId,
+            endpoint: testEndpoint
+        )
+
+        // Record recent contact
+        await node.freshnessManager.recordContact(
+            peerId: testPeerId,
+            reachability: .direct(endpoint: testEndpoint),
+            latencyMs: 50,
+            connectionType: .direct
+        )
+
+        // Should have endpoint
+        let endpoints = await node.endpointManager.getAllEndpoints(peerId: testPeerId)
+        XCTAssertFalse(endpoints.isEmpty, "Should have endpoint")
+
+        // Should have recent contact
+        let hasRecentContact = await node.freshnessManager.hasRecentContact(testPeerId, maxAgeSeconds: 60)
+        XCTAssertTrue(hasRecentContact, "Should have recent contact")
+
+        // This is NOT a new/reconnecting peer
+        let hasEndpoints = !endpoints.isEmpty
+        let isNewOrReconnecting = !hasEndpoints || !hasRecentContact
+        XCTAssertFalse(isNewOrReconnecting, "Known peer with recent contact should not be new/reconnecting")
+    }
 }

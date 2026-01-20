@@ -8,16 +8,18 @@ public typealias PeerId = String
 /// Network endpoint (IP:port)
 public typealias Endpoint = String
 
-/// Peer endpoint info shared in gossip (includes machineId for proper tracking)
+/// Peer endpoint info shared in gossip (includes machineId and natType for proper tracking)
 public struct PeerEndpointInfo: Codable, Sendable, Equatable {
     public let peerId: PeerId
     public let machineId: MachineId
     public let endpoint: String
+    public let natType: NATType
 
-    public init(peerId: PeerId, machineId: MachineId, endpoint: String) {
+    public init(peerId: PeerId, machineId: MachineId, endpoint: String, natType: NATType = .unknown) {
         self.peerId = peerId
         self.machineId = machineId
         self.endpoint = endpoint
+        self.natType = natType
     }
 }
 
@@ -25,11 +27,11 @@ public struct PeerEndpointInfo: Codable, Sendable, Equatable {
 public enum MeshMessage: Codable, Sendable, Equatable {
     // MARK: - Keepalive
 
-    /// Heartbeat with list of recently contacted peers (includes machineId)
-    case ping(recentPeers: [PeerEndpointInfo])
+    /// Heartbeat with list of recently contacted peers (includes machineId and sender's NAT type)
+    case ping(recentPeers: [PeerEndpointInfo], myNATType: NATType)
 
-    /// Heartbeat response (includes machineId)
-    case pong(recentPeers: [PeerEndpointInfo])
+    /// Heartbeat response (includes machineId, sender's NAT type, and tells sender their observed endpoint)
+    case pong(recentPeers: [PeerEndpointInfo], yourEndpoint: String, myNATType: NATType)
 
     // MARK: - Discovery
 
@@ -80,6 +82,15 @@ public enum MeshMessage: Codable, Sendable, Equatable {
 
     /// Data being relayed
     case relayData(sessionId: String, data: Data)
+
+    // MARK: - Simple Relay Forwarding (for symmetric NAT peers)
+
+    /// Request peer to forward message to another peer (simple store-and-forward)
+    /// Used when direct communication isn't possible (e.g., target behind symmetric NAT)
+    case relayForward(targetPeerId: PeerId, payload: Data)
+
+    /// Response from relay indicating forward result
+    case relayForwardResult(targetPeerId: PeerId, success: Bool)
 
     // MARK: - Hole Punching
 

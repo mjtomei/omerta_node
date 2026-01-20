@@ -43,7 +43,6 @@ final class MeshConsumerClientTests: XCTestCase {
             peerId: "test-peer-123",  // Deprecated but still Codable
             port: 9000,
             bootstrapPeers: ["relay@192.168.1.1:9000"],
-            stunServers: ["stun.test:3478"],
             canRelay: true,
             canCoordinateHolePunch: false,
             keepaliveInterval: 20,
@@ -60,7 +59,6 @@ final class MeshConsumerClientTests: XCTestCase {
         XCTAssertEqual(decoded.peerId, original.peerId)
         XCTAssertEqual(decoded.port, original.port)
         XCTAssertEqual(decoded.bootstrapPeers, original.bootstrapPeers)
-        XCTAssertEqual(decoded.stunServers, original.stunServers)
         XCTAssertEqual(decoded.canRelay, original.canRelay)
         XCTAssertEqual(decoded.canCoordinateHolePunch, original.canCoordinateHolePunch)
         XCTAssertEqual(decoded.keepaliveInterval, original.keepaliveInterval)

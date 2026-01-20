@@ -9,12 +9,10 @@ let package = Package(
     products: [
         .executable(name: "omerta", targets: ["OmertaCLI"]),
         .executable(name: "omertad", targets: ["OmertaDaemon"]),
-        .executable(name: "omerta-stun", targets: ["OmertaSTUNCLI"]),
         .executable(name: "omerta-mesh", targets: ["OmertaMeshCLI"]),
         .library(name: "OmertaCore", targets: ["OmertaCore"]),
         .library(name: "OmertaMesh", targets: ["OmertaMesh"]),
         .library(name: "OmertaVPN", targets: ["OmertaVPN"]),
-        .library(name: "OmertaSTUN", targets: ["OmertaSTUN"]),
     ],
     dependencies: [
         // Networking
@@ -125,28 +123,6 @@ let package = Package(
             path: "Sources/OmertaCLI"
         ),
 
-        // STUN server library (NAT endpoint discovery)
-        .target(
-            name: "OmertaSTUN",
-            dependencies: [
-                .product(name: "NIOCore", package: "swift-nio"),
-                .product(name: "NIOPosix", package: "swift-nio"),
-                .product(name: "Logging", package: "swift-log"),
-            ],
-            path: "Sources/OmertaSTUN"
-        ),
-
-        // STUN server executable
-        .executableTarget(
-            name: "OmertaSTUNCLI",
-            dependencies: [
-                "OmertaSTUN",
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
-                .product(name: "Logging", package: "swift-log"),
-            ],
-            path: "Sources/OmertaSTUNCLI"
-        ),
-
         // Mesh node CLI for E2E testing
         .executableTarget(
             name: "OmertaMeshCLI",
@@ -189,13 +165,6 @@ let package = Package(
             name: "OmertaConsumerTests",
             dependencies: ["OmertaConsumer", "OmertaCore"],
             path: "Tests/OmertaConsumerTests"
-        ),
-        .testTarget(
-            name: "OmertaSTUNTests",
-            dependencies: [
-                "OmertaSTUN",
-            ],
-            path: "Tests/OmertaSTUNTests"
         ),
         .testTarget(
             name: "OmertaMeshTests",

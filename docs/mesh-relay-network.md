@@ -2,6 +2,15 @@
 
 A decentralized P2P overlay network where any public node can act as a relay for NAT-bound peers.
 
+> **Note (January 2026)**: STUN-based NAT detection has been replaced with **peer-based NAT prediction**.
+> Peers now report observed endpoints in pong messages, and the `NATPredictor` analyzes these observations
+> to determine NAT type. This eliminates the need for STUN servers. See `Sources/OmertaMesh/NAT/NATPredictor.swift`
+> for the implementation and `Tests/OmertaMeshTests/NATPredictorTests.swift` for tests.
+>
+> Additionally, **NAT-aware routing** has been implemented - messages to symmetric NAT peers are
+> automatically routed via relay, while other NAT types use direct connections. Potential relays
+> are discovered via gossip when peers share information about symmetric NAT peers.
+
 ## Overview
 
 ### What This Is

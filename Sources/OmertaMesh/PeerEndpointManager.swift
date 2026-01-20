@@ -46,6 +46,7 @@ private struct PeerEndpointsFile: Codable {
 /// Scoped by network ID to prevent cross-network data leakage
 public actor PeerEndpointManager {
     private var machines: [String: MachineEndpoints] = [:]  // key = "peerId:machineId"
+    private var natTypes: [PeerId: NATType] = [:]           // NAT type per peer
     private var isDirty = false
     private var cleanupTask: Task<Void, Never>?
     private var saveTask: Task<Void, Never>?
@@ -270,6 +271,38 @@ public actor PeerEndpointManager {
     /// Check if we have any endpoints for a peer
     public func hasEndpoints(for peerId: PeerId) -> Bool {
         machines.values.contains { $0.peerId == peerId && !$0.endpoints.isEmpty }
+    }
+
+    // MARK: - NAT Type Tracking
+
+    /// Update the NAT type for a peer
+    /// Called when we receive NAT type info from gossip or direct messages
+    public func updateNATType(peerId: PeerId, natType: NATType) {
+        // Only update if it's a meaningful value
+        guard natType != .unknown else { return }
+
+        let oldType = natTypes[peerId]
+        if oldType != natType {
+            natTypes[peerId] = natType
+            isDirty = true
+            if let old = oldType {
+                logger.debug("NAT type updated for peer", metadata: [
+                    "peerId": "\(peerId.prefix(8))",
+                    "oldType": "\(old.rawValue)",
+                    "newType": "\(natType.rawValue)"
+                ])
+            } else {
+                logger.debug("NAT type recorded for peer", metadata: [
+                    "peerId": "\(peerId.prefix(8))",
+                    "type": "\(natType.rawValue)"
+                ])
+            }
+        }
+    }
+
+    /// Get the NAT type for a peer
+    public func getNATType(peerId: PeerId) -> NATType? {
+        natTypes[peerId]
     }
 
     // MARK: - Persistence

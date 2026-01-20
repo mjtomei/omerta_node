@@ -3904,81 +3904,27 @@ struct NAT: AsyncParsableCommand {
 struct NATDetect: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "detect",
-        abstract: "Detect NAT type and discover public endpoint"
+        abstract: "Learn about NAT detection"
     )
-
-    @Option(name: .long, help: "STUN server to use (default: stun1.omerta.run:3478)")
-    var stunServer: String?
-
-    @Option(name: .long, help: "Local port to use (default: auto)")
-    var localPort: UInt16 = 0
-
-    @Flag(name: .long, help: "Show detailed output")
-    var verbose: Bool = false
 
     mutating func run() async throws {
         print("NAT Type Detection")
         print("==================")
         print("")
-
-        // Load config for STUN servers
-        let configManager = OmertaCore.ConfigManager()
-        let natConfig = (try? await configManager.load())?.nat ?? OmertaCore.NATConfig()
-
-        // Determine STUN server
-        let server = stunServer ?? natConfig.stunServers.first ?? "stun1.omerta.run:3478"
-
-        if verbose {
-            print("Using STUN server: \(server)")
-            if localPort > 0 {
-                print("Local port: \(localPort)")
-            }
-            print("")
-        }
-
-        print("Discovering endpoint...")
-
-        do {
-            let servers = [server] + natConfig.stunServers.filter { $0 != server }.prefix(2)
-            let detector = OmertaMesh.NATDetector(stunServers: Array(servers))
-
-            let result = try await detector.detect(timeout: natConfig.timeoutInterval)
-
-            print("")
-            print("Results:")
-            print("  NAT Type: \(result.type.rawValue)")
-            print("  Public Endpoint: \(result.publicEndpoint)")
-
-            if verbose {
-                print("")
-                print("Details:")
-                print("  Local Port: \(result.localPort)")
-                print("  RTT: \(String(format: "%.1f", result.rtt * 1000))ms")
-            }
-
-            // Provide connectivity assessment
-            print("")
-            print("Connectivity:")
-            switch result.type {
-            case .public:
-                print("  ✓ Excellent - Public IP, direct connections from any peer")
-            case .fullCone:
-                print("  ✓ Excellent - Direct connections from any peer")
-            case .restrictedCone:
-                print("  ✓ Good - Direct connections with hole punching")
-            case .portRestrictedCone:
-                print("  ○ Fair - Direct connections usually possible")
-            case .symmetric:
-                print("  △ Limited - May require relay for some peers")
-            case .unknown:
-                print("  ? Unknown - Could not determine NAT type")
-            }
-
-        } catch {
-            print("")
-            print("Error: \(error)")
-            throw ExitCode.failure
-        }
+        print("NAT type is now detected automatically via peer connections.")
+        print("When connected to the mesh network, your NAT type is determined")
+        print("by observing how peers see your public endpoint.")
+        print("")
+        print("To see your current NAT type, start the mesh daemon and check:")
+        print("  omerta mesh status")
+        print("")
+        print("NAT Types and Connectivity:")
+        print("  public           - Excellent: Public IP, direct connections from any peer")
+        print("  fullCone         - Excellent: Direct connections from any peer")
+        print("  restrictedCone   - Good: Direct connections with hole punching")
+        print("  portRestrictedCone - Fair: Direct connections usually possible")
+        print("  symmetric        - Limited: May require relay for some peers")
+        print("  unknown          - Not yet determined (connect to more peers)")
     }
 }
 
@@ -4006,7 +3952,6 @@ struct NATStatus: AsyncParsableCommand {
         // Configuration
         print("Configuration:")
         if let natConfig = natConfig {
-            print("  STUN Servers: \(natConfig.stunServers.joined(separator: ", "))")
             print("  Prefer Direct: \(natConfig.preferDirect)")
             print("  Hole Punch Timeout: \(natConfig.holePunchTimeout)ms")
             print("  Probe Count: \(natConfig.probeCount)")
@@ -4017,38 +3962,19 @@ struct NATStatus: AsyncParsableCommand {
             }
         } else {
             print("  (using defaults - no NAT configuration in ~/.omerta/config.json)")
-            print("  STUN Servers: \(OmertaCore.NATConfig.defaultSTUNServers.joined(separator: ", "))")
         }
 
         print("")
 
-        // Quick NAT detection
-        print("Current Status:")
-        print("  Detecting NAT type...")
-
-        do {
-            let servers = natConfig?.stunServers ?? OmertaCore.NATConfig.defaultSTUNServers
-            let detector = OmertaMesh.NATDetector(stunServers: servers)
-
-            let result = try await detector.detect(timeout: natConfig?.timeoutInterval ?? 5.0)
-
-            print("  NAT Type: \(result.type.rawValue)")
-            print("  Public Endpoint: \(result.publicEndpoint)")
-
-            if verbose {
-                print("")
-                print("Detailed Info:")
-                print("  Local Port: \(result.localPort)")
-                print("  RTT: \(String(format: "%.1f", result.rtt * 1000))ms")
-            }
-
-        } catch {
-            print("  Error detecting NAT type: \(error)")
-        }
+        // NAT detection info
+        print("NAT Detection:")
+        print("  NAT type is detected automatically via peer connections.")
+        print("  Start the mesh daemon to see your detected NAT type:")
+        print("    omerta mesh status")
 
         print("")
         print("Commands:")
-        print("  omerta nat detect      - Detailed NAT detection")
+        print("  omerta nat detect      - Learn about NAT detection")
         print("  omerta nat config      - Configure NAT settings")
         print("  omerta mesh connect    - Test connection to mesh peer")
     }
@@ -4061,12 +3987,6 @@ struct NATConfig: AsyncParsableCommand {
         commandName: "config",
         abstract: "Configure NAT traversal settings"
     )
-
-    @Option(name: .long, help: "Add STUN server")
-    var addStun: String?
-
-    @Option(name: .long, help: "Remove STUN server")
-    var removeStun: String?
 
     @Option(name: .long, help: "Set hole punch timeout (ms)")
     var timeout: Int?
@@ -4087,22 +4007,19 @@ struct NATConfig: AsyncParsableCommand {
         let configManager = OmertaCore.ConfigManager()
 
         // Show current config
-        if show || (addStun == nil && removeStun == nil &&
-                    timeout == nil && probeCount == nil && localPort == nil && !reset) {
+        if show || (timeout == nil && probeCount == nil && localPort == nil && !reset) {
             let config = try? await configManager.load()
             let natConfig = config?.nat ?? OmertaCore.NATConfig()
 
             print("NAT Configuration")
             print("=================")
             print("")
-            print("STUN Servers:")
-            for server in natConfig.stunServers {
-                print("  - \(server)")
-            }
             print("Prefer Direct: \(natConfig.preferDirect)")
             print("Hole Punch Timeout: \(natConfig.holePunchTimeout)ms")
             print("Probe Count: \(natConfig.probeCount)")
             print("Local Port: \(natConfig.localPort == 0 ? "auto" : String(natConfig.localPort))")
+            print("")
+            print("Note: NAT type is detected automatically via peer connections.")
             return
         }
 
@@ -4118,24 +4035,6 @@ struct NATConfig: AsyncParsableCommand {
         // Update configuration
         try await configManager.update { config in
             var natConfig = config.nat ?? OmertaCore.NATConfig()
-
-            if let server = addStun {
-                if !natConfig.stunServers.contains(server) {
-                    natConfig.stunServers.append(server)
-                    print("Added STUN server: \(server)")
-                } else {
-                    print("STUN server already configured: \(server)")
-                }
-            }
-
-            if let server = removeStun {
-                if let index = natConfig.stunServers.firstIndex(of: server) {
-                    natConfig.stunServers.remove(at: index)
-                    print("Removed STUN server: \(server)")
-                } else {
-                    print("STUN server not found: \(server)")
-                }
-            }
 
             if let t = timeout {
                 natConfig.holePunchTimeout = t

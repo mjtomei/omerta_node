@@ -22,7 +22,6 @@ final class Phase7Tests: XCTestCase {
         XCTAssertEqual(config.maxRelayCount, 5)
         XCTAssertEqual(config.keepaliveInterval, 15)
         XCTAssertEqual(config.connectionTimeout, 10)
-        XCTAssertFalse(config.stunServers.isEmpty)
     }
 
     func testRelayNodeConfig() throws {
@@ -60,11 +59,10 @@ final class Phase7Tests: XCTestCase {
         config.maxRelayCount = 5
         XCTAssertThrowsError(try config.validate())
 
-        // Fix relay counts, empty STUN servers
+        // Fix relay counts - config should now be valid
         config.targetRelayCount = 3
         config.maxRelayCount = 5
-        config.stunServers = []
-        XCTAssertThrowsError(try config.validate())
+        XCTAssertNoThrow(try config.validate())
     }
 
     func testConfigBuilder() throws {

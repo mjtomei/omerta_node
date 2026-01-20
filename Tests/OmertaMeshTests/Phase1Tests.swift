@@ -138,7 +138,7 @@ final class Phase1Tests: XCTestCase {
             toPeerId: "recipient",
             hopCount: 0,
             timestamp: timestamp,
-            payload: .ping(recentPeers: []),
+            payload: .ping(recentPeers: [], myNATType: .unknown),
             signature: ""
         )
 
@@ -185,9 +185,9 @@ final class Phase1Tests: XCTestCase {
             machineId: "test-machine-id",
             to: "recipient",
             payload: .ping(recentPeers: [
-                PeerEndpointInfo(peerId: "peer1", machineId: "machine1", endpoint: "endpoint1"),
-                PeerEndpointInfo(peerId: "peer2", machineId: "machine2", endpoint: "endpoint2")
-            ])
+                PeerEndpointInfo(peerId: "peer1", machineId: "machine1", endpoint: "endpoint1", natType: .unknown),
+                PeerEndpointInfo(peerId: "peer2", machineId: "machine2", endpoint: "endpoint2", natType: .unknown)
+            ], myNATType: .unknown)
         )
 
         // Encode and decode
@@ -268,7 +268,7 @@ final class Phase1Tests: XCTestCase {
 
         // A sends ping to B
         let response = try await nodeA.sendAndReceive(
-            .ping(recentPeers: []),
+            .ping(recentPeers: [], myNATType: .unknown),
             to: "127.0.0.1:\(portB)",
             timeout: 5.0
         )
@@ -301,7 +301,7 @@ final class Phase1Tests: XCTestCase {
         await nodeB.onMessage { message, _ in
             await counter.increment()
             if case .ping = message {
-                return .pong(recentPeers: [])
+                return .pong(recentPeers: [], yourEndpoint: "test-endpoint", myNATType: .unknown)
             }
             return nil
         }
@@ -317,7 +317,7 @@ final class Phase1Tests: XCTestCase {
             from: keypair,
             machineId: "test-machine-id",
             to: nil,
-            payload: .ping(recentPeers: [])
+            payload: .ping(recentPeers: [], myNATType: .unknown)
         )
         let jsonData = try JSONEncoder().encode(envelope)
 
@@ -366,7 +366,7 @@ final class Phase1Tests: XCTestCase {
             publicKey: nodeAIdentity.publicKeyBase64,
             machineId: "test-machine-id",
             toPeerId: nodeBPeerId,
-            payload: .ping(recentPeers: [])
+            payload: .ping(recentPeers: [], myNATType: .unknown)
         )
         envelope.signature = "invalid-signature-base64"
 
@@ -393,7 +393,7 @@ final class Phase1Tests: XCTestCase {
                 for _ in 0..<5 {
                     group.addTask {
                         try await nodeA.sendAndReceive(
-                            .ping(recentPeers: []),
+                            .ping(recentPeers: [], myNATType: .unknown),
                             to: "127.0.0.1:\(portB)",
                             timeout: 5.0
                         )
@@ -443,7 +443,7 @@ final class Phase1Tests: XCTestCase {
         // Try to send to non-existent node
         do {
             _ = try await nodeA.sendAndReceive(
-                .ping(recentPeers: []),
+                .ping(recentPeers: [], myNATType: .unknown),
                 to: "127.0.0.1:59999",  // Unlikely to be listening
                 timeout: 0.5
             )

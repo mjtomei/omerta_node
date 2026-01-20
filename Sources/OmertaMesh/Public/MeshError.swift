@@ -153,6 +153,8 @@ extension MeshNodeError {
             return .peerNotFound(peerId: "unknown")
         case .sendFailed(let error):
             return .sendFailed(reason: error.localizedDescription)
+        case .noRelayAvailable:
+            return .sendFailed(reason: "No relay available for symmetric NAT peer")
         }
     }
 }

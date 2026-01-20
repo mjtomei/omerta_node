@@ -71,13 +71,14 @@ public actor RelayConnection {
         do {
             // Send ping to verify relay is alive
             let startTime = Date()
+            let myNATType = await node.getPredictedNATType().type
             let response = try await node.sendAndReceive(
-                .ping(recentPeers: []),
+                .ping(recentPeers: [], myNATType: myNATType),
                 to: relayEndpoint,
                 timeout: connectionTimeout
             )
 
-            if case .pong = response {
+            if case .pong(_, _, _) = response {
                 rtt = Date().timeIntervalSince(startTime)
                 lastHeartbeat = Date()
                 state = .connected
@@ -191,13 +192,14 @@ public actor RelayConnection {
 
                 // Send heartbeat ping
                 let startTime = Date()
+                let myNATType = await node.getPredictedNATType().type
                 let response = try await node.sendAndReceive(
-                    .ping(recentPeers: []),
+                    .ping(recentPeers: [], myNATType: myNATType),
                     to: relayEndpoint,
                     timeout: connectionTimeout
                 )
 
-                if case .pong = response {
+                if case .pong(_, _, _) = response {
                     rtt = Date().timeIntervalSince(startTime)
                     lastHeartbeat = Date()
                     logger.debug("Heartbeat OK, RTT: \(String(format: "%.3f", rtt))s")

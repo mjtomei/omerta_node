@@ -55,16 +55,10 @@ public struct MeshConfig: Sendable {
     /// Timeout for connection attempts (seconds)
     public var connectionTimeout: TimeInterval
 
-    /// Timeout for NAT detection (seconds)
-    public var natDetectionTimeout: TimeInterval
-
     /// Interval between peer cache cleanup (seconds)
     public var cacheCleanupInterval: TimeInterval
 
     // MARK: - Discovery Settings
-
-    /// STUN servers for NAT detection
-    public var stunServers: [String]
 
     /// Bootstrap peers for initial discovery
     public var bootstrapPeers: [String]
@@ -115,9 +109,7 @@ public struct MeshConfig: Sendable {
         maxRelaySessions: Int = 50,
         keepaliveInterval: TimeInterval = 15,
         connectionTimeout: TimeInterval = 10,
-        natDetectionTimeout: TimeInterval = 5,
         cacheCleanupInterval: TimeInterval = 60,
-        stunServers: [String]? = nil,
         bootstrapPeers: [String] = [],
         maxCachedPeers: Int = 500,
         peerCacheTTL: TimeInterval = 3600,
@@ -139,9 +131,7 @@ public struct MeshConfig: Sendable {
         self.maxRelaySessions = maxRelaySessions
         self.keepaliveInterval = keepaliveInterval
         self.connectionTimeout = connectionTimeout
-        self.natDetectionTimeout = natDetectionTimeout
         self.cacheCleanupInterval = cacheCleanupInterval
-        self.stunServers = stunServers ?? Self.defaultSTUNServers
         self.bootstrapPeers = bootstrapPeers
         self.maxCachedPeers = maxCachedPeers
         self.peerCacheTTL = peerCacheTTL
@@ -174,9 +164,7 @@ public struct MeshConfig: Sendable {
         self.maxRelaySessions = 50
         self.keepaliveInterval = 15
         self.connectionTimeout = 10
-        self.natDetectionTimeout = 5
         self.cacheCleanupInterval = 60
-        self.stunServers = Self.defaultSTUNServers
         self.bootstrapPeers = networkKey.bootstrapPeers
         self.maxCachedPeers = 500
         self.peerCacheTTL = 3600
@@ -188,14 +176,6 @@ public struct MeshConfig: Sendable {
         self.enableEventLogging = enableEventLogging
         self.eventLogDir = eventLogDir
     }
-
-    // MARK: - Default Values
-
-    /// Default STUN servers (Omerta STUN servers for NAT detection)
-    public static let defaultSTUNServers: [String] = [
-        "stun1.omerta.run:3478",
-        "stun2.omerta.run:3478"
-    ]
 
     // MARK: - Preset Configurations
 
@@ -251,9 +231,6 @@ public struct MeshConfig: Sendable {
         if connectionTimeout <= 0 {
             throw MeshError.invalidConfiguration(reason: "Connection timeout must be positive")
         }
-        if stunServers.isEmpty {
-            throw MeshError.invalidConfiguration(reason: "At least one STUN server required")
-        }
     }
 }
 
@@ -284,9 +261,7 @@ public class MeshConfigBuilder {
     private var maxRelaySessions: Int = 50
     private var keepaliveInterval: TimeInterval = 15
     private var connectionTimeout: TimeInterval = 10
-    private var natDetectionTimeout: TimeInterval = 5
     private var cacheCleanupInterval: TimeInterval = 60
-    private var stunServers: [String] = MeshConfig.defaultSTUNServers
     private var bootstrapPeers: [String] = []
     private var maxCachedPeers: Int = 500
     private var peerCacheTTL: TimeInterval = 3600
@@ -351,12 +326,6 @@ public class MeshConfigBuilder {
     }
 
     @discardableResult
-    public func stunServers(_ servers: [String]) -> Self {
-        self.stunServers = servers
-        return self
-    }
-
-    @discardableResult
     public func bootstrapPeers(_ peers: [String]) -> Self {
         self.bootstrapPeers = peers
         return self
@@ -392,9 +361,7 @@ public class MeshConfigBuilder {
             maxRelaySessions: maxRelaySessions,
             keepaliveInterval: keepaliveInterval,
             connectionTimeout: connectionTimeout,
-            natDetectionTimeout: natDetectionTimeout,
             cacheCleanupInterval: cacheCleanupInterval,
-            stunServers: stunServers,
             bootstrapPeers: bootstrapPeers,
             maxCachedPeers: maxCachedPeers,
             peerCacheTTL: peerCacheTTL,
@@ -422,9 +389,7 @@ public class MeshConfigBuilder {
             maxRelaySessions: maxRelaySessions,
             keepaliveInterval: keepaliveInterval,
             connectionTimeout: connectionTimeout,
-            natDetectionTimeout: natDetectionTimeout,
             cacheCleanupInterval: cacheCleanupInterval,
-            stunServers: stunServers,
             bootstrapPeers: bootstrapPeers,
             maxCachedPeers: maxCachedPeers,
             peerCacheTTL: peerCacheTTL,

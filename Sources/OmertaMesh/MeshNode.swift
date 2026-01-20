@@ -147,6 +147,11 @@ public actor MeshNode {
     /// Known peer connections
     private var peers: [PeerId: PeerConnection] = [:]
 
+    /// Potential relays for symmetric NAT peers
+    /// Maps symmetric NAT peer ID -> list of potential relays (most recent first)
+    private var potentialRelays: [PeerId: [(relayPeerId: PeerId, lastSeen: Date)]] = [:]
+    private let maxRelaysPerPeer = 10
+
     /// Message IDs we've seen (for deduplication)
     private var seenMessageIds: Set<String> = []
     private let maxSeenMessages = 10000
@@ -156,6 +161,12 @@ public actor MeshNode {
     /// Internal for testing
     var peerPropagationQueue: [PeerId: (info: PeerEndpointInfo, count: Int)] = [:]
     let gossipFanout = 5  // Number of peers to forward each new peer info to
+
+    /// Our observed public endpoint as reported by peers (no STUN needed)
+    private var observedPublicEndpoint: String?
+
+    /// Callback when our observed public endpoint changes
+    private var endpointChangeHandler: ((String, String?) async -> Void)?
 
     /// Handler for incoming messages
     private var messageHandler: ((MeshMessage, PeerId) async -> MeshMessage?)?
@@ -180,6 +191,12 @@ public actor MeshNode {
 
     /// Connection keepalive manager for maintaining NAT mappings
     public let connectionKeepalive: ConnectionKeepalive
+
+    /// NAT type predictor using peer-reported endpoint observations
+    private let natPredictor: NATPredictor
+
+    /// Set of known bootstrap peer IDs (for weighted NAT predictions)
+    private var bootstrapPeers: Set<PeerId> = []
 
     /// The port we're listening on
     public var port: Int? {
@@ -223,6 +240,7 @@ public actor MeshNode {
         self.connectionKeepalive = ConnectionKeepalive(
             config: ConnectionKeepalive.Config(interval: config.keepaliveInterval)
         )
+        self.natPredictor = NATPredictor()
     }
 
     /// Set up the hole punch manager callbacks
@@ -489,7 +507,7 @@ public actor MeshNode {
         )
 
         // Check if this is a response to a pending request
-        if case .pong = envelope.payload {
+        if case .pong(_, _, _) = envelope.payload {
             // Find any pending ping request
             for (requestId, pending) in pendingResponses {
                 if requestId.hasPrefix("ping-") {
@@ -517,18 +535,29 @@ public actor MeshNode {
         } else {
             await handleDefaultMessage(envelope.payload, from: envelope.fromPeerId, endpoint: endpointString, hopCount: envelope.hopCount)
         }
+
+        // Check if we should attempt direct connection (Phase 8: Direct connection on relayed message)
+        // If the message came via relay (source endpoint doesn't match known endpoints for sender)
+        // and sender's NAT type allows direct connection, try to establish direct path
+        await attemptDirectConnectionIfNeeded(
+            fromPeerId: envelope.fromPeerId,
+            sourceEndpoint: endpointString
+        )
     }
 
     /// Default message handling for basic protocol
     private func handleDefaultMessage(_ message: MeshMessage, from peerId: PeerId, endpoint: String, hopCount: Int = 0) async {
         switch message {
-        case .ping(let recentPeers):
+        case .ping(let recentPeers, let theirNATType):
             // Check if this is a NEW or RECONNECTING peer BEFORE recording
             // A peer is considered "reconnecting" if we haven't heard from them in 60+ seconds
             // (4 missed keepalives at 15s interval)
             let hasEndpoints = !(await endpointManager.getAllEndpoints(peerId: peerId).isEmpty)
             let hasRecentContact = await freshnessManager.hasRecentContact(peerId, maxAgeSeconds: 60)
             let isNewOrReconnecting = !hasEndpoints || !hasRecentContact
+
+            // Track sender's NAT type
+            await endpointManager.updateNATType(peerId: peerId, natType: theirNATType)
 
             // Record this contact first so we're included in the response
             await freshnessManager.recordContact(
@@ -552,9 +581,12 @@ public actor MeshNode {
                 // Known peer gets recent peers + propagation queue items
                 myPeers = await buildPeerEndpointInfoListWithPropagation(excluding: peerId)
             }
-            await send(.pong(recentPeers: myPeers), to: endpoint)
 
-            // Learn about new peers from the ping WITH machineId
+            // Get our predicted NAT type (unknown until integrated with NATPredictor in Phase 2)
+            let myNATType = await getPredictedNATType().type
+            await send(.pong(recentPeers: myPeers, yourEndpoint: endpoint, myNATType: myNATType), to: endpoint)
+
+            // Learn about new peers from the ping WITH machineId and NAT type
             for peerInfo in recentPeers where peerInfo.peerId != self.peerId {
                 // Check if we already know about this peer's endpoint
                 let existingEndpoints = await endpointManager.getAllEndpoints(peerId: peerInfo.peerId)
@@ -571,6 +603,14 @@ public actor MeshNode {
                     endpoint: peerInfo.endpoint
                 )
 
+                // Track peer's NAT type from gossip
+                await endpointManager.updateNATType(peerId: peerInfo.peerId, natType: peerInfo.natType)
+
+                // RELAY DISCOVERY: If this peer is behind symmetric NAT, the sender becomes a potential relay
+                if peerInfo.natType == .symmetric {
+                    recordPotentialRelay(for: peerInfo.peerId, via: peerId)
+                }
+
                 // GOSSIP: If this is a newly learned peer, add to propagation queue
                 if isNewlyLearnedPeer {
                     addToPropagationQueue(peerInfo)
@@ -585,17 +625,24 @@ public actor MeshNode {
                     let senderInfo = PeerEndpointInfo(
                         peerId: peerId,
                         machineId: senderMachine.machineId,
-                        endpoint: endpoint
+                        endpoint: endpoint,
+                        natType: theirNATType
                     )
                     addToPropagationQueue(senderInfo)
                 }
             }
 
-        case .pong(let recentPeers):
+        case .pong(let recentPeers, let yourEndpoint, let theirNATType):
             // Pong sender is already recorded in handleIncomingData via endpointManager.recordMessageReceived
             logger.info("Received pong from: \(peerId.prefix(8))... at \(endpoint)")
 
-            // Learn about new peers from the pong WITH machineId
+            // Track sender's NAT type
+            await endpointManager.updateNATType(peerId: peerId, natType: theirNATType)
+
+            // Update our observed public endpoint based on what the peer sees
+            await updateObservedEndpoint(yourEndpoint, reportedBy: peerId)
+
+            // Learn about new peers from the pong WITH machineId and NAT type
             for peerInfo in recentPeers where peerInfo.peerId != self.peerId {
                 // Check if we already know about this peer's endpoint
                 let existingEndpoints = await endpointManager.getAllEndpoints(peerId: peerInfo.peerId)
@@ -611,6 +658,14 @@ public actor MeshNode {
                     machineId: peerInfo.machineId,
                     endpoint: peerInfo.endpoint
                 )
+
+                // Track peer's NAT type from gossip
+                await endpointManager.updateNATType(peerId: peerInfo.peerId, natType: peerInfo.natType)
+
+                // RELAY DISCOVERY: If this peer is behind symmetric NAT, the sender becomes a potential relay
+                if peerInfo.natType == .symmetric {
+                    recordPotentialRelay(for: peerInfo.peerId, via: peerId)
+                }
 
                 // GOSSIP: If this is a newly learned peer, add to propagation queue
                 if isNewlyLearnedPeer {
@@ -674,6 +729,19 @@ public actor MeshNode {
             )
             // Note: endpoint is already recorded in handleIncomingData via endpointManager.recordMessageReceived
             logger.info("Received peer announcement: \(peerId.prefix(8))... at \(endpoint)")
+
+        case .relayForward(let targetPeerId, let payload):
+            // Handle relay forward request - forward the payload to the target peer
+            logger.info("Relay forward request from \(peerId.prefix(8))... to \(targetPeerId.prefix(8))...")
+            await handleRelayForward(targetPeerId: targetPeerId, payload: payload, from: peerId, senderEndpoint: endpoint)
+
+        case .relayForwardResult(let targetPeerId, let success):
+            // Log relay forward result (the continuation mechanism handles response matching)
+            if success {
+                logger.debug("Relay forward to \(targetPeerId.prefix(8))... succeeded")
+            } else {
+                logger.warning("Relay forward to \(targetPeerId.prefix(8))... failed")
+            }
 
         default:
             break
@@ -827,8 +895,9 @@ public actor MeshNode {
 
     /// Request peer list from known peers
     public func requestPeers() async {
-        // Build our peer list to share (with machineId)
+        // Build our peer list to share (with machineId and NAT type)
         let myPeers = await buildPeerEndpointInfoList()
+        let myNATType = await getPredictedNATType().type
 
         // Send ping to all known peers
         for peerId in await endpointManager.allPeerIds {
@@ -836,8 +905,205 @@ public actor MeshNode {
             guard let endpoint = await endpointManager.getAllEndpoints(peerId: peerId).first else {
                 continue
             }
-            await send(.ping(recentPeers: myPeers), to: endpoint)
+            await send(.ping(recentPeers: myPeers, myNATType: myNATType), to: endpoint)
         }
+    }
+
+    // MARK: - Observed Endpoint (Peer-Reported)
+
+    /// Get our observed public endpoint as reported by peers
+    /// This is determined from pong messages without requiring STUN
+    public var getObservedEndpoint: String? {
+        observedPublicEndpoint
+    }
+
+    /// Set callback for when our observed public endpoint changes
+    public func setEndpointChangeHandler(_ handler: @escaping (String, String?) async -> Void) {
+        endpointChangeHandler = handler
+    }
+
+    /// Update our observed public endpoint based on peer reports
+    /// Called when we receive a pong message that tells us our endpoint
+    private func updateObservedEndpoint(_ newEndpoint: String, reportedBy peerId: PeerId) async {
+        let oldEndpoint = observedPublicEndpoint
+
+        // Record observation for NAT prediction
+        let isBootstrap = bootstrapPeers.contains(peerId)
+        await natPredictor.recordObservation(endpoint: newEndpoint, from: peerId, isBootstrap: isBootstrap)
+
+        // Only log if endpoint changed or is first report
+        if oldEndpoint != newEndpoint {
+            if let old = oldEndpoint {
+                logger.info("Observed endpoint changed from \(old) to \(newEndpoint) (reported by \(peerId.prefix(8))...)")
+            } else {
+                logger.info("Observed endpoint set to \(newEndpoint) (reported by \(peerId.prefix(8))...)")
+            }
+
+            observedPublicEndpoint = newEndpoint
+
+            // Notify handler if set
+            if let handler = endpointChangeHandler {
+                await handler(newEndpoint, oldEndpoint)
+            }
+        }
+    }
+
+    // MARK: - NAT Prediction
+
+    /// Get our predicted NAT type based on peer observations
+    /// Returns (type, publicEndpoint, confidence) where confidence is number of observations
+    public func getPredictedNATType() async -> (type: NATType, publicEndpoint: String?, confidence: Int) {
+        await natPredictor.predictNATType()
+    }
+
+    /// Get the NAT type of a specific peer
+    public func getNATType(for peerId: PeerId) async -> NATType? {
+        await endpointManager.getNATType(peerId: peerId)
+    }
+
+    /// Register a peer as a bootstrap node (for weighted NAT predictions)
+    public func registerBootstrapPeer(_ peerId: PeerId) {
+        bootstrapPeers.insert(peerId)
+    }
+
+    /// Reset NAT prediction (e.g., after network change)
+    public func resetNATPrediction() async {
+        await natPredictor.reset()
+    }
+
+    // MARK: - Relay Discovery
+
+    /// Record a potential relay for a symmetric NAT peer
+    /// Called when we receive gossip about a symmetric NAT peer - the sender becomes a potential relay
+    public func recordPotentialRelay(for symmetricPeerId: PeerId, via relayPeerId: PeerId) {
+        // Don't record ourselves as a relay
+        guard relayPeerId != peerId else { return }
+        // Don't record the symmetric peer as its own relay
+        guard relayPeerId != symmetricPeerId else { return }
+
+        var relays = potentialRelays[symmetricPeerId] ?? []
+
+        // Remove existing entry for this relay (to move to front)
+        relays.removeAll { $0.relayPeerId == relayPeerId }
+
+        // Add at front (most recent)
+        relays.insert((relayPeerId: relayPeerId, lastSeen: Date()), at: 0)
+
+        // Keep only max relays
+        potentialRelays[symmetricPeerId] = Array(relays.prefix(maxRelaysPerPeer))
+
+        logger.debug("Recorded potential relay \(relayPeerId.prefix(8))... for symmetric peer \(symmetricPeerId.prefix(8))...")
+    }
+
+    /// Get potential relays for a symmetric NAT peer
+    /// Returns relays ordered by most recent contact
+    public func getPotentialRelays(for symmetricPeerId: PeerId) -> [(relayPeerId: PeerId, lastSeen: Date)] {
+        potentialRelays[symmetricPeerId] ?? []
+    }
+
+    /// Clear potential relays for a peer (e.g., when direct connection established)
+    public func clearPotentialRelays(for peerId: PeerId) {
+        potentialRelays.removeValue(forKey: peerId)
+    }
+
+    // MARK: - Relay Forwarding
+
+    /// Handle a relay forward request - forward payload to target peer
+    private func handleRelayForward(targetPeerId: PeerId, payload: Data, from senderPeerId: PeerId, senderEndpoint: String) async {
+        // Check if we know an endpoint for the target
+        guard let targetEndpoint = await endpointManager.getAllEndpoints(peerId: targetPeerId).first else {
+            logger.warning("Relay forward failed: no endpoint for target \(targetPeerId.prefix(8))...")
+            await send(.relayForwardResult(targetPeerId: targetPeerId, success: false), to: senderEndpoint)
+            return
+        }
+
+        // Forward the raw payload directly to the target
+        // The payload is already an encrypted MeshEnvelope from the original sender
+        do {
+            try await socket.send(payload, to: targetEndpoint)
+            logger.info("Relayed \(payload.count) bytes to \(targetPeerId.prefix(8))... at \(targetEndpoint)")
+            await send(.relayForwardResult(targetPeerId: targetPeerId, success: true), to: senderEndpoint)
+        } catch {
+            logger.error("Relay forward to \(targetPeerId.prefix(8))... failed: \(error)")
+            await send(.relayForwardResult(targetPeerId: targetPeerId, success: false), to: senderEndpoint)
+        }
+    }
+
+    /// Attempt direct connection to a peer if message appears to have been relayed
+    /// Called after receiving any message to establish direct bidirectional paths
+    private func attemptDirectConnectionIfNeeded(fromPeerId: PeerId, sourceEndpoint: String) async {
+        // Don't try to connect to ourselves
+        guard fromPeerId != peerId else { return }
+
+        // Get sender's known NAT type
+        let senderNATType = await endpointManager.getNATType(peerId: fromPeerId) ?? .unknown
+
+        // Only attempt direct connection if sender is NOT behind symmetric NAT
+        // Symmetric NAT requires relay because their port mapping changes per destination
+        if senderNATType == .symmetric {
+            logger.debug("Not attempting direct connection to \(fromPeerId.prefix(8))... - symmetric NAT")
+            return
+        }
+
+        // Get sender's known endpoints
+        let knownEndpoints = await endpointManager.getAllEndpoints(peerId: fromPeerId)
+
+        // If the source endpoint is NOT in our known endpoints for this peer,
+        // the message likely came via relay. Try to establish direct connection.
+        if !knownEndpoints.contains(sourceEndpoint) && !knownEndpoints.isEmpty {
+            // We have a different endpoint for this peer - message was relayed
+            // Try pinging their known endpoint to establish direct path
+            if let directEndpoint = knownEndpoints.first {
+                logger.info("Relayed message detected from \(fromPeerId.prefix(8))... - attempting direct connection to \(directEndpoint)")
+
+                // Send ping to establish direct bidirectional communication
+                // Use a background task to avoid blocking message processing
+                Task {
+                    let _ = await self.sendPing(to: fromPeerId, timeout: 5.0)
+                }
+            }
+        }
+
+        // If we received directly (sourceEndpoint IS in knownEndpoints), no action needed
+        // The direct path is already working
+    }
+
+    /// Send a message via relay to a peer behind symmetric NAT
+    /// Uses the most recently contacted relay that knows the target peer
+    public func sendViaRelay(_ message: MeshMessage, to targetPeerId: PeerId) async throws {
+        // Get potential relays for this symmetric NAT peer
+        let relays = getPotentialRelays(for: targetPeerId)
+        guard !relays.isEmpty else {
+            logger.warning("sendViaRelay: No potential relays for \(targetPeerId.prefix(8))...")
+            throw MeshNodeError.noRelayAvailable
+        }
+
+        // Create the envelope we want to send to the target
+        let envelope = try MeshEnvelope.signed(
+            from: identity,
+            machineId: machineId,
+            to: targetPeerId,
+            payload: message
+        )
+
+        // Encode the envelope
+        let jsonData = try JSONEncoder().encode(envelope)
+
+        // Encrypt the payload with our network encryption key
+        let encryptedPayload = try MessageEncryption.encrypt(jsonData, key: config.encryptionKey)
+
+        // Try relays in order (most recent first)
+        for relay in relays {
+            guard let relayEndpoint = await endpointManager.getAllEndpoints(peerId: relay.relayPeerId).first else {
+                continue
+            }
+
+            logger.info("Sending via relay \(relay.relayPeerId.prefix(8))... to \(targetPeerId.prefix(8))...")
+            await send(.relayForward(targetPeerId: targetPeerId, payload: encryptedPayload), to: relayEndpoint)
+            return // Successfully sent to relay
+        }
+
+        throw MeshNodeError.noRelayAvailable
     }
 
     /// Send a self-announcement to a specific endpoint
@@ -882,8 +1148,25 @@ public actor MeshNode {
         }
     }
 
-    /// Send a message to a peer by ID (tries all endpoints with fallback)
+    /// Send a message to a peer by ID (NAT-aware routing)
+    /// Automatically routes via relay for symmetric NAT peers, direct otherwise
     public func sendToPeer(_ message: MeshMessage, peerId: PeerId) async throws {
+        // Check peer's NAT type for routing decision
+        let peerNATType = await endpointManager.getNATType(peerId: peerId) ?? .unknown
+
+        // Symmetric NAT peers require relay (their port mapping changes per destination)
+        if peerNATType == .symmetric {
+            let relays = getPotentialRelays(for: peerId)
+            if !relays.isEmpty {
+                logger.info("sendToPeer: Routing to symmetric NAT peer \(peerId.prefix(16))... via relay")
+                try await sendViaRelay(message, to: peerId)
+                return
+            }
+            // Fall through to try direct if no relays available
+            logger.warning("sendToPeer: Symmetric NAT peer \(peerId.prefix(16))... but no relays, trying direct")
+        }
+
+        // Direct send for non-symmetric NAT peers (or fallback for symmetric)
         let endpoints = await endpointManager.getAllEndpoints(peerId: peerId)
         guard !endpoints.isEmpty else {
             logger.warning("sendToPeer: No endpoints found for peer \(peerId.prefix(16))...")
@@ -1000,15 +1283,16 @@ public actor MeshNode {
             return nil
         }
 
-        // Build our recentPeers to send (with machineId)
+        // Build our recentPeers to send (with machineId and NAT type)
         let peerInfoList = await buildPeerEndpointInfoList()
         let sentPeers = Array(peerInfoList.prefix(5))
-        let ping = MeshMessage.ping(recentPeers: sentPeers)
+        let myNATType = await getPredictedNATType().type
+        let ping = MeshMessage.ping(recentPeers: sentPeers, myNATType: myNATType)
 
         let startTime = Date()
         do {
             let response = try await sendAndReceive(ping, to: endpoint, timeout: timeout)
-            if case .pong(let receivedPeers) = response {
+            if case .pong(let receivedPeers, _, _) = response {
                 let latencyMs = Int(Date().timeIntervalSince(startTime) * 1000)
                 logger.debug("sendPing: Got pong from \(targetPeerId) in \(latencyMs)ms")
 
@@ -1088,17 +1372,19 @@ public actor MeshNode {
 
     // MARK: - Helpers
 
-    /// Build a list of peer endpoint info for gossip (includes machineId)
+    /// Build a list of peer endpoint info for gossip (includes machineId and natType)
     func buildPeerEndpointInfoList() async -> [PeerEndpointInfo] {
         var result: [PeerEndpointInfo] = []
         for peerId in await endpointManager.allPeerIds {
             guard peerId != self.peerId else { continue }
+            let natType = await endpointManager.getNATType(peerId: peerId) ?? .unknown
             for machine in await endpointManager.getAllMachines(peerId: peerId) {
                 if let endpoint = machine.bestEndpoint {
                     result.append(PeerEndpointInfo(
                         peerId: machine.peerId,
                         machineId: machine.machineId,
-                        endpoint: endpoint
+                        endpoint: endpoint,
+                        natType: natType
                     ))
                 }
             }
@@ -1115,12 +1401,14 @@ public actor MeshNode {
         // Add known peers (up to 5)
         for peerId in await endpointManager.allPeerIds {
             guard peerId != self.peerId else { continue }
+            let natType = await endpointManager.getNATType(peerId: peerId) ?? .unknown
             for machine in await endpointManager.getAllMachines(peerId: peerId) {
                 if let endpoint = machine.bestEndpoint {
                     result.append(PeerEndpointInfo(
                         peerId: machine.peerId,
                         machineId: machine.machineId,
-                        endpoint: endpoint
+                        endpoint: endpoint,
+                        natType: natType
                     ))
                 }
             }
@@ -1257,6 +1545,7 @@ public enum MeshNodeError: Error, CustomStringConvertible {
     case timeout
     case peerNotFound
     case sendFailed(Error)
+    case noRelayAvailable
 
     public var description: String {
         switch self {
@@ -1268,6 +1557,8 @@ public enum MeshNodeError: Error, CustomStringConvertible {
             return "Peer not found"
         case .sendFailed(let error):
             return "Send failed: \(error)"
+        case .noRelayAvailable:
+            return "No relay available for symmetric NAT peer"
         }
     }
 }

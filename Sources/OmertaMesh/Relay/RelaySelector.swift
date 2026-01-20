@@ -213,13 +213,14 @@ public actor RelaySelector {
             // Measure RTT
             do {
                 let startTime = Date()
+                let myNATType = await node.getPredictedNATType().type
                 let response = try await node.sendAndReceive(
-                    .ping(recentPeers: []),
+                    .ping(recentPeers: [], myNATType: myNATType),
                     to: endpoint,
                     timeout: 5.0
                 )
 
-                if case .pong = response {
+                if case .pong(_, _, _) = response {
                     let rtt = Date().timeIntervalSince(startTime)
 
                     // Extract capacity from announcement (default to 50)

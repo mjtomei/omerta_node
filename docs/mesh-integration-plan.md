@@ -2,11 +2,16 @@
 
 This document plans the integration of `OmertaMesh` into the existing CLI binaries (`omerta`, `omertad`) and outlines required test updates and E2E infrastructure changes.
 
+> **Note (January 2026)**: STUN-based NAT detection (including Phase M6: OmertaSTUN Extraction)
+> has been replaced with **peer-based NAT prediction**. All STUN-related code and configuration
+> has been removed. NAT type is now determined by observing endpoints reported by peers in
+> pong messages. See `mesh-relay-network.md` for details.
+
 ## Overview
 
 The `OmertaMesh` module implements a complete decentralized P2P overlay network that replaces the original Phase 5 P2P Networking Foundation from [cli-architecture.md](cli-architecture.md). OmertaMesh provides:
 
-- NAT detection via STUN
+- NAT detection via peer observation (formerly STUN)
 - Bootstrap and peer discovery via gossip
 - Relay infrastructure for NAT-bound peers
 - Freshness queries for stale connection recovery
