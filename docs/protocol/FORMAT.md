@@ -166,10 +166,44 @@ This can be used anywhere an expression is expected:
 
 - `SEND(target, MESSAGE)` - send message to a peer
 - `BROADCAST(list, MESSAGE)` - broadcast message to peers
-- `APPEND list <- value` - append to a list
-- `APPEND_BLOCK BLOCK_TYPE` - append block to chain
+- `APPEND(list, value)` - append to a list
+- `APPEND(chain, BLOCK_TYPE)` - append block to chain
 
 This restriction ensures functions are deterministic and have no observable effects other than their return value.
+
+#### No IF Statements
+
+The DSL explicitly does **not** support IF as a control flow statement. Only IF ternary expressions are allowed:
+
+```
+# ALLOWED: IF as ternary expression
+status = IF count > 0 THEN "active" ELSE "inactive"
+RETURN IF approved THEN result ELSE default
+
+# NOT ALLOWED: IF as control flow
+IF condition THEN
+    do_something()
+ELSE
+    do_other()
+```
+
+This restriction encourages expressing control flow through state machine transitions rather than imperative conditionals within actions.
+
+#### Block Statements
+
+FOR loops support multi-statement bodies using parentheses:
+
+```
+FOR item IN items: (
+    total = total + item.value
+    count = count + 1
+)
+```
+
+Single statements don't require parentheses:
+```
+FOR item IN items: total = total + item.value
+```
 
 ### Native Functions
 
@@ -487,6 +521,7 @@ Note: `chain` refers to the actor's own chain. For peer chain data, use `READ(pe
 - `ABORT(reason)` - exit state machine with error
 
 ### Collection Operations
+- `APPEND(list, value)` - append value to list (action only, not in functions)
 - `FILTER(list, predicate) → list` - filter list by lambda predicate
 - `MAP(list, transform) → list` - transform list elements by lambda
 - `LENGTH(list) → int` - list length

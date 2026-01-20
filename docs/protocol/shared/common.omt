@@ -18,10 +18,7 @@
 
 function COMPUTE_CONSENSUS(verdicts list<WitnessVerdict>, threshold uint) -> string (
     accept_count = LENGTH(FILTER(verdicts, v => v == ACCEPT))
-    IF accept_count >= threshold THEN
-      RETURN "ACCEPT"
-    ELSE
-      RETURN "REJECT"
+    RETURN IF accept_count >= threshold THEN "ACCEPT" ELSE "REJECT"
 )
 
 function EXTRACT_FIELD(records list<T>, field string) -> list<U> (
@@ -35,3 +32,28 @@ function COUNT_MATCHING(items list<T>, predicate T) -> uint (
 function CONTAINS(items list<T>, item T) -> bool (
     RETURN LENGTH(FILTER(items, x => x == item)) > 0
 )
+
+function REMOVE(items list<T>, item T) -> list<T> (
+    RETURN FILTER(items, x => x != item)
+)
+
+function SET_EQUALS(a list<T>, b list<T>) -> bool (
+    # Check both directions: all of a in b AND all of b in a
+    a_not_in_b = LENGTH(FILTER(a, x => NOT CONTAINS(b, x)))
+    b_not_in_a = LENGTH(FILTER(b, x => NOT CONTAINS(a, x)))
+    RETURN a_not_in_b == 0 AND b_not_in_a == 0
+)
+
+function MIN(a int, b int) -> int (
+    RETURN IF a < b THEN a ELSE b
+)
+
+function MAX(a int, b int) -> int (
+    RETURN IF a > b THEN a ELSE b
+)
+
+function GET(d dict, key string, default any) -> any (
+    # Get value from dict with default if key not found or dict is null
+    RETURN IF HAS_KEY(d, key) THEN d.{key} ELSE default
+)
+

@@ -1877,34 +1877,6 @@ class TestBlockStatements:
         )
         """)
 
-    def test_if_with_block_bodies(self):
-        """IF statement with multi-statement then/else bodies."""
-        assert_ast_equal("""
-        function classify(x int) -> string (
-            IF x > 0 THEN (
-                sign = "positive"
-                abs_val = x
-            ) ELSE (
-                sign = "non-positive"
-                abs_val = 0 - x
-            )
-            RETURN sign
-        )
-        """)
-
-    def test_for_with_block_containing_if(self):
-        """FOR loop with block body containing IF statement."""
-        assert_ast_equal("""
-        function count_positive(items list<int>) -> int (
-            count = 0
-            FOR item IN items: (
-                IF item > 0 THEN count = count + 1 ELSE count = count
-            )
-            RETURN count
-        )
-        """)
-
-
 class TestParserRealFiles:
     """Verify AST parity for real .omt files."""
 

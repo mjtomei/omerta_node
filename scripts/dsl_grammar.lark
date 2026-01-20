@@ -117,7 +117,6 @@ action: store_action
       | send_action
       | broadcast_action
       | append_action
-      | append_block_action
       | assignment_action
 
 store_action: "store" IDENTIFIER ("," IDENTIFIER)*        -> store_fields
@@ -131,8 +130,6 @@ broadcast_action: "BROADCAST" "(" IDENTIFIER "," IDENTIFIER ")"
 
 append_action: "APPEND" "(" IDENTIFIER "," expr ")"
 
-append_block_action: "append_block" IDENTIFIER
-
 assignment_action: IDENTIFIER "=" expr
 
 // =============================================================================
@@ -145,21 +142,19 @@ function_param: IDENTIFIER type_expr
 
 native_function_decl: "native" "function" IDENTIFIER "(" function_params? ")" "->" type_expr STRING
 
-// Generic statement type used in function bodies, loops, conditionals
+// Generic statement type used in function bodies and loops
 // ? prefix makes these inline (transparent) - they pass through their child directly
+// NOTE: IF is only supported as a ternary expression, not a statement.
+//       Control flow should be expressed through state machine transitions.
 ?stmt: return_stmt
      | assignment_stmt
      | for_stmt
-     | if_stmt
      | block_stmt
 
 return_stmt: "return"i expr
 assignment_stmt: IDENTIFIER "[" expr "]" "=" expr  -> index_assignment
                | IDENTIFIER "=" expr
 for_stmt: "FOR"i IDENTIFIER "IN"i expr ":" stmt
-if_stmt: "IF"i expr "THEN"i if_then_body "ELSE"i if_else_body
-if_then_body: stmt+
-if_else_body: stmt+
 block_stmt: "(" stmt+ ")"
 
 // Alias for clarity in function declarations

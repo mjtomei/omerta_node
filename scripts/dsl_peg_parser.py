@@ -13,9 +13,9 @@ from dsl_ast import (
     Schema, Transaction, Import, Parameter, EnumDecl, EnumValue,
     MessageDecl, BlockDecl, Field, ActorDecl, StateDecl, TriggerDecl,
     TriggerParam, Transition, StoreAction, ComputeAction, LookupAction,
-    SendAction, BroadcastAction, AppendAction, AppendBlockAction,
+    SendAction, BroadcastAction, AppendAction,
     OnGuardFail, FunctionDecl, FunctionParam, ReturnStmt, AssignmentStmt,
-    ForStmt, IfStmt,
+    ForStmt,
     # Expression AST
     Identifier, Literal, BinaryExpr, UnaryExpr, FunctionCallExpr,
     FieldAccessExpr, DynamicFieldAccessExpr, IndexAccessExpr,
@@ -360,9 +360,6 @@ class DSLTransformer(Transformer):
     def append_action(self, list_name, value):
         return AppendAction(list_name=str(list_name), value=value)
 
-    def append_block_action(self, block_type):
-        return AppendBlockAction(block_type=str(block_type))
-
     def assignment_action(self, name, expr):
         return ComputeAction(name=str(name), expression=expr)
 
@@ -374,7 +371,7 @@ class DSLTransformer(Transformer):
         params = []
         return_type = SimpleType(name="void")
         statements = []
-        stmt_types = (ReturnStmt, AssignmentStmt, ForStmt, IfStmt)
+        stmt_types = (ReturnStmt, AssignmentStmt, ForStmt)
 
         for item in rest:
             if isinstance(item, list) and item and isinstance(item[0], FunctionParam):
@@ -437,27 +434,18 @@ class DSLTransformer(Transformer):
         # body_stmt could be a single statement or a list (from block_stmt)
         if isinstance(body_stmt, list):
             body = body_stmt
-        elif isinstance(body_stmt, (ReturnStmt, AssignmentStmt, ForStmt, IfStmt)):
+        elif isinstance(body_stmt, (ReturnStmt, AssignmentStmt, ForStmt)):
             body = [body_stmt]
         else:
             body = []
         return ForStmt(var_name=str(var), iterable=iterable, body=body)
-
-    def if_stmt(self, condition, then_body, else_body):
-        return IfStmt(condition=condition, then_body=then_body, else_body=else_body)
-
-    def if_then_body(self, *items):
-        return self._flatten_stmts(items)
-
-    def if_else_body(self, *items):
-        return self._flatten_stmts(items)
 
     def block_stmt(self, *items):
         return self._flatten_stmts(items)
 
     def _flatten_stmts(self, items):
         """Flatten statement list, expanding any block_stmt lists."""
-        stmt_types = (ReturnStmt, AssignmentStmt, ForStmt, IfStmt)
+        stmt_types = (ReturnStmt, AssignmentStmt, ForStmt)
         result = []
         for item in items:
             if isinstance(item, list):
