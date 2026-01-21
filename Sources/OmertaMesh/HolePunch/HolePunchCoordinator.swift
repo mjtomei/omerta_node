@@ -162,6 +162,12 @@ public actor HolePunchCoordinator {
             return false
         }
 
+        // IPv6 endpoints don't need hole punching - they're globally routable
+        if EndpointUtils.isIPv6(initiatorEndpoint) || EndpointUtils.isIPv6(targetEndpoint) {
+            logger.info("Skipping hole punch - IPv6 endpoint detected (initiator: \(initiatorEndpoint), target: \(targetEndpoint))")
+            return true  // Return success since they can connect directly
+        }
+
         let targetNATType = await getPeerNATType?(targetPeerId) ?? .unknown
 
         // Check if hole punching is possible

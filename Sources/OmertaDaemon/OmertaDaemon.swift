@@ -319,24 +319,32 @@ struct Start: AsyncParsableCommand {
         print("")
 
         // Load network from store
-        guard let networkIdOrPrefix = effectiveNetwork else {
-            print("Error: Network ID is required")
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+
+        // Determine network: explicit arg > config file > most recent
+        let networkIdOrPrefix: String
+        if let explicit = effectiveNetwork {
+            networkIdOrPrefix = explicit
+        } else if let mostRecent = await networkStore.mostRecentNetwork() {
+            networkIdOrPrefix = mostRecent.id
+            print("Using most recently joined network: \(mostRecent.name) (\(mostRecent.id.prefix(16))...)")
+            print("")
+        } else {
+            print("Error: No network specified and no networks joined")
             print("")
             print("Usage:")
             print("  omertad start <network-id>")
             print("  omertad start --network <network-id>")
-            print("  omertad start  # if 'network' is set in config file")
+            print("  omertad start  # uses most recently joined network")
             print("")
-            print("To list existing networks:")
-            print("  omerta network list")
+            print("To join a network:")
+            print("  omerta network join <invite-link>")
             print("")
-            print("To generate a sample config file:")
-            print("  omertad config generate")
+            print("To create a new network:")
+            print("  omerta network create --name \"My Network\"")
             throw ExitCode.failure
         }
-
-        let networkStore = NetworkStore.defaultStore()
-        try await networkStore.load()
 
         // Resolve network ID prefix
         let (resolvedNetwork, resolveError) = await resolveNetwork(networkIdOrPrefix, store: networkStore)

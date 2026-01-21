@@ -185,6 +185,9 @@ public actor MeshNode {
     /// Our observed public IPv6 endpoint as reported by peers
     private var observedIPv6Endpoint: String?
 
+    /// Task for periodic IPv6 address detection
+    private var ipv6DetectionTask: Task<Void, Never>?
+
     /// Callback when our observed public endpoint changes
     private var endpointChangeHandler: ((String, String?) async -> Void)?
 
@@ -448,6 +451,9 @@ public actor MeshNode {
         // Start connection keepalive
         await connectionKeepalive.start()
 
+        // Start IPv6 address detection (checks immediately and every 5 minutes)
+        startIPv6DetectionTask()
+
         // Note: Cache cleanup is now handled by endpointManager
 
         logger.info("Mesh node started on port \(boundPort)")
@@ -472,6 +478,10 @@ public actor MeshNode {
 
         // Stop connection keepalive
         await connectionKeepalive.stop()
+
+        // Stop IPv6 detection task
+        ipv6DetectionTask?.cancel()
+        ipv6DetectionTask = nil
 
         // Note: Cache cleanup is now handled by endpointManager (stopped above)
 
@@ -1050,6 +1060,43 @@ public actor MeshNode {
                 if let handler = endpointChangeHandler {
                     await handler(newEndpoint, oldEndpoint)
                 }
+            }
+        }
+    }
+
+    /// Check for local IPv6 addresses and update our endpoint if found
+    /// This allows advertising IPv6 without waiting for a peer to report it
+    private func detectLocalIPv6Endpoint() async {
+        guard let ipv6Address = EndpointUtils.getBestLocalIPv6Address() else {
+            return
+        }
+
+        // Get our bound port
+        guard let boundPort = await socket.port else {
+            return
+        }
+
+        // Construct the endpoint in bracket notation for IPv6
+        let endpoint = "[\(ipv6Address)]:\(boundPort)"
+
+        // Only update if we don't already have an observed IPv6 endpoint
+        // (peer-reported endpoint is more accurate than local detection)
+        if observedIPv6Endpoint == nil {
+            logger.info("Detected local IPv6 address: \(endpoint)")
+            observedIPv6Endpoint = endpoint
+        }
+    }
+
+    /// Start periodic IPv6 address detection
+    private func startIPv6DetectionTask() {
+        ipv6DetectionTask = Task {
+            // Check immediately on start
+            await detectLocalIPv6Endpoint()
+
+            // Then check every 5 minutes
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(300))
+                await detectLocalIPv6Endpoint()
             }
         }
     }

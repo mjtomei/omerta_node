@@ -63,4 +63,72 @@ public enum EndpointUtils {
         var addr = in6_addr()
         return inet_pton(AF_INET6, string, &addr) == 1
     }
+
+    // MARK: - Local Address Discovery
+
+    /// Get all local IPv6 addresses (global unicast, not link-local)
+    /// Returns addresses suitable for external connectivity
+    public static func getLocalIPv6Addresses() -> [String] {
+        var addresses: [String] = []
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+
+        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else {
+            return addresses
+        }
+
+        defer { freeifaddrs(ifaddr) }
+
+        var ptr: UnsafeMutablePointer<ifaddrs>? = firstAddr
+        while let addr = ptr {
+            defer { ptr = addr.pointee.ifa_next }
+
+            // Check for IPv6
+            guard addr.pointee.ifa_addr?.pointee.sa_family == sa_family_t(AF_INET6) else {
+                continue
+            }
+
+            // Get the address
+            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let result = getnameinfo(
+                addr.pointee.ifa_addr,
+                socklen_t(MemoryLayout<sockaddr_in6>.size),
+                &hostname,
+                socklen_t(hostname.count),
+                nil,
+                0,
+                NI_NUMERICHOST
+            )
+
+            guard result == 0 else { continue }
+
+            let address = String(cString: hostname)
+
+            // Skip link-local (fe80::) and loopback (::1)
+            if address.hasPrefix("fe80:") || address == "::1" {
+                continue
+            }
+
+            // Remove zone ID suffix if present (e.g., %en0)
+            let cleanAddress = address.split(separator: "%").first.map(String.init) ?? address
+
+            addresses.append(cleanAddress)
+        }
+
+        return addresses
+    }
+
+    /// Get the best local IPv6 address for external connectivity
+    /// Returns nil if no suitable IPv6 address is found
+    public static func getBestLocalIPv6Address() -> String? {
+        let addresses = getLocalIPv6Addresses()
+
+        // Prefer global unicast (2000::/3) over unique local (fc00::/7)
+        // Global addresses start with 2 or 3
+        if let global = addresses.first(where: { $0.hasPrefix("2") || $0.hasPrefix("3") }) {
+            return global
+        }
+
+        // Fall back to any non-link-local address
+        return addresses.first
+    }
 }

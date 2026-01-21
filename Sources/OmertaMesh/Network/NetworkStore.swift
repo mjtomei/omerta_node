@@ -66,6 +66,11 @@ public actor NetworkStore {
         networks.values.filter { $0.isActive }
     }
 
+    /// Get the most recently joined network
+    public func mostRecentNetwork() -> Network? {
+        networks.values.max { $0.joinedAt < $1.joinedAt }
+    }
+
     /// Set network active/inactive
     public func setActive(_ networkId: String, active: Bool) async throws {
         guard var network = networks[networkId] else {

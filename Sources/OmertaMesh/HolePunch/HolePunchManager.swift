@@ -140,6 +140,12 @@ public actor HolePunchManager {
     public func establishDirectConnection(to targetPeerId: PeerId) async -> HolePunchResult {
         let startTime = Date()
 
+        // Check if we have an IPv6 endpoint for the target - IPv6 doesn't need hole punching
+        if let endpoint = await getPeerEndpoint?(targetPeerId), EndpointUtils.isIPv6(endpoint) {
+            logger.info("Target \(targetPeerId.prefix(8))... has IPv6 endpoint \(endpoint) - no hole punch needed")
+            return .success(endpoint: endpoint, rtt: 0)
+        }
+
         // Get target's NAT type
         let targetNATType = await getPeerNATType?(targetPeerId) ?? .unknown
 

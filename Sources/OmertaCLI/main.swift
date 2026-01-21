@@ -93,7 +93,7 @@ func resolveNetworkForDaemon(
     networkFlag: String?,
     store: NetworkStore
 ) async throws -> String {
-    // Prefer positional arg, fall back to --network flag, then first available
+    // Prefer positional arg, fall back to --network flag, then most recent
     let specifiedNetwork = positionalArg ?? networkFlag
 
     if let specified = specifiedNetwork {
@@ -104,12 +104,49 @@ func resolveNetworkForDaemon(
         }
         return net.id
     } else {
-        let networks = await store.allNetworks()
-        guard let firstNetwork = networks.first else {
+        guard let mostRecent = await store.mostRecentNetwork() else {
             print("Error: No networks found. Join a network first with 'omerta network join'")
             throw ExitCode.failure
         }
-        return firstNetwork.id
+        return mostRecent.id
+    }
+}
+
+/// Get the effective network, falling back to most recent if not specified
+/// Returns: (network, didFallback) where didFallback indicates automatic selection
+func getEffectiveNetwork(
+    specified: String?,
+    store: NetworkStore
+) async throws -> (OmertaMesh.Network, Bool) {
+    if let specifiedId = specified {
+        let (resolved, error) = await resolveNetwork(specifiedId, store: store)
+        guard let net = resolved else {
+            print(error ?? "Network not found: \(specifiedId)")
+            print("")
+            print("Available networks:")
+            let networks = await store.allNetworks()
+            if networks.isEmpty {
+                print("  (none)")
+                print("")
+                print("Join a network with:")
+                print("  omerta network join '<invite-link>'")
+            } else {
+                for n in networks {
+                    print("  \(n.id.prefix(16))... - \(n.name)")
+                }
+            }
+            throw ExitCode.failure
+        }
+        return (net, false)
+    } else {
+        guard let mostRecent = await store.mostRecentNetwork() else {
+            print("Error: No networks joined yet")
+            print("")
+            print("Join a network with:")
+            print("  omerta network join '<invite-link>'")
+            throw ExitCode.failure
+        }
+        return (mostRecent, true)
     }
 }
 
@@ -707,7 +744,7 @@ struct NetworkCreate: AsyncParsableCommand {
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print("")
         print("To start the provider daemon:")
-        print("  omertad start --network \(networkId) --port \(endpoint.split(separator: ":").last ?? "9999")")
+        print("  omertad start --port \(endpoint.split(separator: ":").last ?? "9999")")
         print("")
         print("Others can join with:")
         print("  omerta network join '<invite-link>'")
@@ -791,7 +828,7 @@ struct NetworkJoin: AsyncParsableCommand {
             print("Bootstrap peers: \(networkKey.bootstrapPeers.joined(separator: ", "))")
             print("")
             print("To start participating in this network:")
-            print("  omertad start --network \(network.id)")
+            print("  omertad start")
 
         } catch {
             print("Failed to join network: \(error)")
@@ -1552,11 +1589,14 @@ struct VMRequest: AsyncParsableCommand {
         abstract: "Request a VM from a provider"
     )
 
-    @Option(name: .long, help: "Network ID (from 'omerta network join' or 'omerta network list')")
-    var network: String?
+    @Argument(help: "Provider peer ID or prefix (from 'omerta peers')")
+    var peerArg: String?
 
-    @Option(name: .long, help: "Provider peer ID to request VM from")
+    @Option(name: .long, help: "Provider peer ID (alternative to positional argument)")
     var peer: String?
+
+    @Option(name: .long, help: "Network ID or prefix (defaults to most recent)")
+    var network: String?
 
     @Option(name: .long, help: "Number of CPU cores")
     var cpu: UInt32?
@@ -1601,49 +1641,33 @@ struct VMRequest: AsyncParsableCommand {
         // Note: Root is NOT required for vm request when omertad is running.
         // The CLI delegates VPN operations to omertad (which runs as root) via IPC.
 
-        // Validate inputs
-        guard let networkId = network else {
-            print("Error: --network <id> is required")
-            print("")
-            print("To join a network:")
-            print("  omerta network join '<invite-link>'")
-            print("")
-            print("To list networks:")
-            print("  omerta network list")
-            throw ExitCode.failure
-        }
-
-        guard let providerPeerId = peer else {
-            print("Error: --peer <provider-peer-id> is required")
-            print("")
-            print("The provider will display their peer ID when they start omertad.")
-            throw ExitCode.failure
-        }
-
         // Load network from store
         let networkStore = NetworkStore.defaultStore()
         try await networkStore.load()
 
-        guard let storedNetwork = await networkStore.network(id: networkId) else {
-            print("Error: Network '\(networkId)' not found")
-            print("")
-            print("Available networks:")
-            let networks = await networkStore.allNetworks()
-            if networks.isEmpty {
-                print("  (none)")
-                print("")
-                print("Join a network with:")
-                print("  omerta network join '<invite-link>'")
-            } else {
-                for n in networks {
-                    print("  \(n.id) - \(n.name)")
-                }
-            }
-            throw ExitCode.failure
+        // Get effective network (specified or most recent)
+        let (storedNetwork, didFallback) = try await getEffectiveNetwork(specified: network, store: networkStore)
+        let networkId = storedNetwork.id
+
+        if didFallback {
+            print("Using network: \(storedNetwork.name) (\(networkId.prefix(16))...)")
+        } else {
+            print("Network: \(storedNetwork.name) (\(networkId.prefix(16))...)")
         }
 
-        print("Network: \(storedNetwork.name) (\(networkId))")
-        print("Provider: \(providerPeerId)")
+        // Get peer ID (positional arg takes precedence over --peer flag)
+        guard let peerIdOrPrefix = peerArg ?? peer else {
+            print("")
+            print("Error: Provider peer ID is required")
+            print("")
+            print("Usage:")
+            print("  omerta vm request <peer-id-prefix>")
+            print("  omerta vm request --peer <peer-id>")
+            print("")
+            print("To list available peers:")
+            print("  omerta peers")
+            throw ExitCode.failure
+        }
 
         // Get SSH key - try config first, fall back to default location, auto-generate if needed
         let sshPrivateKeyPath: String
@@ -1720,12 +1744,44 @@ struct VMRequest: AsyncParsableCommand {
         // Check omertad is running
         let controlClient = ControlSocketClient(networkId: networkId)
         guard controlClient.isDaemonRunning() else {
-            print("Error: omertad is not running for network '\(networkId)'")
+            print("Error: omertad is not running for network '\(networkId.prefix(16))...'")
             print("")
             print("Start the daemon with:")
-            print("  omertad start --network \(networkId)")
+            print("  omertad start")
             throw ExitCode.failure
         }
+
+        // Resolve peer ID prefix
+        let providerPeerId: String
+        if peerIdOrPrefix.count >= 64 {
+            // Full peer ID provided
+            providerPeerId = peerIdOrPrefix
+        } else {
+            // Try to resolve prefix via daemon
+            let peersResponse = try await controlClient.send(.peers, timeout: 10)
+            guard case .peers(let peers) = peersResponse else {
+                print("Error: Failed to get peer list from daemon")
+                throw ExitCode.failure
+            }
+
+            let (resolvedPeerId, resolveError) = resolvePeerId(peerIdOrPrefix, knownPeers: peers)
+            guard let resolved = resolvedPeerId else {
+                print(resolveError ?? "Peer not found: \(peerIdOrPrefix)")
+                print("")
+                print("Available peers:")
+                if peers.isEmpty {
+                    print("  (none discovered yet)")
+                } else {
+                    for p in peers.prefix(10) {
+                        print("  \(p.peerId.prefix(16))... @ \(p.endpoint)")
+                    }
+                }
+                throw ExitCode.failure
+            }
+            providerPeerId = resolved
+        }
+
+        print("Provider: \(providerPeerId.prefix(16))...")
 
         if dryRun {
             print("[DRY RUN] Skipping VPN setup")
@@ -3552,10 +3608,10 @@ struct MeshStatus: AsyncParsableCommand {
         // Connect to daemon via control socket
         let client = ControlSocketClient(networkId: networkId)
         guard client.isDaemonRunning() else {
-            print("Error: omertad is not running for network '\(networkId)'")
+            print("Error: omertad is not running for network '\(networkId.prefix(16))...'")
             print("")
             print("Start the daemon with:")
-            print("  omertad start --network \(networkId)")
+            print("  omertad start")
             throw ExitCode.failure
         }
 
@@ -3614,10 +3670,10 @@ struct MeshPeers: AsyncParsableCommand {
         // Connect to daemon via control socket
         let client = ControlSocketClient(networkId: networkId)
         guard client.isDaemonRunning() else {
-            print("Error: omertad is not running for network '\(networkId)'")
+            print("Error: omertad is not running for network '\(networkId.prefix(16))...'")
             print("")
             print("Start the daemon with:")
-            print("  omertad start --network \(networkId)")
+            print("  omertad start")
             throw ExitCode.failure
         }
 
@@ -3686,10 +3742,10 @@ struct MeshConnect: AsyncParsableCommand {
         // Connect to daemon via control socket
         let client = ControlSocketClient(networkId: networkId)
         guard client.isDaemonRunning() else {
-            print("Error: omertad is not running for network '\(networkId)'")
+            print("Error: omertad is not running for network '\(networkId.prefix(16))...'")
             print("")
             print("Start the daemon with:")
-            print("  omertad start --network \(networkId)")
+            print("  omertad start")
             throw ExitCode.failure
         }
 
@@ -3792,10 +3848,10 @@ struct MeshPing: AsyncParsableCommand {
         // Connect to daemon via control socket
         let client = ControlSocketClient(networkId: networkId)
         guard client.isDaemonRunning() else {
-            print("Error: omertad is not running for network '\(networkId)'")
+            print("Error: omertad is not running for network '\(networkId.prefix(16))...'")
             print("")
             print("Start the daemon with:")
-            print("  omertad start --network \(networkId)")
+            print("  omertad start")
             throw ExitCode.failure
         }
 
