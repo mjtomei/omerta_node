@@ -36,14 +36,17 @@ public actor FreshnessManager {
     private let logger: Logger
     private let config: Config
 
-    /// Callback to send messages (set by MeshNode)
+    /// Callback to send messages (deprecated - use setServices)
     private var sendMessage: ((MeshMessage, PeerId?) async -> Void)?
 
-    /// Callback to broadcast messages (set by MeshNode)
+    /// Callback to broadcast messages (deprecated - use setServices)
     private var broadcastMessage: ((MeshMessage, Int) async -> Void)?
 
-    /// Callback to invalidate cache entries (set by MeshNode)
+    /// Callback to invalidate cache entries (deprecated - use setServices)
     private var invalidateCache: ((PeerId, ReachabilityPath) async -> Void)?
+
+    /// Unified services reference (preferred over individual callbacks)
+    private weak var services: (any MeshNodeServices)?
 
     public init(config: Config = .default) {
         self.config = config
@@ -81,7 +84,7 @@ public actor FreshnessManager {
 
     // MARK: - Configuration
 
-    /// Set callbacks for network operations
+    /// Set callbacks for network operations (deprecated - use setServices)
     public func setCallbacks(
         sendMessage: @escaping (MeshMessage, PeerId?) async -> Void,
         broadcastMessage: @escaping (MeshMessage, Int) async -> Void,
@@ -90,6 +93,11 @@ public actor FreshnessManager {
         self.sendMessage = sendMessage
         self.broadcastMessage = broadcastMessage
         self.invalidateCache = invalidateCache
+    }
+
+    /// Set the unified services reference (preferred over individual callbacks)
+    public func setServices(_ services: any MeshNodeServices) {
+        self.services = services
     }
 
     // MARK: - Recording Contacts
@@ -118,6 +126,13 @@ public actor FreshnessManager {
 
     /// Query the network for fresh information about a peer
     public func queryFreshInfo(for peerId: PeerId) async -> FreshnessQueryResult {
+        // Use services if available, fall back to legacy callback
+        if let services = services {
+            return await freshnessQuery.query(peerId: peerId) { message, maxHops in
+                await services.broadcast(message, maxHops: maxHops)
+            }
+        }
+
         guard let broadcast = broadcastMessage else {
             logger.warning("Cannot query: no broadcast callback set")
             return .notFound(peerId)
@@ -147,12 +162,20 @@ public actor FreshnessManager {
     ) async {
         // Report locally
         if let message = await pathFailureReporter.reportFailure(peerId: peerId, path: path) {
-            // Broadcast to network
-            await broadcastMessage?(message, config.pathFailureConfig.maxPropagationHops)
+            // Broadcast to network (prefer services)
+            if let services = services {
+                await services.broadcast(message, maxHops: config.pathFailureConfig.maxPropagationHops)
+            } else {
+                await broadcastMessage?(message, config.pathFailureConfig.maxPropagationHops)
+            }
         }
 
-        // Invalidate local cache
-        await invalidateCache?(peerId, path)
+        // Invalidate local cache (prefer services)
+        if let services = services {
+            await services.invalidateCache(peerId: peerId, path: path)
+        } else {
+            await invalidateCache?(peerId, path)
+        }
 
         // Remove from recent contacts
         await recentContacts.removeContact(peerId)
@@ -262,8 +285,12 @@ public actor FreshnessManager {
     }
 
     private func handlePathFailure(_ failure: PathFailure) async {
-        // Invalidate cache for this path
-        await invalidateCache?(failure.peerId, failure.path)
+        // Invalidate cache for this path (prefer services)
+        if let services = services {
+            await services.invalidateCache(peerId: failure.peerId, path: failure.path)
+        } else {
+            await invalidateCache?(failure.peerId, failure.path)
+        }
 
         // Remove from recent contacts if the path matches
         if let contact = await recentContacts.getContact(failure.peerId),

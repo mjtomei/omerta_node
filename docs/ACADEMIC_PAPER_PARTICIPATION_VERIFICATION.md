@@ -12,6 +12,9 @@ toc-depth: 2
 header-includes:
   - \usepackage{float}
   - \usepackage{hyperref}
+  - \usepackage{amsmath}
+  - \usepackage{amssymb}
+  - \usepackage{stmaryrd}
 ---
 
 \newpage
@@ -20,29 +23,27 @@ header-includes:
 
 Decentralized compute sharing faces a fundamental challenge: how can strangers cooperate without a trusted central authority? Blockchain-based systems address this through proof-of-work or proof-of-stake consensus, achieving Byzantine fault tolerance at the cost of significant resource overhead and limited throughput. We present Omerta, a practical implementation that synthesizes decades of research on trust, reputation, and mechanism design into a working system for decentralized compute markets.
 
-Omerta builds on established foundations—EigenTrust's iterative aggregation [3], FIRE's multi-source trust integration [35], Subjective Logic's uncertainty formalism [36], and transaction cost economics [34]—while making specific design choices suited to compute markets. The key architectural decision is computing trust *locally* relative to each observer, rather than maintaining global scores. This differs from EigenTrust's global PageRank-style computation and enables natural scaling without global consensus overhead.
+Omerta computes trust *locally* relative to each observer, rather than maintaining global scores. Trust is derived from verified transactions—actual compute sessions with measurable outcomes—rather than subjective ratings. This design is *machine-native*: unlike prior reputation systems that assumed humans would rate each other, Omerta expects trust signals to be generated automatically from transaction outcomes, enabling measurement at scales human rating could never achieve. This enables natural scaling without global consensus overhead, at the cost of accepting that different observers may have different views of the same identity's trustworthiness. Crucially, local computation does not mean isolated computation: transactions are witnessed by third parties, records propagate through gossip, and cryptographic signatures ensure authenticity. We retain the benefits of distributed verification and immutable records—we simply don't require the entire network to agree on a single global ordering before transactions can proceed.
 
-This paper presents: (1) a trust model derived from verified transactions rather than subjective ratings, building on insights from feedback mechanism design [18, 19]; (2) local trust computation with path decay, extending graph-based trust propagation [3, 37]; (3) automated monetary policy that adjusts parameters in response to detected threats—a novel integration not present in prior reputation systems; (4) economic analysis demonstrating when unreliable home compute creates genuine value, informed by Budish's analysis of blockchain attack economics [38]; and (5) double-spend resolution where currency "weight" scales with network performance, providing a practical alternative to global consensus for bilateral transactions.
+This paper presents: (1) a trust model derived from verified transactions rather than subjective ratings; (2) local trust computation with path decay; (3) automated monetary policy that adjusts parameters in response to detected threats; (4) economic analysis demonstrating when unreliable home compute creates genuine value; and (5) double-spend resolution where currency "weight" scales with network performance, providing a practical alternative to global consensus for bilateral transactions.
 
-We draw on the observation that human societies have always traded privacy for trust—villages had high trust precisely because everyone knew everyone's business. Omerta recreates this visibility at global scale through on-chain transparency. Unlike villages with their arbitrary social punishment, we aim to maximize freedom within the trust constraint: only provably anti-social behavior (failed deliveries, double-spends) affects trust scores, and all mechanisms are documented for scrutiny.
+We draw on the observation that human societies have always traded privacy for trust—villages had high trust precisely because everyone knew everyone's business. Omerta recreates this visibility at global scale through on-chain transparency. Unlike villages with their arbitrary social punishment, we aim to maximize freedom within the trust constraint: only verifiable anti-social behavior—failed deliveries, double-spends, verification failures—affects trust scores, where "verifiable" means the determination is reproducible from on-chain data by any observer.
 
 We argue that implementing fair trust systems at scale was computationally intractable until machine intelligence provided the reasoning capacity to model behavior, tune parameters, and explain decisions. This paper itself was developed through human-machine collaboration, demonstrating the thesis: machine intelligence both demands the compute that systems like Omerta could provide and enables the trust mechanisms that make such systems work.
 
-Prior trust systems like EigenTrust and FIRE were never widely deployed—they remained academic exercises, computing trust scores that connected to nothing. Omerta is not presented as theoretically superior to that prior work, but as a practical synthesis bringing established ideas into implementation with real economic consequences. Where prior work offers better solutions, we aim to adopt them. The contribution is the integration itself—a working system rather than isolated mechanisms, with the software given away for free and no preallocation of tokens.
+Prior trust systems like EigenTrust and FIRE were never widely deployed—they remained academic exercises, computing trust scores that connected to nothing. Omerta brings these ideas into implementation with real economic consequences: trust scores that affect payments, transfer costs, and access. The contribution is both theoretical and practical—new mechanisms where prior work was insufficient, adoption of proven approaches where they exist, and integration into a working system. The software is given away for free with no preallocation of tokens.
 
-Unlike prior decentralized compute platforms that struggled with adoption, Omerta targets a specific opportunity: billions of home computers sit idle most of the time, representing near-zero marginal cost compute for owners who have already paid for hardware, electricity, and internet. The software is open source with no platform fees. And the primary customers are machine intelligence workloads—naturally fault-tolerant, parallelizable, and generated in unbounded quantity. This combination of zero-cost supply, zero-rent platform, and machine-intelligence-native demand may succeed where blockchain-based alternatives with mining overhead, token economics, and human-centric design have struggled.
+Unlike prior decentralized compute platforms that struggled with adoption, Omerta targets a specific opportunity: billions of home computers sit idle most of the time, representing low marginal cost compute for owners who have already paid for hardware and internet. The software will provide transparency about actual operating costs—electricity, bandwidth, wear—with user controls for participation thresholds. The software is open source with no platform fees. And machine intelligence dramatically increases the utility of distributed compute—enabling humans to orchestrate complex parallel workloads across unreliable infrastructure in ways they couldn't manage manually. This combination of low-cost supply, zero-rent platform, and machine-intelligence-amplified demand may succeed where blockchain-based alternatives with mining overhead, token economics, and human-centric design have struggled.
 
 \newpage
 
 # 1. Introduction
 
-The vision of decentralized computing—where anyone can contribute resources and anyone can consume them, without intermediaries extracting rents—has motivated decades of research. The core challenge remains constant: how do strangers cooperate when each has incentive to defect?
+The vision of decentralized computing—where anyone can contribute resources and anyone can consume them, without intermediaries extracting rents—has motivated decades of research. The core challenge is threefold: protecting against the rare bad actors who spoil cooperation for everyone, reducing the technical barriers that have limited participation to experts, and making the experience simple enough to be worthwhile. The practical reality is that most participants in even "trustless" systems don't write their own code—they trust wallet software, exchange interfaces, and protocol implementations written by others. The question is not whether to trust, but whom, how much, and at what cost.
 
 ## 1.0 A Brief History of Trust Systems
 
-The question of computational trust saw intensive research in the early 2000s, driven by the rise of peer-to-peer file sharing networks and online marketplaces. EigenTrust [3] adapted PageRank to compute global reputation scores in P2P networks. PeerTrust [4] incorporated transaction context and feedback credibility. FIRE [35] integrated multiple information sources—direct experience, role-based trust, witness reports, and certified reputation. Subjective Logic [36] provided mathematical foundations for reasoning under trust uncertainty. PowerTrust [37] leveraged power-law distributions in feedback patterns for faster convergence.
-
-This body of work established core insights that remain valid: trust propagates through networks with decay; local computation can substitute for global consensus; time and history provide unforgeable credentials; and detection of manipulation patterns enables defensive responses.
+The question of computational trust saw intensive research in the early 2000s, driven by the rise of peer-to-peer file sharing networks and online marketplaces. Researchers developed algorithms to compute reputation scores, integrate multiple trust sources, reason under uncertainty, and detect manipulation. This body of work established core insights that remain valid: trust propagates through networks with decay; local computation can substitute for global consensus; time and history provide unforgeable credentials; and detection of manipulation patterns enables defensive responses. (See Section 2.1 for detailed treatment of specific systems.)
 
 **Yet these systems were never widely deployed.** They remained academic exercises—published, cited, and largely forgotten in practice. Why?
 
@@ -62,29 +63,40 @@ Omerta represents an attempt at this synthesis. We return to the trust-based app
 
 Traditional approaches fall into two categories. **Trusted intermediary** models, exemplified by cloud computing providers, centralize authority in organizations that can enforce contracts and punish misbehavior. This works but introduces single points of failure, censorship risk, and rent extraction. **Blockchain-based** models, exemplified by Ethereum and its descendants, replace trusted intermediaries with cryptographic consensus protocols that theoretically eliminate the need for trust. This also works but imposes significant costs: massive energy expenditure (proof-of-work), capital lockup requirements (proof-of-stake), limited transaction throughput, and delayed finality.
 
+Between these extremes lies a spectrum of approaches trading trust for cost. Fully homomorphic encryption (FHE) and multi-party computation (MPC) enable trustless computation but with 1,000-1,000,000× overhead. Trusted execution environments (TEEs) like Intel SGX reduce overhead but trust hardware manufacturers. Layer-2 solutions (rollups, sidechains) inherit security from a base chain while improving throughput, but still pay consensus costs. Smart contracts execute deterministically but are limited to on-chain data and simple computations.
+
 We propose a third path—or rather, we return to one that was overshadowed. Omerta is a trust-based distributed compute network that neither centralizes authority nor attempts to eliminate trust. Instead, it makes trust *subjective*, *local*, and *earned*—computed by each participant from their own position in the network, based on verifiable on-chain data accumulated over time. This approach builds directly on EigenTrust, FIRE, and related work, while making specific adaptations for compute markets and leveraging machine intelligence for implementation.
 
 ## 1.2 The Trust Spectrum
 
-Trustlessness is not binary—it exists on a spectrum. Proof-of-work and proof-of-stake mechanisms genuinely increase trustlessness compared to centralized alternatives. They represent real achievements in distributed systems research. However, historical episodes demonstrate that no system achieves absolute trustlessness:
+Trustlessness is not binary—it exists on a spectrum. Proof-of-work and proof-of-stake mechanisms genuinely increase trustlessness compared to centralized alternatives. They represent real achievements in distributed systems research. However, historical episodes reveal that a social layer always remains:
 
 **The DAO Hack (2016)**: An attacker exploited a smart contract vulnerability to drain $60 million from The DAO. The Ethereum community responded with a hard fork that reversed the theft—creating Ethereum (rolled back) and Ethereum Classic (preserved the "immutable" history). The community chose social consensus over mechanical execution.
 
 **Bitcoin Value Overflow (2010)**: A bug created 184 billion bitcoins out of thin air. Developers and node operators coordinated to deploy a fix and roll back the chain. Human judgment overrode the protocol when stakes were high enough.
 
-**Exchange Coordination**: When $40 million was stolen from Binance in 2019, the company seriously considered coordinating a Bitcoin rollback before deciding against it. The option existed—revealing that social coordination remains available when needed.
+These interventions were controversial—but the social layer can also work as intended:
 
-These episodes do not invalidate blockchain achievements. Rather, they reveal that we operate on a spectrum from full trust (centralized authority) to reduced trust (cryptographic consensus) to some irreducible social layer that emerges under sufficient pressure. No practical system reaches the zero-trust endpoint.
+**Exchange Coordination**: When exchanges collectively delist contentious tokens or coordinate responses to theft, they demonstrate genuine community action in support of shared values. This is humans exercising collective judgment when protocol alone is insufficient, and it represents the system working, not failing.
+
+These episodes do not invalidate blockchain achievements. Rather, they reveal that we operate on a spectrum from full trust (centralized authority) to reduced trust (cryptographic consensus) to some irreducible social layer. Sometimes that social layer intervenes controversially; sometimes it acts in clear support of community values. No practical system reaches the zero-trust endpoint—nor should it.
 
 **The question becomes**: given that we cannot achieve absolute trustlessness anyway, what are we paying for the trustlessness we do achieve? And could we relax our requirements slightly to capture most of the practical benefit at dramatically lower cost?
-
-*Trust is the API you pay for but never see—until it fails.*
 
 This is the same reasoning that motivates ephemeral compute over fully homomorphic encryption (FHE). FHE provides the ultimate guarantee: compute on encrypted data without ever decrypting it. No trust in the compute provider required. But FHE imposes 1,000-1,000,000x computational overhead [21], making it impractical for most workloads. Ephemeral compute—where data exists briefly on untrusted hardware with verification and economic penalties—provides weaker guarantees but serves far more use cases at practical cost.
 
 Omerta applies this spectrum thinking to consensus itself. Blockchain consensus mechanisms genuinely reduce trust requirements, but at significant cost: energy expenditure (PoW), capital lockup (PoS), limited throughput, and delayed finality. We ask: for compute markets specifically, can we relax the global consensus requirement while preserving the practical security properties that matter?
 
 Our hypothesis is yes. Compute markets do not require global agreement—they require pairwise trust between specific buyers and sellers. By computing trust locally rather than achieving global consensus, Omerta aims to capture most of the practical benefit of decentralization at dramatically lower cost, making trustworthy compute sharing accessible to more people.
+
+Compute is also uniquely suited to trust-based systems because of the nature of the goods being traded:
+
+- **Revocable**: Providers can reclaim their machines at any time. Unlike transferring money or physical goods, access can be terminated instantly.
+- **Low stakes per transaction**: Each session consumes only a bit of time, energy, and wear. No single transaction is catastrophic.
+- **Already sunk costs**: Most home computers sit idle—owners have already paid for hardware, electricity, and internet. The marginal loss from a bad transaction is minimal.
+- **Verifiable during execution**: Compute can be checked while running through heartbeats, random audits, and result validation. Fraud is detectable, not just punishable after the fact.
+
+These properties make compute an ideal domain for experimenting with trust-based systems. The downside risk is bounded, the verification is tractable, and the resources were often going unused anyway.
 
 ## 1.3 Our Contribution
 
@@ -110,23 +122,23 @@ This paper's primary contribution is a **practical synthesis**—bringing establ
 
 6. **Structured accusation mechanism**. Prior systems use binary ratings or simple scores. Omerta's trust assertions include evidence hashes, derive credibility from the asserter's own trust (recursive), and apply impact/context multipliers for appropriate gray areas. This enables nuanced handling of infractions.
 
-7. **Double-spend resolution via currency weight**. While TrustChain [51] detects double-spends, it has no mechanism to scale finality requirements. Omerta introduces "currency weight" that scales with network connectivity—well-connected networks get lightweight finality; poorly-connected networks require heavier mechanisms. This enables graceful degradation.
+7. **Double-spend resolution via currency weight**. Since we detect double-spends rather than prevent them, transaction finality depends on how quickly conflicting transactions would be discovered. Omerta introduces "currency weight"—the confidence level required before a transaction is considered final—that scales with network connectivity. Well-connected networks detect double-spends quickly, so transactions reach finality faster with fewer confirmations. Poorly-connected networks have detection gaps, requiring longer wait times or more confirmations. This allows graceful degradation: the system adapts its trust requirements to actual network conditions rather than assuming uniform connectivity.
 
 8. **On-chain verification logs**. Prior systems record transactions or ratings, but not third-party verification results. Omerta stores verification outcomes on-chain, enabling trust computation to incorporate objective performance data rather than only self-reported transactions.
 
 9. **Application to compute markets**. The specific integration of trust, payment, verification, order book, and session lifecycle mechanisms for decentralized compute rental is novel, though individual components draw on established work.
 
-**Framing contributions (not technical novelty):**
-
-10. **The "resurgence" thesis**: We argue that trust systems research from 2000-2010 is ready for practical implementation, enabled by machine intelligence capabilities that didn't exist then.
-
-11. **Machine-intelligence-assisted design methodology**: This paper itself demonstrates the approach, developed through human-machine collaboration with explicit acknowledgment of that process.
-
-The remainder of this paper is organized as follows. Section 2 reviews related work, explicitly acknowledging the foundations we build on. Section 3 presents system architecture. Section 4 details the trust model. Section 5 describes economic mechanisms. Section 6 analyzes attack vectors and defenses. Section 7 presents simulation results. Section 8 discusses the trust-cost spectrum, limitations, and methodological notes on machine-intelligence-assisted design. Section 9 concludes.
+10. **Machine-native trust measurement**. Prior reputation systems (eBay, EigenTrust, FIRE) assumed humans would rate each other—clicking stars, leaving feedback, issuing certifications. Omerta assumes trust signals are generated automatically from verified transaction outcomes. Human input comes through engineering the automation and reviewing edge cases, not through direct rating. This enables trust measurement at scales and frequencies that human rating could never achieve.
 
 \newpage
 
 # 2. Related Work
+
+Omerta draws on multiple research traditions that have evolved largely independently. Reputation systems from e-commerce and P2P networks established how to aggregate trust signals. Sybil resistance research addressed identity manipulation. Blockchain and consensus work explored the trust-cost spectrum. Secure computation approaches (FHE, MPC, TEEs) pushed toward trustless execution at high cost. Volunteer and commercial distributed computing projects demonstrated both the potential and the pitfalls of shared compute. Finally, computational economics provided tools for modeling incentives and validating mechanism designs.
+
+A key distinction runs through all comparisons: prior reputation systems assumed humans would rate each other. Omerta assumes machine-generated trust signals from verified transactions. This difference is fundamental—it changes what scales are achievable and what attack surfaces exist.
+
+This section surveys each tradition, identifies what Omerta borrows, and clarifies where we diverge.
 
 ## 2.1 Reputation Systems
 
@@ -138,15 +150,17 @@ More sophisticated approaches emerged from peer-to-peer networks in the early 20
 
 **PeerTrust** [4] incorporated transaction context, feedback scope, and community context factors. It recognized that trust depends on more than simple rating counts. Omerta adopts this insight but derives context from transaction records rather than explicit metadata.
 
-**FIRE** [35] integrated four trust sources: interaction trust (direct experience), role-based trust (position in organization), witness reputation (third-party reports), and certified reputation (references from trustees). This multi-source approach influenced Omerta's design, though we deliberately exclude witness and certified reputation to eliminate subjective input vectors.
+**FIRE** [35] integrated four trust sources: interaction trust (direct experience), role-based trust (position in organization), witness reputation (third-party reports), and certified reputation (references from trustees). Omerta shares the recognition that trust has multiple components, though we deliberately exclude witness and certified reputation to eliminate subjective input vectors—relying only on verifiable transaction outcomes.
 
 **Subjective Logic** [36] provided mathematical foundations for reasoning under trust uncertainty, modeling opinions as probability distributions with explicit uncertainty parameters. Jøsang's framework for trust transitivity and fusion operations could strengthen Omerta's formal foundations; we note this as future work.
 
-**PowerTrust** [37] discovered power-law distributions in user feedback patterns and leveraged this for faster convergence through "power nodes." While Omerta doesn't use power nodes, understanding feedback distribution patterns informs our detection of anomalous behavior.
+**PowerTrust** [37] discovered power-law distributions in user feedback patterns and leveraged this for faster convergence through "power nodes." Omerta doesn't explicitly designate power nodes, but we expect trust scores to follow a similar power-law distribution—early participants, reliable providers, and high-volume traders will accumulate disproportionate trust. This is arguably a feature (natural meritocracy where proven participants gain influence) and a risk (concentration that could enable collusion or create single points of failure). We acknowledge this dynamic rather than pretending it won't occur.
 
-**What Omerta borrows**: Trust propagation with decay, local computation principles, transaction context sensitivity, and the recognition that different trust components require different handling.
+**Similarities with prior work**: Trust propagation with decay, local computation principles, transaction context sensitivity, and the recognition that different trust components require different handling.
 
-**What Omerta changes**: We derive trust exclusively from verified on-chain transactions, eliminating subjective ratings entirely. This is a deliberate trade-off: we lose information richness in exchange for removing the fake feedback attack surface. Whether this trade-off is correct depends on the application domain; for compute markets where delivery is verifiable, we believe it is.
+**What Omerta changes**: Trust derives primarily from verified on-chain transactions rather than subjective ratings. This dramatically reduces the fake feedback attack surface—some surface remains (colluding parties can generate fake transactions), but statistical analysis makes this harder than simply posting fake reviews. Humans can still influence trust scores directly through assertions, but at a cost: making an accusation stakes the asserter's own credibility. If you assert something others can't verify, you pay for it in trust. This mirrors how human trust networks actually work—when someone makes an accusation in a social group, their own reputation is on the line. Baseless accusations damage the accuser. The protocol codifies this natural dynamic, creating economic pressure toward honest, explainable feedback while preserving the ability to flag genuinely problematic behavior when the cost is worth it. Meanwhile, we collect objective metrics from every transaction (latency, uptime, resource delivery, verification outcomes)—more data than occasional human ratings could ever provide.
+
+**The fundamental shift**: All systems above assumed humans would generate trust signals—clicking stars, writing reviews, issuing certifications. This creates inherent scale limits: humans won't rate every file download, every API call, every 30-second compute session. It also creates attack surfaces: fake reviews, rating manipulation, retaliation. Omerta assumes trust signals are generated primarily by machines observing verified transaction outcomes. Human input enters the system through multiple channels: engineering the automation that generates ratings, setting policy parameters, reviewing edge cases that automated systems flag, and—when warranted—direct assertions that stake the asserter's own credibility. This same mechanism allows machine intelligences—including future superhuman systems—to participate in the trust network: they can make assertions, stake credibility, and have their judgments weighted by their accumulated trust like any other participant. The protocol is agent-agnostic. Compute markets may be an almost ideal testing ground for such intelligences: they operate on resources society has already deemed marginally beneficial (idle compute that would otherwise go unused), security mechanisms on personal hardware bound potential damage, and users retain the ability to reclaim their machines at any time. If something goes wrong, the system can be shut down—unlike financial markets or critical infrastructure where superhuman participants could cause irreversible harm. This is not a minor implementation detail—it fundamentally changes what scales are achievable, what attacks are possible, and what kinds of intelligence can safely participate.
 
 **TrustChain** [51] from the Tribler project deserves special attention as the most architecturally similar prior work. Like Omerta, TrustChain uses bilateral ledgers without global consensus, detecting double-spending rather than preventing it. Both scale by avoiding network-wide agreement. However, TrustChain focuses on bandwidth accounting for file sharing, while Omerta integrates trust with economic mechanisms for compute markets.
 
@@ -195,7 +209,7 @@ The following table compares Omerta's mechanisms against prior work. Checkmarks 
 
 5. **Age as derate (not bonus) is a design choice**: While temporal defenses exist in prior work, Omerta specifically ensures age never *adds* trust—only removes a penalty. This prevents dormant identity accumulation attacks.
 
-**Why this matters**: These prior systems produced thousands of citations but minimal deployment. EigenTrust was published in 2003, FIRE in 2006, TidalTrust in 2005—yet none became infrastructure that people rely on daily. The missing ingredient was economic integration. A trust score that affects nothing has no reason to exist outside academic papers. Omerta's contribution is not better theory but practical synthesis: connecting trust to payments, making reputation have economic consequences, and targeting an application domain (compute markets) where these consequences matter.
+**Why this matters**: The theory developed in these prior systems is sound—the algorithms work, the math is correct, the insights are real. What was missing was economic integration and a compelling application domain. Omerta builds on this foundation by connecting trust to payments, making reputation have economic consequences, and targeting compute markets where machine-native trust measurement and verifiable delivery align naturally. The contribution is both theoretical (novel mechanisms listed above) and practical (a working system with real economic stakes).
 
 ## 2.2 Sybil Resistance
 
@@ -211,9 +225,9 @@ Defenses fall into three categories:
 
 **Temporal**: Require identities to exist over time before gaining influence. This defense, explored in various systems including Freenet's Web of Trust, cannot prevent patient attackers who pre-create identities years in advance.
 
-Omerta employs a hybrid approach: economic penalties (transfer burns), social detection (cluster analysis), and temporal constraints. Identity age—time since on-chain creation—cannot be forged, purchased, or accelerated.
+Omerta employs a hybrid approach: economic penalties (transfer burns), social detection (cluster analysis), temporal constraints, and computational investment. Crucially, effective aging only starts when identities begin contributing meaningfully to the network—simply creating an identity and waiting provides no benefit. An attacker cannot pre-create a pool of dormant identities; they must actually run compute sessions, which costs real resources.
 
-**Limitations we acknowledge**: A well-resourced attacker who creates thousands of identities today and waits five years will have thousands of mature identities. Omerta's defenses make this expensive in time and capital, but do not make it impossible. We discuss residual attack surfaces in Section 8.9.
+**Limitations we acknowledge**: A well-resourced attacker who creates thousands of identities and actively matures them through real computational contribution over years will have thousands of mature identities. This attack requires substantial capital (to pay for compute during maturation) and patience. Omerta's defenses make this expensive in time and money, but do not make it impossible. We discuss residual attack surfaces in Section 8.9.
 
 ## 2.3 Blockchain Consensus and Its Limits
 
@@ -225,21 +239,27 @@ All these mechanisms solve the Byzantine Generals Problem: achieving agreement a
 
 **Federated approaches** occupy a middle ground. Stellar's Federated Byzantine Agreement and Ripple's trust lines allow nodes to choose which other nodes they trust for consensus, rather than trusting the entire network. However, recent analysis [48] reveals that FBA's "open membership" is limited in practice—"membership in the top tier is conditional on approval by current top tier nodes if maintaining safety is a core requirement." Despite this limitation, these systems influenced Omerta's design—the local trust computation is conceptually similar to choosing trusted validators, though Omerta applies this to reputation rather than consensus.
 
-Omerta sidesteps global consensus entirely. Compute markets do not require global agreement—they require pairwise trust between specific buyers and sellers. By computing trust locally, Omerta eliminates the coordination overhead of global agreement while providing the security properties actually needed for compute rental. This is not superior to blockchain for applications requiring global consensus; it is a different trade-off appropriate for different applications.
+**Layer-2 solutions** (optimistic rollups, zk-rollups, sidechains) address blockchain scalability by moving computation off the main chain while inheriting security from L1 through various mechanisms (fraud proofs, validity proofs, or periodic checkpoints). Rollups achieve significantly higher throughput at lower cost, making them attractive for high-frequency applications. However, L2s introduce their own trust assumptions: most rely on centralized sequencers operated by single entities, creating censorship risk and single points of failure. Operators can withhold transaction data, preventing users from independently verifying state. The fragmented ecosystem of 140+ L2s requires bridges that have suffered billions in losses (Ronin $615M, Wormhole $320M). These are real trade-offs, not free scaling. For compute markets specifically, L2 solutions face an additional limitation: smart contracts cannot verify that off-chain computation was performed correctly, requiring oracles or optimistic schemes that reintroduce trust. L2s trade increased user trust for decreased transaction cost, but without managing that trust—the assumptions are implicit, scattered across sequencer operators, bridge security, and data availability guarantees. Omerta makes a similar trade-off but explicitly: by acknowledging our trust assumptions and managing them as first-class protocol concepts with reputation scores, decay mechanisms, and economic penalties, we aim to require a much smaller increase in user trust relative to the main chains.
+
+Omerta sidesteps global consensus entirely. While individual transactions are bilateral (buyer-seller), trust has ripple effects: each interaction updates trust scores that propagate through the network. For the economy to function, the majority of interactions must be honest—which is why trust measurement exists in the first place. But this is different from requiring every node to agree on every transaction before it can proceed. By computing trust locally, Omerta eliminates the coordination overhead of global agreement while providing the security properties actually needed for compute rental. This is not superior to blockchain for applications requiring global consensus; it is a different trade-off appropriate for different applications.
 
 *Blockchain solved the Byzantine Generals Problem. Compute markets don't have Byzantine generals—they have landlords and tenants.*
 
 ## 2.4 Secure Computation Approaches
 
-The ultimate solution to untrusted compute would be **fully homomorphic encryption (FHE)** [21], which enables computation on encrypted data without decryption. FHE provides mathematical guarantees: the compute provider learns nothing about the data. However, current FHE implementations impose 1,000-1,000,000x overhead compared to plaintext computation [22], restricting practical use to narrow applications.
+The ultimate solution to untrusted compute would be **fully homomorphic encryption (FHE)** [21], which enables computation on encrypted data without decryption. FHE provides mathematical guarantees: the compute provider learns nothing about the data. However, current FHE implementations impose 1,000-1,000,000x overhead compared to plaintext computation [22], restricting practical use to narrow applications like encrypted database queries or private set intersection where the security requirement justifies the cost.
 
-**Trusted execution environments (TEEs)** like Intel SGX [23] provide hardware-based isolation, but require trusting the hardware manufacturer and have been vulnerable to side-channel attacks [24]. **Secure multi-party computation (MPC)** [25] distributes computation across parties such that no single party learns the inputs, but requires coordination and communication overhead scaling with circuit complexity.
+**Trusted execution environments (TEEs)** like Intel SGX [23] provide hardware-based isolation with much lower overhead (typically 5-30%), but require trusting the hardware manufacturer and have been vulnerable to side-channel attacks [24] including Spectre, Meltdown, and Foreshadow. TEEs are practical for applications where you trust Intel/AMD/ARM but not the cloud operator—a meaningful threat model, but not trustless.
 
-These approaches represent one end of the trust spectrum: maximum guarantees at maximum cost. Omerta explores the opposite trade-off: accepting some trust requirements in exchange for practical performance that serves more use cases.
+**Secure multi-party computation (MPC)** [25] distributes computation across parties such that no single party learns the inputs. MPC overhead depends heavily on circuit complexity and number of parties—simple operations may run at 100-1000x slowdown, while complex operations can be millions of times slower. MPC is practical for specific high-value operations: private auctions, secure voting, threshold cryptography. It is not practical for general-purpose compute.
+
+**Where these approaches make sense**: When the data is genuinely sensitive (medical records, financial data, trade secrets) and the computation is well-defined and bounded, the overhead may be justified. A hospital running private analytics on patient data, or banks computing fraud scores across institutions without sharing raw data—these are legitimate MPC/FHE use cases.
+
+**Where Omerta fits**: Most compute workloads don't require cryptographic privacy guarantees. Running a build pipeline, training a model on public data, rendering video, processing batch jobs—these benefit more from cheap, available compute than from mathematical privacy proofs. Omerta targets this larger space, accepting trust requirements in exchange for practical performance.
 
 ## 2.5 Decentralized Computing
 
-Distributed computing projects like BOINC [13], Folding@home [14], and SETI@home demonstrated that volunteers would contribute compute resources for scientific research. Commercial successors like Golem [15] and iExec [16] built on blockchain platforms to enable paid compute sharing.
+The altruistic distributed computing projects—BOINC [13], Folding@home [14], SETI@home—are among Omerta's closest ancestors. They demonstrated that volunteers would contribute compute resources for causes they believed in, without direct compensation. One purpose of Omerta is to make such projects easier: lowering barriers so that researchers without large budgets can access distributed compute for scientific work, citizen science, or public-benefit computation. We built awareness of this heritage into the protocol's design.
 
 These systems face common challenges: verifying that claimed work was actually performed, preventing providers from delivering inferior resources, and detecting collusion. Omerta addresses these through continuous verification, trust-based payment splits, and statistical detection of manipulation patterns.
 
@@ -250,7 +270,9 @@ These systems face common challenges: verifying that claimed work was actually p
 - *Extractive economics*: VC funding requires returns; token economics require appreciation; platforms extract fees. These create friction that erodes the cost advantage of distributed compute
 - *Mining overhead*: Proof-of-work and proof-of-stake consensus impose costs unrelated to compute delivery
 
-Omerta's approach differs: the software is free and open source, requiring only a download to participate. There are no platform fees—providers keep what they earn (minus trust-based burns that fund network security). There is no preallocation of tokens, no founder stake, no investors requiring returns. The primary customers are machine intelligence workloads that are naturally fault-tolerant and retry-friendly. And the "mining" is the useful compute itself, not a separate consensus mechanism.
+Omerta's approach differs: the software is free and open source, requiring only a download to participate. There are no platform fees—providers keep what they earn (minus trust-based burns that fund network security). There is no preallocation of tokens, no founder stake, no investors requiring returns. Machine intelligence workloads are naturally fault-tolerant and retry-friendly, well-suited to unreliable infrastructure. And the "mining" is the useful compute itself, not a separate consensus mechanism.
+
+**What we expect to gain**: We are transparent about benefits to Omerta's creators. By participating early, we gain access to cheaper compute for our own research and the ability to study trust systems on real networks with real people—something prior academic projects lacked. Early participants naturally accumulate higher trust scores through participation history, which may translate to economic advantages (lower transfer costs, priority matching). These benefits are available to all motivated early participants, not reserved for founders.
 
 **The gap in prior trust research**: Decentralized compute is not just a blockchain problem—it's also a trust problem. Prior trust systems (EigenTrust, TidalTrust, FIRE) could have addressed the reputation challenges in compute markets, but they remained confined to academia. Why? They lacked economic integration and a compelling application. Omerta attempts to bridge this gap: taking the trust theory developed in the 2000s, connecting it to real economic mechanisms, and applying it to a market with genuinely unbounded demand.
 
@@ -258,9 +280,11 @@ Omerta's approach differs: the software is free and open source, requiring only 
 
 The design and validation of economic mechanisms increasingly relies on computational methods. Agent-based computational economics [26, 27] provides tools for studying emergent phenomena in complex markets where analytical solutions are intractable [28]. This approach has proven particularly valuable for mechanism design [29], where simulating agent behavior under proposed rules reveals edge cases and failure modes before deployment.
 
+These computational methods have produced substantial real-world successes. Auction theory [31] informed the FCC spectrum auctions that raised over \$200 billion while efficiently allocating scarce radio frequencies—a problem intractable without computational mechanism design. Matching market algorithms [32] now assign medical residents to hospitals (the NRMP match), students to schools, and kidneys to recipients, handling constraints and preferences that would overwhelm manual processes. Google's AdWords auction, designed using algorithmic game theory principles from the same literature we draw upon, processes billions of transactions daily. These are not laboratory curiosities but deployed systems handling high-stakes allocation problems.
+
 Validation of agent-based models follows established practices [30]: parameter sensitivity analysis, comparison against theoretical predictions where available, and testing under adversarial conditions. These methods inform our simulation methodology in Section 7.
 
-The market design draws on auction theory [31] and matching market literature [32]. The trust propagation model relates to work on reputation mechanism design [33], particularly the challenge of eliciting honest feedback in the presence of moral hazard. The concept that trust mechanism overhead should scale with network uncertainty echoes transaction cost economics [34], which analyzes how institutions emerge to reduce uncertainty in exchange.
+The trust propagation model relates to work on reputation mechanism design [33], particularly the challenge of eliciting honest feedback in the presence of moral hazard. The concept that trust mechanism overhead should scale with network uncertainty echoes transaction cost economics [34], which analyzes how institutions emerge to reduce uncertainty in exchange.
 
 Omerta's economic simulations build on these foundations while extending them to a novel domain: trust-based compute markets where machine intelligence both creates demand and enables the trust mechanisms that make supply possible.
 
@@ -330,17 +354,19 @@ Either party can terminate at any time—the market handles quality through cons
 
 # 4. Trust Model
 
-The trust model draws on two decades of research—EigenTrust's iterative aggregation, TidalTrust's local computation, FIRE's multi-source integration—but differs in one critical respect: trust derives from verified transactions, not subjective ratings. This eliminates the fake feedback attack surface at the cost of information richness. For compute markets, where delivery can be objectively verified, we believe this trade-off is correct.
+Trust in Omerta derives from verified transactions, not subjective ratings. This dramatically reduces the fake feedback attack surface while actually increasing data richness through continuous objective measurement rather than occasional subjective ratings. For compute markets, where delivery can be objectively verified, this approach is well-suited.
 
 ## 4.1 Trust Accumulation
 
-Trust accumulates from verified transactions, not subjective ratings:
+Each identity accumulates a **base trust score** ($T_{base}$) representing their track record in the network. This score has two components: trust earned from completing transactions ($T_{transactions}$) and adjustments from explicit assertions by other participants ($T_{assertions}$).
 
 $$T_{base} = T_{transactions} + T_{assertions}$$
 
+**Why this formulation?** Transactions are objective and machine-verifiable—either the compute was delivered or it wasn't. Assertions handle everything else: exceptional performance, suspected manipulation, off-chain behavior. By separating these, we keep the core trust signal clean while allowing for human judgment where needed.
+
 $$T_{transactions} = \sum_i \left( CREDIT \times resource\_weight_i \times duration_i \times verification\_score_i \times cluster\_weight_i \right)$$
 
-Transaction-based trust grows with verified compute provision. Each term serves a specific purpose: resource weights normalize across compute types, duration captures commitment extent, verification scores reflect audit outcomes, and cluster weights downweight suspected Sybil transactions.
+Each completed transaction contributes to trust. The terms normalize and weight this contribution: resource weights account for different compute types (a GPU hour is worth more than a CPU hour), duration captures commitment length, verification scores reflect audit outcomes (did resources match claims?), and cluster weights downweight transactions suspected of being within Sybil clusters.
 
 Assertion-based trust adjusts for reported incidents:
 
@@ -357,6 +383,8 @@ $$T_{effective} = T_{base} \times age\_derate$$
 $$age\_derate = \min\left(1.0, \frac{identity\_age}{AGE\_MATURITY\_DAYS}\right)$$
 
 New identities start at zero effective trust regardless of transaction volume. This prevents attackers from pre-creating dormant identities that accumulate trust through mere existence. You can only earn trust by participating over time.
+
+**Why linear?** We considered alternatives: exponential growth (fast early gains, slow later) favors new users but makes age easily purchased; logarithmic (slow early, faster later) is harsh on newcomers and may discourage participation. Linear provides predictable progress: a 30-day-old identity at 33% has exactly one-third the age credit of a 90-day identity. The simplicity also makes the system easier to reason about—both for participants and attackers calculating costs.
 
 ## 4.3 Local Trust Computation
 
@@ -526,7 +554,29 @@ The trust and economic mechanisms described above create a system with specific 
 
 **Solution**: VM access is bound to the consumer's on-chain private key. No key, no access. *If you have the key, you ARE the identity—there is no "stealing," only "being."*
 
-## 6.6 Attack Economics Summary
+## 6.6 Double-Spend Attacks
+
+**Problem**: Unlike blockchain where global consensus mathematically prevents spending the same currency twice, Omerta's local trust model allows an attacker to sign conflicting transactions and broadcast them to different parts of the network before detection.
+
+**Why blockchain prevents it**: Proof-of-work and proof-of-stake achieve global consensus on transaction ordering. Once a transaction is confirmed, the entire network agrees it happened, making conflicting transactions impossible to confirm.
+
+**Why Omerta can only detect it**: We deliberately avoid global consensus (and its costs). Without a single authoritative ordering, conflicting transactions can temporarily coexist until nodes compare notes.
+
+**Our defenses**:
+
+1. **Detection via gossip**: Nodes share transaction records. When a node receives conflicting transactions from the same sender, the double-spend is detected. Well-connected networks detect nearly all double-spends; poorly-connected networks have detection gaps.
+
+2. **Economic penalties**: Detected double-spends trigger a 5× penalty on the attacker's stake. At 100% detection, expected ROI is -400%. Even at 50% detection, ROI remains negative (-150%).
+
+3. **Currency weight scaling**: Trust-weighted currency treats high-trust and low-trust coins differently. Transactions from low-trust identities require more confirmations or smaller amounts, limiting exposure.
+
+4. **Reputation destruction**: Beyond the immediate penalty, detected double-spenders lose their accumulated trust, making future participation difficult.
+
+**Limitation**: This is detection, not prevention. For high-value transactions requiring absolute double-spend prevention, blockchain remains more appropriate. Omerta accepts this tradeoff for lower-value, high-frequency compute transactions where the economics of detection are sufficient.
+
+See Section 7.6 for simulation results validating detection rates and economic stability under various network conditions.
+
+## 6.7 Attack Economics Summary
 
 The following table summarizes the economic calculus for major attack types:
 
@@ -1051,111 +1101,111 @@ Prior trust systems remained academic exercises—elegant theory with no economi
 
 # References
 
-[1] P. Resnick, K. Kuwabara, R. Zeckhauser, and E. Friedman, "Reputation systems," *Communications of the ACM*, vol. 43, no. 12, pp. 45-48, 2000.
+[1] P. Resnick, K. Kuwabara, R. Zeckhauser, and E. Friedman, "Reputation systems," *Communications of the ACM*, vol. 43, no. 12, pp. 45-48, 2000. https://doi.org/10.1145/355112.355122
 
-[2] C. Dellarocas, "The digitization of word of mouth: Promise and challenges of online feedback mechanisms," *Management Science*, vol. 49, no. 10, pp. 1407-1424, 2003.
+[2] C. Dellarocas, "The digitization of word of mouth: Promise and challenges of online feedback mechanisms," *Management Science*, vol. 49, no. 10, pp. 1407-1424, 2003. https://doi.org/10.1287/mnsc.49.10.1407.17308
 
-[3] S. D. Kamvar, M. T. Schlosser, and H. Garcia-Molina, "The EigenTrust algorithm for reputation management in P2P networks," in *Proc. WWW*, 2003.
+[3] S. D. Kamvar, M. T. Schlosser, and H. Garcia-Molina, "The EigenTrust algorithm for reputation management in P2P networks," in *Proc. WWW*, 2003. https://doi.org/10.1145/775152.775242
 
-[4] L. Xiong and L. Liu, "PeerTrust: Supporting reputation-based trust for peer-to-peer electronic communities," *IEEE TKDE*, vol. 16, no. 7, pp. 843-857, 2004.
+[4] L. Xiong and L. Liu, "PeerTrust: Supporting reputation-based trust for peer-to-peer electronic communities," *IEEE TKDE*, vol. 16, no. 7, pp. 843-857, 2004. https://doi.org/10.1109/TKDE.2004.1318566
 
-[5] K. Walsh and E. G. Sirer, "Experience with an object reputation system for peer-to-peer filesharing," in *Proc. NSDI*, 2006.
+[5] K. Walsh and E. G. Sirer, "Experience with an object reputation system for peer-to-peer filesharing," in *Proc. NSDI*, 2006. https://www.usenix.org/conference/nsdi-06/experience-object-reputation-system-peer-peer-filesharing
 
-[6] J. R. Douceur, "The Sybil attack," in *Proc. IPTPS*, 2002.
+[6] J. R. Douceur, "The Sybil attack," in *Proc. IPTPS*, 2002. https://doi.org/10.1007/3-540-45748-8_24
 
-[7] S. Nakamoto, "Bitcoin: A peer-to-peer electronic cash system," 2008.
+[7] S. Nakamoto, "Bitcoin: A peer-to-peer electronic cash system," 2008. https://bitcoin.org/bitcoin.pdf
 
-[8] S. King and S. Nadal, "PPCoin: Peer-to-peer crypto-currency with proof-of-stake," 2012.
+[8] S. King and S. Nadal, "PPCoin: Peer-to-peer crypto-currency with proof-of-stake," 2012. https://peercoin.net/assets/paper/peercoin-paper.pdf
 
-[9] H. Yu, M. Kaminsky, P. B. Gibbons, and A. Flaxman, "SybilGuard: Defending against Sybil attacks via social networks," *ACM SIGCOMM*, 2006.
+[9] H. Yu, M. Kaminsky, P. B. Gibbons, and A. Flaxman, "SybilGuard: Defending against Sybil attacks via social networks," *ACM SIGCOMM*, 2006. https://doi.org/10.1145/1159913.1159945
 
-[10] G. Danezis and P. Mittal, "SybilInfer: Detecting Sybil nodes using social networks," in *Proc. NDSS*, 2009.
+[10] G. Danezis and P. Mittal, "SybilInfer: Detecting Sybil nodes using social networks," in *Proc. NDSS*, 2009. https://www.ndss-symposium.org/ndss2009/sybilinfer-detecting-sybil-nodes-using-social-networks/
 
-[11] D. Larimer, "Delegated proof-of-stake (DPOS)," *Bitshare whitepaper*, 2014.
+[11] D. Larimer, "Delegated proof-of-stake (DPOS)," *Bitshare whitepaper*, 2014. https://bitshares.org/technology/delegated-proof-of-stake-consensus/
 
-[12] M. Castro and B. Liskov, "Practical Byzantine fault tolerance," in *Proc. OSDI*, 1999.
+[12] M. Castro and B. Liskov, "Practical Byzantine fault tolerance," in *Proc. OSDI*, 1999. https://www.usenix.org/conference/osdi-99/practical-byzantine-fault-tolerance
 
-[13] D. P. Anderson, "BOINC: A system for public-resource computing and storage," in *Proc. Grid*, 2004.
+[13] D. P. Anderson, "BOINC: A system for public-resource computing and storage," in *Proc. Grid*, 2004. https://doi.org/10.1109/GRID.2004.14
 
-[14] V. S. Pande et al., "Atomistic protein folding simulations on the submillisecond time scale using worldwide distributed computing," *Biopolymers*, vol. 68, no. 1, pp. 91-109, 2003.
+[14] V. S. Pande et al., "Atomistic protein folding simulations on the submillisecond time scale using worldwide distributed computing," *Biopolymers*, vol. 68, no. 1, pp. 91-109, 2003. https://doi.org/10.1002/bip.10219
 
-[15] The Golem Project, "The Golem whitepaper," 2016.
+[15] The Golem Project, "The Golem whitepaper," 2016. https://golem.network/
 
-[16] iExec, "iExec: Blockchain-based decentralized cloud computing," 2017.
+[16] iExec, "iExec: Blockchain-based decentralized cloud computing," 2017. https://iex.ec/wp-content/uploads/2022/09/iexec_whitepaper.pdf
 
-[17] M. Feldman, K. Lai, I. Stoica, and J. Chuang, "Robust incentive techniques for peer-to-peer networks," in *Proc. EC*, 2004.
+[17] M. Feldman, K. Lai, I. Stoica, and J. Chuang, "Robust incentive techniques for peer-to-peer networks," in *Proc. EC*, 2004. https://doi.org/10.1145/988772.988788
 
-[18] R. Jurca and B. Faltings, "Collusion-resistant, incentive-compatible feedback payments," in *Proc. EC*, 2007.
+[18] R. Jurca and B. Faltings, "Collusion-resistant, incentive-compatible feedback payments," in *Proc. EC*, 2007. https://doi.org/10.1145/1250910.1250940
 
-[19] G. E. Bolton, B. Greiner, and A. Ockenfels, "Engineering trust: Reciprocity in the production of reputation information," *Management Science*, vol. 59, no. 2, pp. 265-285, 2013.
+[19] G. E. Bolton, B. Greiner, and A. Ockenfels, "Engineering trust: Reciprocity in the production of reputation information," *Management Science*, vol. 59, no. 2, pp. 265-285, 2013. https://doi.org/10.1287/mnsc.1120.1609
 
-[20] D. E. Denning, "An intrusion-detection model," *IEEE TSE*, vol. 13, no. 2, pp. 222-232, 1987.
+[20] D. E. Denning, "An intrusion-detection model," *IEEE TSE*, vol. 13, no. 2, pp. 222-232, 1987. https://doi.org/10.1109/TSE.1987.232894
 
-[21] C. Gentry, "Fully homomorphic encryption using ideal lattices," in *Proc. STOC*, 2009.
+[21] C. Gentry, "Fully homomorphic encryption using ideal lattices," in *Proc. STOC*, 2009. https://doi.org/10.1145/1536414.1536440
 
-[22] M. Naehrig, K. Lauter, and V. Vaikuntanathan, "Can homomorphic encryption be practical?," in *Proc. CCSW*, 2011.
+[22] M. Naehrig, K. Lauter, and V. Vaikuntanathan, "Can homomorphic encryption be practical?," in *Proc. CCSW*, 2011. https://doi.org/10.1145/2046660.2046682
 
-[23] V. Costan and S. Devadas, "Intel SGX explained," *IACR Cryptology ePrint Archive*, 2016.
+[23] V. Costan and S. Devadas, "Intel SGX explained," *IACR Cryptology ePrint Archive*, 2016. https://eprint.iacr.org/2016/086
 
-[24] J. Van Bulck et al., "Foreshadow: Extracting the keys to the Intel SGX kingdom," in *Proc. USENIX Security*, 2018.
+[24] J. Van Bulck et al., "Foreshadow: Extracting the keys to the Intel SGX kingdom," in *Proc. USENIX Security*, 2018. https://www.usenix.org/conference/usenixsecurity18/presentation/bulck
 
-[25] A. C. Yao, "How to generate and exchange secrets," in *Proc. FOCS*, 1986.
+[25] A. C. Yao, "How to generate and exchange secrets," in *Proc. FOCS*, 1986. https://doi.org/10.1109/SFCS.1986.25
 
-[26] L. Tesfatsion and K. L. Judd, Eds., *Handbook of Computational Economics, Vol. 2: Agent-Based Computational Economics*. North-Holland, 2006.
+[26] L. Tesfatsion and K. L. Judd, Eds., *Handbook of Computational Economics, Vol. 2: Agent-Based Computational Economics*. North-Holland, 2006. https://doi.org/10.1016/S1574-0021(05)02016-2
 
-[27] J. D. Farmer and D. Foley, "The economy needs agent-based modelling," *Nature*, vol. 460, no. 7256, pp. 685-686, 2009.
+[27] J. D. Farmer and D. Foley, "The economy needs agent-based modelling," *Nature*, vol. 460, no. 7256, pp. 685-686, 2009. https://doi.org/10.1038/460685a
 
-[28] W. B. Arthur, "Complexity and the economy," *Science*, vol. 284, no. 5411, pp. 107-109, 1999.
+[28] W. B. Arthur, "Complexity and the economy," *Science*, vol. 284, no. 5411, pp. 107-109, 1999. https://doi.org/10.1126/science.284.5411.107
 
-[29] N. Nisan, T. Roughgarden, E. Tardos, and V. V. Vazirani, Eds., *Algorithmic Game Theory*. Cambridge University Press, 2007.
+[29] N. Nisan, T. Roughgarden, E. Tardos, and V. V. Vazirani, Eds., *Algorithmic Game Theory*. Cambridge University Press, 2007. https://www.cambridge.org/core/books/algorithmic-game-theory/0092C07CA8B724E1B1BE2238DDD66B38
 
-[30] P. Windrum, G. Fagiolo, and A. Moneta, "Empirical validation of agent-based models: Alternatives and prospects," *Journal of Artificial Societies and Social Simulation*, vol. 10, no. 2, 2007.
+[30] P. Windrum, G. Fagiolo, and A. Moneta, "Empirical validation of agent-based models: Alternatives and prospects," *Journal of Artificial Societies and Social Simulation*, vol. 10, no. 2, 2007. https://www.jasss.org/10/2/8.html
 
-[31] P. Klemperer, "Auction theory: A guide to the literature," *Journal of Economic Surveys*, vol. 13, no. 3, pp. 227-286, 1999.
+[31] P. Klemperer, "Auction theory: A guide to the literature," *Journal of Economic Surveys*, vol. 13, no. 3, pp. 227-286, 1999. https://doi.org/10.1111/1467-6419.00083
 
-[32] A. E. Roth, "The economics of matching: Stability and incentives," *Mathematics of Operations Research*, vol. 7, no. 4, pp. 617-628, 1982.
+[32] A. E. Roth, "The economics of matching: Stability and incentives," *Mathematics of Operations Research*, vol. 7, no. 4, pp. 617-628, 1982. https://doi.org/10.1287/moor.7.4.617
 
-[33] C. Dellarocas, "Reputation mechanism design in online trading environments with pure moral hazard," *Information Systems Research*, vol. 16, no. 2, pp. 209-230, 2005.
+[33] C. Dellarocas, "Reputation mechanism design in online trading environments with pure moral hazard," *Information Systems Research*, vol. 16, no. 2, pp. 209-230, 2005. https://doi.org/10.1287/isre.1050.0054
 
-[34] O. E. Williamson, "Transaction cost economics: How it works; where it is headed," *De Economist*, vol. 146, no. 1, pp. 23-58, 1998.
+[34] O. E. Williamson, "Transaction cost economics: How it works; where it is headed," *De Economist*, vol. 146, no. 1, pp. 23-58, 1998. https://doi.org/10.1023/A:1003263908567
 
-[35] T. D. Huynh, N. R. Jennings, and N. R. Shadbolt, "An integrated trust and reputation model for open multi-agent systems," *Autonomous Agents and Multi-Agent Systems*, vol. 13, no. 2, pp. 119-154, 2006.
+[35] T. D. Huynh, N. R. Jennings, and N. R. Shadbolt, "An integrated trust and reputation model for open multi-agent systems," *Autonomous Agents and Multi-Agent Systems*, vol. 13, no. 2, pp. 119-154, 2006. https://doi.org/10.1007/s10458-005-6825-4
 
-[36] A. Jøsang, *Subjective Logic: A Formalism for Reasoning Under Uncertainty*. Springer, 2016.
+[36] A. Jøsang, *Subjective Logic: A Formalism for Reasoning Under Uncertainty*. Springer, 2016. https://doi.org/10.1007/978-3-319-42337-1
 
-[37] R. Zhou and K. Hwang, "PowerTrust: A robust and scalable reputation system for trusted peer-to-peer computing," *IEEE Trans. Parallel and Distributed Systems*, vol. 18, no. 4, pp. 460-473, 2007.
+[37] R. Zhou and K. Hwang, "PowerTrust: A robust and scalable reputation system for trusted peer-to-peer computing," *IEEE Trans. Parallel and Distributed Systems*, vol. 18, no. 4, pp. 460-473, 2007. https://doi.org/10.1109/TPDS.2007.1021
 
-[38] E. Budish, "The economic limits of Bitcoin and the blockchain," *Quarterly Journal of Economics*, 2024. (Originally NBER Working Paper 24717, 2018.)
+[38] E. Budish, "The economic limits of Bitcoin and the blockchain," *Quarterly Journal of Economics*, 2024. (Originally NBER Working Paper 24717, 2018.) https://doi.org/10.1093/qje/qjae033
 
-[39] J. S. Gans and N. Gandal, "More (or less) economic limits of the blockchain," *CEPR Discussion Paper*, 2019.
+[39] J. S. Gans and N. Gandal, "More (or less) economic limits of the blockchain," *CEPR Discussion Paper*, 2019. https://cepr.org/publications/dp14154
 
-[40] S. Seuken and D. C. Parkes, "Sybil-proof accounting mechanisms with transitive trust," in *Proc. AAMAS*, pp. 205-212, 2014.
+[40] S. Seuken and D. C. Parkes, "Sybil-proof accounting mechanisms with transitive trust," in *Proc. AAMAS*, pp. 205-212, 2014. https://www.ifaamas.org/Proceedings/aamas2014/aamas/p205.pdf
 
-[41] M. O. Jackson, *Social and Economic Networks*. Princeton University Press, 2008.
+[41] M. O. Jackson, *Social and Economic Networks*. Princeton University Press, 2008. https://press.princeton.edu/books/paperback/9780691148205/social-and-economic-networks
 
-[42] J. Golbeck, "Computing and applying trust in web-based social networks," PhD dissertation, University of Maryland, 2005.
+[42] J. Golbeck, "Computing and applying trust in web-based social networks," PhD dissertation, University of Maryland, 2005. https://drum.lib.umd.edu/items/28ef1e3b-eb79-4586-83f1-e18b10694750
 
-[43] O. Richters and T. P. Peixoto, "Trust transitivity in social networks," *PLoS ONE*, vol. 6, no. 4, e18384, 2011.
+[43] O. Richters and T. P. Peixoto, "Trust transitivity in social networks," *PLoS ONE*, vol. 6, no. 4, e18384, 2011. https://doi.org/10.1371/journal.pone.0018384
 
-[44] E. Friedman and P. Resnick, "The social cost of cheap pseudonyms," *J. Economics & Management Strategy*, vol. 10, no. 2, pp. 173-199, 2001.
+[44] E. Friedman and P. Resnick, "The social cost of cheap pseudonyms," *J. Economics & Management Strategy*, vol. 10, no. 2, pp. 173-199, 2001. https://doi.org/10.1111/j.1430-9134.2001.00173.x
 
-[45] H. Yu, P. B. Gibbons, M. Kaminsky, and F. Xiao, "SybilLimit: A near-optimal social network defense against Sybil attacks," in *Proc. IEEE S&P*, 2008.
+[45] H. Yu, P. B. Gibbons, M. Kaminsky, and F. Xiao, "SybilLimit: A near-optimal social network defense against Sybil attacks," in *Proc. IEEE S&P*, 2008. https://doi.org/10.1109/SP.2008.13
 
-[46] B. Nasrulin and G. Ishmaev, "MeritRank: Sybil tolerant reputation for merit-based tokenomics," arXiv:2207.09950, 2022.
+[46] B. Nasrulin and G. Ishmaev, "MeritRank: Sybil tolerant reputation for merit-based tokenomics," arXiv:2207.09950, 2022. https://arxiv.org/abs/2207.09950
 
-[47] S. Tadelis, "Reputation and feedback systems in online platform markets," *Annual Review of Economics*, vol. 8, pp. 321-340, 2016.
+[47] S. Tadelis, "Reputation and feedback systems in online platform markets," *Annual Review of Economics*, vol. 8, pp. 321-340, 2016. https://doi.org/10.1146/annurev-economics-080315-015325
 
-[48] M. Florian, S. Henningsen, C. Ndolo, and B. Scheuermann, "The sum of its parts: Analysis of federated byzantine agreement systems," *Distributed Computing*, vol. 35, pp. 399-417, 2022.
+[48] M. Florian, S. Henningsen, C. Ndolo, and B. Scheuermann, "The sum of its parts: Analysis of federated byzantine agreement systems," *Distributed Computing*, vol. 35, pp. 399-417, 2022. https://doi.org/10.1007/s00446-022-00430-0
 
-[49] M. Meulpolder, J. Pouwelse, D. Epema, and H. Sips, "BarterCast: A practical approach to prevent lazy freeriding in P2P networks," in *Proc. HoT-P2P*, 2009.
+[49] M. Meulpolder, J. Pouwelse, D. Epema, and H. Sips, "BarterCast: A practical approach to prevent lazy freeriding in P2P networks," in *Proc. HoT-P2P*, 2009. https://doi.org/10.1109/IPDPS.2009.5160954
 
 [50] J. Ruderman, "The Advogato trust metric is not attack-resistant," 2005. Available: https://www.squarefree.com/2005/05/26/advogato/
 
-[51] P. Otte, M. de Vos, and J. Pouwelse, "TrustChain: A Sybil-resistant scalable blockchain," *Future Generation Computer Systems*, vol. 107, pp. 770-780, 2020.
+[51] P. Otte, M. de Vos, and J. Pouwelse, "TrustChain: A Sybil-resistant scalable blockchain," *Future Generation Computer Systems*, vol. 107, pp. 770-780, 2020. https://doi.org/10.1016/j.future.2017.08.048
 
-[52] L. L. Fuller, *The Morality of Law*, rev. ed., New Haven: Yale University Press, 1969.
+[52] L. L. Fuller, *The Morality of Law*, rev. ed., New Haven: Yale University Press, 1969. https://yalebooks.yale.edu/book/9780300010701/the-morality-of-law/
 
-[53] W. J. Stuntz, "The Pathological Politics of Criminal Law," *Michigan Law Review*, vol. 100, no. 3, pp. 505-600, 2001.
+[53] W. J. Stuntz, "The Pathological Politics of Criminal Law," *Michigan Law Review*, vol. 100, no. 3, pp. 505-600, 2001. https://repository.law.umich.edu/mlr/vol100/iss3/2/
 
 \newpage
 
@@ -1170,3 +1220,762 @@ Prior trust systems remained academic exercises—elegant theory with no economi
 | ISOLATION_THRESHOLD | Sybil cluster detection | 0.7 - 0.9 |
 | TRANSITIVITY_DECAY | Trust decay per hop | 0.5 - 0.8 |
 | DAMPENING_FACTOR | Policy adjustment scaling | 0.1 - 0.5 |
+
+\newpage
+
+# Appendix: OMT Transaction DSL Specification
+
+The Omerta Transaction DSL (OMT) is a domain-specific language for formally specifying distributed transaction protocols as communicating state machines. This appendix provides the complete language specification.
+
+## Lexical Structure
+
+### Comments
+
+Single-line comments begin with `#` and extend to end of line:
+
+```
+# This is a comment
+```
+
+### Identifiers
+
+Identifiers consist of letters, digits, and underscores, starting with a letter:
+
+- `UPPER_CASE`: Constants, enum values, built-in functions
+- `CamelCase`: Type names, actor names, message names
+- `lower_case`: Variables, fields, parameters
+
+### Keywords
+
+Reserved keywords:
+
+| | | | |
+|---|---|---|---|
+| `transaction` | `imports` | `parameters` | `enum` |
+| `block` | `message` | `actor` | `function` |
+| `store` | `trigger` | `state` | `native` |
+| `by` | `from` | `to` | `signed` |
+| `in` | `on` | `when` | `auto` |
+| `else` | `timeout` | `initial` | `terminal` |
+
+### Literals
+
+- **Integer**: `42`, `1000`
+- **Float**: `3.14`, `0.67`
+- **String**: `"quoted text"`
+- **Boolean**: `true`, `false`
+- **Null**: `null`
+
+## Type System
+
+### Primitive Types
+
+| Type | Description |
+|------|-------------|
+| `uint` | Unsigned integer |
+| `int` | Signed integer |
+| `float` | Floating-point number |
+| `bool` | Boolean |
+| `string` | UTF-8 string |
+| `bytes` | Byte array |
+| `hash` | 256-bit hash value |
+| `peer_id` | Peer identifier (hash of public key) |
+| `timestamp` | Unix timestamp |
+| `any` | Dynamic type |
+| `dict` | Key-value mapping |
+
+### Compound Types
+
+- **List**: `list<peer_id>`, `list<uint>`
+- **Map**: `map<string, uint>`, `map<peer_id, float>`
+
+## Top-Level Declarations
+
+### Transaction Declaration
+
+```
+transaction <id> "<name>" "<description>"
+```
+
+Example:
+```
+transaction 00 "Escrow Lock" "Lock funds for compute session"
+```
+
+### Import Declaration
+
+```
+imports <path>
+```
+
+Imports definitions from another OMT file.
+
+### Parameters Block
+
+```
+parameters (
+    <NAME> = <value> <unit>? "<description>"
+    ...
+)
+```
+
+Units: `seconds`, `count`, `fraction`
+
+Example:
+```
+parameters (
+    WITNESS_COUNT = 5 count "Number of witnesses"
+    TIMEOUT = 300 seconds "Session timeout"
+    THRESHOLD = 0.67 fraction "Consensus threshold"
+)
+```
+
+### Enum Declaration
+
+```
+enum <Name> "<description>" (
+    VALUE1
+    VALUE2
+    ...
+)
+```
+
+### Block Declaration
+
+Blocks represent on-chain records:
+
+```
+block <NAME> by [<Actor1>, <Actor2>] (
+    <field_name>    <type>
+    ...
+)
+```
+
+### Message Declaration
+
+Messages are signed communications between actors:
+
+```
+message <NAME> from <Actor> to [<Recipient>, ...] signed? (
+    <field_name>    <type>
+    ...
+)
+```
+
+### Function Declaration
+
+```
+function <NAME>(<param> <type>, ...) -> <return_type> (
+    <statements>
+)
+```
+
+## Actor Declaration
+
+Actors are state machines that process messages:
+
+```
+actor <Name> "<description>" (
+    store (
+        <field_name>    <type>
+        ...
+    )
+
+    trigger <name>(<params>) in [<STATE1>, ...] "<description>"
+
+    state <NAME> initial? terminal? "<description>"
+
+    <transitions>
+)
+```
+
+### Transitions
+
+```
+<FROM_STATE> -> <TO_STATE> on <trigger> when <guard>? (
+    <actions>
+) else -> <ALT_STATE> (
+    <actions>
+)
+```
+
+Trigger types:
+- `on <MESSAGE_NAME>`: Triggered by receiving a message
+- `on <trigger_name>`: Triggered by external trigger
+- `on timeout(<PARAM>)`: Triggered after timeout
+- `auto`: Automatic transition (no trigger)
+
+## Actions
+
+| Action | Syntax | Description |
+|--------|--------|-------------|
+| Store fields | `store field1, field2` | Store from message |
+| Store computed | `STORE(name, expr)` | Store computed value |
+| Compute | `name = expr` | Compute and store |
+| Send | `SEND(target, MESSAGE)` | Send message to peer |
+| Broadcast | `BROADCAST(list, MESSAGE)` | Send to multiple peers |
+| Append | `APPEND(chain, BLOCK)` | Append block to chain |
+| Append list | `APPEND(list, value)` | Append to list |
+
+## Expressions
+
+### Operators
+
+| Category | Operators |
+|----------|-----------|
+| Arithmetic | `+`, `-`, `*`, `/` |
+| Comparison | `==`, `!=`, `<`, `>`, `<=`, `>=` |
+| Logical | `AND`, `OR`, `NOT` |
+| Access | `.` (field), `[]` (index) |
+
+### Conditional
+
+```
+IF <condition> THEN <expr> ELSE <expr>
+```
+
+### Lambda
+
+```
+param => expr
+```
+
+Used with `FILTER` and `MAP`.
+
+## Built-in Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `HASH` | `(any, ...) -> hash` | Cryptographic hash |
+| `SIGN` | `(hash) -> bytes` | Sign with actor's key |
+| `VERIFY_SIG` | `(bytes, peer_id) -> bool` | Verify signature |
+| `NOW` | `() -> timestamp` | Current time |
+| `LENGTH` | `(list<T>) -> uint` | List length |
+| `FILTER` | `(list<T>, T -> bool) -> list<T>` | Filter list |
+| `MAP` | `(list<T>, T -> U) -> list<U>` | Transform list |
+| `GET` | `(map<K,V>, K, V?) -> V` | Map lookup with default |
+| `CONTAINS` | `(list<T>, T) -> bool` | List membership |
+| `LOAD` | `(identifier) -> any` | Load from store |
+| `RETURN` | `(expr)` | Return from function |
+
+## Semantic Constraints
+
+1. Each actor must have exactly one `initial` state
+2. Each actor should have at least one `terminal` state
+3. All states must be reachable from the initial state
+4. All referenced types, messages, and states must be defined
+5. Triggers can only fire in their declared `in` states
+6. The `message` keyword refers to the received message in transitions
+7. The `peer_id` keyword refers to the actor's own identity
+
+## Example: Simplified Escrow Lock
+
+```
+transaction 00 "Escrow Lock" "Lock funds for compute session"
+
+parameters (
+    WITNESS_COUNT = 5 count "Number of witnesses"
+    LOCK_TIMEOUT = 300 seconds "Time to complete lock"
+)
+
+enum LockStatus (
+    ACCEPTED
+    REJECTED
+)
+
+block BALANCE_LOCK by [Consumer, Witness] (
+    session_id       hash
+    amount           uint
+    timestamp        timestamp
+)
+
+message LOCK_INTENT from Consumer to [Provider] signed (
+    session_id       hash
+    amount           uint
+)
+
+message LOCK_RESULT from Witness to [Consumer] signed (
+    session_id       hash
+    status           LockStatus
+)
+
+actor Consumer "Party paying for service" (
+    store (
+        session_id       hash
+        amount           uint
+    )
+
+    trigger initiate_lock(provider peer_id, amount uint) in [IDLE]
+
+    state IDLE initial "Waiting to initiate"
+    state WAITING "Waiting for result"
+    state LOCKED terminal "Funds locked"
+    state FAILED terminal "Lock failed"
+
+    IDLE -> WAITING on initiate_lock when amount > 0 (
+        session_id = HASH(peer_id, provider, NOW())
+        store amount
+        SEND(provider, LOCK_INTENT)
+    )
+
+    WAITING -> LOCKED on LOCK_RESULT when message.status == LockStatus.ACCEPTED (
+        APPEND(chain, BALANCE_LOCK)
+    )
+
+    WAITING -> FAILED on LOCK_RESULT when message.status == LockStatus.REJECTED ()
+
+    WAITING -> FAILED on timeout(LOCK_TIMEOUT) ()
+)
+```
+
+\newpage
+
+# Appendix B: Formal Specification of OMT
+
+This appendix presents a formal specification of the Omerta Transaction Language (OMT) in the style of academic programming language papers. We define the abstract syntax via BNF grammar, static semantics via well-formedness judgments, and dynamic semantics via a labeled transition system. We then discuss the relationship to multiparty session types and identify directions for future formal development.
+
+## B.1 Abstract Syntax
+
+We present the abstract syntax of OMT using BNF notation. Metavariables are written in italics; terminal symbols in **bold** or `monospace`.
+
+### Syntactic Categories
+
+| Metavariable | Domain |
+|--------------|--------|
+| *x*, *y*, *z* | Identifiers |
+| *n* | Integer literals |
+| *s* | String literals |
+| *T* | Transaction definitions |
+| *A* | Actor definitions |
+| *S*, *S'* | State names |
+| *M* | Message types |
+| *B* | Block types |
+| Type | Types |
+| *e* | Expressions |
+| *a* | Actions |
+
+### Transaction Structure
+
+```
+T ::= transaction n s1 s2 D*            (transaction definition)
+
+D ::= imports x                         (import declaration)
+    | parameters ( P* )                 (parameter block)
+    | enum x s? ( C* )                  (enumeration)
+    | block x by [ R* ] ( F* )          (block type)
+    | message x from R to [ R* ] Sig? ( F* )  (message type)
+    | function x ( Param* ) -> Type ( Body ) (function)
+    | actor x s ( ActorBody )           (actor definition)
+
+P ::= x = n Unit? s?                    (parameter)
+C ::= x                                 (enum case)
+F ::= x Type                            (field declaration)
+R ::= x                                 (role name)
+Sig ::= signed                          (signature requirement)
+```
+
+### Actor Structure
+
+```
+ActorBody ::= store ( F* ) Trigger* State* Trans*
+
+Trigger ::= trigger x ( Param* ) in [ S* ] s?
+
+State ::= state S Mod* s?
+Mod   ::= initial | terminal
+
+Trans ::= S -> S' Event Guard? ( a* ) ElseBranch?
+
+Event ::= on x                          (message or trigger)
+        | on timeout ( x )              (timeout)
+        | auto                          (automatic)
+
+Guard ::= when e
+
+ElseBranch ::= else -> S' ( a* )
+```
+
+### Types
+
+```
+Type ::= uint | int | bool | string     (primitive types)
+       | hash | bytes | signature       (cryptographic types)
+       | peer_id | timestamp            (protocol types)
+       | list < Type >                  (list type)
+       | map < Type , Type >            (map type)
+       | dict                           (dictionary type)
+       | x                              (named type / enum)
+```
+
+### Expressions
+
+```
+e ::= n | s | true | false | null       (literals)
+    | x                                 (variable)
+    | e.x                               (field access)
+    | e [ e ]                           (index access)
+    | e BinOp e                         (binary operation)
+    | NOT e                             (negation)
+    | IF e THEN e ELSE e                (conditional)
+    | f ( e* )                          (function call)
+    | x => e                            (lambda)
+    | { F* }                            (record literal)
+
+BinOp ::= + | - | * | /                 (arithmetic)
+        | == | != | < | > | <= | >=     (comparison)
+        | AND | OR                      (logical)
+```
+
+### Actions
+
+```
+a ::= store x*                          (store from message)
+    | STORE ( x , e )                   (store computed)
+    | x = e                             (assign)
+    | SEND ( e , M )                    (send message)
+    | BROADCAST ( e , M )               (broadcast)
+    | APPEND ( x , e )                  (append to list/chain)
+```
+
+## B.2 Well-Formedness Judgments (Static Semantics)
+
+We define well-formedness as a collection of judgments that must hold for a transaction definition to be valid. These judgments are analogous to typing rules in traditional type systems, but verify structural properties rather than expression types.
+
+### Environments
+
+Let $\Gamma$ denote a *transaction environment* containing:
+
+- $\Gamma$.params : $x \to (n, unit, desc)$  — parameter definitions
+- $\Gamma$.enums : $x \to C^*$  — enumeration cases
+- $\Gamma$.messages : $M \to (from, to, fields)$  — message schemas
+- $\Gamma$.blocks : $B \to (roles, fields)$  — block schemas
+- $\Gamma$.functions : $f \to (params, return, body)$  — function definitions
+- $\Gamma$.actors : $A \to ActorEnv$  — actor environments
+
+Let $\Delta$ denote an *actor environment* containing:
+
+- $\Delta$.store : $x \to Type$  — store fields
+- $\Delta$.states : $S \to (initial?, terminal?)$  — state declarations
+- $\Delta$.triggers : $x \to (params, valid\_states)$  — trigger declarations
+
+### Transaction Well-Formedness
+
+$$\frac{\forall D \in T.\mathit{decls}. \quad \Gamma \vdash D \text{ wf}}{\vdash T \text{ wf}}$$
+\hspace{2em} [WF-TRANS]
+
+A transaction is well-formed if all its declarations are well-formed in the transaction environment.
+
+### Actor Well-Formedness
+
+$$\frac{
+\begin{array}{c}
+\exists! S \in \Delta.\mathit{states}. \; \mathit{initial}(S) \\[2pt]
+\exists S \in \Delta.\mathit{states}. \; \mathit{terminal}(S) \\[2pt]
+\forall S \in \Delta.\mathit{states}. \; \mathit{reachable}(S, S_0) \\[2pt]
+\forall t \in A.\mathit{transitions}. \; \Gamma, \Delta \vdash t \text{ wf}
+\end{array}
+}{\Gamma \vdash A \text{ wf}}$$
+\hspace{2em} [WF-ACTOR]
+
+An actor is well-formed if:
+1. There is exactly one initial state
+2. There is at least one terminal state
+3. All states are reachable from the initial state
+4. All transitions are well-formed
+
+### Transition Well-Formedness
+
+$$\frac{
+\begin{array}{c}
+S, S' \in \Delta.\mathit{states} \\[2pt]
+\Gamma, \Delta \vdash \mathit{event} : \mathit{valid\_in}(S) \\[2pt]
+\Gamma, \Delta, \mathit{bindings}(\mathit{event}) \vdash \mathit{guard} : \texttt{bool} \\[2pt]
+\forall a \in \mathit{actions}. \; \Gamma, \Delta \vdash a \text{ wf}
+\end{array}
+}{\Gamma, \Delta \vdash S \to S' \text{ on } \mathit{event} \text{ when } \mathit{guard} \; (a^*) \text{ wf}}$$
+\hspace{2em} [WF-TRANS]
+
+### Message Event Well-Formedness
+
+$$\frac{
+M \in \Gamma.\mathit{messages} \quad
+A \in M.\mathit{to}
+}{\Gamma, \Delta \vdash \texttt{on } M : \mathit{valid\_in}(S) \text{ for all } S}$$
+\hspace{2em} [WF-MSG-EVENT]
+
+$$\frac{
+\mathit{trig} \in \Delta.\mathit{triggers} \quad
+S \in \mathit{trig}.\mathit{valid\_states}
+}{\Gamma, \Delta \vdash \texttt{on } \mathit{trig} : \mathit{valid\_in}(S)}$$
+\hspace{2em} [WF-TRIG-EVENT]
+
+### State Reachability
+
+The reachability predicate is defined as the reflexive-transitive closure of the transition relation:
+
+$$\frac{}{\mathit{reachable}(S, S)}$$
+\hspace{2em} [REACH-REFL]
+
+$$\frac{
+\exists t \in A.\mathit{transitions}. \; t.\mathit{source} = S \land t.\mathit{target} = S'' \quad
+\mathit{reachable}(S'', S')
+}{\mathit{reachable}(S, S')}$$
+\hspace{2em} [REACH-STEP]
+
+## B.3 Operational Semantics (Labeled Transition System)
+
+We define the dynamic semantics of OMT actors as a labeled transition system (LTS). This captures how actors execute in response to events.
+
+### Actor Configurations
+
+An actor configuration is a triple $\langle A, S, \sigma \rangle$ where:
+- *A* is the actor definition
+- *S* is the current state
+- $\sigma$ : *x* $\to$ *v* is the store (mapping identifiers to values)
+
+### Labels
+
+Transitions are labeled with events:
+
+```
+Label ::= tau                           (internal/auto)
+        | ?M(v*)                         (receive message M with values)
+        | !M(v*)@p                       (send message M to peer p)
+        | !M(v*)@P                       (broadcast M to peer set P)
+        | timeout(t)                     (timeout after t)
+        | trigger(x, v*)                 (external trigger with args)
+```
+
+### Transition Rules
+
+**Automatic Transition:**
+
+$$\frac{
+(S \to S' \texttt{ auto when } e \; (a^*)) \in A.\mathit{trans} \quad
+\llbracket e \rrbracket_\sigma = \mathit{true} \quad
+\langle \sigma, a^* \rangle \Downarrow \sigma'
+}{\langle A, S, \sigma \rangle \xrightarrow{\tau} \langle A, S', \sigma' \rangle}$$
+\hspace{2em} [E-AUTO]
+
+**Message Reception:**
+
+$$\frac{
+(S \to S' \texttt{ on } M \texttt{ when } e \; (a^*)) \in A.\mathit{trans} \quad
+\sigma_1 = \sigma[\texttt{message} \mapsto v] \quad
+\llbracket e \rrbracket_{\sigma_1} = \mathit{true} \quad
+\langle \sigma_1, a^* \rangle \Downarrow \sigma'
+}{\langle A, S, \sigma \rangle \xrightarrow{?M(v)} \langle A, S', \sigma' \rangle}$$
+\hspace{2em} [E-RECV]
+
+**Trigger Activation:**
+
+$$\frac{
+(S \to S' \texttt{ on } x \texttt{ when } e \; (a^*)) \in A.\mathit{trans} \quad
+x \in \Delta.\mathit{triggers} \quad
+S \in x.\mathit{valid\_states} \quad
+\sigma_1 = \sigma[\mathit{params}(x) \mapsto v^*] \quad
+\llbracket e \rrbracket_{\sigma_1} = \mathit{true} \quad
+\langle \sigma_1, a^* \rangle \Downarrow \sigma'
+}{\langle A, S, \sigma \rangle \xrightarrow{\mathit{trigger}(x, v^*)} \langle A, S', \sigma' \rangle}$$
+\hspace{2em} [E-TRIG]
+
+**Timeout:**
+
+$$\frac{
+(S \to S' \texttt{ on timeout}(P) \texttt{ when } e \; (a^*)) \in A.\mathit{trans} \quad
+\llbracket e \rrbracket_\sigma = \mathit{true} \quad
+\langle \sigma, a^* \rangle \Downarrow \sigma'
+}{\langle A, S, \sigma \rangle \xrightarrow{\mathit{timeout}(\Gamma.\mathit{params}(P))} \langle A, S', \sigma' \rangle}$$
+\hspace{2em} [E-TIMEOUT]
+
+**Guarded Else Branch:**
+
+$$\frac{
+(S \to S_1 \texttt{ on } \alpha \texttt{ when } e_1 \; (a_1^*) \texttt{ else} \to S_2 \; (a_2^*)) \in A.\mathit{trans} \quad
+\llbracket e_1 \rrbracket_\sigma = \mathit{false} \quad
+\langle \sigma, a_2^* \rangle \Downarrow \sigma'
+}{\langle A, S, \sigma \rangle \xrightarrow{\alpha} \langle A, S_2, \sigma' \rangle}$$
+\hspace{2em} [E-ELSE]
+
+### Action Evaluation
+
+Actions are evaluated sequentially, threading the store:
+
+$$\frac{}{\langle \sigma, \epsilon \rangle \Downarrow \sigma}$$
+\hspace{2em} [A-EMPTY]
+
+$$\frac{
+\langle \sigma, a \rangle \Downarrow \sigma_1 \quad
+\langle \sigma_1, a^* \rangle \Downarrow \sigma'
+}{\langle \sigma, a \cdot a^* \rangle \Downarrow \sigma'}$$
+\hspace{2em} [A-SEQ]
+
+$$\frac{
+v = \llbracket e \rrbracket_\sigma
+}{\langle \sigma, \texttt{STORE}(x, e) \rangle \Downarrow \sigma[x \mapsto v]}$$
+\hspace{2em} [A-STORE]
+
+$$\frac{
+v = \llbracket e \rrbracket_\sigma
+}{\langle \sigma, x = e \rangle \Downarrow \sigma[x \mapsto v]}$$
+\hspace{2em} [A-ASSIGN]
+
+Send and broadcast actions produce observable effects but do not modify the local store; we model these as side effects in a concurrent composition (Section B.4).
+
+## B.4 Concurrent Composition
+
+A transaction execution consists of multiple actors running concurrently. We model this as a *parallel composition* of actor configurations with a shared message queue.
+
+### System Configuration
+
+A system configuration is a tuple $\langle C_1, \ldots, C_n, Q \rangle$ where:
+- Each $C_i = \langle A_i, S_i, \sigma_i \rangle$ is an actor configuration
+- *Q* is a multiset of pending messages
+
+### Composition Rules
+
+**Internal Step:**
+
+$$\frac{
+\langle A_i, S_i, \sigma_i \rangle \xrightarrow{\tau} \langle A_i, S'_i, \sigma'_i \rangle
+}{\langle C_1, \ldots, C_i, \ldots, C_n, Q \rangle \to \langle C_1, \ldots, C'_i, \ldots, C_n, Q \rangle}$$
+\hspace{2em} [SYS-TAU]
+
+**Message Send:**
+
+$$\frac{
+\langle A_i, S_i, \sigma_i \rangle \xrightarrow{!M(v)@p_j} \langle A_i, S'_i, \sigma'_i \rangle
+}{\langle C_1, \ldots, C_n, Q \rangle \to \langle C_1, \ldots, C'_i, \ldots, C_n, Q \uplus \{M(v)@p_j\} \rangle}$$
+\hspace{2em} [SYS-SEND]
+
+**Message Receive:**
+
+$$\frac{
+M(v)@p_i \in Q \quad
+\langle A_i, S_i, \sigma_i \rangle \xrightarrow{?M(v)} \langle A_i, S'_i, \sigma'_i \rangle
+}{\langle C_1, \ldots, C_n, Q \rangle \to \langle C_1, \ldots, C'_i, \ldots, C_n, Q \setminus \{M(v)@p_i\} \rangle}$$
+\hspace{2em} [SYS-RECV]
+
+## B.5 Relationship to Multiparty Session Types
+
+OMT bears strong structural similarity to *multiparty session types* (MPST) [Honda et al. 2008, 2016]. We identify the correspondence and discuss how MPST theory could be applied.
+
+### Correspondence
+
+| MPST Concept | OMT Equivalent |
+|--------------|----------------|
+| Global type | Transaction definition |
+| Local type | Actor definition |
+| Role | Actor role (Consumer, Provider, Witness) |
+| Message type | `message` declaration |
+| Choice | Guarded transitions from same state |
+| Recursion | Cycles in state machine |
+| End | Terminal state |
+
+### Global Type View
+
+An OMT transaction can be viewed as a *global type* specifying the interaction pattern:
+
+```
+Escrow = Consumer -> Provider : LOCK_INTENT .
+         Provider -> Consumer : WITNESS_SELECTION_COMMITMENT .
+         Consumer -> Witness* : WITNESS_REQUEST .
+         Witness <-> Witness : WITNESS_PRELIMINARY .
+         Witness <-> Witness : WITNESS_FINAL_VOTE .
+         Witness -> Consumer : LOCK_RESULT_FOR_SIGNATURE .
+         Consumer -> Witness* : CONSUMER_SIGNED_LOCK .
+         end
+```
+
+### Local Type View
+
+Each actor definition corresponds to a *local type*—the projection of the global protocol onto a single participant:
+
+```
+Consumer_Local = !LOCK_INTENT .
+                 ?WITNESS_SELECTION_COMMITMENT .
+                 !WITNESS_REQUEST* .
+                 ?LOCK_RESULT_FOR_SIGNATURE .
+                 !CONSUMER_SIGNED_LOCK* .
+                 end
+```
+
+Where `!M` denotes sending message M and `?M` denotes receiving.
+
+### Potential for Session Type Verification
+
+The MPST framework provides several verification guarantees that could be adapted to OMT:
+
+1. **Communication Safety**: Well-typed sessions do not have message type mismatches. In OMT terms: messages are always received by actors that expect them.
+
+2. **Protocol Conformance**: Each actor follows the prescribed interaction pattern. The state machine structure of OMT actors already enforces this locally.
+
+3. **Deadlock Freedom**: Well-formed global types project to local types that cannot deadlock. This would require analyzing the composition of all actors.
+
+4. **Progress**: If the system can make a step, it will. Combined with deadlock freedom, this ensures liveness.
+
+**Key Difference**: MPST typically uses *projection* to derive local types from a global type. OMT instead specifies local types (actors) directly, with the global protocol emerging from their composition. This is closer to the *bottom-up* approach of choreographic programming [Montesi 2013] or the *communicating automata* framework [Brand & Zafiropulo 1983].
+
+## B.6 Related Formalisms
+
+OMT's design draws on several formal traditions:
+
+**Process Calculi** [Milner 1980, 1999]: The concurrent composition of actors follows CCS/pi-calculus style. Our LTS semantics uses standard structural operational semantics (SOS) [Plotkin 1981].
+
+**Communicating Finite State Machines** [Brand & Zafiropulo 1983]: Each actor is essentially a CFSM. The extensive theory of CFSMs (decidability results, verification algorithms) may apply.
+
+**Scribble** [Yoshida et al. 2014]: A protocol description language based on MPST. Scribble's syntax influenced OMT's message declarations. The Scribble toolchain generates endpoint APIs from global protocols—a similar approach could generate OMT actor skeletons.
+
+**Promela/SPIN** [Holzmann 1997]: A verification-oriented protocol language. SPIN's model checking approach (state space exploration, LTL verification) could be adapted for OMT transaction verification.
+
+**TLA+** [Lamport 2002]: A specification language based on temporal logic. TLA+'s approach to specifying state machines with temporal properties provides a model for formal verification of OMT transactions.
+
+## B.7 Future Work
+
+We identify several directions for formal development:
+
+### Type System Extensions
+
+1. **Refinement Types**: Extend field types with predicates (e.g., `amount : uint{v > 0}`) to capture value constraints. This would enable static verification of guards.
+
+2. **Linear Types**: Track message consumption linearly to ensure each message is processed exactly once. This connects to session type linearity.
+
+3. **Dependent Types**: Allow types to depend on values (e.g., `list<peer_id>{length = WITNESS_COUNT}`). This would strengthen static guarantees.
+
+### Verification
+
+1. **Model Checking**: Translate OMT transactions to Promela or TLA+ for automatic verification of safety and liveness properties.
+
+2. **Session Type Checking**: Implement projection from a global protocol specification to verify that actor definitions conform.
+
+3. **Deadlock Analysis**: Develop static analysis to detect potential deadlocks in actor compositions.
+
+### Tooling
+
+1. **Formal Semantics in Coq/Agda**: Mechanize the semantics for machine-checked proofs of meta-theoretic properties (type safety, progress, preservation).
+
+2. **Test Generation**: Use the formal semantics to generate test cases that cover all transition paths.
+
+3. **Runtime Monitoring**: Generate runtime monitors from OMT specifications to detect protocol violations during execution.
+
+## B.8 References (Formal Methods)
+
+[Brand & Zafiropulo 1983] D. Brand and P. Zafiropulo. "On Communicating Finite-State Machines." *Journal of the ACM*, 30(2):323-342, 1983. [https://doi.org/10.1145/322374.322380](https://doi.org/10.1145/322374.322380)
+
+[Holzmann 1997] G. J. Holzmann. "The Model Checker SPIN." *IEEE Transactions on Software Engineering*, 23(5):279-295, 1997. [https://spinroot.com/spin/Doc/ieee97.pdf](https://spinroot.com/spin/Doc/ieee97.pdf)
+
+[Honda et al. 2008] K. Honda, N. Yoshida, and M. Carbone. "Multiparty Asynchronous Session Types." *POPL 2008*, pages 273-284. [https://doi.org/10.1145/1328438.1328472](https://doi.org/10.1145/1328438.1328472)
+
+[Honda et al. 2016] K. Honda, N. Yoshida, and M. Carbone. "Multiparty Asynchronous Session Types." *Journal of the ACM*, 63(1):1-67, 2016. [https://doi.org/10.1145/2827695](https://doi.org/10.1145/2827695)
+
+[Lamport 2002] L. Lamport. *Specifying Systems: The TLA+ Language and Tools for Hardware and Software Engineers*. Addison-Wesley, 2002. [https://lamport.azurewebsites.net/tla/book.html](https://lamport.azurewebsites.net/tla/book.html)
+
+[Milner 1980] R. Milner. *A Calculus of Communicating Systems*. Springer-Verlag, LNCS 92, 1980. [https://doi.org/10.1007/3-540-10235-3](https://doi.org/10.1007/3-540-10235-3)
+
+[Milner 1999] R. Milner. *Communicating and Mobile Systems: The Pi-Calculus*. Cambridge University Press, 1999. [https://doi.org/10.1017/CBO9781139166874](https://doi.org/10.1017/CBO9781139166874)
+
+[Montesi 2013] F. Montesi. "Choreographic Programming." Ph.D. thesis, IT University of Copenhagen, 2013. [https://www.fabriziomontesi.com/files/choreographic-programming.pdf](https://www.fabriziomontesi.com/files/choreographic-programming.pdf)
+
+[Plotkin 1981] G. D. Plotkin. "A Structural Approach to Operational Semantics." Technical Report DAIMI FN-19, Aarhus University, 1981. [https://homepages.inf.ed.ac.uk/gdp/publications/sos_jlap.pdf](https://homepages.inf.ed.ac.uk/gdp/publications/sos_jlap.pdf)
+
+[Yoshida et al. 2014] N. Yoshida, R. Hu, R. Neykova, and N. Ng. "The Scribble Protocol Language." *TGC 2013*, LNCS 8358, pages 22-41, 2014. [https://doi.org/10.1007/978-3-642-54262-1_3](https://doi.org/10.1007/978-3-642-54262-1_3)

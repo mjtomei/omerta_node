@@ -152,19 +152,14 @@ public actor MeshEventLogger {
             return [:]
         }
 
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode([String: PeerRecord].self, from: data)) ?? [:]
+        return (try? JSONCoding.iso8601Decoder.decode([String: PeerRecord].self, from: data)) ?? [:]
     }
 
     private func savePeersSeen() {
         let path = "\(logDir)/peers_seen.json"
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = .prettyPrinted
 
         do {
-            let data = try encoder.encode(peersSeen)
+            let data = try JSONCoding.iso8601PrettyEncoder.encode(peersSeen)
             try data.write(to: URL(fileURLWithPath: path))
         } catch {
             logger.warning("Failed to save peers_seen", metadata: ["error": "\(error)"])
@@ -514,15 +509,12 @@ public actor MeshEventLogger {
             return []
         }
 
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-
         let lines = String(data: data, encoding: .utf8)?.split(separator: "\n") ?? []
         var records: [ErrorRecord] = []
 
         for line in lines.suffix(limit) {
             if let lineData = String(line).data(using: .utf8),
-               let event = try? decoder.decode(ErrorEvent.self, from: lineData) {
+               let event = try? JSONCoding.iso8601Decoder.decode(ErrorEvent.self, from: lineData) {
                 records.append(ErrorRecord(
                     timestamp: event.timestamp,
                     component: event.component,
@@ -546,16 +538,13 @@ public actor MeshEventLogger {
             return []
         }
 
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-
         let since = Date().addingTimeInterval(-Double(hours) * 3600)
         let lines = String(data: data, encoding: .utf8)?.split(separator: "\n") ?? []
         var records: [LatencyStatsRecord] = []
 
         for line in lines {
             if let lineData = String(line).data(using: .utf8),
-               let event = try? decoder.decode(LatencyStatsEvent.self, from: lineData),
+               let event = try? JSONCoding.iso8601Decoder.decode(LatencyStatsEvent.self, from: lineData),
                event.peerId == peerId && event.timestamp > since {
                 records.append(LatencyStatsRecord(
                     timestamp: event.timestamp,

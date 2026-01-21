@@ -169,9 +169,7 @@ public actor NetworkStore {
             return
         }
 
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let stored = try decoder.decode([String: Network].self, from: data)
+        let stored = try JSONCoding.iso8601Decoder.decode([String: Network].self, from: data)
         networks = stored
 
         logger.info("Loaded \(networks.count) networks from store")
@@ -179,10 +177,7 @@ public actor NetworkStore {
 
     /// Save networks to disk
     public func save() async throws {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(networks)
+        let data = try JSONCoding.iso8601PrettyEncoder.encode(networks)
 
         // Ensure directory exists
         try FileManager.default.createDirectory(

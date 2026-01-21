@@ -38,9 +38,7 @@ public struct NetworkKey: Sendable, Codable, Equatable {
 
     /// Encode network key as base64 string with omerta:// prefix
     public func encode() throws -> String {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        let jsonData = try encoder.encode(self)
+        let jsonData = try JSONCoding.iso8601Encoder.encode(self)
         let base64 = jsonData.base64EncodedString()
         return "omerta://join/\(base64)"
     }
@@ -56,10 +54,8 @@ public struct NetworkKey: Sendable, Codable, Equatable {
             throw NetworkKeyError.invalidBase64
         }
 
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
         do {
-            return try decoder.decode(NetworkKey.self, from: jsonData)
+            return try JSONCoding.iso8601Decoder.decode(NetworkKey.self, from: jsonData)
         } catch {
             throw NetworkKeyError.decodingFailed
         }

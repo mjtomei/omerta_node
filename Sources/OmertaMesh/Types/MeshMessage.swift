@@ -8,6 +8,40 @@ public typealias PeerId = String
 /// Network endpoint (IP:port)
 public typealias Endpoint = String
 
+/// Channel validation and utilities
+public enum ChannelUtils {
+    /// Maximum channel name length
+    public static let maxLength = 64
+
+    /// Allowed characters in channel names
+    private static let allowedCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+
+    /// Validate a channel name
+    /// - Parameter channel: Channel name to validate
+    /// - Returns: true if valid
+    public static func isValid(_ channel: String) -> Bool {
+        guard channel.count <= maxLength else { return false }
+        guard channel.isEmpty || channel.unicodeScalars.allSatisfy({ allowedCharacters.contains($0) }) else { return false }
+        return true
+    }
+
+    /// Compute a 64-bit hash for fast routing lookups
+    /// Uses first 8 bytes of SHA256 for collision resistance
+    /// - Parameter channel: Channel name
+    /// - Returns: 64-bit hash for O(1) lookup
+    public static func hash(_ channel: String) -> UInt64 {
+        guard !channel.isEmpty else { return 0 }
+        let data = Data(channel.utf8)
+        // Simple FNV-1a hash for speed (SHA256 would be overkill for routing)
+        var hash: UInt64 = 14695981039346656037  // FNV offset basis
+        for byte in data {
+            hash ^= UInt64(byte)
+            hash &*= 1099511628211  // FNV prime
+        }
+        return hash
+    }
+}
+
 /// Peer endpoint info shared in gossip (includes machineId and natType for proper tracking)
 public struct PeerEndpointInfo: Codable, Sendable, Equatable {
     public let peerId: PeerId
@@ -218,6 +252,13 @@ public struct MeshEnvelope: Codable, Sendable {
     /// Recipient's peer ID (nil for broadcast)
     public let toPeerId: PeerId?
 
+    /// Channel for routing to handlers
+    /// Can be used as:
+    /// - Functionality ID: "vm_request", "vm_release", "heartbeat"
+    /// - Session ID: "session-abc123" for request/response correlation
+    /// - Empty string for internal mesh messages (ping/pong, discovery, etc.)
+    public let channel: String
+
     /// Hop count to prevent infinite loops
     public var hopCount: Int
 
@@ -230,12 +271,16 @@ public struct MeshEnvelope: Codable, Sendable {
     /// Ed25519 signature over the envelope (base64)
     public var signature: String
 
+    /// Channel used for internal mesh protocol messages
+    public static let meshChannel = ""
+
     public init(
         messageId: String = UUID().uuidString,
         fromPeerId: PeerId,
         publicKey: String,
         machineId: MachineId,
         toPeerId: PeerId?,
+        channel: String = "",
         hopCount: Int = 0,
         timestamp: Date = Date(),
         payload: MeshMessage,
@@ -246,6 +291,7 @@ public struct MeshEnvelope: Codable, Sendable {
         self.publicKey = publicKey
         self.machineId = machineId
         self.toPeerId = toPeerId
+        self.channel = channel
         self.hopCount = hopCount
         self.timestamp = timestamp
         self.payload = payload
@@ -261,14 +307,13 @@ public struct MeshEnvelope: Codable, Sendable {
             publicKey: publicKey,
             machineId: machineId,
             toPeerId: toPeerId,
+            channel: channel,
             hopCount: hopCount,
             timestamp: timestamp,
             payload: payload
         )
         // Use sorted keys for deterministic JSON encoding
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .sortedKeys
-        return try encoder.encode(signable)
+        return try JSONCoding.signatureEncoder.encode(signable)
     }
 
     /// Create a signed envelope using the given keypair
@@ -277,6 +322,7 @@ public struct MeshEnvelope: Codable, Sendable {
         from keypair: IdentityKeypair,
         machineId: MachineId,
         to toPeerId: PeerId?,
+        channel: String = "",
         payload: MeshMessage
     ) throws -> MeshEnvelope {
         var envelope = MeshEnvelope(
@@ -285,6 +331,7 @@ public struct MeshEnvelope: Codable, Sendable {
             publicKey: keypair.publicKeyBase64,
             machineId: machineId,
             toPeerId: toPeerId,
+            channel: channel,
             payload: payload
         )
 
@@ -320,6 +367,7 @@ private struct SignableEnvelope: Codable {
     let publicKey: String
     let machineId: MachineId
     let toPeerId: PeerId?
+    let channel: String
     let hopCount: Int
     let timestamp: Date
     let payload: MeshMessage

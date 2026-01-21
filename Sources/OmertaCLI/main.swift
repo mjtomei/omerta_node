@@ -1805,7 +1805,8 @@ struct VMRequest: AsyncParsableCommand {
                 requirements: requirementsData,
                 sshPublicKey: sshPublicKey,
                 sshUser: sshUser,
-                timeoutMinutes: timeout
+                timeoutMinutes: timeout,
+                dryRun: dryRun
             ),
             timeout: 120  // Allow 2 minutes for the request to complete
         )

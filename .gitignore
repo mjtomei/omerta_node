@@ -65,3 +65,7 @@ logs/
 # Temporary files
 *.tmp
 .cache/
+
+# Generated transaction files
+docs/protocol/transactions/*.md
+simulations/transactions/*_generated.py

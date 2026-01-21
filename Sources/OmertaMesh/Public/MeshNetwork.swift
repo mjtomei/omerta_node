@@ -7,7 +7,7 @@ import NIOPosix
 
 /// The main entry point for the mesh network
 /// This actor wraps all internal components and provides a clean public API
-public actor MeshNetwork {
+public actor MeshNetwork: ChannelProvider {
     // MARK: - Properties
 
     /// Our cryptographic identity
@@ -143,6 +143,9 @@ public actor MeshNetwork {
             if let handler = pendingMessageHandler {
                 await applyMessageHandler(to: node, handler: handler)
             }
+
+            // Apply pending channel handlers
+            await applyPendingChannelHandlers(to: node)
 
             // Connect to bootstrap peers
             state = .bootstrapping
@@ -358,6 +361,62 @@ public actor MeshNetwork {
                 ))
                 await handler(from, data)
             }
+        }
+    }
+
+    // MARK: - Channel-based Messaging
+
+    /// Pending channel handlers (registered before node is started)
+    private var pendingChannelHandlers: [String: @Sendable (PeerId, Data) async -> Void] = [:]
+
+    /// Register a handler for a channel
+    /// Messages arriving before handler registration are queued and delivered when handler is registered
+    /// - Parameters:
+    ///   - channel: Channel name (max 64 chars, alphanumeric/-/_ only)
+    ///   - handler: Async handler that receives (fromPeerId, data)
+    /// - Throws: MeshError if channel name is invalid
+    public func onChannel(_ channel: String, handler: @escaping @Sendable (PeerId, Data) async -> Void) async throws {
+        // Validate channel name
+        guard ChannelUtils.isValid(channel) else {
+            throw MeshError.sendFailed(reason: "Invalid channel '\(channel)': must be max 64 chars, alphanumeric/-/_ only")
+        }
+
+        if let node = meshNode {
+            // Node is running - register directly
+            try await node.onChannel(channel, handler: handler)
+        } else {
+            // Node not started - save for later
+            pendingChannelHandlers[channel] = handler
+        }
+    }
+
+    /// Unregister a handler for a channel
+    /// - Parameter channel: Channel name to stop listening on
+    public func offChannel(_ channel: String) async {
+        pendingChannelHandlers.removeValue(forKey: channel)
+        if let node = meshNode {
+            await node.offChannel(channel)
+        }
+    }
+
+    /// Send data on a channel to a peer
+    /// Uses automatic NAT-aware routing (IPv6 > direct > relay fallback)
+    /// - Parameters:
+    ///   - data: Data to send
+    ///   - peerId: Target peer ID
+    ///   - channel: Channel name
+    /// - Throws: MeshError if not started, channel invalid, or send fails
+    public func sendOnChannel(_ data: Data, to peerId: PeerId, channel: String) async throws {
+        guard state == .running, let node = meshNode else {
+            throw MeshError.notStarted
+        }
+        try await node.sendOnChannel(data, to: peerId, channel: channel)
+    }
+
+    /// Apply pending channel handlers when node starts
+    private func applyPendingChannelHandlers(to node: MeshNode) async {
+        for (channel, handler) in pendingChannelHandlers {
+            try? await node.onChannel(channel, handler: handler)
         }
     }
 

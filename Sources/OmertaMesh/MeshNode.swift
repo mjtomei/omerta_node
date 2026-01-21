@@ -132,6 +132,9 @@ public actor MeshNode {
     /// Endpoint manager for multi-endpoint tracking by (peerId, machineId)
     public let endpointManager: PeerEndpointManager
 
+    /// Socket type alias for subsystem access
+    public typealias Socket = UDPSocket
+
     /// Connected relay peer IDs
     private var connectedRelays: Set<PeerId> = []
 
@@ -191,11 +194,28 @@ public actor MeshNode {
     /// Callback when our observed public endpoint changes
     private var endpointChangeHandler: ((String, String?) async -> Void)?
 
-    /// Handler for incoming messages
+    /// Handler for incoming messages (legacy, for internal mesh messages)
     private var messageHandler: ((MeshMessage, PeerId) async -> MeshMessage?)?
 
     /// Pending responses for request/response pattern
     private var pendingResponses: [String: (continuation: CheckedContinuation<MeshMessage, Error>, timer: Task<Void, Never>)] = [:]
+
+    // MARK: - Channel System
+
+    /// Registered channel handlers
+    /// Key is channel hash (UInt64) for O(1) lookup, value is (channelName, handler)
+    private var channelHandlers: [UInt64: (name: String, handler: @Sendable (PeerId, Data) async -> Void)] = [:]
+
+    /// Queued messages for channels without handlers
+    /// Key is channel hash for consistent lookup
+    /// Messages are queued until a handler registers, then delivered immediately
+    private var channelQueues: [UInt64: [(from: PeerId, data: Data, channel: String, timestamp: Date)]] = [:]
+
+    /// Maximum messages to queue per channel (prevents memory exhaustion)
+    private let maxQueuedMessagesPerChannel = 100
+
+    /// Maximum age of queued messages before they're dropped (60 seconds)
+    private let queuedMessageMaxAge: TimeInterval = 60.0
 
     /// Whether the node is running
     private var isRunning = false
@@ -268,78 +288,20 @@ public actor MeshNode {
 
     /// Set up the hole punch manager callbacks
     private func setupHolePunchManager() async {
-        await holePunchManager.setCallbacks(
-            sendMessage: { [weak self] (message: MeshMessage, toPeerId: PeerId) in
-                guard let self = self else { return }
-                if let endpoint = await self.getEndpoint(for: toPeerId) {
-                    await self.send(message, to: endpoint)
-                }
-            },
-            getPeerEndpoint: { [weak self] (peerId: PeerId) -> Endpoint? in
-                guard let self = self else { return nil }
-                return await self.getEndpoint(for: peerId)
-            },
-            getPeerNATType: { (_: PeerId) -> NATType? in
-                // For now, return unknown - could be enhanced with peer NAT tracking
-                return NATType.unknown
-            },
-            getCoordinatorPeerId: { [weak self] () -> PeerId? in
-                // Return first connected relay as coordinator (they have public IPs)
-                guard let self = self else { return nil }
-                if let relay = await self.getConnectedRelays().first {
-                    return relay
-                }
-                // Fall back to first known peer
-                return await self.endpointManager.allPeerIds.first
-            }
-        )
+        // Use the new unified services approach
+        await holePunchManager.setServices(self)
     }
 
     /// Set up the freshness manager callbacks
     private func setupFreshnessManager() async {
-        await freshnessManager.setCallbacks(
-            sendMessage: { [weak self] (message: MeshMessage, toPeerId: PeerId?) in
-                guard let self = self else { return }
-                if let toPeerId = toPeerId,
-                   let endpoint = await self.getEndpoint(for: toPeerId) {
-                    await self.send(message, to: endpoint)
-                }
-            },
-            broadcastMessage: { [weak self] (message: MeshMessage, maxHops: Int) in
-                guard let self = self else { return }
-                await self.broadcast(message, maxHops: maxHops)
-            },
-            invalidateCache: { [weak self] (peerId: PeerId, path: ReachabilityPath) in
-                // Cache invalidation can be handled by higher layers
-                // For now, just log it
-                guard let self = self else { return }
-                self.logger.debug("Cache invalidation requested for \(peerId)")
-            }
-        )
+        // Use the new unified services approach
+        await freshnessManager.setServices(self)
     }
 
     /// Set up the connection keepalive callbacks
     private func setupConnectionKeepalive() async {
-        // Provide endpoint lookup for keepalive
-        await connectionKeepalive.setEndpointProvider { [weak self] (peerId: PeerId, machineId: MachineId) -> String? in
-            guard let self = self else { return nil }
-            // Get best endpoint for this specific machine
-            return await self.endpointManager.getBestEndpoint(peerId: peerId, machineId: machineId)
-        }
-
-        // Provide ping sender for keepalive
-        await connectionKeepalive.setPingSender { [weak self] (peerId: PeerId, machineId: MachineId, endpoint: String) -> Bool in
-            guard let self = self else { return false }
-            // Send ping to specific endpoint
-            return await self.sendPingToEndpoint(peerId: peerId, endpoint: endpoint, timeout: 5.0)
-        }
-
-        // Handle keepalive failures
-        await connectionKeepalive.setFailureHandler { [weak self] (peerId: PeerId, machineId: MachineId, endpoint: String) in
-            guard let self = self else { return }
-            self.logger.warning("Connection to \(peerId.prefix(8))...:\(machineId.prefix(8))... failed keepalive check")
-            await self.handleKeepaliveFailure(peerId: peerId, machineId: machineId, endpoint: endpoint)
-        }
+        // Use the new unified services approach
+        await connectionKeepalive.setServices(self)
     }
 
     /// Send a ping to a specific endpoint (for keepalive)
@@ -359,8 +321,8 @@ public actor MeshNode {
         }
     }
 
-    /// Handle a keepalive failure for a machine
-    private func handleKeepaliveFailure(peerId: PeerId, machineId: MachineId, endpoint: String) async {
+    /// Handle a keepalive failure for a machine (internal implementation)
+    private func handleKeepaliveConnectionFailure(peerId: PeerId, machineId: MachineId, endpoint: String) async {
         // Log the failure - endpointManager handles endpoint lifecycle via activity tracking
         logger.info("Keepalive failure for \(peerId.prefix(8))...:\(machineId.prefix(8))... at \(endpoint)")
 
@@ -371,8 +333,8 @@ public actor MeshNode {
         )
     }
 
-    /// Get endpoint for a peer (returns best endpoint from any machine)
-    private func getEndpoint(for peerId: PeerId) async -> String? {
+    /// Get endpoint for a peer (returns best endpoint from any machine) - internal use
+    private func getEndpointForPeer(_ peerId: PeerId) async -> String? {
         await endpointManager.getAllEndpoints(peerId: peerId).first
     }
 
@@ -394,7 +356,7 @@ public actor MeshNode {
                     payload: message
                 )
 
-                let data = try JSONEncoder().encode(envelope)
+                let data = try JSONCoding.encoder.encode(envelope)
                 try await socket.send(data, to: endpoint)
             } catch {
                 logger.debug("Failed to broadcast to \(peerId): \(error)")
@@ -514,7 +476,7 @@ public actor MeshNode {
         }
 
         // Decode the envelope
-        guard let envelope = try? JSONDecoder().decode(MeshEnvelope.self, from: decryptedData) else {
+        guard let envelope = try? JSONCoding.decoder.decode(MeshEnvelope.self, from: decryptedData) else {
             logger.debug("Failed to decode message from \(address)")
             return
         }
@@ -598,7 +560,7 @@ public actor MeshNode {
                 await send(response, to: endpointString)
             }
         } else {
-            await handleDefaultMessage(envelope.payload, from: envelope.fromPeerId, endpoint: endpointString, hopCount: envelope.hopCount)
+            await handleDefaultMessage(envelope.payload, from: envelope.fromPeerId, endpoint: endpointString, channel: envelope.channel, hopCount: envelope.hopCount)
         }
 
         // Check if we should attempt direct connection (Phase 8: Direct connection on relayed message)
@@ -611,7 +573,13 @@ public actor MeshNode {
     }
 
     /// Default message handling for basic protocol
-    private func handleDefaultMessage(_ message: MeshMessage, from peerId: PeerId, endpoint: String, hopCount: Int = 0) async {
+    /// - Parameters:
+    ///   - message: The message payload
+    ///   - peerId: Sender's peer ID
+    ///   - endpoint: Sender's endpoint
+    ///   - channel: Channel for routing (empty for internal mesh messages)
+    ///   - hopCount: Current hop count
+    private func handleDefaultMessage(_ message: MeshMessage, from peerId: PeerId, endpoint: String, channel: String = "", hopCount: Int = 0) async {
         switch message {
         case .ping(let recentPeers, let theirNATType, let requestFullList):
             // Check if this is a NEW or RECONNECTING peer BEFORE recording
@@ -812,12 +780,17 @@ public actor MeshNode {
             }
 
         case .data(let payload):
-            // Pass application data to the handler
-            if let handler = applicationMessageHandler {
+            // Route based on channel
+            if !channel.isEmpty {
+                // Channel-based routing (new system)
+                logger.info("Routing .data(\(payload.count) bytes) to channel '\(channel)' from \(peerId.prefix(16))...")
+                await handleChannelMessage(from: peerId, channel: channel, data: payload)
+            } else if let handler = applicationMessageHandler {
+                // Legacy application handler (for internal mesh messages)
                 logger.info("Passing .data(\(payload.count) bytes) to application handler from \(peerId.prefix(16))...")
                 await handler(.data(payload), peerId)
             } else {
-                logger.warning("No applicationMessageHandler set for .data message from \(peerId.prefix(16))...")
+                logger.warning("No handler for .data message from \(peerId.prefix(16))... (channel: empty, no applicationMessageHandler)")
             }
 
         case .peerInfo:
@@ -867,7 +840,7 @@ public actor MeshNode {
                     payload: message
                 )
 
-                let data = try JSONEncoder().encode(envelope)
+                let data = try JSONCoding.encoder.encode(envelope)
                 try await socket.send(data, to: endpoint)
             } catch {
                 logger.debug("Failed to forward to \(peerId): \(error)")
@@ -878,23 +851,28 @@ public actor MeshNode {
     // MARK: - Sending Messages
 
     /// Send a message to an endpoint
-    public func send(_ message: MeshMessage, to endpoint: String) async {
+    /// - Parameters:
+    ///   - message: Message to send
+    ///   - endpoint: Target endpoint
+    ///   - channel: Channel for routing (default: empty for internal mesh messages)
+    public func send(_ message: MeshMessage, to endpoint: String, channel: String = "") async {
         do {
             // Create signed envelope with embedded public key
             let envelope = try MeshEnvelope.signed(
                 from: identity,
                 machineId: machineId,
                 to: nil,
+                channel: channel,
                 payload: message
             )
 
             // Encode to JSON then encrypt
-            let jsonData = try JSONEncoder().encode(envelope)
+            let jsonData = try JSONCoding.encoder.encode(envelope)
             let encryptedData = try MessageEncryption.encrypt(jsonData, key: config.encryptionKey)
             logger.info("Sending \(encryptedData.count) bytes to \(endpoint)")
             try await socket.send(encryptedData, to: endpoint)
 
-            logger.info("Sent \(type(of: message)) (\(encryptedData.count) bytes) to \(endpoint)")
+            logger.info("Sent \(type(of: message)) (\(encryptedData.count) bytes) to \(endpoint) [channel: \(channel.isEmpty ? "<mesh>" : channel)]")
         } catch {
             logger.error("Failed to send message: \(error)")
         }
@@ -1312,7 +1290,11 @@ public actor MeshNode {
 
     /// Send a message via relay to a peer behind symmetric NAT
     /// Uses the most recently contacted relay that knows the target peer
-    public func sendViaRelay(_ message: MeshMessage, to targetPeerId: PeerId) async throws {
+    /// - Parameters:
+    ///   - message: Message to send
+    ///   - targetPeerId: Target peer ID
+    ///   - channel: Channel for routing (default: empty for internal mesh messages)
+    public func sendViaRelay(_ message: MeshMessage, to targetPeerId: PeerId, channel: String = "") async throws {
         // Get potential relays for this symmetric NAT peer
         let relays = getPotentialRelays(for: targetPeerId)
         guard !relays.isEmpty else {
@@ -1325,11 +1307,12 @@ public actor MeshNode {
             from: identity,
             machineId: machineId,
             to: targetPeerId,
+            channel: channel,
             payload: message
         )
 
         // Encode the envelope
-        let jsonData = try JSONEncoder().encode(envelope)
+        let jsonData = try JSONCoding.encoder.encode(envelope)
 
         // Encrypt the payload with our network encryption key
         let encryptedPayload = try MessageEncryption.encrypt(jsonData, key: config.encryptionKey)
@@ -1340,7 +1323,7 @@ public actor MeshNode {
                 continue
             }
 
-            logger.info("Sending via relay \(relay.relayPeerId.prefix(8))... to \(targetPeerId.prefix(8))...")
+            logger.info("Sending via relay \(relay.relayPeerId.prefix(8))... to \(targetPeerId.prefix(8))... [channel: \(channel.isEmpty ? "<mesh>" : channel)]")
             await send(.relayForward(targetPeerId: targetPeerId, payload: encryptedPayload), to: relayEndpoint)
             return // Successfully sent to relay
         }
@@ -1857,6 +1840,7 @@ public enum MeshNodeError: Error, CustomStringConvertible {
     case peerNotFound
     case sendFailed(Error)
     case noRelayAvailable
+    case invalidChannel(String)
 
     public var description: String {
         switch self {
@@ -1870,6 +1854,263 @@ public enum MeshNodeError: Error, CustomStringConvertible {
             return "Send failed: \(error)"
         case .noRelayAvailable:
             return "No relay available for symmetric NAT peer"
+        case .invalidChannel(let channel):
+            return "Invalid channel '\(channel)': must be max 64 chars, alphanumeric/-/_ only"
+        }
+    }
+}
+
+// MARK: - MeshNodeServices Conformance
+
+extension MeshNode: MeshNodeServices {
+    public func send(_ message: MeshMessage, to peerId: PeerId, strategy: RoutingStrategy) async throws {
+        switch strategy {
+        case .direct(let endpoint):
+            await send(message, to: endpoint)
+        case .auto:
+            try await sendWithAutoRouting(message, to: peerId)
+        case .relay(let relayPeerId):
+            try await sendViaSpecificRelay(message, to: peerId, via: relayPeerId)
+        }
+    }
+
+    public func getEndpoint(for peerId: PeerId) async -> Endpoint? {
+        // Get all endpoints and prefer IPv6 using EndpointUtils
+        EndpointUtils.preferredEndpoint(from: await endpointManager.getAllEndpoints(peerId: peerId))
+    }
+
+    public func getEndpoint(peerId: PeerId, machineId: MachineId) async -> Endpoint? {
+        await endpointManager.getBestEndpoint(peerId: peerId, machineId: machineId)
+    }
+
+    // getNATType(for:) is already declared in MeshNode, so we don't need to redeclare it
+
+    public var allPeerIds: [PeerId] {
+        get async { await endpointManager.allPeerIds }
+    }
+
+    public func getCoordinatorPeerId() async -> PeerId? {
+        // Return first connected relay as coordinator (they have public IPs)
+        if let relay = await getConnectedRelays().first {
+            return relay
+        }
+        // Fall back to first known peer with reachable NAT type
+        for peerId in await endpointManager.allPeerIds {
+            if let natType = await endpointManager.getNATType(peerId: peerId),
+               natType.isDirectlyReachable {
+                return peerId
+            }
+        }
+        return await endpointManager.allPeerIds.first
+    }
+
+    public func invalidateCache(peerId: PeerId, path: ReachabilityPath) async {
+        // Log the cache invalidation request
+        logger.debug("Cache invalidation requested for \(peerId) via \(path)")
+    }
+
+    public func sendPing(peerId: PeerId, machineId: MachineId, endpoint: Endpoint) async -> Bool {
+        await sendPingToEndpoint(peerId: peerId, endpoint: endpoint, timeout: 5.0)
+    }
+
+    public func handleKeepaliveFailure(peerId: PeerId, machineId: MachineId, endpoint: Endpoint) async {
+        await handleKeepaliveConnectionFailure(peerId: peerId, machineId: machineId, endpoint: endpoint)
+    }
+
+    // MARK: - Auto-routing
+
+    /// Send a message with automatic routing strategy
+    /// Priority: IPv6 > direct (if reachable) > relay
+    /// - Parameters:
+    ///   - message: Message to send
+    ///   - peerId: Target peer ID
+    ///   - channel: Channel for routing (default: empty for internal mesh messages)
+    private func sendWithAutoRouting(_ message: MeshMessage, to peerId: PeerId, channel: String = "") async throws {
+        // Helper to get best endpoint for peer (across all machines)
+        func getBestPeerEndpoint() async -> Endpoint? {
+            EndpointUtils.preferredEndpoint(from: await endpointManager.getAllEndpoints(peerId: peerId))
+        }
+
+        // 1. Try IPv6 first (always works, no NAT)
+        if let endpoint = await getBestPeerEndpoint(),
+           EndpointUtils.isIPv6(endpoint) {
+            await send(message, to: endpoint, channel: channel)
+            return
+        }
+
+        // 2. Try direct if peer is reachable
+        let peerNATType = await endpointManager.getNATType(peerId: peerId) ?? .unknown
+        if peerNATType.isDirectlyReachable,
+           let endpoint = await getBestPeerEndpoint() {
+            await send(message, to: endpoint, channel: channel)
+            return
+        }
+
+        // 3. Fall back to relay (uses existing sendViaRelay which finds best relay)
+        let potentialRelays = getPotentialRelays(for: peerId)
+        if !potentialRelays.isEmpty {
+            try await sendViaRelay(message, to: peerId, channel: channel)
+            return
+        }
+
+        // 4. Try connected relays
+        if let relay = connectedRelays.first {
+            try await sendViaSpecificRelay(message, to: peerId, via: relay, channel: channel)
+            return
+        }
+
+        // 5. Last resort: try direct anyway
+        if let endpoint = await getBestPeerEndpoint() {
+            await send(message, to: endpoint, channel: channel)
+            return
+        }
+
+        throw MeshNodeError.peerNotFound
+    }
+
+    /// Send via a specific relay peer (for MeshNodeServices.send with .relay strategy)
+    /// - Parameters:
+    ///   - message: Message to send
+    ///   - targetPeerId: Target peer ID
+    ///   - relayPeerId: Relay peer to route through
+    ///   - channel: Channel for routing (default: empty for internal mesh messages)
+    private func sendViaSpecificRelay(_ message: MeshMessage, to targetPeerId: PeerId, via relayPeerId: PeerId, channel: String = "") async throws {
+        guard let relayEndpoint = await endpointManager.getAllEndpoints(peerId: relayPeerId).first else {
+            throw MeshNodeError.noRelayAvailable
+        }
+
+        // Create the envelope we want to send to the target
+        let envelope = try MeshEnvelope.signed(
+            from: identity,
+            machineId: machineId,
+            to: targetPeerId,
+            channel: channel,
+            payload: message
+        )
+
+        // Encode and encrypt the payload
+        let jsonData = try JSONCoding.encoder.encode(envelope)
+        let encryptedPayload = try MessageEncryption.encrypt(jsonData, key: config.encryptionKey)
+
+        logger.info("Sending via relay \(relayPeerId.prefix(8))... to \(targetPeerId.prefix(8))... [channel: \(channel.isEmpty ? "<mesh>" : channel)]")
+        await send(.relayForward(targetPeerId: targetPeerId, payload: encryptedPayload), to: relayEndpoint)
+    }
+
+    // MARK: - Channel System
+
+    /// Register a handler for a channel
+    /// Any queued messages for this channel will be delivered immediately
+    /// - Parameters:
+    ///   - channel: Channel name to listen on (max 64 chars, alphanumeric/-/_)
+    ///   - handler: Async handler that receives (fromPeerId, data)
+    /// - Throws: MeshNodeError.invalidChannel if channel name is invalid or hash collides with existing channel
+    public func onChannel(_ channel: String, handler: @escaping @Sendable (PeerId, Data) async -> Void) async throws {
+        guard ChannelUtils.isValid(channel) else {
+            throw MeshNodeError.invalidChannel(channel)
+        }
+
+        let hash = ChannelUtils.hash(channel)
+
+        // Check for hash collision with existing handler
+        if let existing = channelHandlers[hash], existing.name != channel {
+            logger.error("Channel hash collision: '\(channel)' collides with existing '\(existing.name)'")
+            throw MeshNodeError.invalidChannel("\(channel) (hash collision with '\(existing.name)')")
+        }
+
+        channelHandlers[hash] = (name: channel, handler: handler)
+
+        // Deliver any queued messages for this channel
+        if var queue = channelQueues.removeValue(forKey: hash) {
+            // Filter out expired messages and ensure channel name matches (collision safety)
+            let now = Date()
+            queue = queue.filter {
+                now.timeIntervalSince($0.timestamp) < queuedMessageMaxAge && $0.channel == channel
+            }
+
+            if !queue.isEmpty {
+                logger.debug("Delivering \(queue.count) queued message(s) for channel '\(channel)'")
+
+                for message in queue {
+                    await handler(message.from, message.data)
+                }
+            }
+        }
+    }
+
+    /// Unregister a handler for a channel
+    /// - Parameter channel: Channel name to stop listening on
+    public func offChannel(_ channel: String) {
+        let hash = ChannelUtils.hash(channel)
+        channelHandlers.removeValue(forKey: hash)
+        // Also clear the queue for this channel
+        channelQueues.removeValue(forKey: hash)
+    }
+
+    /// Send data on a channel to a peer
+    /// Uses auto-routing (IPv6 > direct > relay fallback)
+    /// - Parameters:
+    ///   - data: Data to send
+    ///   - peerId: Target peer ID
+    ///   - channel: Channel name
+    /// - Throws: MeshNodeError.invalidChannel if channel name is invalid
+    public func sendOnChannel(_ data: Data, to peerId: PeerId, channel: String) async throws {
+        guard ChannelUtils.isValid(channel) else {
+            throw MeshNodeError.invalidChannel(channel)
+        }
+        let message = MeshMessage.data(data)
+        try await sendWithAutoRouting(message, to: peerId, channel: channel)
+    }
+
+    /// Handle incoming message on a channel
+    /// Called by handleIncomingData when a message arrives with a non-empty channel
+    /// Uses hash-based lookup for O(1) routing with collision verification
+    internal func handleChannelMessage(from peerId: PeerId, channel: String, data: Data) async {
+        let hash = ChannelUtils.hash(channel)
+
+        if let entry = channelHandlers[hash], entry.name == channel {
+            // Handler registered and channel name matches (collision check) - deliver immediately
+            await entry.handler(peerId, data)
+        } else if let entry = channelHandlers[hash] {
+            // Hash collision detected - handler exists but channel name doesn't match
+            logger.warning("Channel hash collision detected: '\(channel)' collides with '\(entry.name)', queueing message")
+            // Fall through to queue the message
+            queueChannelMessage(from: peerId, channel: channel, data: data, hash: hash)
+        } else {
+            // No handler - queue the message
+            queueChannelMessage(from: peerId, channel: channel, data: data, hash: hash)
+        }
+    }
+
+    /// Queue a message for a channel that doesn't have a handler registered yet
+    private func queueChannelMessage(from peerId: PeerId, channel: String, data: Data, hash: UInt64) {
+        var queue = channelQueues[hash] ?? []
+
+        // Enforce queue size limit
+        if queue.count >= maxQueuedMessagesPerChannel {
+            // Drop oldest message
+            queue.removeFirst()
+            logger.warning("Channel queue overflow for '\(channel)', dropping oldest message")
+        }
+
+        queue.append((from: peerId, data: data, channel: channel, timestamp: Date()))
+        channelQueues[hash] = queue
+
+        logger.debug("Queued message for channel '\(channel)' (queue size: \(queue.count))")
+    }
+
+    /// Clear expired messages from all channel queues
+    /// Called periodically to prevent memory leaks
+    internal func cleanupChannelQueues() {
+        let now = Date()
+        for (hash, queue) in channelQueues {
+            let filtered = queue.filter { now.timeIntervalSince($0.timestamp) < queuedMessageMaxAge }
+            if filtered.isEmpty {
+                channelQueues.removeValue(forKey: hash)
+            } else if filtered.count != queue.count {
+                channelQueues[hash] = filtered
+                let channelName = queue.first?.channel ?? "unknown"
+                logger.debug("Cleaned up \(queue.count - filtered.count) expired message(s) from channel '\(channelName)'")
+            }
         }
     }
 }

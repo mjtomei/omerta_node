@@ -535,7 +535,7 @@ actor Provider "Party providing service, selects witnesses" (
     state SELECTING_WITNESSES "Computing deterministic witness selection"
     state SENDING_COMMITMENT "Sending witness selection to consumer"
     state WAITING_FOR_LOCK "Waiting for lock to complete"
-    state SERVICE_PHASE "Lock complete, providing service"
+    state SERVICE_PHASE terminal "Lock complete, providing service"
 
     IDLE -> VALIDATING_CHECKPOINT on LOCK_INTENT (
         store consumer, amount, session_id, consumer_nonce
@@ -609,33 +609,22 @@ actor Witness "Verifies consumer balance, participates in consensus" (
 
     state IDLE initial "Waiting for witness request"
     state CHECKING_CHAIN_KNOWLEDGE "Checking if we have recent consumer chain data"
-    state REQUESTING_CHAIN_SYNC "Requesting chain data from peers"
-    state WAITING_FOR_CHAIN_SYNC "Waiting for chain sync response"
     state CHECKING_BALANCE "Verifying consumer has sufficient balance"
     state CHECKING_EXISTING_LOCKS "Checking for existing locks on balance"
     state SHARING_PRELIMINARY "Sharing preliminary verdict with peers"
     state COLLECTING_PRELIMINARIES "Collecting preliminary verdicts"
-    state EVALUATING_PRELIMINARIES "Evaluating preliminary consensus"
     state VOTING "Casting final vote"
     state COLLECTING_VOTES "Collecting final votes"
-    state EVALUATING_VOTES "Evaluating vote consensus"
     state BUILDING_RESULT "Building final lock result"
-    state RECRUITING_MORE "Recruiting additional witnesses"
-    state WAITING_FOR_RECRUITS "Waiting for recruit responses"
     state SIGNING_RESULT "Signing the lock result"
-    state COLLECTING_SIGNATURES "Collecting peer signatures"
     state PROPAGATING_RESULT "Sending result to consumer"
-    state WAITING_FOR_CONSUMER_SIGNATURE "Waiting for consumer counter-signature"
-    state FINALIZING "Recording lock on chain and broadcasting"
     state ESCROW_ACTIVE "Escrow locked, monitoring liveness"
-    state DONE "Lock process complete"
-    state REJECTED "Witness declined to participate"
+    state DONE terminal "Lock process complete"
     state CHECKING_TOPUP_BALANCE "Verifying consumer has additional free balance"
     state VOTING_TOPUP "Voting on top-up request"
     state COLLECTING_TOPUP_VOTES "Collecting top-up votes from other witnesses"
     state BUILDING_TOPUP_RESULT "Building the top-up result after consensus"
     state PROPAGATING_TOPUP "Sending top-up result to consumer for signature"
-    state WAITING_FOR_CONSUMER_TOPUP_SIGNATURE "Waiting for consumer top-up signature"
 
     IDLE -> CHECKING_CHAIN_KNOWLEDGE on WITNESS_REQUEST (
         store consumer, provider, amount, session_id, my_chain_head, witnesses

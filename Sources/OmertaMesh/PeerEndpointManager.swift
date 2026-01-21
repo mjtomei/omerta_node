@@ -335,7 +335,7 @@ public actor PeerEndpointManager {
 
         // Try to decode - handle version mismatches gracefully
         do {
-            let file = try JSONDecoder().decode(PeerEndpointsFile.self, from: data)
+            let file = try JSONCoding.decoder.decode(PeerEndpointsFile.self, from: data)
 
             // Version check
             guard file.version == PeerEndpointsFile.currentVersion else {
@@ -375,9 +375,7 @@ public actor PeerEndpointManager {
             machines: machines
         )
 
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(file)
+        let data = try JSONCoding.prettyEncoder.encode(file)
 
         // Ensure directory exists
         let dir = storagePath.deletingLastPathComponent()

@@ -113,7 +113,7 @@ public actor PeerStore {
 
         // Try to decode - handle version mismatches gracefully
         do {
-            let file = try JSONDecoder().decode(PeerStoreFile.self, from: data)
+            let file = try JSONCoding.decoder.decode(PeerStoreFile.self, from: data)
 
             // Version check
             guard file.version == PeerStoreFile.currentVersion else {
@@ -157,9 +157,7 @@ public actor PeerStore {
             peers: peers
         )
 
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(file)
+        let data = try JSONCoding.prettyEncoder.encode(file)
 
         // Ensure directory exists
         try FileManager.default.createDirectory(

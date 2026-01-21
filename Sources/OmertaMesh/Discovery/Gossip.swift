@@ -228,9 +228,7 @@ extension Gossip {
             ttlSeconds: announcement.ttlSeconds
         )
 
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .sortedKeys
-        return try encoder.encode(signable)
+        return try JSONCoding.signatureEncoder.encode(signable)
     }
 }
 
@@ -264,9 +262,7 @@ extension PeerAnnouncement {
             ttlSeconds: ttlSeconds
         )
 
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .sortedKeys
-        guard let data = try? encoder.encode(signable) else {
+        guard let data = try? JSONCoding.signatureEncoder.encode(signable) else {
             return false
         }
 

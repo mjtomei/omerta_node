@@ -478,8 +478,8 @@ struct Start: AsyncParsableCommand {
         let controlSocket = ControlSocketServer(networkId: networkId)
 
         do {
-            // Set up consumer message handler for incoming heartbeats BEFORE starting
-            await daemon.setConsumerMessageHandler { [daemon, vmTracker] peerId, data in
+            // Set up heartbeat channel handler for incoming heartbeats when acting as consumer BEFORE starting
+            try await daemon.onChannel(VMChannels.heartbeat) { [daemon, vmTracker] peerId, data in
                 await self.handleConsumerMessage(
                     from: peerId,
                     data: data,
@@ -604,9 +604,8 @@ struct Start: AsyncParsableCommand {
             // Release consumer VMs (notify providers, tear down VPNs)
             print("Releasing consumer VMs...")
             await self.releaseAllConsumerVMs(
+                daemon: daemon,
                 vmTracker: vmTracker,
-                identity: identity,
-                networkKey: keyData,
                 networkId: networkId
             )
 
@@ -698,7 +697,7 @@ struct Start: AsyncParsableCommand {
             }
             return .peers(peers)
 
-        case .vmRequest(let peerId, let requirements, let sshPublicKey, let sshUser, let timeoutMinutes):
+        case .vmRequest(let peerId, let requirements, let sshPublicKey, let sshUser, let timeoutMinutes, let requestDryRun):
             return await handleVMRequest(
                 providerPeerId: peerId,
                 requirementsData: requirements,
@@ -710,7 +709,7 @@ struct Start: AsyncParsableCommand {
                 identity: identity,
                 networkKey: networkKey,
                 networkId: networkId,
-                dryRun: dryRun
+                dryRun: requestDryRun
             )
 
         case .vmRelease(let vmId):
@@ -774,26 +773,13 @@ struct Start: AsyncParsableCommand {
             ))
         }
 
-        // Get provider's endpoint using standardized lookup (known peers first, then ping)
-        guard let providerEndpoint = await daemon.getEndpointForPeer(providerPeerId) else {
-            return .vmRequestResult(ControlResponse.VMRequestResultData(
-                success: false,
-                vmId: nil,
-                vmIP: nil,
-                sshCommand: nil,
-                error: "Failed to reach provider \(providerPeerId.prefix(16))... - peer not found in network"
-            ))
-        }
-
-        // Create MeshConsumerClient for this request
+        // Create MeshConsumerClient using the daemon's MeshNetwork
         let client: MeshConsumerClient
         do {
-            client = try MeshConsumerClient(
-                identity: identity,
-                networkKey: networkKey,
-                networkId: networkId,
+            client = try await MeshConsumerClient(
+                meshNetwork: daemon.mesh,
                 providerPeerId: providerPeerId,
-                providerEndpoint: providerEndpoint,
+                networkId: networkId,
                 dryRun: dryRun
             )
         } catch {
@@ -846,15 +832,13 @@ struct Start: AsyncParsableCommand {
             return .vmReleaseResult(success: false, error: "VM not found: \(vmId)")
         }
 
-        // Create client to send release request
+        // Create client using daemon's MeshNetwork
         let client: MeshConsumerClient
         do {
-            client = try MeshConsumerClient(
-                identity: identity,
-                networkKey: networkKey,
-                networkId: vm.networkId,
+            client = try await MeshConsumerClient(
+                meshNetwork: daemon.mesh,
                 providerPeerId: vm.provider.peerId,
-                providerEndpoint: vm.provider.endpoint,
+                networkId: vm.networkId,
                 dryRun: false
             )
             // releaseVM handles both provider notification and local cleanup
@@ -885,9 +869,8 @@ struct Start: AsyncParsableCommand {
     /// Release all consumer VMs during shutdown
     /// This notifies providers and tears down VPN interfaces
     private func releaseAllConsumerVMs(
+        daemon: MeshProviderDaemon,
         vmTracker: VMTracker,
-        identity: OmertaMesh.IdentityKeypair,
-        networkKey: Data,
         networkId: String
     ) async {
         let vms = await vmTracker.getActiveVMs()
@@ -900,12 +883,10 @@ struct Start: AsyncParsableCommand {
 
         for vm in vms {
             do {
-                let client = try MeshConsumerClient(
-                    identity: identity,
-                    networkKey: networkKey,
-                    networkId: vm.networkId,
+                let client = try await MeshConsumerClient(
+                    meshNetwork: daemon.mesh,
                     providerPeerId: vm.provider.peerId,
-                    providerEndpoint: vm.provider.endpoint,
+                    networkId: vm.networkId,
                     dryRun: false
                 )
                 // Use forceLocalCleanup=true so we still clean up even if provider is unreachable
@@ -962,7 +943,7 @@ struct Start: AsyncParsableCommand {
             // Still respond with empty list
             let response = MeshVMHeartbeatResponse(activeVmIds: [])
             if let responseData = try? JSONEncoder().encode(response) {
-                try? await daemon.sendToPeer(responseData, to: providerPeerId)
+                try? await daemon.sendOnChannel(responseData, to: providerPeerId, channel: VMChannels.heartbeat)
             }
             return
         }
@@ -979,7 +960,7 @@ struct Start: AsyncParsableCommand {
 
         if let responseData = try? JSONEncoder().encode(response) {
             do {
-                try await daemon.sendToPeer(responseData, to: providerPeerId)
+                try await daemon.sendOnChannel(responseData, to: providerPeerId, channel: VMChannels.heartbeat)
                 logger.debug("Sent heartbeat response", metadata: [
                     "provider": "\(providerPeerId.prefix(16))...",
                     "activeVMs": "\(activeIds.count)"

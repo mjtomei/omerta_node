@@ -572,6 +572,202 @@ def load_commentary(tx_dir: Path) -> str:
 # MARKDOWN GENERATION
 # =============================================================================
 
+def format_type_for_md(type_expr) -> str:
+    """Format a TypeExpr AST node as a human-readable string for markdown."""
+    if type_expr is None:
+        return "any"
+    if isinstance(type_expr, str):
+        return type_expr
+
+    type_class = type(type_expr).__name__
+
+    if type_class == 'SimpleType':
+        return type_expr.name
+    elif type_class == 'ListType':
+        inner = format_type_for_md(type_expr.element_type)
+        return f"list<{inner}>"
+    elif type_class == 'MapType':
+        key = format_type_for_md(type_expr.key_type)
+        val = format_type_for_md(type_expr.value_type)
+        return f"map<{key}, {val}>"
+    else:
+        return str(type_expr)
+
+
+def format_trigger_for_md(trigger) -> str:
+    """Format a trigger AST node as a human-readable string for markdown."""
+    if trigger is None:
+        return "?"
+    if isinstance(trigger, str):
+        return trigger
+
+    type_class = type(trigger).__name__
+
+    if type_class == 'MessageTrigger':
+        return trigger.message_type
+    elif type_class == 'TimeoutTrigger':
+        return f"timeout({trigger.parameter})"
+    elif type_class == 'NamedTrigger':
+        return trigger.name
+    else:
+        return str(trigger)
+
+
+def format_expr_for_md(expr) -> str:
+    """Format an expression AST node as a human-readable string for markdown."""
+    if expr is None:
+        return ""
+    if isinstance(expr, str):
+        return expr
+
+    type_class = type(expr).__name__
+
+    if type_class == 'Identifier':
+        return expr.name
+    elif type_class == 'Literal':
+        if expr.type == 'string':
+            return f'"{expr.value}"'
+        elif expr.type == 'null':
+            return "null"
+        elif expr.type == 'bool':
+            return "true" if expr.value else "false"
+        return str(expr.value)
+    elif type_class == 'BinaryExpr':
+        left = format_expr_for_md(expr.left)
+        right = format_expr_for_md(expr.right)
+        op_map = {
+            'ADD': '+', 'SUB': '-', 'MUL': '*', 'DIV': '/',
+            'EQ': '==', 'NEQ': '!=', 'LT': '<', 'GT': '>',
+            'LTE': '<=', 'GTE': '>=', 'AND': 'and', 'OR': 'or'
+        }
+        op = op_map.get(expr.op.name, str(expr.op.name))
+        return f"{left} {op} {right}"
+    elif type_class == 'UnaryExpr':
+        operand = format_expr_for_md(expr.operand)
+        if expr.op.name == 'NOT':
+            return f"NOT {operand}"
+        elif expr.op.name == 'NEG':
+            return f"-{operand}"
+        return operand
+    elif type_class == 'FunctionCallExpr':
+        args = ", ".join(format_expr_for_md(a) for a in expr.args)
+        return f"{expr.name}({args})"
+    elif type_class == 'FieldAccessExpr':
+        obj = format_expr_for_md(expr.object)
+        return f"{obj}.{expr.field}"
+    elif type_class == 'IndexAccessExpr':
+        obj = format_expr_for_md(expr.object)
+        index = format_expr_for_md(expr.index)
+        return f"{obj}[{index}]"
+    elif type_class == 'EnumRefExpr':
+        return f"{expr.enum_name}.{expr.value}"
+    elif type_class == 'LambdaExpr':
+        body = format_expr_for_md(expr.body)
+        return f"{expr.param} => {body}"
+    else:
+        return str(expr)
+
+
+def extract_omt_sections(omt_path: Path) -> Dict[str, str]:
+    """Extract named sections from an .omt file.
+
+    Sections are delimited by lines like:
+    # =============================================================================
+    # SECTION_NAME
+    # =============================================================================
+
+    Returns a dict mapping section name -> section content (without the header).
+    """
+    with open(omt_path) as f:
+        content = f.read()
+
+    sections = {}
+    lines = content.split('\n')
+
+    current_section = None
+    section_lines = []
+    in_header = False
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Check for section header start
+        if line.startswith('# ====') and i + 2 < len(lines):
+            # Look for pattern: ===, # NAME, ===
+            next_line = lines[i + 1]
+            after_next = lines[i + 2]
+
+            if next_line.startswith('# ') and after_next.startswith('# ===='):
+                # Save previous section if any
+                if current_section:
+                    sections[current_section] = '\n'.join(section_lines).strip()
+
+                # Extract section name (remove # and any trailing stuff like "(written to chain)")
+                section_name = next_line[2:].strip()
+                # Normalize: remove parenthetical notes, uppercase
+                if '(' in section_name:
+                    section_name = section_name[:section_name.index('(')].strip()
+                current_section = section_name.upper()
+                section_lines = []
+                i += 3  # Skip the header
+                continue
+
+        # Add line to current section
+        if current_section:
+            section_lines.append(line)
+
+        i += 1
+
+    # Save last section
+    if current_section:
+        sections[current_section] = '\n'.join(section_lines).strip()
+
+    return sections
+
+
+def extract_actors_from_omt(omt_path: Path) -> Dict[str, str]:
+    """Extract individual actor definitions from an .omt file.
+
+    Returns a dict mapping actor name -> actor source code.
+    """
+    with open(omt_path) as f:
+        content = f.read()
+
+    actors = {}
+    lines = content.split('\n')
+
+    current_actor = None
+    actor_lines = []
+    paren_depth = 0
+
+    for line in lines:
+        # Check for actor start
+        if line.startswith('actor ') and '(' in line:
+            # Extract actor name
+            parts = line.split('"')
+            if len(parts) >= 1:
+                name_part = line.split()[1]  # "actor Name" -> Name
+                if '"' in name_part:
+                    name_part = name_part.split('"')[0]
+                current_actor = name_part
+                actor_lines = [line]
+                paren_depth = line.count('(') - line.count(')')
+                continue
+
+        if current_actor:
+            actor_lines.append(line)
+            paren_depth += line.count('(') - line.count(')')
+
+            # Actor ends when parentheses balance
+            if paren_depth <= 0:
+                actors[current_actor] = '\n'.join(actor_lines)
+                current_actor = None
+                actor_lines = []
+
+    return actors
+
+
 def generate_parameters_markdown(schema: Schema) -> str:
     """Generate parameters table markdown."""
     if not schema.parameters:
@@ -602,7 +798,8 @@ def generate_blocks_markdown(schema: Schema) -> str:
     for block in schema.blocks:
         lines.append(f"{block.name} {{")
         for field in block.fields:
-            lines.append(f"  {field.name}: {field.type}")
+            type_str = format_type_for_md(field.type)
+            lines.append(f"  {field.name}: {type_str}")
         lines.append("}\n")
 
     lines.append("```")
@@ -623,7 +820,8 @@ def generate_messages_markdown(schema: Schema) -> str:
         lines.append(f"{msg.name} {{")
 
         for field in msg.fields:
-            lines.append(f"  {field.name}: {field.type}")
+            type_str = format_type_for_md(field.type)
+            lines.append(f"  {field.name}: {type_str}")
 
         if msg.signed:
             lines.append(f"  signature: bytes  # signed by {msg.sender.lower()}")
@@ -662,7 +860,7 @@ def generate_state_machines_markdown(schema: Schema) -> str:
         if actor.triggers:
             lines.append("EXTERNAL TRIGGERS:")
             for trigger in actor.triggers:
-                param_str = ", ".join(f"{p.name}: {p.type}" for p in trigger.params)
+                param_str = ", ".join(f"{p.name}: {format_type_for_md(p.type)}" for p in trigger.params)
                 lines.append(f"  {trigger.name}({param_str})")
                 lines.append(f"    allowed_in: [{', '.join(trigger.allowed_in)}]")
             lines.append("")
@@ -679,8 +877,8 @@ def generate_state_machines_markdown(schema: Schema) -> str:
         if actor.transitions:
             lines.append("TRANSITIONS:")
             for trans in actor.transitions:
-                trigger = "auto" if trans.auto else (trans.trigger or "?")
-                guard_str = f" [guard: {trans.guard}]" if trans.guard else ""
+                trigger = "auto" if trans.auto else format_trigger_for_md(trans.trigger)
+                guard_str = f" [guard: {format_expr_for_md(trans.guard)}]" if trans.guard else ""
 
                 lines.append(f"  {trans.from_state} --{trigger}-->{guard_str} {trans.to_state}")
 
@@ -705,22 +903,57 @@ def _format_action_for_md(action) -> str:
             items = list(action.assignments.items())
             if len(items) == 1:
                 key, val = items[0]
-                return f"STORE({key}, {val})"
-            return f"STORE({action.assignments})"
+                val_str = format_expr_for_md(val)
+                return f"STORE({key}, {val_str})"
+            formatted = {k: format_expr_for_md(v) for k, v in action.assignments.items()}
+            return f"STORE({formatted})"
         return f"store {', '.join(action.fields)}"
     elif isinstance(action, ComputeAction):
-        return f"compute {action.name} = {action.expression}"
+        expr_str = format_expr_for_md(action.expression)
+        return f"compute {action.name} = {expr_str}"
     elif isinstance(action, LookupAction):
-        return f"lookup {action.name} = {action.expression}"
+        expr_str = format_expr_for_md(action.expression)
+        return f"lookup {action.name} = {expr_str}"
     elif isinstance(action, SendAction):
-        return f"SEND({action.target}, {action.message})"
+        target_str = format_expr_for_md(action.target)
+        return f"SEND({target_str}, {action.message})"
     elif isinstance(action, BroadcastAction):
-        return f"BROADCAST({action.target_list}, {action.message})"
+        target_str = format_expr_for_md(action.target_list)
+        return f"BROADCAST({target_str}, {action.message})"
     elif isinstance(action, AppendAction):
-        return f"APPEND({action.list_name}, {action.value})"
+        value_str = format_expr_for_md(action.value)
+        return f"APPEND({action.list_name}, {value_str})"
     elif isinstance(action, AppendBlockAction):
-        return f"APPEND(chain, {action.block_type})"
+        block_str = format_expr_for_md(action.block_type) if hasattr(action.block_type, 'name') else action.block_type
+        return f"APPEND(chain, {block_str})"
     return str(action)
+
+
+def generate_section_from_omt(section_content: str, title: str) -> str:
+    """Generate markdown for a section using raw DSL source."""
+    if not section_content:
+        return f"## {title}\n\nNo {title.lower()} defined."
+
+    lines = [f"## {title}\n"]
+    lines.append("```omt")
+    lines.append(section_content)
+    lines.append("```")
+    return "\n".join(lines)
+
+
+def generate_actors_from_omt(actors: Dict[str, str]) -> str:
+    """Generate markdown for actors using raw DSL source."""
+    if not actors:
+        return "No actors defined."
+
+    lines = []
+    for actor_name, actor_source in actors.items():
+        lines.append(f"### Actor: {actor_name}\n")
+        lines.append("```omt")
+        lines.append(actor_source)
+        lines.append("```\n")
+
+    return "\n".join(lines)
 
 
 def generate_markdown(tx_dir: Path, output_path: Path = None) -> str:
@@ -728,15 +961,53 @@ def generate_markdown(tx_dir: Path, output_path: Path = None) -> str:
     schema = load_transaction(tx_dir)
     commentary = load_commentary(tx_dir)
 
-    params_md = generate_parameters_markdown(schema)
-    blocks_md = generate_blocks_markdown(schema)
-    messages_md = generate_messages_markdown(schema)
-    states_md = generate_state_machines_markdown(schema)
+    # Extract raw sections from the .omt file
+    omt_path = tx_dir / "transaction.omt"
+    sections = extract_omt_sections(omt_path)
+    actors = extract_actors_from_omt(omt_path)
+
+    # Required sections - error if missing
+    required_sections = ["PARAMETERS", "MESSAGES", "ACTORS"]
+    missing = [s for s in required_sections if s not in sections and s != "ACTORS"]
+
+    # Check actors separately
+    if not actors:
+        missing.append("ACTORS")
+
+    if missing:
+        raise ValueError(
+            f"Missing required section headers in {omt_path}:\n"
+            f"  {', '.join(missing)}\n"
+            f"Each section must have a header like:\n"
+            f"  # =============================================================================\n"
+            f"  # SECTION_NAME\n"
+            f"  # ============================================================================="
+        )
+
+    # Generate markdown using raw DSL source
+    params_md = generate_section_from_omt(sections["PARAMETERS"], "Parameters")
+
+    # Block types are optional
+    if "BLOCK TYPES" in sections:
+        blocks_md = generate_section_from_omt(sections["BLOCK TYPES"], "Block Types (Chain Records)")
+    else:
+        blocks_md = ""
+
+    messages_md = generate_section_from_omt(sections["MESSAGES"], "Message Types")
+
+    # Functions are optional
+    if "FUNCTIONS" in sections:
+        functions_md = generate_section_from_omt(sections["FUNCTIONS"], "Functions")
+    else:
+        functions_md = ""
+
+    states_md = "## State Machines\n\n" + generate_actors_from_omt(actors)
 
     result = commentary
     result = result.replace("{{PARAMETERS}}", params_md)
     result = result.replace("{{BLOCKS}}", blocks_md)
     result = result.replace("{{MESSAGES}}", messages_md)
+    result = result.replace("{{FUNCTIONS}}", functions_md)
     result = result.replace("{{STATE_MACHINES}}", states_md)
 
     if output_path:

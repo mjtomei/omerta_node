@@ -87,19 +87,14 @@ public actor IdentityStore {
         }
 
         let data = try Data(contentsOf: storePath)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        identities = try decoder.decode([String: StoredIdentity].self, from: data)
+        identities = try JSONCoding.iso8601Decoder.decode([String: StoredIdentity].self, from: data)
 
         logger.info("Loaded \(identities.count) identities from store")
     }
 
     /// Save identities to disk
     public func save() async throws {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(identities)
+        let data = try JSONCoding.iso8601PrettyEncoder.encode(identities)
 
         // Ensure directory exists
         try FileManager.default.createDirectory(

@@ -135,19 +135,6 @@ public struct MeshVMAck: Codable, Sendable {
     }
 }
 
-/// ACK for VM release response - confirms consumer received the release confirmation
-public struct MeshVMReleaseAck: Codable, Sendable {
-    public let type: String
-    public let vmId: UUID
-    public let success: Bool
-
-    public init(vmId: UUID, success: Bool) {
-        self.type = "vm_release_ack"
-        self.vmId = vmId
-        self.success = success
-    }
-}
-
 // MARK: - Provider Shutdown Notification
 
 /// Notification sent by provider to consumers when shutting down

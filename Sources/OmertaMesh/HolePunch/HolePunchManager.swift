@@ -45,17 +45,20 @@ public actor HolePunchManager {
     /// Local port for hole punching
     private var localPort: UInt16 = 0
 
-    /// Callback to send messages
+    /// Callback to send messages (deprecated - use setServices)
     private var sendMessage: ((MeshMessage, PeerId) async -> Void)?
 
-    /// Callback to get peer endpoint
+    /// Callback to get peer endpoint (deprecated - use setServices)
     private var getPeerEndpoint: ((PeerId) async -> Endpoint?)?
 
-    /// Callback to get peer NAT type
+    /// Callback to get peer NAT type (deprecated - use setServices)
     private var getPeerNATType: ((PeerId) async -> NATType?)?
 
-    /// Callback to get coordinator peer ID
+    /// Callback to get coordinator peer ID (deprecated - use setServices)
     private var getCoordinatorPeerId: (() async -> PeerId?)?
+
+    /// Unified services reference (preferred over individual callbacks)
+    private weak var services: (any MeshNodeServices)?
 
     /// Pending hole punch results
     private var pendingResults: [PeerId: CheckedContinuation<HolePunchResult, Never>] = [:]
@@ -100,7 +103,7 @@ public actor HolePunchManager {
         logger.info("Hole punch manager stopped")
     }
 
-    /// Set callbacks for network operations
+    /// Set callbacks for network operations (deprecated - use setServices)
     public func setCallbacks(
         sendMessage: @escaping (MeshMessage, PeerId) async -> Void,
         getPeerEndpoint: @escaping (PeerId) async -> Endpoint?,
@@ -124,6 +127,17 @@ public actor HolePunchManager {
         }
     }
 
+    /// Set the unified services reference (preferred over individual callbacks)
+    public func setServices(_ services: any MeshNodeServices) {
+        self.services = services
+        // Also set services on coordinator if available
+        if let coordinator = coordinator {
+            Task {
+                await coordinator.setServices(services)
+            }
+        }
+    }
+
     /// Update NAT type
     public func updateNATType(_ natType: NATType) {
         self.natType = natType
@@ -140,14 +154,47 @@ public actor HolePunchManager {
     public func establishDirectConnection(to targetPeerId: PeerId) async -> HolePunchResult {
         let startTime = Date()
 
+        // Helper to get endpoint (prefer services)
+        func getEndpoint(_ peerId: PeerId) async -> Endpoint? {
+            if let services = services {
+                return await services.getEndpoint(for: peerId)
+            }
+            return await getPeerEndpoint?(peerId)
+        }
+
+        // Helper to get NAT type (prefer services)
+        func getNATType(_ peerId: PeerId) async -> NATType? {
+            if let services = services {
+                return await services.getNATType(for: peerId)
+            }
+            return await getPeerNATType?(peerId)
+        }
+
+        // Helper to get coordinator (prefer services)
+        func getCoordinator() async -> PeerId? {
+            if let services = services {
+                return await services.getCoordinatorPeerId()
+            }
+            return await getCoordinatorPeerId?()
+        }
+
+        // Helper to send message (prefer services)
+        func sendMsg(_ message: MeshMessage, to peerId: PeerId) async {
+            if let services = services {
+                try? await services.send(message, to: peerId, strategy: .auto)
+            } else {
+                await sendMessage?(message, peerId)
+            }
+        }
+
         // Check if we have an IPv6 endpoint for the target - IPv6 doesn't need hole punching
-        if let endpoint = await getPeerEndpoint?(targetPeerId), EndpointUtils.isIPv6(endpoint) {
+        if let endpoint = await getEndpoint(targetPeerId), EndpointUtils.isIPv6(endpoint) {
             logger.info("Target \(targetPeerId.prefix(8))... has IPv6 endpoint \(endpoint) - no hole punch needed")
             return .success(endpoint: endpoint, rtt: 0)
         }
 
         // Get target's NAT type
-        let targetNATType = await getPeerNATType?(targetPeerId) ?? .unknown
+        let targetNATType = await getNATType(targetPeerId) ?? .unknown
 
         // Log hole punch started
         await eventLogger?.recordHolePunchEvent(
@@ -184,19 +231,19 @@ public actor HolePunchManager {
 
         // If we're public and target is public, we can connect directly
         if natType.isDirectlyReachable && targetNATType.isDirectlyReachable {
-            if let endpoint = await getPeerEndpoint?(targetPeerId) {
+            if let endpoint = await getEndpoint(targetPeerId) {
                 return .success(endpoint: endpoint, rtt: 0)
             }
         }
 
         // Need coordination - find a coordinator
-        guard let coordinatorId = await getCoordinatorPeerId?() else {
+        guard let coordinatorId = await getCoordinator() else {
             logger.warning("No coordinator available for hole punch")
             return .failed(reason: .timeout)
         }
 
         // Get our public endpoint (from STUN or announcement)
-        let myEndpoint = await getPeerEndpoint?(peerId) ?? "unknown:0"
+        let myEndpoint = await getEndpoint(peerId) ?? "unknown:0"
 
         // Send hole punch request to coordinator
         let requestMessage = MeshMessage.holePunchRequest(
@@ -204,7 +251,7 @@ public actor HolePunchManager {
             myEndpoint: myEndpoint,
             myNATType: natType
         )
-        await sendMessage?(requestMessage, coordinatorId)
+        await sendMsg(requestMessage, to: coordinatorId)
 
         logger.info("Sent hole punch request via coordinator \(coordinatorId)")
 
@@ -290,6 +337,15 @@ public actor HolePunchManager {
 
     // MARK: - Private Handlers
 
+    /// Helper to send message (prefer services)
+    private func sendMsg(_ message: MeshMessage, to peerId: PeerId) async {
+        if let services = services {
+            try? await services.send(message, to: peerId, strategy: .auto)
+        } else {
+            await sendMessage?(message, peerId)
+        }
+    }
+
     private func handleInvite(
         fromPeerId: PeerId,
         theirEndpoint: Endpoint,
@@ -346,7 +402,7 @@ public actor HolePunchManager {
             success: result.succeeded,
             establishedEndpoint: result.endpoint
         )
-        await sendMessage?(resultMessage, fromPeerId)
+        await sendMsg(resultMessage, to: fromPeerId)
     }
 
     private func handleExecute(
@@ -397,7 +453,7 @@ public actor HolePunchManager {
             success: result.succeeded,
             establishedEndpoint: result.endpoint
         )
-        await sendMessage?(resultMessage, coordinatorId)
+        await sendMsg(resultMessage, to: coordinatorId)
     }
 
     private func handleResult(

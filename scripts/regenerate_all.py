@@ -25,16 +25,22 @@ GRAPHS_OUTPUT = REPO_ROOT / "docs" / "protocol" / "transactions" / "graphs"
 
 
 def find_transaction_dirs() -> list[Path]:
-    """Find all transaction directories containing DSL files (.omt or .yaml)."""
+    """Find all transaction directories containing DSL or commentary files."""
     tx_dirs = []
     for item in sorted(SCHEMA_BASE.iterdir()):
-        if item.is_dir():
-            # Prefer .omt files, fall back to .yaml
+        if item.is_dir() and item.name != "graphs":
+            # Include dirs with transaction.omt, schema.yaml, or commentary.md
             dsl_file = item / "transaction.omt"
             yaml_file = item / "schema.yaml"
-            if dsl_file.exists() or yaml_file.exists():
+            commentary_file = item / "commentary.md"
+            if dsl_file.exists() or yaml_file.exists() or commentary_file.exists():
                 tx_dirs.append(item)
     return tx_dirs
+
+
+def has_transaction_omt(tx_dir: Path) -> bool:
+    """Check if directory has a transaction.omt file."""
+    return (tx_dir / "transaction.omt").exists()
 
 
 def generate_mermaid_statechart(tx_def: dict, actor_name: str) -> str:
@@ -184,6 +190,20 @@ def regenerate_markdown(tx_dir: Path, verbose: bool = False) -> bool:
     tx_name = tx_dir.name
     output_path = tx_dir.parent / f"{tx_name}.md"
 
+    # If no transaction.omt, just copy commentary.md directly
+    if not has_transaction_omt(tx_dir):
+        commentary_path = tx_dir / "commentary.md"
+        if commentary_path.exists():
+            content = commentary_path.read_text()
+            output_path.write_text(content)
+            if verbose:
+                print(f"  Generated: {output_path} (from commentary.md)")
+            return True
+        else:
+            print(f"  Error: No transaction.omt or commentary.md found", file=sys.stderr)
+            return False
+
+    # Full generation from transaction.omt
     result = subprocess.run(
         [
             sys.executable,
@@ -207,6 +227,12 @@ def regenerate_markdown(tx_dir: Path, verbose: bool = False) -> bool:
 
 def regenerate_python(tx_dir: Path, verbose: bool = False) -> bool:
     """Regenerate Python simulation code for a transaction."""
+    # Skip if no transaction.omt (commentary-only transactions)
+    if not has_transaction_omt(tx_dir):
+        if verbose:
+            print(f"  Skipping Python generation (no transaction.omt)")
+        return True
+
     tx_name = tx_dir.name.split("_", 1)[1] if "_" in tx_dir.name else tx_dir.name
     output_path = PYTHON_OUTPUT / f"{tx_name}_generated.py"
 

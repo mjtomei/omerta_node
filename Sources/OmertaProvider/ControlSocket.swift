@@ -22,7 +22,7 @@ private let SOCK_STREAM_VALUE = Int32(SOCK_STREAM.rawValue)
 public enum ControlCommand: Codable {
     case ping(peerId: String, timeout: Int, requestFullList: Bool = false)
     case connect(peerId: String, timeout: Int)
-    case vmRequest(peerId: String, requirements: Data, sshPublicKey: String, sshUser: String, timeoutMinutes: Int)
+    case vmRequest(peerId: String, requirements: Data, sshPublicKey: String, sshUser: String, timeoutMinutes: Int, dryRun: Bool = false)
     case vmRelease(vmId: UUID)
     case vmList
     case status

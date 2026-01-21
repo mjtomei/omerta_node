@@ -87,18 +87,22 @@ final class MeshConsumerClientTests: XCTestCase {
     // MARK: - MeshConsumerClient Initialization Tests
 
     func testMeshConsumerClientInitialization() async throws {
+        // Create a MeshNetwork for testing
         let identity = OmertaMesh.IdentityKeypair()
-        let networkKey = Data(repeating: 0x42, count: 32)
+        let encryptionKey = Data(repeating: 0x42, count: 32)
+        let meshConfig = MeshConfig(encryptionKey: encryptionKey)
+        let meshNetwork = MeshNetwork(identity: identity, config: meshConfig)
 
         // Use a unique temp path to avoid interference from other tests/runs
         let tempPath = "/tmp/omerta-test-\(UUID().uuidString)/vms.json"
 
-        let client = try MeshConsumerClient(
-            identity: identity,
-            networkKey: networkKey,
+        // Use a different peer ID than our own
+        let providerPeerId = "different-provider-peer-id-1234"
+
+        let client = try await MeshConsumerClient(
+            meshNetwork: meshNetwork,
+            providerPeerId: providerPeerId,
             networkId: "test-network-id",
-            providerPeerId: "testprovider1234",
-            providerEndpoint: "192.168.1.100:9999",
             persistencePath: tempPath,
             dryRun: true
         )
@@ -109,6 +113,29 @@ final class MeshConsumerClientTests: XCTestCase {
 
         // Cleanup
         try? FileManager.default.removeItem(atPath: (tempPath as NSString).deletingLastPathComponent)
+    }
+
+    func testMeshConsumerClientRejectsSelfRequest() async throws {
+        // Create a MeshNetwork for testing
+        let identity = OmertaMesh.IdentityKeypair()
+        let encryptionKey = Data(repeating: 0x42, count: 32)
+        let meshConfig = MeshConfig(encryptionKey: encryptionKey)
+        let meshNetwork = MeshNetwork(identity: identity, config: meshConfig)
+
+        // Use our own peer ID as the provider - should be rejected
+        let myPeerId = await meshNetwork.peerId
+
+        do {
+            _ = try await MeshConsumerClient(
+                meshNetwork: meshNetwork,
+                providerPeerId: myPeerId,
+                networkId: "test-network-id",
+                dryRun: true
+            )
+            XCTFail("Expected selfRequestNotAllowed error")
+        } catch let error as MeshConsumerError {
+            XCTAssertEqual(error.description, MeshConsumerError.selfRequestNotAllowed.description)
+        }
     }
 
     // MARK: - Error Description Tests

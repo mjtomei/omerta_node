@@ -155,6 +155,8 @@ extension MeshNodeError {
             return .sendFailed(reason: error.localizedDescription)
         case .noRelayAvailable:
             return .sendFailed(reason: "No relay available for symmetric NAT peer")
+        case .invalidChannel(let channel):
+            return .sendFailed(reason: "Invalid channel '\(channel)': must be max 64 chars, alphanumeric/-/_ only")
         }
     }
 }

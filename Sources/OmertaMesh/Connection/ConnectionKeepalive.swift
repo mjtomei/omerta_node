@@ -93,14 +93,17 @@ public actor ConnectionKeepalive {
     /// Background task for keepalive loop
     private var keepaliveTask: Task<Void, Never>?
 
-    /// Callback to get best endpoint for a machine
+    /// Callback to get best endpoint for a machine (deprecated - use setServices)
     private var endpointProvider: EndpointProvider?
 
-    /// Callback to send ping to a machine
+    /// Callback to send ping to a machine (deprecated - use setServices)
     private var pingSender: PingSender?
 
-    /// Callback when a connection fails
+    /// Callback when a connection fails (deprecated - use setServices)
     private var failureHandler: FailureHandler?
+
+    /// Unified services reference (preferred over individual callbacks)
+    private weak var services: (any MeshNodeServices)?
 
     // MARK: - Initialization
 
@@ -124,6 +127,11 @@ public actor ConnectionKeepalive {
     /// Set the failure handler callback
     public func setFailureHandler(_ handler: @escaping FailureHandler) {
         self.failureHandler = handler
+    }
+
+    /// Set the unified services reference (preferred over individual callbacks)
+    public func setServices(_ services: any MeshNodeServices) {
+        self.services = services
     }
 
     // MARK: - Lifecycle
@@ -265,14 +273,18 @@ public actor ConnectionKeepalive {
     }
 
     private func sendKeepalives() async {
-        guard let sender = pingSender else {
-            logger.warning("No ping sender configured for keepalive")
-            return
-        }
+        // Prefer services if available, fall back to legacy callbacks
+        let useServices = services != nil
 
-        guard let provider = endpointProvider else {
-            logger.warning("No endpoint provider configured for keepalive")
-            return
+        if !useServices {
+            guard pingSender != nil else {
+                logger.warning("No ping sender configured for keepalive")
+                return
+            }
+            guard endpointProvider != nil else {
+                logger.warning("No endpoint provider configured for keepalive")
+                return
+            }
         }
 
         // Select machines to ping this cycle using weighted sampling
@@ -286,13 +298,25 @@ public actor ConnectionKeepalive {
             guard let state = machines[key] else { continue }
 
             // Get current best endpoint for this machine
-            guard let endpoint = await provider(state.peerId, state.machineId) else {
+            let endpoint: String?
+            if let services = services {
+                endpoint = await services.getEndpoint(peerId: state.peerId, machineId: state.machineId)
+            } else {
+                endpoint = await endpointProvider?(state.peerId, state.machineId)
+            }
+
+            guard let endpoint = endpoint else {
                 logger.debug("No endpoint for machine \(state.peerId.prefix(8))...:\(state.machineId.prefix(8))...")
                 continue
             }
 
             // Send ping
-            let success = await sender(state.peerId, state.machineId, endpoint)
+            let success: Bool
+            if let services = services {
+                success = await services.sendPing(peerId: state.peerId, machineId: state.machineId, endpoint: endpoint)
+            } else {
+                success = await pingSender?(state.peerId, state.machineId, endpoint) ?? false
+            }
 
             if success {
                 // Reset missed count on success and record endpoint
@@ -327,7 +351,9 @@ public actor ConnectionKeepalive {
                         machines.removeValue(forKey: key)
 
                         // Notify failure handler
-                        if let handler = failureHandler {
+                        if let services = services {
+                            await services.handleKeepaliveFailure(peerId: state.peerId, machineId: state.machineId, endpoint: endpoint)
+                        } else if let handler = failureHandler {
                             await handler(state.peerId, state.machineId, endpoint)
                         }
                     }
