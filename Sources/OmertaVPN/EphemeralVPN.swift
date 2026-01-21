@@ -755,6 +755,27 @@ public actor EphemeralVPN: VPNProvider {
         config: String,
         interfaceName: String
     ) async throws {
+        // Check if we have root privileges (needed for WireGuard)
+        // Either running as root directly, or sudo is available without password
+        if getuid() != 0 {
+            // Not running as root - check if sudo works without password
+            let testProcess = Process()
+            testProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            testProcess.arguments = ["-n", "true"]  // -n = non-interactive (fail if password needed)
+            testProcess.standardOutput = FileHandle.nullDevice
+            testProcess.standardError = FileHandle.nullDevice
+
+            do {
+                try testProcess.run()
+                testProcess.waitUntilExit()
+                if testProcess.terminationStatus != 0 {
+                    throw VPNError.rootRequired
+                }
+            } catch {
+                throw VPNError.rootRequired
+            }
+        }
+
         // Check if interface already exists (stale from previous run)
         let existingInterfaces = (try? WireGuardCleanup.listOmertaInterfaces()) ?? []
         if existingInterfaces.contains(interfaceName) || existingInterfaces.contains(where: { $0.contains(interfaceName) }) {

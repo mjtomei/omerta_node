@@ -305,10 +305,28 @@ public struct VPNTunnelStats: Sendable {
 }
 
 /// VPN errors
-public enum VPNError: Error {
+public enum VPNError: Error, LocalizedError {
     case invalidConfiguration(String)
     case tunnelNotFound(UUID)
     case tunnelStartFailed(String)
     case tunnelStatsFailed
     case connectivityCheckFailed(String)
+    case rootRequired
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidConfiguration(let msg):
+            return "Invalid VPN configuration: \(msg)"
+        case .tunnelNotFound(let id):
+            return "VPN tunnel not found: \(id)"
+        case .tunnelStartFailed(let msg):
+            return "Failed to start VPN tunnel: \(msg)"
+        case .tunnelStatsFailed:
+            return "Failed to get VPN tunnel stats"
+        case .connectivityCheckFailed(let msg):
+            return "VPN connectivity check failed: \(msg)"
+        case .rootRequired:
+            return "omertad must run as root to create WireGuard tunnels. Start with: sudo omertad start"
+        }
+    }
 }
