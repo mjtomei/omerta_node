@@ -722,6 +722,27 @@ public actor MeshProviderDaemon {
         await mesh.ping(peerId, timeout: timeout, requestFullList: requestFullList)
     }
 
+    /// Get endpoint for a peer - uses known peers first, falls back to fresh ping
+    /// This is more reliable than always requiring a fresh ping
+    /// - Parameters:
+    ///   - peerId: The peer to get endpoint for
+    ///   - pingTimeout: Timeout for fallback ping (default 10s)
+    /// - Returns: The peer's endpoint, or nil if not reachable
+    public func getEndpointForPeer(_ peerId: String, pingTimeout: TimeInterval = 10) async -> String? {
+        // First check known peers - faster and doesn't require network
+        let knownPeers = await knownPeersWithInfo()
+        if let knownPeer = knownPeers.first(where: { $0.peerId == peerId }) {
+            return knownPeer.endpoint
+        }
+
+        // Fallback to fresh ping if peer not in cache
+        if let pingResult = await ping(peerId: peerId, timeout: pingTimeout) {
+            return pingResult.endpoint
+        }
+
+        return nil
+    }
+
     /// Connect to a peer through the mesh network
     public func connect(to peerId: String) async throws -> DirectConnection {
         try await mesh.connect(to: peerId)

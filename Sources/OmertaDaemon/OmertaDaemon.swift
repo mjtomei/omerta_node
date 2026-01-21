@@ -774,18 +774,16 @@ struct Start: AsyncParsableCommand {
             ))
         }
 
-        // Ping provider to get their endpoint
-        guard let pingResult = await daemon.ping(peerId: providerPeerId, timeout: 10) else {
+        // Get provider's endpoint using standardized lookup (known peers first, then ping)
+        guard let providerEndpoint = await daemon.getEndpointForPeer(providerPeerId) else {
             return .vmRequestResult(ControlResponse.VMRequestResultData(
                 success: false,
                 vmId: nil,
                 vmIP: nil,
                 sshCommand: nil,
-                error: "Failed to reach provider \(providerPeerId.prefix(16))..."
+                error: "Failed to reach provider \(providerPeerId.prefix(16))... - peer not found in network"
             ))
         }
-
-        let providerEndpoint = pingResult.endpoint
 
         // Create MeshConsumerClient for this request
         let client: MeshConsumerClient

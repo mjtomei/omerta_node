@@ -3457,8 +3457,8 @@ struct Ping: AsyncParsableCommand {
     @Option(name: .long, help: "Ping timeout in seconds")
     var timeout: Int = 5
 
-    @Option(name: .shortAndLong, help: "Number of pings to send")
-    var count: Int = 1
+    @Option(name: .shortAndLong, help: "Number of pings to send (0 = unlimited, like ping)")
+    var count: Int = 0
 
     @Flag(name: .shortAndLong, help: "Show detailed gossip information")
     var verbose: Bool = false
@@ -3814,8 +3814,8 @@ struct MeshPing: AsyncParsableCommand {
     @Option(name: .long, help: "Ping timeout in seconds")
     var timeout: Int = 5
 
-    @Option(name: .shortAndLong, help: "Number of pings to send")
-    var count: Int = 1
+    @Option(name: .shortAndLong, help: "Number of pings to send (0 = unlimited, like ping)")
+    var count: Int = 0
 
     @Flag(name: .shortAndLong, help: "Show detailed gossip information")
     var verbose: Bool = false
@@ -3876,9 +3876,13 @@ struct MeshPing: AsyncParsableCommand {
 
         var successCount = 0
         var totalLatency = 0
+        var transmitted = 0
 
-        for i in 0..<count {
+        // count == 0 means unlimited (like ping utility)
+        var i = 0
+        while count == 0 || i < count {
             do {
+                transmitted += 1
                 let response = try await client.send(.ping(peerId: resolvedPeerId, timeout: timeout, requestFullList: requestFullList))
 
                 switch response {
@@ -3931,9 +3935,14 @@ struct MeshPing: AsyncParsableCommand {
                     throw ExitCode.failure
                 }
 
-                if i < count - 1 {
+                i += 1
+                // Sleep between pings (not after the last one if count is specified)
+                if count == 0 || i < count {
                     try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second between pings
                 }
+            } catch is CancellationError {
+                // Ctrl+C - print stats and exit gracefully
+                break
             } catch let error as ControlSocketError {
                 print("Error: \(error.description)")
                 throw ExitCode.failure
@@ -3943,7 +3952,8 @@ struct MeshPing: AsyncParsableCommand {
         print("")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print("Ping statistics for \(resolvedPeerId.prefix(16))...")
-        print("  \(count) packets transmitted, \(successCount) received, \(100 - (successCount * 100 / max(count, 1)))% packet loss")
+        let packetLoss = transmitted > 0 ? 100 - (successCount * 100 / transmitted) : 0
+        print("  \(transmitted) packets transmitted, \(successCount) received, \(packetLoss)% packet loss")
         if successCount > 0 {
             let avgLatency = totalLatency / successCount
             print("  avg latency: \(avgLatency)ms")
