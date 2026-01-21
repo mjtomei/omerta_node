@@ -303,6 +303,9 @@ class DSLTransformer(Transformer):
 
         auto = isinstance(trigger, tuple) and trigger[0] == "auto"
 
+        # Extract line number from from_state token if available
+        line = getattr(from_state, 'line', 0)
+
         return Transition(
             from_state=str(from_state),
             to_state=str(to_state),
@@ -310,7 +313,8 @@ class DSLTransformer(Transformer):
             auto=auto,
             guard=guard,
             actions=actions,
-            on_guard_fail=on_guard_fail
+            on_guard_fail=on_guard_fail,
+            line=line
         )
 
     def guarded_transition(self, from_state, to_state, trigger, guard, *rest):
@@ -365,10 +369,12 @@ class DSLTransformer(Transformer):
 
     def send_action(self, target, message):
         # Keep target as AST node for generator compatibility
-        return SendAction(message=str(message), target=target)
+        line = getattr(message, 'line', 0)
+        return SendAction(message=str(message), target=target, line=line)
 
     def broadcast_action(self, target_list, message):
-        return BroadcastAction(message=str(message), target_list=str(target_list))
+        line = getattr(message, 'line', 0)
+        return BroadcastAction(message=str(message), target_list=str(target_list), line=line)
 
     def append_action(self, list_name, value):
         return AppendAction(list_name=str(list_name), value=value)

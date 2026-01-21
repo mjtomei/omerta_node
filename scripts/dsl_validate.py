@@ -29,12 +29,25 @@ def _type_to_str(type_val) -> str:
 
 
 @dataclass
+class Fix:
+    """A suggested fix for a validation error."""
+    old_text: str
+    new_text: str
+    line: int
+    description: str = ""
+
+    def __str__(self):
+        return f"{self.old_text} -> {self.new_text}"
+
+
+@dataclass
 class ValidationError:
     """A validation error with location info."""
     message: str
     line: int = 0
     column: int = 0
     severity: str = "error"  # "error" or "warning"
+    fix: Optional[Fix] = None  # Optional auto-fix
 
     def __str__(self):
         loc = f"line {self.line}" if self.line else "unknown location"
@@ -55,11 +68,21 @@ class ValidationResult:
     def has_warnings(self) -> bool:
         return len(self.warnings) > 0
 
-    def add_error(self, message: str, line: int = 0, column: int = 0):
-        self.errors.append(ValidationError(message, line, column, "error"))
+    def add_error(self, message: str, line: int = 0, column: int = 0, fix: Optional[Fix] = None):
+        self.errors.append(ValidationError(message, line, column, "error", fix))
 
-    def add_warning(self, message: str, line: int = 0, column: int = 0):
-        self.warnings.append(ValidationError(message, line, column, "warning"))
+    def add_warning(self, message: str, line: int = 0, column: int = 0, fix: Optional[Fix] = None):
+        self.warnings.append(ValidationError(message, line, column, "warning", fix))
+
+    @property
+    def fixable_count(self) -> int:
+        """Count of errors and warnings that have auto-fixes."""
+        return sum(1 for e in self.errors if e.fix) + sum(1 for w in self.warnings if w.fix)
+
+    @property
+    def fixes(self) -> List[Fix]:
+        """Get all fixes from errors and warnings."""
+        return [e.fix for e in self.errors if e.fix] + [w.fix for w in self.warnings if w.fix]
 
     def merge(self, other: 'ValidationResult'):
         self.errors.extend(other.errors)
@@ -100,6 +123,36 @@ BUILTIN_FUNCTIONS = {
 # Impure functions that shouldn't be in pure function bodies
 IMPURE_FUNCTIONS = {"STORE", "SEND", "BROADCAST"}
 
+# Descriptions of why impure operations are impure
+IMPURE_REASONS = {
+    "STORE": "mutates state",
+    "SEND": "sends messages",
+    "BROADCAST": "sends messages",
+}
+
+# Reserved keywords (case-insensitive)
+RESERVED_KEYWORDS = {
+    # Declaration keywords
+    "transaction", "imports", "parameters", "enum", "message", "block", "actor", "function", "native",
+    # Actor keywords
+    "store", "trigger", "state", "initial", "terminal",
+    # Transition keywords
+    "on", "auto", "when", "else",
+    # Action keywords
+    "lookup", "send", "broadcast", "append", "append_block", "return",
+    # Modifier keywords
+    "from", "to", "by", "in", "with", "signed",
+    # Logical operators
+    "and", "or", "not",
+    # Control flow
+    "if", "then", "for",
+}
+
+# Reserved identifiers (case-sensitive)
+RESERVED_IDENTIFIERS = {
+    "chain", "peer_id", "message", "null", "true", "false",
+}
+
 # Primitive types
 PRIMITIVE_TYPES = {
     "string", "str", "int", "uint", "float", "bool", "boolean",
@@ -108,6 +161,125 @@ PRIMITIVE_TYPES = {
 
 # Numeric types for arithmetic validation
 NUMERIC_TYPES = {"int", "uint", "float", "timestamp", "number", "count"}
+
+
+# =============================================================================
+# Typo Detection / Suggestions
+# =============================================================================
+
+def levenshtein_distance(s1: str, s2: str) -> int:
+    """Calculate Levenshtein edit distance between two strings."""
+    if len(s1) < len(s2):
+        s1, s2 = s2, s1
+    if len(s2) == 0:
+        return len(s1)
+
+    prev_row = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        curr_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = prev_row[j + 1] + 1
+            deletions = curr_row[j] + 1
+            substitutions = prev_row[j] + (c1 != c2)
+            curr_row.append(min(insertions, deletions, substitutions))
+        prev_row = curr_row
+
+    return prev_row[-1]
+
+
+def find_similar(name: str, candidates: Set[str], max_distance: int = 2, max_suggestions: int = 3) -> List[str]:
+    """Find similar names from a set of candidates using Levenshtein distance.
+
+    Args:
+        name: The unknown name to find matches for
+        candidates: Set of valid names to search
+        max_distance: Maximum edit distance to consider (default 2)
+        max_suggestions: Maximum number of suggestions to return
+
+    Returns:
+        List of similar names, sorted by distance then alphabetically
+    """
+    suggestions = []
+    name_lower = name.lower()
+
+    for candidate in candidates:
+        # Check edit distance
+        dist = levenshtein_distance(name_lower, candidate.lower())
+        if dist <= max_distance and dist > 0:  # dist > 0 excludes exact matches
+            suggestions.append((dist, candidate))
+
+    # Sort by distance, then alphabetically
+    suggestions.sort(key=lambda x: (x[0], x[1]))
+    return [s[1] for s in suggestions[:max_suggestions]]
+
+
+def format_suggestions(suggestions: List[str]) -> str:
+    """Format a list of suggestions for display in an error message."""
+    if not suggestions:
+        return ""
+    if len(suggestions) == 1:
+        return f" Did you mean '{suggestions[0]}'?"
+    return f" Did you mean one of: {', '.join(repr(s) for s in suggestions)}?"
+
+
+def format_alternatives(name: str, candidates: Set[str], max_list: int = 5) -> str:
+    """Format valid alternatives when typo detection finds nothing.
+
+    If there are few enough candidates, list them all. Otherwise, suggest
+    checking the schema.
+
+    Args:
+        name: The unknown name that was referenced
+        candidates: Set of valid names
+        max_list: Maximum number of candidates to list
+
+    Returns:
+        Formatted string with suggestions or alternatives
+    """
+    # First try typo detection
+    suggestions = find_similar(name, candidates)
+    if suggestions:
+        return format_suggestions(suggestions)
+
+    # If no typos found and few candidates, list them all
+    if candidates and len(candidates) <= max_list:
+        sorted_candidates = sorted(candidates)
+        return f" Valid options: {', '.join(sorted_candidates)}."
+
+    # Too many candidates to list
+    if candidates:
+        return f" ({len(candidates)} defined in schema)"
+
+    return " (none defined)"
+
+
+def get_obvious_fix(name: str, candidates: Set[str], line: int, max_distance: int = 3) -> Optional[Fix]:
+    """Get an obvious fix if there's a single high-confidence suggestion.
+
+    Returns a fix if there's exactly one suggestion within the edit distance threshold.
+    This catches typos, transpositions, and minor spelling errors.
+
+    Args:
+        name: The unknown name that was referenced
+        candidates: Set of valid names
+        line: Line number for the fix
+        max_distance: Maximum edit distance to consider for fixes (default 5)
+
+    Returns:
+        Fix object if an obvious fix exists, None otherwise
+    """
+    # Find suggestions within the distance threshold
+    # Only return a fix if there's exactly one match (unambiguous)
+    suggestions = find_similar(name, candidates, max_distance=max_distance, max_suggestions=2)
+    if len(suggestions) == 1:
+        return Fix(
+            old_text=name,
+            new_text=suggestions[0],
+            line=line,
+            description=f"Replace '{name}' with '{suggestions[0]}'"
+        )
+
+    return None
 
 
 # =============================================================================
@@ -208,6 +380,9 @@ def validate_schema(schema: Schema, imported_schemas: List[Schema] = None) -> Va
     # Validate no object types
     result.merge(validate_no_object_types(schema))
 
+    # Validate no reserved words as identifiers
+    result.merge(validate_reserved_words(schema))
+
     return result
 
 
@@ -261,7 +436,7 @@ def validate_actor(actor: ActorDecl, ctx: SchemaContext) -> ValidationResult:
     # Warn if no terminal states
     if not terminal_states:
         result.add_warning(
-            f"Actor '{actor.name}' has no terminal states",
+            f"Actor '{actor.name}' has no terminal states. Add 'terminal' keyword to a state, e.g., 'state DONE terminal'.",
             actor.line
         )
 
@@ -304,16 +479,20 @@ def validate_transition(
 
     # Check from_state exists
     if trans.from_state not in state_names:
+        fix = get_obvious_fix(trans.from_state, state_names, trans.line)
         result.add_error(
-            f"Transition references unknown state '{trans.from_state}' in actor '{actor_name}'",
-            trans.line
+            f"Transition references unknown state '{trans.from_state}' in actor '{actor_name}'.{format_alternatives(trans.from_state, state_names)}",
+            trans.line,
+            fix=fix
         )
 
     # Check to_state exists
     if trans.to_state not in state_names:
+        fix = get_obvious_fix(trans.to_state, state_names, trans.line)
         result.add_error(
-            f"Transition references unknown target state '{trans.to_state}' in actor '{actor_name}'",
-            trans.line
+            f"Transition references unknown target state '{trans.to_state}' in actor '{actor_name}'.{format_alternatives(trans.to_state, state_names)}",
+            trans.line,
+            fix=fix
         )
 
     # Check trigger/message
@@ -325,9 +504,13 @@ def validate_transition(
             is_timeout = trigger_name.startswith("timeout(")
 
             if not is_message and not is_trigger and not is_timeout:
+                # Try to suggest similar messages or triggers
+                all_triggers = ctx.message_names | trigger_names
+                fix = get_obvious_fix(trigger_name, all_triggers, trans.line)
                 result.add_error(
-                    f"Transition trigger '{trigger_name}' is neither a message nor a declared trigger in actor '{actor_name}'",
-                    trans.line
+                    f"Transition trigger '{trigger_name}' is neither a message nor a declared trigger in actor '{actor_name}'.{format_alternatives(trigger_name, all_triggers)}",
+                    trans.line,
+                    fix=fix
                 )
 
     # Validate guard expression
@@ -365,9 +548,11 @@ def validate_action(
 
     if isinstance(action, SendAction):
         if action.message not in ctx.message_names:
+            fix = get_obvious_fix(action.message, ctx.message_names, action.line)
             result.add_error(
-                f"SEND references unknown message '{action.message}' in {actor_name}",
-                action.line
+                f"SEND references unknown message '{action.message}' in {actor_name}.{format_alternatives(action.message, ctx.message_names)}",
+                action.line,
+                fix=fix
             )
         # Validate target expression
         if action.target and not isinstance(action.target, str):
@@ -375,9 +560,11 @@ def validate_action(
 
     elif isinstance(action, BroadcastAction):
         if action.message not in ctx.message_names:
+            fix = get_obvious_fix(action.message, ctx.message_names, action.line)
             result.add_error(
-                f"BROADCAST references unknown message '{action.message}' in {actor_name}",
-                action.line
+                f"BROADCAST references unknown message '{action.message}' in {actor_name}.{format_alternatives(action.message, ctx.message_names)}",
+                action.line,
+                fix=fix
             )
         # Validate target list expression
         if action.target_list and not isinstance(action.target_list, str):
@@ -388,9 +575,11 @@ def validate_action(
         if hasattr(block_type, 'name'):
             block_type = block_type.name
         if block_type not in ctx.block_names:
+            fix = get_obvious_fix(block_type, ctx.block_names, action.line)
             result.add_error(
-                f"APPEND references unknown block type '{block_type}' in {actor_name}",
-                action.line
+                f"APPEND references unknown block type '{block_type}' in {actor_name}.{format_alternatives(block_type, ctx.block_names)}",
+                action.line,
+                fix=fix
             )
 
     elif isinstance(action, StoreAction):
@@ -457,7 +646,8 @@ def check_unreachable_states(
     unreachable = state_names - reachable
     for state_name in unreachable:
         result.add_warning(
-            f"State '{state_name}' in actor '{actor.name}' is unreachable from initial state",
+            f"State '{state_name}' in actor '{actor.name}' is unreachable from initial state. "
+            f"Add a transition to this state or remove it if unused.",
             actor.line
         )
 
@@ -540,20 +730,24 @@ def _check_expr_purity(expr, func_name: str, line: int) -> ValidationResult:
     if isinstance(expr, str):
         for impure in IMPURE_FUNCTIONS:
             if f"{impure}(" in expr:
+                reason = IMPURE_REASONS.get(impure, "has side effects")
                 result.add_error(
-                    f"Function '{func_name}' contains impure operation '{impure}' - functions must be pure",
+                    f"Function '{func_name}' is impure: line {line} contains {impure}() which {reason}",
                     line
                 )
         return result
 
     if isinstance(expr, FunctionCallExpr):
-        if expr.name.upper() in IMPURE_FUNCTIONS:
+        op_name = expr.name.upper()
+        if op_name in IMPURE_FUNCTIONS:
+            reason = IMPURE_REASONS.get(op_name, "has side effects")
+            op_line = expr.line if expr.line else line
             result.add_error(
-                f"Function '{func_name}' calls impure operation '{expr.name}' - functions must be pure",
-                expr.line
+                f"Function '{func_name}' is impure: line {op_line} contains {expr.name}() which {reason}",
+                op_line
             )
         for arg in expr.args:
-            result.merge(_check_expr_purity(arg, func_name, expr.line))
+            result.merge(_check_expr_purity(arg, func_name, expr.line if expr.line else line))
 
     elif hasattr(expr, '__dataclass_fields__'):
         for field_name in expr.__dataclass_fields__:
@@ -598,14 +792,20 @@ def validate_expression(
     elif isinstance(expr, EnumRefExpr):
         # Validate enum reference
         if expr.enum_name not in ctx.enum_names:
+            fix = get_obvious_fix(expr.enum_name, ctx.enum_names, line)
             result.add_error(
-                f"Reference to undefined enum '{expr.enum_name}' in {location}",
-                line
+                f"Reference to undefined enum '{expr.enum_name}' in {location}.{format_alternatives(expr.enum_name, ctx.enum_names)}",
+                line,
+                fix=fix
             )
         elif expr.value not in ctx.enum_values:
+            # Find valid values for this enum
+            valid_values = {v for v, e in ctx.enum_values.items() if e == expr.enum_name}
+            fix = get_obvious_fix(expr.value, valid_values, line)
             result.add_error(
-                f"Enum '{expr.enum_name}' has no value '{expr.value}' in {location}",
-                line
+                f"Enum '{expr.enum_name}' has no value '{expr.value}' in {location}.{format_alternatives(expr.value, valid_values)}",
+                line,
+                fix=fix
             )
         elif ctx.enum_values.get(expr.value) != expr.enum_name:
             result.add_error(
@@ -620,9 +820,12 @@ def validate_expression(
         if (func_upper not in BUILTIN_FUNCTIONS and
             func_name not in ctx.function_names and
             func_upper not in ctx.function_names):
+            # Suggest similar functions (only schema-defined, builtins are too many)
+            fix = get_obvious_fix(func_name, ctx.function_names, line)
             result.add_error(
-                f"Call to undefined function '{func_name}' in {location}",
-                line
+                f"Call to undefined function '{func_name}' in {location}.{format_alternatives(func_name, ctx.function_names)}",
+                line,
+                fix=fix
             )
 
         # Validate LOAD references
@@ -646,15 +849,21 @@ def validate_expression(
         base_type = _infer_type(expr.object, local_vars, ctx)
         if base_type in ctx.message_fields:
             if expr.field not in ctx.message_fields[base_type]:
+                valid_fields = set(ctx.message_fields[base_type].keys())
+                fix = get_obvious_fix(expr.field, valid_fields, line)
                 result.add_warning(
-                    f"Field '{expr.field}' may not exist on message '{base_type}' in {location}",
-                    line
+                    f"Field '{expr.field}' may not exist on message '{base_type}' in {location}.{format_alternatives(expr.field, valid_fields)}",
+                    line,
+                    fix=fix
                 )
         elif base_type in ctx.block_fields:
             if expr.field not in ctx.block_fields[base_type]:
+                valid_fields = set(ctx.block_fields[base_type].keys())
+                fix = get_obvious_fix(expr.field, valid_fields, line)
                 result.add_warning(
-                    f"Field '{expr.field}' may not exist on block '{base_type}' in {location}",
-                    line
+                    f"Field '{expr.field}' may not exist on block '{base_type}' in {location}.{format_alternatives(expr.field, valid_fields)}",
+                    line,
+                    fix=fix
                 )
 
     elif isinstance(expr, BinaryExpr):
@@ -667,12 +876,14 @@ def validate_expression(
             right_type = _infer_type(expr.right, local_vars, ctx)
             if left_type and left_type not in NUMERIC_TYPES and left_type != "any":
                 result.add_warning(
-                    f"Arithmetic operation on non-numeric type '{left_type}' in {location}",
+                    f"Arithmetic operation on non-numeric type '{left_type}' in {location}. "
+                    f"Ensure the operand is numeric (int, uint, float).",
                     line
                 )
             if right_type and right_type not in NUMERIC_TYPES and right_type != "any":
                 result.add_warning(
-                    f"Arithmetic operation on non-numeric type '{right_type}' in {location}",
+                    f"Arithmetic operation on non-numeric type '{right_type}' in {location}. "
+                    f"Ensure the operand is numeric (int, uint, float).",
                     line
                 )
 
@@ -812,6 +1023,68 @@ def validate_no_object_types(schema: Schema) -> ValidationResult:
                     f"Block '{block.name}' field '{fld.name}': type '{fld.type}' not allowed, use explicit struct types",
                     fld.line
                 )
+
+    return result
+
+
+def is_reserved(name: str) -> Optional[str]:
+    """Check if a name is reserved. Returns the reservation type or None."""
+    if name.lower() in RESERVED_KEYWORDS:
+        return "keyword"
+    if name in RESERVED_IDENTIFIERS:
+        return "identifier"
+    return None
+
+
+def validate_reserved_words(schema: Schema) -> ValidationResult:
+    """Validate that reserved words aren't used as identifiers."""
+    result = ValidationResult()
+
+    def check_name(name: str, context: str, line: int = 0):
+        reserved_type = is_reserved(name)
+        if reserved_type:
+            result.add_error(
+                f"'{name}' is a reserved {reserved_type}, cannot be used as {context}. Rename to avoid conflicts.",
+                line
+            )
+
+    # Check enum names and values
+    for enum in schema.enums:
+        check_name(enum.name, "enum name", enum.line)
+        for val in enum.values:
+            check_name(val.name, f"enum value in {enum.name}", val.line)
+
+    # Check message names and fields
+    for msg in schema.messages:
+        check_name(msg.name, "message name", msg.line)
+        for fld in msg.fields:
+            check_name(fld.name, f"field name in message {msg.name}", fld.line)
+
+    # Check block names and fields
+    for block in schema.blocks:
+        check_name(block.name, "block name", block.line)
+        for fld in block.fields:
+            check_name(fld.name, f"field name in block {block.name}", fld.line)
+
+    # Check function names and parameters
+    for func in schema.functions:
+        check_name(func.name, "function name", func.line)
+        for param in func.params:
+            check_name(param.name, f"parameter in function {func.name}", param.line)
+
+    # Check actor names, states, triggers, and store fields
+    for actor in schema.actors:
+        check_name(actor.name, "actor name", actor.line)
+        for state in actor.states:
+            check_name(state.name, f"state name in actor {actor.name}", state.line)
+        for trigger in actor.triggers:
+            check_name(trigger.name, f"trigger name in actor {actor.name}", trigger.line)
+        for fld in actor.store:
+            check_name(fld.name, f"store field in actor {actor.name}", fld.line)
+
+    # Check parameter names
+    for param in schema.parameters:
+        check_name(param.name, "parameter name", param.line)
 
     return result
 
