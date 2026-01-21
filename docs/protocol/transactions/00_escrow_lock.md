@@ -54,6 +54,7 @@ Consumer wants to pay Provider for a service. This transaction locks the funds b
 | `MAX_RECRUITMENT_ROUNDS` | 3 count | Max times to recruit more witnesses |
 | `MIN_HIGH_TRUST_WITNESSES` | 2 count | Minimum high-trust witnesses for fairness |
 | `MAX_PRIOR_INTERACTIONS` | 5 count | Max prior interactions with consumer for fairness |
+| `HIGH_TRUST_THRESHOLD` | 1.0 fraction | Trust score threshold for high-trust classification |
 
 ---
 
@@ -61,38 +62,38 @@ Consumer wants to pay Provider for a service. This transaction locks the funds b
 
 ```
 BALANCE_LOCK {
-  session_id: hash
-  amount: uint
-  lock_result_hash: hash
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  amount: SimpleType(name='uint', line=0, column=0)
+  lock_result_hash: SimpleType(name='hash', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
 }
 
 BALANCE_TOPUP {
-  session_id: hash
-  previous_total: uint
-  topup_amount: uint
-  new_total: uint
-  topup_result_hash: hash
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  previous_total: SimpleType(name='uint', line=0, column=0)
+  topup_amount: SimpleType(name='uint', line=0, column=0)
+  new_total: SimpleType(name='uint', line=0, column=0)
+  topup_result_hash: SimpleType(name='hash', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
 }
 
 WITNESS_COMMITMENT {
-  session_id: hash
-  consumer: peer_id
-  provider: peer_id
-  amount: uint
-  observed_balance: uint
-  witnesses: list[peer_id]
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  consumer: SimpleType(name='peer_id', line=0, column=0)
+  provider: SimpleType(name='peer_id', line=0, column=0)
+  amount: SimpleType(name='uint', line=0, column=0)
+  observed_balance: SimpleType(name='uint', line=0, column=0)
+  witnesses: ListType(element_type=SimpleType(name='peer_id', line=0, column=0), line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
 }
 
 WITNESS_REPLACEMENT {
-  session_id: hash
-  old_witness: peer_id
-  new_witness: peer_id
-  reason: string
-  remaining_witnesses: list[peer_id]
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  old_witness: SimpleType(name='peer_id', line=0, column=0)
+  new_witness: SimpleType(name='peer_id', line=0, column=0)
+  reason: SimpleType(name='string', line=0, column=0)
+  remaining_witnesses: ListType(element_type=SimpleType(name='peer_id', line=0, column=0), line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
 }
 
 ```
@@ -104,168 +105,168 @@ WITNESS_REPLACEMENT {
 ```
 # Consumer -> Provider
 LOCK_INTENT {
-  consumer: peer_id
-  provider: peer_id
-  amount: uint
-  session_id: hash
-  consumer_nonce: bytes
-  provider_chain_checkpoint: hash
-  checkpoint_timestamp: timestamp
-  timestamp: timestamp
+  consumer: SimpleType(name='peer_id', line=0, column=0)
+  provider: SimpleType(name='peer_id', line=0, column=0)
+  amount: SimpleType(name='uint', line=0, column=0)
+  session_id: SimpleType(name='hash', line=0, column=0)
+  consumer_nonce: SimpleType(name='bytes', line=0, column=0)
+  provider_chain_checkpoint: SimpleType(name='hash', line=0, column=0)
+  checkpoint_timestamp: SimpleType(name='timestamp', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by consumer
 }
 
 # Provider -> Consumer
 WITNESS_SELECTION_COMMITMENT {
-  session_id: hash
-  provider: peer_id
-  provider_nonce: bytes
-  provider_chain_segment: bytes
-  selection_inputs: SelectionInputs
-  witnesses: list[peer_id]
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  provider: SimpleType(name='peer_id', line=0, column=0)
+  provider_nonce: SimpleType(name='bytes', line=0, column=0)
+  provider_chain_segment: SimpleType(name='bytes', line=0, column=0)
+  selection_inputs: SimpleType(name='SelectionInputs', line=0, column=0)
+  witnesses: ListType(element_type=SimpleType(name='peer_id', line=0, column=0), line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by provider
 }
 
 # Provider -> Consumer
 LOCK_REJECTED {
-  session_id: hash
-  reason: string
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  reason: SimpleType(name='string', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by provider
 }
 
 # Consumer -> Witness
 WITNESS_REQUEST {
-  consumer: peer_id
-  provider: peer_id
-  amount: uint
-  session_id: hash
-  my_chain_head: hash
-  witnesses: list[peer_id]
-  timestamp: timestamp
+  consumer: SimpleType(name='peer_id', line=0, column=0)
+  provider: SimpleType(name='peer_id', line=0, column=0)
+  amount: SimpleType(name='uint', line=0, column=0)
+  session_id: SimpleType(name='hash', line=0, column=0)
+  my_chain_head: SimpleType(name='hash', line=0, column=0)
+  witnesses: ListType(element_type=SimpleType(name='peer_id', line=0, column=0), line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by consumer
 }
 
 # Consumer -> Witness
 CONSUMER_SIGNED_LOCK {
-  session_id: hash
-  consumer_signature: signature
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  consumer_signature: SimpleType(name='signature', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
 }
 
 # Witness -> Witness
 WITNESS_PRELIMINARY {
-  session_id: hash
-  witness: peer_id
-  verdict: WitnessVerdict
-  observed_balance: uint
-  observed_chain_head: hash
-  reject_reason: string
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  witness: SimpleType(name='peer_id', line=0, column=0)
+  verdict: SimpleType(name='WitnessVerdict', line=0, column=0)
+  observed_balance: SimpleType(name='uint', line=0, column=0)
+  observed_chain_head: SimpleType(name='hash', line=0, column=0)
+  reject_reason: SimpleType(name='string', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by witness
 }
 
 # Witness -> Witness
 WITNESS_CHAIN_SYNC_REQUEST {
-  session_id: hash
-  consumer: peer_id
-  requesting_witness: peer_id
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  consumer: SimpleType(name='peer_id', line=0, column=0)
+  requesting_witness: SimpleType(name='peer_id', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by witness
 }
 
 # Witness -> Witness
 WITNESS_CHAIN_SYNC_RESPONSE {
-  session_id: hash
-  consumer: peer_id
-  chain_data: bytes
-  chain_head: hash
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  consumer: SimpleType(name='peer_id', line=0, column=0)
+  chain_data: SimpleType(name='bytes', line=0, column=0)
+  chain_head: SimpleType(name='hash', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by witness
 }
 
 # Witness -> Witness
 WITNESS_FINAL_VOTE {
-  session_id: hash
-  witness: peer_id
-  vote: WitnessVerdict
-  observed_balance: uint
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  witness: SimpleType(name='peer_id', line=0, column=0)
+  vote: SimpleType(name='WitnessVerdict', line=0, column=0)
+  observed_balance: SimpleType(name='uint', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by witness
 }
 
 # Witness -> Witness
 WITNESS_RECRUIT_REQUEST {
-  session_id: hash
-  consumer: peer_id
-  provider: peer_id
-  amount: uint
-  existing_witnesses: list[peer_id]
-  existing_votes: list[WITNESS_FINAL_VOTE]
-  reason: string
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  consumer: SimpleType(name='peer_id', line=0, column=0)
+  provider: SimpleType(name='peer_id', line=0, column=0)
+  amount: SimpleType(name='uint', line=0, column=0)
+  existing_witnesses: ListType(element_type=SimpleType(name='peer_id', line=0, column=0), line=0, column=0)
+  existing_votes: ListType(element_type=SimpleType(name='WITNESS_FINAL_VOTE', line=0, column=0), line=0, column=0)
+  reason: SimpleType(name='string', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by witness
 }
 
 # Witness -> Consumer
 LOCK_RESULT_FOR_SIGNATURE {
-  result: LockResult
+  result: SimpleType(name='LockResult', line=0, column=0)
 }
 
-# Witness -> Broadcast
+# Witness -> Network
 BALANCE_UPDATE_BROADCAST {
-  consumer: peer_id
-  lock_result: LockResult
-  timestamp: timestamp
+  consumer: SimpleType(name='peer_id', line=0, column=0)
+  lock_result: SimpleType(name='LockResult', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
 }
 
 # Witness -> Witness, Consumer
 LIVENESS_PING {
-  session_id: hash
-  from_witness: peer_id
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  from_witness: SimpleType(name='peer_id', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by witness
 }
 
 # Witness -> Witness
 LIVENESS_PONG {
-  session_id: hash
-  from_witness: peer_id
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  from_witness: SimpleType(name='peer_id', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by witness
 }
 
 # Consumer -> Witness
 TOPUP_INTENT {
-  session_id: hash
-  consumer: peer_id
-  additional_amount: uint
-  current_lock_result_hash: hash
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  consumer: SimpleType(name='peer_id', line=0, column=0)
+  additional_amount: SimpleType(name='uint', line=0, column=0)
+  current_lock_result_hash: SimpleType(name='hash', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by consumer
 }
 
 # Witness -> Consumer
 TOPUP_RESULT_FOR_SIGNATURE {
-  topup_result: TopUpResult
+  topup_result: SimpleType(name='TopUpResult', line=0, column=0)
 }
 
 # Consumer -> Witness
 CONSUMER_SIGNED_TOPUP {
-  session_id: hash
-  consumer_signature: signature
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  consumer_signature: SimpleType(name='signature', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
 }
 
 # Witness -> Witness
 TOPUP_VOTE {
-  session_id: hash
-  witness: peer_id
-  vote: WitnessVerdict
-  additional_amount: uint
-  observed_balance: uint
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  witness: SimpleType(name='peer_id', line=0, column=0)
+  vote: SimpleType(name='WitnessVerdict', line=0, column=0)
+  additional_amount: SimpleType(name='uint', line=0, column=0)
+  observed_balance: SimpleType(name='uint', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by witness
 }
 
@@ -297,9 +298,9 @@ STATES: [IDLE, SENDING_LOCK_INTENT, WAITING_FOR_WITNESS_COMMITMENT, VERIFYING_PR
 INITIAL: IDLE
 
 EXTERNAL TRIGGERS:
-  initiate_lock(provider: peer_id, amount: uint)
+  initiate_lock(provider: SimpleType(name='peer_id', line=0, column=0), amount: SimpleType(name='uint', line=0, column=0))
     allowed_in: [IDLE]
-  initiate_topup(additional_amount: uint)
+  initiate_topup(additional_amount: SimpleType(name='uint', line=0, column=0))
     allowed_in: [LOCKED]
 
 STATE IDLE:
@@ -348,57 +349,63 @@ STATE SIGNING_TOPUP:
   # Counter-signing top-up
 
 TRANSITIONS:
-  IDLE --initiate_lock--> [guard: has_provider_checkpoint] SENDING_LOCK_INTENT
-    action: {'store': ['provider', 'amount']}
-    action: {'store': {'consumer': 'peer_id'}}
-    action: {'compute': 'session_id', 'from': 'HASH(peer_id + provider +...
-    ... and 1 more actions
-  SENDING_LOCK_INTENT --auto--> WAITING_FOR_WITNESS_COMMITMENT
-    action: {'send': {'message': 'LOCK_INTENT', 'to': 'provider'}}
-    action: {'store': {'intent_sent_at': 'current_time'}}
-  WAITING_FOR_WITNESS_COMMITMENT --WITNESS_SELECTION_COMMITMENT--> VERIFYING_PROVIDER_CHAIN
-    action: {'store_from_message': ['provider_nonce', 'provider_chain_se...
-    action: {'store_from_message': {'proposed_witnesses': 'witnesses'}}
-  WAITING_FOR_WITNESS_COMMITMENT --LOCK_REJECTED--> FAILED
-    action: {'store_from_message': {'reject_reason': 'reason'}}
-  WAITING_FOR_WITNESS_COMMITMENT --timeout(WITNESS_COMMITMENT_TIMEOUT)--> FAILED
-    action: {'store': {'reject_reason': 'provider_timeout'}}
-  VERIFYING_PROVIDER_CHAIN --auto--> [guard: chain_segment_valid_and_contains_checkpoint] VERIFYING_WITNESSES
-    action: {'compute': 'verified_chain_state', 'from': 'CHAIN_STATE_AT(...
-  VERIFYING_WITNESSES --auto--> [guard: witness_selection_valid] SENDING_REQUESTS
-    action: {'store': {'witnesses': 'proposed_witnesses'}}
-  SENDING_REQUESTS --auto--> WAITING_FOR_RESULT
-    action: {'send': {'message': 'WITNESS_REQUEST', 'to': 'each(witnesse...
-    action: {'store': {'requests_sent_at': 'current_time'}}
-  WAITING_FOR_RESULT --LOCK_RESULT_FOR_SIGNATURE--> REVIEWING_RESULT
-    action: {'store_from_message': {'pending_result': 'result'}}
-    action: {'store_from_message': {'result_sender': 'sender'}}
-  WAITING_FOR_RESULT --timeout(RECRUITMENT_TIMEOUT)--> FAILED
-    action: {'store': {'reject_reason': 'witness_timeout'}}
-  REVIEWING_RESULT --auto--> [guard: result_valid_and_accepted] SIGNING_RESULT
-  SIGNING_RESULT --auto--> LOCKED
-    action: {'compute': 'consumer_signature', 'from': 'SIGN(pending_resu...
-    action: {'store': {'lock_result': '{...pending_result, consumer_sign...
-    action: {'append_block': {'type': 'BALANCE_LOCK'}}
+  IDLE --NamedTrigger(name='initiate_lock', line=0, column=0)--> [guard: BinaryExpr(left=Identifier(name='provider_chain_checkpoint', line=0, column=0), op=<BinaryOperator.NEQ: 6>, right=Literal(value=None, type='null', line=0, column=0), line=0, column=0)] SENDING_LOCK_INTENT
+    action: store provider, amount
+    action: STORE(consumer, Identifier(name='peer_id', line=0, column=0)...
+    action: compute session_id = FunctionCallExpr(name='HASH', args=[Bin...
     ... and 2 more actions
-  LOCKED --LIVENESS_PING--> LOCKED
-    action: {'store': {'from_witness': 'peer_id'}}
-    action: {'send': {'message': 'LIVENESS_PONG', 'to': 'message.sender'...
-  LOCKED --initiate_topup--> SENDING_TOPUP
-    action: {'store': ['additional_amount']}
-    action: {'compute': 'current_lock_hash', 'from': 'HASH(lock_result)'...
+  SENDING_LOCK_INTENT --auto--> WAITING_FOR_WITNESS_COMMITMENT
+    action: SEND(Identifier(name='provider', line=0, column=0), LOCK_INT...
+    action: STORE(intent_sent_at, FunctionCallExpr(name='NOW', args=[], ...
+  WAITING_FOR_WITNESS_COMMITMENT --MessageTrigger(message_type='WITNESS_SELECTION_COMMITMENT', line=0, column=0)--> VERIFYING_PROVIDER_CHAIN
+    action: store provider_nonce, provider_chain_segment, selection_inpu...
+    action: STORE(proposed_witnesses, FieldAccessExpr(object=Identifier(...
+    action: compute chain_segment_valid_and_contains_checkpoint = Binary...
+  WAITING_FOR_WITNESS_COMMITMENT --MessageTrigger(message_type='LOCK_REJECTED', line=0, column=0)--> FAILED
+    action: STORE(reject_reason, FieldAccessExpr(object=Identifier(name=...
+  WAITING_FOR_WITNESS_COMMITMENT --TimeoutTrigger(parameter='WITNESS_COMMITMENT_TIMEOUT', line=0, column=0)--> FAILED
+    action: STORE(reject_reason, Literal(value='provider_timeout', type=...
+  VERIFYING_PROVIDER_CHAIN --auto--> [guard: Identifier(name='chain_segment_valid_and_contains_checkpoint', line=0, column=0)] VERIFYING_WITNESSES
+    action: compute verified_chain_state = FunctionCallExpr(name='CHAIN_...
+    action: compute witness_selection_valid = FunctionCallExpr(name='VER...
+  VERIFYING_WITNESSES --auto--> [guard: Identifier(name='witness_selection_valid', line=0, column=0)] SENDING_REQUESTS
+    action: STORE(witnesses, Identifier(name='proposed_witnesses', line=...
+  SENDING_REQUESTS --auto--> WAITING_FOR_RESULT
+    action: BROADCAST(witnesses, WITNESS_REQUEST)
+    action: STORE(requests_sent_at, FunctionCallExpr(name='NOW', args=[]...
+  WAITING_FOR_RESULT --MessageTrigger(message_type='LOCK_RESULT_FOR_SIGNATURE', line=0, column=0)--> REVIEWING_RESULT
+    action: STORE(pending_result, FieldAccessExpr(object=Identifier(name...
+    action: STORE(result_sender, FieldAccessExpr(object=Identifier(name=...
+    action: compute result_valid_and_accepted = FunctionCallExpr(name='V...
+  WAITING_FOR_RESULT --TimeoutTrigger(parameter='RECRUITMENT_TIMEOUT', line=0, column=0)--> FAILED
+    action: STORE(reject_reason, Literal(value='witness_timeout', type='...
+  REVIEWING_RESULT --auto--> [guard: Identifier(name='result_valid_and_accepted', line=0, column=0)] SIGNING_RESULT
+  REVIEWING_RESULT --auto--> [guard: UnaryExpr(op=<UnaryOperator.NOT: 1>, operand=Identifier(name='result_valid_and_accepted', line=0, column=0), line=0, column=0)] FAILED
+    action: STORE(reject_reason, Literal(value='lock_rejected', type='st...
+  SIGNING_RESULT --auto--> LOCKED
+    action: compute consumer_signature = FunctionCallExpr(name='SIGN', a...
+    action: STORE(lock_result, StructLiteralExpr(fields={'consumer_signa...
+    action: APPEND(chain, Identifier(name='BALANCE_LOCK', line=0, column...
+    ... and 2 more actions
+  LOCKED --MessageTrigger(message_type='LIVENESS_PING', line=0, column=0)--> LOCKED
+    action: STORE(from_witness, Identifier(name='peer_id', line=0, colum...
+    action: SEND(FieldAccessExpr(object=Identifier(name='message', line=...
+  LOCKED --NamedTrigger(name='initiate_topup', line=0, column=0)--> SENDING_TOPUP
+    action: store additional_amount
+    action: compute current_lock_hash = FunctionCallExpr(name='HASH', ar...
   SENDING_TOPUP --auto--> WAITING_FOR_TOPUP_RESULT
-    action: {'send': {'message': 'TOPUP_INTENT', 'to': 'each(witnesses)'...
-    action: {'store': {'topup_sent_at': 'current_time'}}
-  WAITING_FOR_TOPUP_RESULT --TOPUP_RESULT_FOR_SIGNATURE--> REVIEWING_TOPUP_RESULT
-    action: {'store_from_message': {'pending_topup_result': 'topup_resul...
-  WAITING_FOR_TOPUP_RESULT --timeout(CONSENSUS_TIMEOUT)--> LOCKED
-    action: {'store': {'topup_failed_reason': 'timeout'}}
-  REVIEWING_TOPUP_RESULT --auto--> [guard: topup_result_valid] SIGNING_TOPUP
+    action: BROADCAST(witnesses, TOPUP_INTENT)
+    action: STORE(topup_sent_at, FunctionCallExpr(name='NOW', args=[], l...
+  WAITING_FOR_TOPUP_RESULT --MessageTrigger(message_type='TOPUP_RESULT_FOR_SIGNATURE', line=0, column=0)--> REVIEWING_TOPUP_RESULT
+    action: STORE(pending_topup_result, FieldAccessExpr(object=Identifie...
+    action: compute topup_result_valid = FunctionCallExpr(name='VALIDATE...
+  WAITING_FOR_TOPUP_RESULT --TimeoutTrigger(parameter='CONSENSUS_TIMEOUT', line=0, column=0)--> LOCKED
+    action: STORE(topup_failed_reason, Literal(value='timeout', type='st...
+  REVIEWING_TOPUP_RESULT --auto--> [guard: Identifier(name='topup_result_valid', line=0, column=0)] SIGNING_TOPUP
   SIGNING_TOPUP --auto--> LOCKED
-    action: {'compute': 'consumer_signature', 'from': 'SIGN(pending_topu...
-    action: {'store': {'topup_result': '{...pending_topup_result, consum...
-    action: {'append_block': {'type': 'BALANCE_TOPUP'}}
+    action: compute consumer_signature = FunctionCallExpr(name='SIGN', a...
+    action: STORE(topup_result, StructLiteralExpr(fields={'consumer_sign...
+    action: APPEND(chain, Identifier(name='BALANCE_TOPUP', line=0, colum...
     ... and 2 more actions
 ```
 
@@ -433,25 +440,25 @@ STATE SERVICE_PHASE:
   # Lock complete, providing service
 
 TRANSITIONS:
-  IDLE --LOCK_INTENT--> VALIDATING_CHECKPOINT
-    action: {'store_from_message': ['consumer', 'amount', 'session_id', ...
-    action: {'store_from_message': {'requested_checkpoint': 'provider_ch...
-    action: {'compute': 'provider_nonce', 'from': 'RANDOM_BYTES(32)'}
-  VALIDATING_CHECKPOINT --auto--> [guard: checkpoint_exists_in_chain] SELECTING_WITNESSES
-    action: {'compute': 'chain_state_at_checkpoint', 'from': 'chain.get_...
-    action: {'compute': 'provider_chain_segment', 'from': 'chain.to_segm...
+  IDLE --MessageTrigger(message_type='LOCK_INTENT', line=0, column=0)--> VALIDATING_CHECKPOINT
+    action: store consumer, amount, session_id, consumer_nonce
+    action: STORE(requested_checkpoint, FieldAccessExpr(object=Identifie...
+    action: compute provider_nonce = FunctionCallExpr(name='RANDOM_BYTES...
+  VALIDATING_CHECKPOINT --auto--> [guard: FunctionCallExpr(name='CHAIN_CONTAINS_HASH', args=[Identifier(name='chain', line=0, column=0), Identifier(name='requested_checkpoint', line=0, column=0)], line=0, column=0)] SELECTING_WITNESSES
+    action: compute chain_state_at_checkpoint = FunctionCallExpr(name='C...
+    action: compute provider_chain_segment = FunctionCallExpr(name='CHAI...
   SENDING_REJECTION --auto--> IDLE
-    action: {'send': {'message': 'LOCK_REJECTED', 'to': 'consumer'}}
+    action: SEND(Identifier(name='consumer', line=0, column=0), LOCK_REJ...
   SELECTING_WITNESSES --auto--> SENDING_COMMITMENT
-    action: {'compute': 'witnesses', 'from': 'SELECT_WITNESSES(HASH(sess...
-    action: {'store': {'selection_inputs': '{known_peers, trust_scores, ...
+    action: compute witnesses = FunctionCallExpr(name='SELECT_WITNESSES'...
+    action: STORE(selection_inputs, Identifier(name='chain_state_at_chec...
   SENDING_COMMITMENT --auto--> WAITING_FOR_LOCK
-    action: {'send': {'message': 'WITNESS_SELECTION_COMMITMENT', 'to': '...
-    action: {'store': {'commitment_sent_at': 'current_time'}}
-  WAITING_FOR_LOCK --BALANCE_UPDATE_BROADCAST--> [guard: message.lock_result.session_id == session_id  and message.lock_result.status == ACCEPTED] SERVICE_PHASE
-    action: {'store_from_message': {'lock_result': 'lock_result'}}
-  WAITING_FOR_LOCK --timeout(LOCK_TIMEOUT)--> IDLE
-    action: {'store': {'session_id': 'null'}}
+    action: SEND(Identifier(name='consumer', line=0, column=0), WITNESS_...
+    action: STORE(commitment_sent_at, FunctionCallExpr(name='NOW', args=...
+  WAITING_FOR_LOCK --MessageTrigger(message_type='BALANCE_UPDATE_BROADCAST', line=0, column=0)--> [guard: BinaryExpr(left=BinaryExpr(left=FieldAccessExpr(object=FieldAccessExpr(object=Identifier(name='message', line=0, column=0), field='lock_result', line=0, column=0), field='session_id', line=0, column=0), op=<BinaryOperator.EQ: 5>, right=Identifier(name='session_id', line=0, column=0), line=0, column=0), op=<BinaryOperator.AND: 11>, right=BinaryExpr(left=FieldAccessExpr(object=FieldAccessExpr(object=Identifier(name='message', line=0, column=0), field='lock_result', line=0, column=0), field='status', line=0, column=0), op=<BinaryOperator.EQ: 5>, right=Identifier(name='ACCEPTED', line=0, column=0), line=0, column=0), line=0, column=0)] SERVICE_PHASE
+    action: STORE(lock_result, FieldAccessExpr(object=Identifier(name='m...
+  WAITING_FOR_LOCK --TimeoutTrigger(parameter='LOCK_TIMEOUT', line=0, column=0)--> IDLE
+    action: STORE(session_id, Literal(value=None, type='null', line=0, c...
 ```
 
 ### ACTOR: Witness
@@ -551,73 +558,73 @@ STATE WAITING_FOR_CONSUMER_TOPUP_SIGNATURE:
   # Waiting for consumer top-up signature
 
 TRANSITIONS:
-  IDLE --WITNESS_REQUEST--> CHECKING_CHAIN_KNOWLEDGE
-    action: {'store_from_message': ['consumer', 'provider', 'amount', 's...
-    action: {'store_from_message': {'consumer': 'sender'}}
-    action: {'compute': 'other_witnesses', 'from': 'REMOVE(witnesses, pe...
+  IDLE --MessageTrigger(message_type='WITNESS_REQUEST', line=0, column=0)--> CHECKING_CHAIN_KNOWLEDGE
+    action: store consumer, provider, amount, session_id, my_chain_head,...
+    action: STORE(consumer, FieldAccessExpr(object=Identifier(name='mess...
+    action: compute other_witnesses = FunctionCallExpr(name='REMOVE', ar...
     ... and 4 more actions
   CHECKING_CHAIN_KNOWLEDGE --auto--> CHECKING_BALANCE
-    action: {'compute': 'observed_balance', 'from': 'peer_balances[consu...
-  CHECKING_BALANCE --auto--> [guard: observed_balance >= amount] CHECKING_EXISTING_LOCKS
-  CHECKING_BALANCE --auto--> [guard: observed_balance < amount] SHARING_PRELIMINARY
-    action: {'store': {'verdict': 'REJECT'}}
-    action: {'store': {'reject_reason': 'insufficient_balance'}}
+    action: compute observed_balance = IndexAccessExpr(object=Identifier...
+  CHECKING_BALANCE --auto--> [guard: BinaryExpr(left=Identifier(name='observed_balance', line=0, column=0), op=<BinaryOperator.GTE: 10>, right=Identifier(name='amount', line=0, column=0), line=0, column=0)] CHECKING_EXISTING_LOCKS
+  CHECKING_BALANCE --auto--> [guard: BinaryExpr(left=Identifier(name='observed_balance', line=0, column=0), op=<BinaryOperator.LT: 7>, right=Identifier(name='amount', line=0, column=0), line=0, column=0)] SHARING_PRELIMINARY
+    action: STORE(verdict, Identifier(name='REJECT', line=0, column=0))
+    action: STORE(reject_reason, Literal(value='insufficient_balance', t...
   CHECKING_EXISTING_LOCKS --auto--> SHARING_PRELIMINARY
-    action: {'store': {'verdict': 'ACCEPT'}}
+    action: STORE(verdict, Identifier(name='ACCEPT', line=0, column=0))
   SHARING_PRELIMINARY --auto--> COLLECTING_PRELIMINARIES
-    action: {'send': {'message': 'WITNESS_PRELIMINARY', 'to': 'each(othe...
-    action: {'store': {'preliminary_sent_at': 'current_time'}}
-  COLLECTING_PRELIMINARIES --WITNESS_PRELIMINARY--> COLLECTING_PRELIMINARIES
-    action: {'append': {'preliminaries': 'message.payload'}}
-  COLLECTING_PRELIMINARIES --auto--> [guard: LENGTH (preliminaries) >= WITNESS_THRESHOLD - 1] VOTING
-    action: {'compute': 'consensus_direction', 'from': 'compute_consensu...
-  COLLECTING_PRELIMINARIES --timeout(PRELIMINARY_TIMEOUT)--> VOTING
-    action: {'compute': 'consensus_direction', 'from': 'compute_consensu...
+    action: BROADCAST(other_witnesses, WITNESS_PRELIMINARY)
+    action: STORE(preliminary_sent_at, FunctionCallExpr(name='NOW', args...
+  COLLECTING_PRELIMINARIES --MessageTrigger(message_type='WITNESS_PRELIMINARY', line=0, column=0)--> COLLECTING_PRELIMINARIES
+    action: APPEND(preliminaries, FieldAccessExpr(object=Identifier(name...
+  COLLECTING_PRELIMINARIES --auto--> [guard: BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='preliminaries', line=0, column=0)], line=0, column=0), op=<BinaryOperator.GTE: 10>, right=BinaryExpr(left=Identifier(name='WITNESS_THRESHOLD', line=0, column=0), op=<BinaryOperator.SUB: 2>, right=Literal(value=1, type='number', line=0, column=0), line=0, column=0), line=0, column=0)] VOTING
+    action: compute consensus_direction = FunctionCallExpr(name='COMPUTE...
+  COLLECTING_PRELIMINARIES --TimeoutTrigger(parameter='PRELIMINARY_TIMEOUT', line=0, column=0)--> VOTING
+    action: compute consensus_direction = FunctionCallExpr(name='COMPUTE...
   VOTING --auto--> COLLECTING_VOTES
-    action: {'send': {'message': 'WITNESS_FINAL_VOTE', 'to': 'each(other...
-  COLLECTING_VOTES --WITNESS_FINAL_VOTE--> COLLECTING_VOTES
-    action: {'append': {'votes': 'message.payload'}}
-  COLLECTING_VOTES --auto--> [guard: LENGTH (votes) >= WITNESS_THRESHOLD] BUILDING_RESULT
-  COLLECTING_VOTES --timeout(CONSENSUS_TIMEOUT)--> [guard: LENGTH (votes) >= WITNESS_THRESHOLD] BUILDING_RESULT
+    action: BROADCAST(other_witnesses, WITNESS_FINAL_VOTE)
+  COLLECTING_VOTES --MessageTrigger(message_type='WITNESS_FINAL_VOTE', line=0, column=0)--> COLLECTING_VOTES
+    action: APPEND(votes, FieldAccessExpr(object=Identifier(name='messag...
+  COLLECTING_VOTES --auto--> [guard: BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.GTE: 10>, right=Identifier(name='WITNESS_THRESHOLD', line=0, column=0), line=0, column=0)] BUILDING_RESULT
+  COLLECTING_VOTES --TimeoutTrigger(parameter='CONSENSUS_TIMEOUT', line=0, column=0)--> [guard: BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.GTE: 10>, right=Identifier(name='WITNESS_THRESHOLD', line=0, column=0), line=0, column=0)] BUILDING_RESULT
   BUILDING_RESULT --auto--> SIGNING_RESULT
-    action: {'compute': 'result', 'from': 'build_lock_result()'}
+    action: compute result = FunctionCallExpr(name='BUILD_LOCK_RESULT', ...
   SIGNING_RESULT --auto--> PROPAGATING_RESULT
-    action: {'send': {'message': 'LOCK_RESULT_FOR_SIGNATURE', 'to': 'con...
-    action: {'store': {'propagated_at': 'current_time'}}
-  PROPAGATING_RESULT --CONSUMER_SIGNED_LOCK--> ESCROW_ACTIVE
-    action: {'store_from_message': {'consumer_signature': 'signature'}}
-    action: {'store': {'total_escrowed': 'amount'}}
-    action: {'append_block': {'type': 'WITNESS_COMMITMENT'}}
+    action: SEND(Identifier(name='consumer', line=0, column=0), LOCK_RES...
+    action: STORE(propagated_at, FunctionCallExpr(name='NOW', args=[], l...
+  PROPAGATING_RESULT --MessageTrigger(message_type='CONSUMER_SIGNED_LOCK', line=0, column=0)--> ESCROW_ACTIVE
+    action: STORE(consumer_signature, FieldAccessExpr(object=Identifier(...
+    action: STORE(total_escrowed, Identifier(name='amount', line=0, colu...
+    action: APPEND(chain, Identifier(name='WITNESS_COMMITMENT', line=0, ...
     ... and 1 more actions
-  PROPAGATING_RESULT --timeout(CONSENSUS_TIMEOUT)--> DONE
-    action: {'store': {'reject_reason': 'consumer_signature_timeout'}}
-  ESCROW_ACTIVE --TOPUP_INTENT--> CHECKING_TOPUP_BALANCE
-    action: {'store': {'topup_intent': 'message'}}
-    action: {'compute': 'topup_observed_balance', 'from': 'peer_balances...
-  CHECKING_TOPUP_BALANCE --auto--> [guard: topup_observed_balance - total_escrowed >= topup_intent.additional_amount] VOTING_TOPUP
-    action: {'store': {'topup_verdict': 'accept'}}
-  CHECKING_TOPUP_BALANCE --auto--> [guard: topup_observed_balance - total_escrowed < topup_intent.additional_amount] ESCROW_ACTIVE
-    action: {'store': {'topup_verdict': 'reject'}}
-    action: {'store': {'topup_reject_reason': 'insufficient_free_balance...
+  PROPAGATING_RESULT --TimeoutTrigger(parameter='CONSENSUS_TIMEOUT', line=0, column=0)--> DONE
+    action: STORE(reject_reason, Literal(value='consumer_signature_timeo...
+  ESCROW_ACTIVE --MessageTrigger(message_type='TOPUP_INTENT', line=0, column=0)--> CHECKING_TOPUP_BALANCE
+    action: STORE(topup_intent, Identifier(name='message', line=0, colum...
+    action: compute topup_observed_balance = IndexAccessExpr(object=Iden...
+  CHECKING_TOPUP_BALANCE --auto--> [guard: BinaryExpr(left=BinaryExpr(left=Identifier(name='topup_observed_balance', line=0, column=0), op=<BinaryOperator.SUB: 2>, right=Identifier(name='total_escrowed', line=0, column=0), line=0, column=0), op=<BinaryOperator.GTE: 10>, right=FieldAccessExpr(object=Identifier(name='topup_intent', line=0, column=0), field='additional_amount', line=0, column=0), line=0, column=0)] VOTING_TOPUP
+    action: STORE(topup_verdict, Identifier(name='accept', line=0, colum...
+  CHECKING_TOPUP_BALANCE --auto--> [guard: BinaryExpr(left=BinaryExpr(left=Identifier(name='topup_observed_balance', line=0, column=0), op=<BinaryOperator.SUB: 2>, right=Identifier(name='total_escrowed', line=0, column=0), line=0, column=0), op=<BinaryOperator.LT: 7>, right=FieldAccessExpr(object=Identifier(name='topup_intent', line=0, column=0), field='additional_amount', line=0, column=0), line=0, column=0)] ESCROW_ACTIVE
+    action: STORE(topup_verdict, Identifier(name='reject', line=0, colum...
+    action: STORE(topup_reject_reason, Literal(value='insufficient_free_...
   VOTING_TOPUP --auto--> COLLECTING_TOPUP_VOTES
-    action: {'store': {'topup_votes': '[]'}}
-    action: {'send': {'message': 'TOPUP_VOTE', 'to': 'each(other_witness...
-  COLLECTING_TOPUP_VOTES --TOPUP_VOTE--> COLLECTING_TOPUP_VOTES
-    action: {'append': {'topup_votes': 'message.payload'}}
-  COLLECTING_TOPUP_VOTES --auto--> [guard: LENGTH (topup_votes) >= WITNESS_THRESHOLD - 1] BUILDING_TOPUP_RESULT
-  COLLECTING_TOPUP_VOTES --timeout(PRELIMINARY_TIMEOUT)--> [guard: LENGTH (topup_votes) >= WITNESS_THRESHOLD - 1] BUILDING_TOPUP_RESULT
-  COLLECTING_TOPUP_VOTES --timeout(CONSENSUS_TIMEOUT)--> ESCROW_ACTIVE
-    action: {'store': {'topup_failed_reason': 'vote_timeout'}}
+    action: STORE(topup_votes, ListLiteralExpr(elements=[], line=0, colu...
+    action: BROADCAST(other_witnesses, TOPUP_VOTE)
+  COLLECTING_TOPUP_VOTES --MessageTrigger(message_type='TOPUP_VOTE', line=0, column=0)--> COLLECTING_TOPUP_VOTES
+    action: APPEND(topup_votes, FieldAccessExpr(object=Identifier(name='...
+  COLLECTING_TOPUP_VOTES --auto--> [guard: BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='topup_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.GTE: 10>, right=BinaryExpr(left=Identifier(name='WITNESS_THRESHOLD', line=0, column=0), op=<BinaryOperator.SUB: 2>, right=Literal(value=1, type='number', line=0, column=0), line=0, column=0), line=0, column=0)] BUILDING_TOPUP_RESULT
+  COLLECTING_TOPUP_VOTES --TimeoutTrigger(parameter='PRELIMINARY_TIMEOUT', line=0, column=0)--> [guard: BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='topup_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.GTE: 10>, right=BinaryExpr(left=Identifier(name='WITNESS_THRESHOLD', line=0, column=0), op=<BinaryOperator.SUB: 2>, right=Literal(value=1, type='number', line=0, column=0), line=0, column=0), line=0, column=0)] BUILDING_TOPUP_RESULT
+  COLLECTING_TOPUP_VOTES --TimeoutTrigger(parameter='CONSENSUS_TIMEOUT', line=0, column=0)--> ESCROW_ACTIVE
+    action: STORE(topup_failed_reason, Literal(value='vote_timeout', typ...
   BUILDING_TOPUP_RESULT --auto--> PROPAGATING_TOPUP
-    action: {'compute': 'topup_result', 'from': 'build_topup_result()'}
-    action: {'send': {'message': 'TOPUP_RESULT_FOR_SIGNATURE', 'to': 'co...
-  PROPAGATING_TOPUP --CONSUMER_SIGNED_TOPUP--> ESCROW_ACTIVE
-    action: {'store': {'total_escrowed': 'total_escrowed + topup_intent....
-  PROPAGATING_TOPUP --timeout(CONSENSUS_TIMEOUT)--> ESCROW_ACTIVE
-    action: {'store': {'topup_failed_reason': 'consumer_signature_timeou...
-  ESCROW_ACTIVE --LIVENESS_PING--> ESCROW_ACTIVE
-    action: {'store': {'from_witness': 'peer_id'}}
-    action: {'send': {'message': 'LIVENESS_PONG', 'to': 'message.sender'...
+    action: compute topup_result = FunctionCallExpr(name='BUILD_TOPUP_RE...
+    action: SEND(Identifier(name='consumer', line=0, column=0), TOPUP_RE...
+  PROPAGATING_TOPUP --MessageTrigger(message_type='CONSUMER_SIGNED_TOPUP', line=0, column=0)--> ESCROW_ACTIVE
+    action: STORE(total_escrowed, BinaryExpr(left=Identifier(name='total...
+  PROPAGATING_TOPUP --TimeoutTrigger(parameter='CONSENSUS_TIMEOUT', line=0, column=0)--> ESCROW_ACTIVE
+    action: STORE(topup_failed_reason, Literal(value='consumer_signature...
+  ESCROW_ACTIVE --MessageTrigger(message_type='LIVENESS_PING', line=0, column=0)--> ESCROW_ACTIVE
+    action: STORE(from_witness, Identifier(name='peer_id', line=0, colum...
+    action: SEND(FieldAccessExpr(object=Identifier(name='message', line=...
 ```
 
 

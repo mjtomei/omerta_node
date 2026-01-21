@@ -481,7 +481,7 @@ class ReturnStmt:
 
 @dataclass
 class ForStmt:
-    """For loop: FOR var IN iterable: body"""
+    """For loop: FOR var IN iterable body"""
     var_name: str
     iterable: Union[str, 'Expr']  # Iterable expression
     body: List['FunctionStatement'] = field(default_factory=list)

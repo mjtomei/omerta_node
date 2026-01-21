@@ -1,0 +1,79 @@
+# Balance Propagation Test
+# Tests how quickly balance updates propagate through the network.
+# Consumer updates balance, then we track when each peer sees the update.
+
+name: "balance_propagation"
+description: "Track balance update propagation across network"
+
+network:
+  seed: 42
+  nodes:
+    # Consumer in North America
+    - id: consumer
+      region: north_america
+      connection: cable
+
+    # Peers in different regions with different connections
+    - id: peer_na_fiber
+      region: north_america
+      connection: fiber
+    - id: peer_na_cable
+      region: north_america
+      connection: cable
+    - id: peer_eu_datacenter
+      region: europe
+      connection: datacenter
+    - id: peer_eu_dsl
+      region: europe
+      connection: dsl
+    - id: peer_asia_fiber
+      region: asia
+      connection: fiber
+    - id: peer_asia_4g
+      region: asia
+      connection: 4g_lte
+    - id: peer_australia
+      region: australia
+      connection: cable
+    - id: peer_south_america
+      region: south_america
+      connection: satellite_leo
+
+setup:
+  chains:
+    consumer:
+      balance: 100.0
+      trust: 1.0
+    peer_na_fiber:
+      trust: 2.0
+    peer_na_cable:
+      trust: 1.5
+    peer_eu_datacenter:
+      trust: 2.5
+    peer_eu_dsl:
+      trust: 1.0
+    peer_asia_fiber:
+      trust: 2.0
+    peer_asia_4g:
+      trust: 1.5
+    peer_australia:
+      trust: 1.5
+    peer_south_america:
+      trust: 1.0
+
+  # All peers know each other
+  relationships:
+    - peers: [consumer, peer_na_fiber, peer_na_cable, peer_eu_datacenter, peer_eu_dsl, peer_asia_fiber, peer_asia_4g, peer_australia, peer_south_america]
+      age_days: 30
+
+actions:
+  # Consumer broadcasts balance update (simulated as keepalive)
+  - time: 0.0
+    actor: consumer
+    action: broadcast_balance
+    params:
+      new_balance: 150.0
+
+assertions:
+  - type: no_messages_dropped
+    description: "All balance updates should be delivered"

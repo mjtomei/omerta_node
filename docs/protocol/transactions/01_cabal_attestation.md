@@ -60,12 +60,12 @@ From [Protocol Format](../../FORMAT.md#settlement-conditions):
 
 ```
 ATTESTATION {
-  session_id: hash
-  connectivity_verified: bool
-  actual_duration_seconds: uint
-  termination_reason: string
-  witnesses: list[peer_id]
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  connectivity_verified: SimpleType(name='bool', line=0, column=0)
+  actual_duration_seconds: SimpleType(name='uint', line=0, column=0)
+  termination_reason: SimpleType(name='string', line=0, column=0)
+  witnesses: ListType(element_type=SimpleType(name='peer_id', line=0, column=0), line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
 }
 
 ```
@@ -77,87 +77,87 @@ ATTESTATION {
 ```
 # Provider -> Witness
 VM_ALLOCATED {
-  session_id: hash
-  provider: peer_id
-  consumer: peer_id
-  vm_wireguard_pubkey: bytes
-  consumer_wireguard_endpoint: string
-  cabal_wireguard_endpoints: list[string]
-  allocated_at: timestamp
-  lock_result_hash: hash
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  provider: SimpleType(name='peer_id', line=0, column=0)
+  consumer: SimpleType(name='peer_id', line=0, column=0)
+  vm_wireguard_pubkey: SimpleType(name='bytes', line=0, column=0)
+  consumer_wireguard_endpoint: SimpleType(name='string', line=0, column=0)
+  cabal_wireguard_endpoints: ListType(element_type=SimpleType(name='string', line=0, column=0), line=0, column=0)
+  allocated_at: SimpleType(name='timestamp', line=0, column=0)
+  lock_result_hash: SimpleType(name='hash', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by provider
 }
 
 # Provider -> Witness
 VM_CANCELLED {
-  session_id: hash
-  provider: peer_id
-  cancelled_at: timestamp
-  reason: TerminationReason
-  actual_duration_seconds: uint
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  provider: SimpleType(name='peer_id', line=0, column=0)
+  cancelled_at: SimpleType(name='timestamp', line=0, column=0)
+  reason: SimpleType(name='TerminationReason', line=0, column=0)
+  actual_duration_seconds: SimpleType(name='uint', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by provider
 }
 
 # Provider -> Witness
 MISUSE_ACCUSATION {
-  session_id: hash
-  provider: peer_id
-  evidence: string
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  provider: SimpleType(name='peer_id', line=0, column=0)
+  evidence: SimpleType(name='string', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by provider
 }
 
 # Provider -> Consumer
 VM_READY {
-  session_id: hash
-  vm_info: dict
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  vm_info: SimpleType(name='dict', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
 }
 
 # Provider -> Consumer
 SESSION_TERMINATED {
-  session_id: hash
-  reason: TerminationReason
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  reason: SimpleType(name='TerminationReason', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
 }
 
 # Consumer -> Provider
 CANCEL_REQUEST {
-  session_id: hash
-  consumer: peer_id
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  consumer: SimpleType(name='peer_id', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by consumer
 }
 
 # Witness -> Witness, Provider
 VM_CONNECTIVITY_VOTE {
-  session_id: hash
-  witness: peer_id
-  can_reach_vm: bool
-  can_see_consumer_connected: bool
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  witness: SimpleType(name='peer_id', line=0, column=0)
+  can_reach_vm: SimpleType(name='bool', line=0, column=0)
+  can_see_consumer_connected: SimpleType(name='bool', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by witness
 }
 
 # Witness -> Witness
 ABORT_VOTE {
-  session_id: hash
-  witness: peer_id
-  reason: string
-  timestamp: timestamp
+  session_id: SimpleType(name='hash', line=0, column=0)
+  witness: SimpleType(name='peer_id', line=0, column=0)
+  reason: SimpleType(name='string', line=0, column=0)
+  timestamp: SimpleType(name='timestamp', line=0, column=0)
   signature: bytes  # signed by witness
 }
 
 # Witness -> Witness
 ATTESTATION_SHARE {
-  attestation: dict
+  attestation: SimpleType(name='dict', line=0, column=0)
 }
 
 # Witness -> Consumer, Provider
 ATTESTATION_RESULT {
-  attestation: dict
+  attestation: SimpleType(name='dict', line=0, column=0)
 }
 
 ```
@@ -174,11 +174,11 @@ STATES: [WAITING_FOR_LOCK, VM_PROVISIONING, NOTIFYING_CABAL, WAITING_FOR_VERIFIC
 INITIAL: WAITING_FOR_LOCK
 
 EXTERNAL TRIGGERS:
-  start_session(session_id: hash, consumer: peer_id, witnesses: list[peer_id], lock_result: dict)
+  start_session(session_id: SimpleType(name='hash', line=0, column=0), consumer: SimpleType(name='peer_id', line=0, column=0), witnesses: ListType(element_type=SimpleType(name='peer_id', line=0, column=0), line=0, column=0), lock_result: SimpleType(name='dict', line=0, column=0))
     allowed_in: [WAITING_FOR_LOCK]
-  allocate_vm(vm_info: dict)
+  allocate_vm(vm_info: SimpleType(name='dict', line=0, column=0))
     allowed_in: [VM_PROVISIONING]
-  cancel_session(reason: TerminationReason)
+  cancel_session(reason: SimpleType(name='TerminationReason', line=0, column=0))
     allowed_in: [VM_RUNNING]
 
 STATE WAITING_FOR_LOCK:
@@ -212,46 +212,46 @@ STATE SESSION_ABORTED: [TERMINAL]
   # Session was aborted before completion
 
 TRANSITIONS:
-  WAITING_FOR_LOCK --start_session--> VM_PROVISIONING
-    action: {'store': ['session_id', 'consumer', 'witnesses', 'lock_resu...
-    action: {'store': {'lock_completed_at': 'current_time'}}
-  VM_PROVISIONING --timeout(VM_ALLOCATION_TIMEOUT)--> SESSION_ABORTED
-    action: {'store': {'termination_reason': 'TerminationReason.ALLOCATI...
-  VM_PROVISIONING --allocate_vm--> NOTIFYING_CABAL
-    action: {'store': ['vm_info']}
-    action: {'store': {'vm_allocated_at': 'current_time'}}
+  WAITING_FOR_LOCK --NamedTrigger(name='start_session', line=0, column=0)--> VM_PROVISIONING
+    action: store session_id, consumer, witnesses, lock_result
+    action: STORE(lock_completed_at, FunctionCallExpr(name='NOW', args=[...
+  VM_PROVISIONING --TimeoutTrigger(parameter='VM_ALLOCATION_TIMEOUT', line=0, column=0)--> SESSION_ABORTED
+    action: STORE(termination_reason, FieldAccessExpr(object=Identifier(...
+  VM_PROVISIONING --NamedTrigger(name='allocate_vm', line=0, column=0)--> NOTIFYING_CABAL
+    action: store vm_info
+    action: STORE(vm_allocated_at, FunctionCallExpr(name='NOW', args=[],...
   NOTIFYING_CABAL --auto--> WAITING_FOR_VERIFICATION
-    action: {'compute': 'vm_allocated_msg', 'from': '{session_id: LOAD(s...
-    action: {'send': {'message': 'VM_ALLOCATED', 'to': 'each(witnesses)'...
-    action: {'send': {'message': 'VM_READY', 'to': 'consumer'}}
+    action: compute vm_allocated_msg = StructLiteralExpr(fields={'sessio...
+    action: BROADCAST(witnesses, VM_ALLOCATED)
+    action: SEND(Identifier(name='consumer', line=0, column=0), VM_READY...
     ... and 2 more actions
-  WAITING_FOR_VERIFICATION --VM_CONNECTIVITY_VOTE--> WAITING_FOR_VERIFICATION
-    action: {'append': {'connectivity_votes': 'message.payload'}}
-  WAITING_FOR_VERIFICATION --auto--> [guard: LENGTH (connectivity_votes) >= LENGTH (witnesses)  and count_positive_votes (connectivity_votes) / LENGTH (connectivity_votes) >= CONNECTIVITY_THRESHOLD] VM_RUNNING
-    action: {'store': {'verification_passed': 'true'}}
-  WAITING_FOR_VERIFICATION --auto--> [guard: LENGTH (connectivity_votes) >= LENGTH (witnesses)  and count_positive_votes (connectivity_votes) / LENGTH (connectivity_votes) < CONNECTIVITY_THRESHOLD] SENDING_CANCELLATION
-    action: {'store': {'verification_passed': 'false'}}
-    action: {'store': {'termination_reason': 'TerminationReason.CONNECTI...
-  WAITING_FOR_VERIFICATION --timeout(CONNECTIVITY_CHECK_TIMEOUT)--> [guard: LENGTH (connectivity_votes) > 0  and count_positive_votes (connectivity_votes) / LENGTH (connectivity_votes) >= CONNECTIVITY_THRESHOLD] VM_RUNNING
-    action: {'store': {'verification_passed': 'true'}}
-  WAITING_FOR_VERIFICATION --timeout(CONNECTIVITY_CHECK_TIMEOUT)--> [guard: LENGTH (connectivity_votes) == 0  or count_positive_votes (connectivity_votes) / LENGTH (connectivity_votes) < CONNECTIVITY_THRESHOLD] SENDING_CANCELLATION
-    action: {'store': {'verification_passed': 'false'}}
-    action: {'store': {'termination_reason': 'TerminationReason.CONNECTI...
-  VM_RUNNING --CANCEL_REQUEST--> [guard: message.sender == LOAD (consumer)] HANDLING_CANCEL
-    action: {'store': {'termination_reason': 'TerminationReason.CONSUMER...
-    action: {'store': {'cancelled_at': 'current_time'}}
-  VM_RUNNING --cancel_session--> HANDLING_CANCEL
-    action: {'store': ['reason']}
-    action: {'store': {'termination_reason': 'reason'}}
-    action: {'store': {'cancelled_at': 'current_time'}}
+  WAITING_FOR_VERIFICATION --MessageTrigger(message_type='VM_CONNECTIVITY_VOTE', line=0, column=0)--> WAITING_FOR_VERIFICATION
+    action: APPEND(connectivity_votes, FieldAccessExpr(object=Identifier...
+  WAITING_FOR_VERIFICATION --auto--> [guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.GTE: 10>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='witnesses', line=0, column=0)], line=0, column=0), line=0, column=0), op=<BinaryOperator.AND: 11>, right=BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='count_positive_votes', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.DIV: 4>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), line=0, column=0), op=<BinaryOperator.GTE: 10>, right=Identifier(name='CONNECTIVITY_THRESHOLD', line=0, column=0), line=0, column=0), line=0, column=0)] VM_RUNNING
+    action: STORE(verification_passed, Literal(value=True, type='bool', ...
+  WAITING_FOR_VERIFICATION --auto--> [guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.GTE: 10>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='witnesses', line=0, column=0)], line=0, column=0), line=0, column=0), op=<BinaryOperator.AND: 11>, right=BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='count_positive_votes', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.DIV: 4>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), line=0, column=0), op=<BinaryOperator.LT: 7>, right=Identifier(name='CONNECTIVITY_THRESHOLD', line=0, column=0), line=0, column=0), line=0, column=0)] SENDING_CANCELLATION
+    action: STORE(verification_passed, Literal(value=False, type='bool',...
+    action: STORE(termination_reason, FieldAccessExpr(object=Identifier(...
+  WAITING_FOR_VERIFICATION --TimeoutTrigger(parameter='CONNECTIVITY_CHECK_TIMEOUT', line=0, column=0)--> [guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.GT: 8>, right=Literal(value=0, type='number', line=0, column=0), line=0, column=0), op=<BinaryOperator.AND: 11>, right=BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='count_positive_votes', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.DIV: 4>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), line=0, column=0), op=<BinaryOperator.GTE: 10>, right=Identifier(name='CONNECTIVITY_THRESHOLD', line=0, column=0), line=0, column=0), line=0, column=0)] VM_RUNNING
+    action: STORE(verification_passed, Literal(value=True, type='bool', ...
+  WAITING_FOR_VERIFICATION --TimeoutTrigger(parameter='CONNECTIVITY_CHECK_TIMEOUT', line=0, column=0)--> [guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.EQ: 5>, right=Literal(value=0, type='number', line=0, column=0), line=0, column=0), op=<BinaryOperator.OR: 12>, right=BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='count_positive_votes', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.DIV: 4>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), line=0, column=0), op=<BinaryOperator.LT: 7>, right=Identifier(name='CONNECTIVITY_THRESHOLD', line=0, column=0), line=0, column=0), line=0, column=0)] SENDING_CANCELLATION
+    action: STORE(verification_passed, Literal(value=False, type='bool',...
+    action: STORE(termination_reason, FieldAccessExpr(object=Identifier(...
+  VM_RUNNING --MessageTrigger(message_type='CANCEL_REQUEST', line=0, column=0)--> [guard: BinaryExpr(left=FieldAccessExpr(object=Identifier(name='message', line=0, column=0), field='sender', line=0, column=0), op=<BinaryOperator.EQ: 5>, right=FunctionCallExpr(name='LOAD', args=[Identifier(name='consumer', line=0, column=0)], line=0, column=0), line=0, column=0)] HANDLING_CANCEL
+    action: STORE(termination_reason, FieldAccessExpr(object=Identifier(...
+    action: STORE(cancelled_at, FunctionCallExpr(name='NOW', args=[], li...
+  VM_RUNNING --NamedTrigger(name='cancel_session', line=0, column=0)--> HANDLING_CANCEL
+    action: store reason
+    action: STORE(termination_reason, Identifier(name='reason', line=0, ...
+    action: STORE(cancelled_at, FunctionCallExpr(name='NOW', args=[], li...
   HANDLING_CANCEL --auto--> SENDING_CANCELLATION
   SENDING_CANCELLATION --auto--> WAITING_FOR_ATTESTATION
-    action: {'compute': 'vm_cancelled_msg', 'from': '{session_id: LOAD(s...
-    action: {'send': {'message': 'VM_CANCELLED', 'to': 'each(witnesses)'...
-    action: {'send': {'message': 'SESSION_TERMINATED', 'to': 'consumer'}...
+    action: compute vm_cancelled_msg = StructLiteralExpr(fields={'sessio...
+    action: BROADCAST(witnesses, VM_CANCELLED)
+    action: SEND(Identifier(name='consumer', line=0, column=0), SESSION_...
     ... and 1 more actions
-  WAITING_FOR_ATTESTATION --ATTESTATION_RESULT--> SESSION_COMPLETE
-    action: {'store_from_message': {'attestation': 'attestation'}}
+  WAITING_FOR_ATTESTATION --MessageTrigger(message_type='ATTESTATION_RESULT', line=0, column=0)--> SESSION_COMPLETE
+    action: STORE(attestation, FieldAccessExpr(object=Identifier(name='m...
 ```
 
 ### ACTOR: Witness
@@ -264,7 +264,7 @@ STATES: [AWAITING_ALLOCATION, VERIFYING_VM, COLLECTING_VOTES, EVALUATING_CONNECT
 INITIAL: AWAITING_ALLOCATION
 
 EXTERNAL TRIGGERS:
-  setup_session(session_id: hash, consumer: peer_id, provider: peer_id, other_witnesses: list[peer_id])
+  setup_session(session_id: SimpleType(name='hash', line=0, column=0), consumer: SimpleType(name='peer_id', line=0, column=0), provider: SimpleType(name='peer_id', line=0, column=0), other_witnesses: ListType(element_type=SimpleType(name='peer_id', line=0, column=0), line=0, column=0))
     allowed_in: [AWAITING_ALLOCATION]
 
 STATE AWAITING_ALLOCATION:
@@ -304,60 +304,60 @@ STATE DONE: [TERMINAL]
   # Attestation complete
 
 TRANSITIONS:
-  AWAITING_ALLOCATION --setup_session--> AWAITING_ALLOCATION
-    action: {'store': ['session_id', 'consumer', 'provider', 'other_witn...
-  AWAITING_ALLOCATION --VM_ALLOCATED--> VERIFYING_VM
-    action: {'store_from_message': {'vm_allocated_msg': 'payload'}}
-    action: {'store_from_message': {'vm_allocated_at': 'payload.allocate...
+  AWAITING_ALLOCATION --NamedTrigger(name='setup_session', line=0, column=0)--> AWAITING_ALLOCATION
+    action: store session_id, consumer, provider, other_witnesses
+  AWAITING_ALLOCATION --MessageTrigger(message_type='VM_ALLOCATED', line=0, column=0)--> VERIFYING_VM
+    action: STORE(vm_allocated_msg, FieldAccessExpr(object=Identifier(na...
+    action: STORE(vm_allocated_at, FieldAccessExpr(object=FieldAccessExp...
   VERIFYING_VM --auto--> COLLECTING_VOTES
-    action: {'compute': 'can_reach_vm', 'from': 'check_vm_connectivity()...
-    action: {'compute': 'can_see_consumer_connected', 'from': 'check_con...
-    action: {'store': {'witness': 'peer_id'}}
+    action: compute can_reach_vm = FunctionCallExpr(name='check_vm_conne...
+    action: compute can_see_consumer_connected = FunctionCallExpr(name='...
+    action: STORE(witness, Identifier(name='peer_id', line=0, column=0))
     ... and 7 more actions
-  COLLECTING_VOTES --VM_CONNECTIVITY_VOTE--> [guard: message.payload.witness != peer_id] COLLECTING_VOTES
-    action: {'append': {'connectivity_votes': 'message.payload'}}
-  COLLECTING_VOTES --auto--> [guard: LENGTH (connectivity_votes) >= LENGTH (other_witnesses) + 1] EVALUATING_CONNECTIVITY
-  COLLECTING_VOTES --timeout(CONNECTIVITY_VOTE_TIMEOUT)--> EVALUATING_CONNECTIVITY
-  EVALUATING_CONNECTIVITY --auto--> [guard: LENGTH (connectivity_votes) > 0  and count_positive_votes (connectivity_votes) / LENGTH (connectivity_votes) >= CONNECTIVITY_THRESHOLD] MONITORING
-    action: {'store': {'connectivity_verified': 'true'}}
-  EVALUATING_CONNECTIVITY --auto--> [guard: LENGTH (connectivity_votes) == 0  or count_positive_votes (connectivity_votes) / LENGTH (connectivity_votes) < CONNECTIVITY_THRESHOLD] VOTING_ABORT
-    action: {'store': {'connectivity_verified': 'false'}}
-    action: {'store': {'abort_reason': 'vm_unreachable'}}
-  MONITORING --VM_CANCELLED--> ATTESTING
-    action: {'store_from_message': {'vm_cancelled_msg': 'payload'}}
-    action: {'store_from_message': {'actual_duration_seconds': 'payload....
-    action: {'store_from_message': {'termination_reason': 'payload.reaso...
-  MONITORING --MISUSE_ACCUSATION--> HANDLING_MISUSE
-    action: {'store_from_message': {'misuse_accusation': 'payload'}}
-  HANDLING_MISUSE --auto--> [guard: LOAD (misuse_accusation).evidence != ""] VOTING_ABORT
-    action: {'store': {'abort_reason': 'consumer_misuse'}}
-  HANDLING_MISUSE --auto--> [guard: LOAD (misuse_accusation).evidence == ""] MONITORING
+  COLLECTING_VOTES --MessageTrigger(message_type='VM_CONNECTIVITY_VOTE', line=0, column=0)--> [guard: BinaryExpr(left=FieldAccessExpr(object=FieldAccessExpr(object=Identifier(name='message', line=0, column=0), field='payload', line=0, column=0), field='witness', line=0, column=0), op=<BinaryOperator.NEQ: 6>, right=Identifier(name='peer_id', line=0, column=0), line=0, column=0)] COLLECTING_VOTES
+    action: APPEND(connectivity_votes, FieldAccessExpr(object=Identifier...
+  COLLECTING_VOTES --auto--> [guard: BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.GTE: 10>, right=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='other_witnesses', line=0, column=0)], line=0, column=0), op=<BinaryOperator.ADD: 1>, right=Literal(value=1, type='number', line=0, column=0), line=0, column=0), line=0, column=0)] EVALUATING_CONNECTIVITY
+  COLLECTING_VOTES --TimeoutTrigger(parameter='CONNECTIVITY_VOTE_TIMEOUT', line=0, column=0)--> EVALUATING_CONNECTIVITY
+  EVALUATING_CONNECTIVITY --auto--> [guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.GT: 8>, right=Literal(value=0, type='number', line=0, column=0), line=0, column=0), op=<BinaryOperator.AND: 11>, right=BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='count_positive_votes', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.DIV: 4>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), line=0, column=0), op=<BinaryOperator.GTE: 10>, right=Identifier(name='CONNECTIVITY_THRESHOLD', line=0, column=0), line=0, column=0), line=0, column=0)] MONITORING
+    action: STORE(connectivity_verified, Literal(value=True, type='bool'...
+  EVALUATING_CONNECTIVITY --auto--> [guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.EQ: 5>, right=Literal(value=0, type='number', line=0, column=0), line=0, column=0), op=<BinaryOperator.OR: 12>, right=BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='count_positive_votes', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.DIV: 4>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), line=0, column=0), op=<BinaryOperator.LT: 7>, right=Identifier(name='CONNECTIVITY_THRESHOLD', line=0, column=0), line=0, column=0), line=0, column=0)] VOTING_ABORT
+    action: STORE(connectivity_verified, Literal(value=False, type='bool...
+    action: STORE(abort_reason, Literal(value='vm_unreachable', type='st...
+  MONITORING --MessageTrigger(message_type='VM_CANCELLED', line=0, column=0)--> ATTESTING
+    action: STORE(vm_cancelled_msg, FieldAccessExpr(object=Identifier(na...
+    action: STORE(actual_duration_seconds, FieldAccessExpr(object=FieldA...
+    action: STORE(termination_reason, FieldAccessExpr(object=FieldAccess...
+  MONITORING --MessageTrigger(message_type='MISUSE_ACCUSATION', line=0, column=0)--> HANDLING_MISUSE
+    action: STORE(misuse_accusation, FieldAccessExpr(object=Identifier(n...
+  HANDLING_MISUSE --auto--> [guard: BinaryExpr(left=FieldAccessExpr(object=FunctionCallExpr(name='LOAD', args=[Identifier(name='misuse_accusation', line=0, column=0)], line=0, column=0), field='evidence', line=0, column=0), op=<BinaryOperator.NEQ: 6>, right=Literal(value='', type='string', line=0, column=0), line=0, column=0)] VOTING_ABORT
+    action: STORE(abort_reason, Literal(value='consumer_misuse', type='s...
+  HANDLING_MISUSE --auto--> [guard: BinaryExpr(left=FieldAccessExpr(object=FunctionCallExpr(name='LOAD', args=[Identifier(name='misuse_accusation', line=0, column=0)], line=0, column=0), field='evidence', line=0, column=0), op=<BinaryOperator.EQ: 5>, right=Literal(value='', type='string', line=0, column=0), line=0, column=0)] MONITORING
   VOTING_ABORT --auto--> COLLECTING_ABORT_VOTES
-    action: {'compute': 'abort_vote_data', 'from': '{session_id: LOAD(se...
-    action: {'compute': 'abort_vote_signature', 'from': 'SIGN(LOAD(abort...
-    action: {'compute': 'my_abort_vote', 'from': '{...LOAD(abort_vote_da...
+    action: compute abort_vote_data = StructLiteralExpr(fields={'session...
+    action: compute abort_vote_signature = FunctionCallExpr(name='SIGN',...
+    action: compute my_abort_vote = StructLiteralExpr(fields={'signature...
     ... and 3 more actions
-  COLLECTING_ABORT_VOTES --ABORT_VOTE--> [guard: message.payload.witness != peer_id] COLLECTING_ABORT_VOTES
-    action: {'append': {'abort_votes': 'message.payload'}}
-  COLLECTING_ABORT_VOTES --auto--> [guard: LENGTH (abort_votes) / (LENGTH (other_witnesses) + 1) >= ABORT_THRESHOLD] ATTESTING
-    action: {'store': {'session_aborted': 'true'}}
-    action: {'store': {'termination_reason': 'LOAD(abort_reason)'}}
-  COLLECTING_ABORT_VOTES --timeout(ABORT_VOTE_TIMEOUT)--> [guard: LENGTH (abort_votes) / (LENGTH (other_witnesses) + 1) < ABORT_THRESHOLD] MONITORING
-  COLLECTING_ABORT_VOTES --timeout(ABORT_VOTE_TIMEOUT)--> [guard: LENGTH (abort_votes) / (LENGTH (other_witnesses) + 1) >= ABORT_THRESHOLD] ATTESTING
-    action: {'store': {'session_aborted': 'true'}}
-    action: {'store': {'termination_reason': 'LOAD(abort_reason)'}}
+  COLLECTING_ABORT_VOTES --MessageTrigger(message_type='ABORT_VOTE', line=0, column=0)--> [guard: BinaryExpr(left=FieldAccessExpr(object=FieldAccessExpr(object=Identifier(name='message', line=0, column=0), field='payload', line=0, column=0), field='witness', line=0, column=0), op=<BinaryOperator.NEQ: 6>, right=Identifier(name='peer_id', line=0, column=0), line=0, column=0)] COLLECTING_ABORT_VOTES
+    action: APPEND(abort_votes, FieldAccessExpr(object=Identifier(name='...
+  COLLECTING_ABORT_VOTES --auto--> [guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='abort_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.DIV: 4>, right=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='other_witnesses', line=0, column=0)], line=0, column=0), op=<BinaryOperator.ADD: 1>, right=Literal(value=1, type='number', line=0, column=0), line=0, column=0), line=0, column=0), op=<BinaryOperator.GTE: 10>, right=Identifier(name='ABORT_THRESHOLD', line=0, column=0), line=0, column=0)] ATTESTING
+    action: STORE(session_aborted, Literal(value=True, type='bool', line...
+    action: STORE(termination_reason, FunctionCallExpr(name='LOAD', args...
+  COLLECTING_ABORT_VOTES --TimeoutTrigger(parameter='ABORT_VOTE_TIMEOUT', line=0, column=0)--> [guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='abort_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.DIV: 4>, right=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='other_witnesses', line=0, column=0)], line=0, column=0), op=<BinaryOperator.ADD: 1>, right=Literal(value=1, type='number', line=0, column=0), line=0, column=0), line=0, column=0), op=<BinaryOperator.LT: 7>, right=Identifier(name='ABORT_THRESHOLD', line=0, column=0), line=0, column=0)] MONITORING
+  COLLECTING_ABORT_VOTES --TimeoutTrigger(parameter='ABORT_VOTE_TIMEOUT', line=0, column=0)--> [guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='abort_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.DIV: 4>, right=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='other_witnesses', line=0, column=0)], line=0, column=0), op=<BinaryOperator.ADD: 1>, right=Literal(value=1, type='number', line=0, column=0), line=0, column=0), line=0, column=0), op=<BinaryOperator.GTE: 10>, right=Identifier(name='ABORT_THRESHOLD', line=0, column=0), line=0, column=0)] ATTESTING
+    action: STORE(session_aborted, Literal(value=True, type='bool', line...
+    action: STORE(termination_reason, FunctionCallExpr(name='LOAD', args...
   ATTESTING --auto--> COLLECTING_ATTESTATION_SIGS
-    action: {'compute': 'attestation', 'from': '{session_id: LOAD(sessio...
-    action: {'compute': 'my_signature', 'from': 'SIGN(LOAD(attestation))...
-    action: {'store': {'attestation_signatures': '[{witness: peer_id, si...
+    action: compute attestation = StructLiteralExpr(fields={'session_id'...
+    action: compute my_signature = FunctionCallExpr(name='SIGN', args=[F...
+    action: STORE(attestation_signatures, ListLiteralExpr(elements=[Stru...
     ... and 2 more actions
-  COLLECTING_ATTESTATION_SIGS --ATTESTATION_SHARE--> COLLECTING_ATTESTATION_SIGS
-    action: {'append': {'attestation_signatures': 'message.payload.attes...
-  COLLECTING_ATTESTATION_SIGS --auto--> [guard: LENGTH (attestation_signatures) >= ATTESTATION_THRESHOLD] PROPAGATING_ATTESTATION
+  COLLECTING_ATTESTATION_SIGS --MessageTrigger(message_type='ATTESTATION_SHARE', line=0, column=0)--> COLLECTING_ATTESTATION_SIGS
+    action: APPEND(attestation_signatures, FieldAccessExpr(object=FieldA...
+  COLLECTING_ATTESTATION_SIGS --auto--> [guard: BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='attestation_signatures', line=0, column=0)], line=0, column=0), op=<BinaryOperator.GTE: 10>, right=Identifier(name='ATTESTATION_THRESHOLD', line=0, column=0), line=0, column=0)] PROPAGATING_ATTESTATION
   PROPAGATING_ATTESTATION --auto--> DONE
-    action: {'compute': 'final_attestation', 'from': '{...LOAD(attestati...
-    action: {'send': {'message': 'ATTESTATION_RESULT', 'to': 'consumer'}...
-    action: {'send': {'message': 'ATTESTATION_RESULT', 'to': 'provider'}...
+    action: compute final_attestation = StructLiteralExpr(fields={'cabal...
+    action: SEND(Identifier(name='consumer', line=0, column=0), ATTESTAT...
+    action: SEND(Identifier(name='provider', line=0, column=0), ATTESTAT...
     ... and 1 more actions
 ```
 
@@ -371,7 +371,7 @@ STATES: [WAITING_FOR_VM, CONNECTING, CONNECTED, REQUESTING_CANCEL, SESSION_ENDED
 INITIAL: WAITING_FOR_VM
 
 EXTERNAL TRIGGERS:
-  setup_session(session_id: hash, provider: peer_id)
+  setup_session(session_id: SimpleType(name='hash', line=0, column=0), provider: SimpleType(name='peer_id', line=0, column=0))
     allowed_in: [WAITING_FOR_VM]
   request_cancel()
     allowed_in: [CONNECTED]
@@ -392,21 +392,21 @@ STATE SESSION_ENDED: [TERMINAL]
   # Session terminated
 
 TRANSITIONS:
-  WAITING_FOR_VM --setup_session--> WAITING_FOR_VM
-    action: {'store': ['session_id', 'provider']}
-  WAITING_FOR_VM --VM_READY--> CONNECTING
-    action: {'store_from_message': {'vm_info': 'vm_info'}}
+  WAITING_FOR_VM --NamedTrigger(name='setup_session', line=0, column=0)--> WAITING_FOR_VM
+    action: store session_id, provider
+  WAITING_FOR_VM --MessageTrigger(message_type='VM_READY', line=0, column=0)--> CONNECTING
+    action: STORE(vm_info, FieldAccessExpr(object=Identifier(name='messa...
   CONNECTING --auto--> CONNECTED
-    action: {'store': {'connected_at': 'current_time'}}
-  CONNECTED --SESSION_TERMINATED--> SESSION_ENDED
-    action: {'store_from_message': {'termination_reason': 'reason'}}
-  CONNECTED --ATTESTATION_RESULT--> CONNECTED
-    action: {'store_from_message': {'attestation': 'attestation'}}
-  CONNECTED --request_cancel--> REQUESTING_CANCEL
+    action: STORE(connected_at, FunctionCallExpr(name='NOW', args=[], li...
+  CONNECTED --MessageTrigger(message_type='SESSION_TERMINATED', line=0, column=0)--> SESSION_ENDED
+    action: STORE(termination_reason, FieldAccessExpr(object=Identifier(...
+  CONNECTED --MessageTrigger(message_type='ATTESTATION_RESULT', line=0, column=0)--> CONNECTED
+    action: STORE(attestation, FieldAccessExpr(object=Identifier(name='m...
+  CONNECTED --NamedTrigger(name='request_cancel', line=0, column=0)--> REQUESTING_CANCEL
   REQUESTING_CANCEL --auto--> CONNECTED
-    action: {'send': {'message': 'CANCEL_REQUEST', 'to': 'provider'}}
-  SESSION_ENDED --ATTESTATION_RESULT--> SESSION_ENDED
-    action: {'store_from_message': {'attestation': 'attestation'}}
+    action: SEND(Identifier(name='provider', line=0, column=0), CANCEL_R...
+  SESSION_ENDED --MessageTrigger(message_type='ATTESTATION_RESULT', line=0, column=0)--> SESSION_ENDED
+    action: STORE(attestation, FieldAccessExpr(object=Identifier(name='m...
 ```
 
 

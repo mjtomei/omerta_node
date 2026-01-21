@@ -183,6 +183,7 @@ class ASTTranslator:
         self.enum_values = enum_values or {}  # value_name -> enum_type
         self.parameters = parameters or set()
         self._local_vars: Set[str] = set()
+        self._msg_var: str = None  # Set to message variable name when in message context
 
     def translate(self, expr, local_vars: Set[str] = None) -> str:
         """Translate an AST expression node to Python code.
@@ -326,6 +327,10 @@ class ASTTranslator:
             return 'True'
         if name == 'false':
             return 'False'
+
+        # Check for 'message' in message-handling context
+        if name == 'message' and self._msg_var:
+            return self._msg_var
 
         # Check local variables (lambda params, function params)
         if name in self._local_vars:
@@ -537,52 +542,20 @@ class ASTTranslator:
 
 def load_transaction(tx_dir: Path) -> Schema:
     """Load transaction definition from directory (DSL .omt file)."""
+    from dsl_validate import validate_and_report
+
     dsl_path = tx_dir / "transaction.omt"
     if dsl_path.exists():
         schema = load_transaction_ast(dsl_path)
-        validate_no_object_types(schema)
+        # Run semantic validation (raises on errors, warns on warnings)
+        result = validate_and_report(schema, raise_on_error=True)
+        if result.has_warnings:
+            import sys
+            for warning in result.warnings:
+                print(f"Warning: {warning}", file=sys.stderr)
         return schema
 
     raise FileNotFoundError(f"Transaction not found: tried {dsl_path}")
-
-
-def validate_no_object_types(schema: Schema) -> None:
-    """Validate that transaction doesn't use 'object' or 'list[object]' types.
-
-    These types are disallowed - use explicit struct types instead.
-    """
-    errors = []
-
-    # Check messages
-    for msg in schema.messages:
-        for field in msg.fields:
-            if _is_disallowed_type(field.type):
-                errors.append(f"messages.{msg.name}.{field.name}: '{field.type}' is not allowed. Use explicit struct types.")
-
-    # Check actors' store
-    for actor in schema.actors:
-        for field in actor.store:
-            if _is_disallowed_type(field.type):
-                errors.append(f"actors.{actor.name}.store.{field.name}: '{field.type}' is not allowed. Use explicit struct types.")
-
-    if errors:
-        error_msg = "Validation failed - disallowed types found:\n" + "\n".join(f"  - {e}" for e in errors)
-        raise ValueError(error_msg)
-
-
-def _is_disallowed_type(type_str: str) -> bool:
-    """Check if a type string is disallowed (object or list[object])."""
-    if not isinstance(type_str, str):
-        return False
-    type_str = type_str.strip()
-    if type_str == "object":
-        return True
-    if type_str == "list[object]":
-        return True
-    # Also catch quoted versions
-    if type_str == '"object"' or type_str == "'object'":
-        return True
-    return False
 
 
 def load_commentary(tx_dir: Path) -> str:
@@ -1129,6 +1102,10 @@ class PythonActorGenerator:
         lines = []
         ind = "    " * indent_level
 
+        # Set message context for expression translation
+        old_msg_var = self.expr_translator._msg_var
+        self.expr_translator._msg_var = msg_var
+
         if isinstance(action, StoreAction):
             if action.assignments:
                 # Store with explicit key=value assignments: STORE(key, value)
@@ -1137,6 +1114,9 @@ class PythonActorGenerator:
                     assert_is_ast_node(val, f"StoreAction assignment for '{key}'")
                     # Translate the AST expression directly
                     translated = self.expr_translator.translate(val)
+                    # If storing the message object, store its payload instead
+                    if translated == msg_var and msg_var:
+                        translated = f"{msg_var}.payload"
                     lines.append(f'{ind}self.store("{key}", {translated})')
             elif action.fields:
                 # Store fields from params (function arguments) or message
@@ -1226,6 +1206,9 @@ class PythonActorGenerator:
                 lines.append(f'{ind}_list = self.load("{list_name}") or []')
                 lines.append(f'{ind}_list.append({translated_value})')
                 lines.append(f'{ind}self.store("{list_name}", _list)')
+
+        # Restore message context
+        self.expr_translator._msg_var = old_msg_var
 
         return lines
 

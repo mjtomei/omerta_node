@@ -205,7 +205,7 @@ class Provider(Actor):
             raise ValueError(f"Cannot cancel_session in state {self.state}")
 
         self.store("reason", reason)
-        self.store("termination_reason", self.load("reason"))
+        self.store("termination_reason", "reason")
         self.store("cancelled_at", self.current_time)
         self.transition_to(ProviderState.HANDLING_CANCEL)
 
@@ -226,7 +226,7 @@ class Provider(Actor):
 
         elif self.state == ProviderState.NOTIFYING_CABAL:
             # Auto transition
-            # Compute: vm_allocated_msg = StructLiteralExpr(fields={'session_id': FunctionCallExpr(name='LOAD', args=[Identifier(name='session_id', line=221, column=55)], line=221, column=50), 'provider': Identifier(name='peer_id', line=221, column=78), 'consumer': FunctionCallExpr(name='LOAD', args=[Identifier(name='consumer', line=221, column=102)], line=221, column=97), 'vm_info': FunctionCallExpr(name='LOAD', args=[Identifier(name='vm_info', line=221, column=127)], line=221, column=122), 'allocated_at': FunctionCallExpr(name='LOAD', args=[Identifier(name='vm_allocated_at', line=221, column=156)], line=221, column=151), 'lock_result_hash': FunctionCallExpr(name='HASH', args=[FunctionCallExpr(name='LOAD', args=[Identifier(name='lock_result', line=221, column=202)], line=221, column=197)], line=221, column=192), 'timestamp': FunctionCallExpr(name='NOW', args=[], line=221, column=228)}, spread=None, line=221, column=36)
+            # Compute: vm_allocated_msg = StructLiteralExpr(fields={'session_id': FunctionCallExpr(name='LOAD', args=[Identifier(name='session_id', line=0, column=0)], line=0, column=0), 'provider': Identifier(name='peer_id', line=0, column=0), 'consumer': FunctionCallExpr(name='LOAD', args=[Identifier(name='consumer', line=0, column=0)], line=0, column=0), 'vm_info': FunctionCallExpr(name='LOAD', args=[Identifier(name='vm_info', line=0, column=0)], line=0, column=0), 'allocated_at': FunctionCallExpr(name='LOAD', args=[Identifier(name='vm_allocated_at', line=0, column=0)], line=0, column=0), 'lock_result_hash': FunctionCallExpr(name='HASH', args=[FunctionCallExpr(name='LOAD', args=[Identifier(name='lock_result', line=0, column=0)], line=0, column=0)], line=0, column=0), 'timestamp': FunctionCallExpr(name='NOW', args=[], line=0, column=0)}, spread=None, line=0, column=0)
             self.store("vm_allocated_msg", self._compute_vm_allocated_msg())
             for recipient in self.load("witnesses", []):
                 msg_payload = self._build_vm_allocated_payload()
@@ -271,11 +271,11 @@ class Provider(Actor):
                 self.store("termination_reason", TerminationReason.CONNECTIVITY_FAILED)
                 self.transition_to(ProviderState.SENDING_CANCELLATION)
 
-            # Auto transition with guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=234, column=61)], line=234, column=54), op=<BinaryOperator.GTE: 10>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='witnesses', line=234, column=91)], line=234, column=84), line=234, column=81), op=<BinaryOperator.AND: 11>, right=BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='count_positive_votes', args=[Identifier(name='connectivity_votes', line=234, column=127)], line=234, column=106), op=<BinaryOperator.DIV: 4>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=234, column=156)], line=234, column=149), line=234, column=147), op=<BinaryOperator.GTE: 10>, right=Identifier(name='CONNECTIVITY_THRESHOLD', line=234, column=179), line=234, column=176), line=234, column=102)
+            # Auto transition with guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.GTE: 10>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='witnesses', line=0, column=0)], line=0, column=0), line=0, column=0), op=<BinaryOperator.AND: 11>, right=BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='count_positive_votes', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.DIV: 4>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), line=0, column=0), op=<BinaryOperator.GTE: 10>, right=Identifier(name='CONNECTIVITY_THRESHOLD', line=0, column=0), line=0, column=0), line=0, column=0)
             if self._check_LENGTH_connectivity_votes_gte_LENGTH_witnesses_and_count_pos():
                 self.store("verification_passed", True)
                 self.transition_to(ProviderState.VM_RUNNING)
-            # Auto transition with guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=239, column=71)], line=239, column=64), op=<BinaryOperator.GTE: 10>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='witnesses', line=239, column=101)], line=239, column=94), line=239, column=91), op=<BinaryOperator.AND: 11>, right=BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='count_positive_votes', args=[Identifier(name='connectivity_votes', line=239, column=137)], line=239, column=116), op=<BinaryOperator.DIV: 4>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=239, column=166)], line=239, column=159), line=239, column=157), op=<BinaryOperator.LT: 7>, right=Identifier(name='CONNECTIVITY_THRESHOLD', line=239, column=188), line=239, column=186), line=239, column=112)
+            # Auto transition with guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.GTE: 10>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='witnesses', line=0, column=0)], line=0, column=0), line=0, column=0), op=<BinaryOperator.AND: 11>, right=BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='count_positive_votes', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.DIV: 4>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), line=0, column=0), op=<BinaryOperator.LT: 7>, right=Identifier(name='CONNECTIVITY_THRESHOLD', line=0, column=0), line=0, column=0), line=0, column=0)
             elif self._check_LENGTH_connectivity_votes_gte_LENGTH_witnesses_and_count_pos():
                 self.store("verification_passed", False)
                 self.store("termination_reason", TerminationReason.CONNECTIVITY_FAILED)
@@ -298,7 +298,7 @@ class Provider(Actor):
 
         elif self.state == ProviderState.SENDING_CANCELLATION:
             # Auto transition
-            # Compute: vm_cancelled_msg = StructLiteralExpr(fields={'session_id': FunctionCallExpr(name='LOAD', args=[Identifier(name='session_id', line=272, column=55)], line=272, column=50), 'provider': Identifier(name='peer_id', line=272, column=78), 'cancelled_at': FunctionCallExpr(name='LOAD', args=[Identifier(name='cancelled_at', line=272, column=106)], line=272, column=101), 'reason': FunctionCallExpr(name='LOAD', args=[Identifier(name='termination_reason', line=272, column=134)], line=272, column=129), 'actual_duration_seconds': BinaryExpr(left=FunctionCallExpr(name='LOAD', args=[Identifier(name='cancelled_at', line=272, column=185)], line=272, column=180), op=<BinaryOperator.SUB: 2>, right=FunctionCallExpr(name='LOAD', args=[Identifier(name='vm_allocated_at', line=272, column=206)], line=272, column=201), line=272, column=199), 'timestamp': FunctionCallExpr(name='NOW', args=[], line=272, column=235)}, spread=None, line=272, column=36)
+            # Compute: vm_cancelled_msg = StructLiteralExpr(fields={'session_id': FunctionCallExpr(name='LOAD', args=[Identifier(name='session_id', line=0, column=0)], line=0, column=0), 'provider': Identifier(name='peer_id', line=0, column=0), 'cancelled_at': FunctionCallExpr(name='LOAD', args=[Identifier(name='cancelled_at', line=0, column=0)], line=0, column=0), 'reason': FunctionCallExpr(name='LOAD', args=[Identifier(name='termination_reason', line=0, column=0)], line=0, column=0), 'actual_duration_seconds': BinaryExpr(left=FunctionCallExpr(name='LOAD', args=[Identifier(name='cancelled_at', line=0, column=0)], line=0, column=0), op=<BinaryOperator.SUB: 2>, right=FunctionCallExpr(name='LOAD', args=[Identifier(name='vm_allocated_at', line=0, column=0)], line=0, column=0), line=0, column=0), 'timestamp': FunctionCallExpr(name='NOW', args=[], line=0, column=0)}, spread=None, line=0, column=0)
             self.store("vm_cancelled_msg", self._compute_vm_cancelled_msg())
             for recipient in self.load("witnesses", []):
                 msg_payload = self._build_vm_cancelled_payload()
@@ -356,6 +356,19 @@ class Provider(Actor):
         payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
+    def _build_vm_cancelled_payload(self) -> Dict[str, Any]:
+        """Build payload for VM_CANCELLED message."""
+        payload = {
+            "session_id": self._serialize_value(self.load("session_id")),
+            "provider": self._serialize_value(self.load("provider")),
+            "cancelled_at": self._serialize_value(self.load("cancelled_at")),
+            "reason": self._serialize_value(self.load("reason")),
+            "actual_duration_seconds": self._serialize_value(self.load("actual_duration_seconds")),
+            "timestamp": self.current_time,
+        }
+        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
+        return payload
+
     def _build_session_terminated_payload(self) -> Dict[str, Any]:
         """Build payload for SESSION_TERMINATED message."""
         payload = {
@@ -372,19 +385,6 @@ class Provider(Actor):
             "vm_info": self._serialize_value(self.load("vm_info")),
             "timestamp": self.current_time,
         }
-        return payload
-
-    def _build_vm_cancelled_payload(self) -> Dict[str, Any]:
-        """Build payload for VM_CANCELLED message."""
-        payload = {
-            "session_id": self._serialize_value(self.load("session_id")),
-            "provider": self._serialize_value(self.load("provider")),
-            "cancelled_at": self._serialize_value(self.load("cancelled_at")),
-            "reason": self._serialize_value(self.load("reason")),
-            "actual_duration_seconds": self._serialize_value(self.load("actual_duration_seconds")),
-            "timestamp": self.current_time,
-        }
-        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
         return payload
 
     def _check_LENGTH_connectivity_votes_gte_LENGTH_witnesses_and_count_pos(self) -> bool:
@@ -406,7 +406,7 @@ class Provider(Actor):
     def _compute_vm_allocated_msg(self) -> Any:
         """Compute vm_allocated_msg."""
         # Schema: { session_id: LOAD(session_id), provider: peer_id, consumer:...
-        return {"session_id": self.load("session_id"), "provider": self.peer_id, "consumer": self.load("consumer"), "vm_info": self.load("vm_info"), "allocated_at": self.load("vm_allocated_at"), "lock_result_hash": hash_data(self._to_hashable(self.load("lock_result"))), "timestamp": self.current_time}
+        return {"session_id": self.load("session_id"), "provider": self.peer_id, "consumer": self.load("consumer"), "vm_info": self.load("vm_info"), "allocated_at": self.load("vm_allocated_at"), "lock_result_hash": hash_data(self.load("lock_result")), "timestamp": self.current_time}
 
     def _compute_vm_cancelled_msg(self) -> Any:
         """Compute vm_cancelled_msg."""
@@ -523,14 +523,11 @@ class Provider(Actor):
     def _COMPUTE_CONSENSUS(self, verdicts: List[str], threshold: int) -> str:
         """Compute COMPUTE_CONSENSUS."""
         accept_count = len([v for v in verdicts if (v == self.load("ACCEPT"))])
-        if (accept_count >= threshold):
-            return "ACCEPT"
-        else:
-            return "REJECT"
+        return ("ACCEPT" if (accept_count >= threshold) else "REJECT")
 
     def _EXTRACT_FIELD(self, records: List[Any], field: str) -> List[Any]:
         """Compute EXTRACT_FIELD."""
-        return [r[field] for r in records]
+        return [r.get(field) for r in records]
 
     def _COUNT_MATCHING(self, items: List[Any], predicate: Any) -> int:
         """Compute COUNT_MATCHING."""
@@ -560,17 +557,17 @@ class Provider(Actor):
 
     def _GET(self, d: Dict[str, Any], key: str, default: Any) -> Any:
         """Compute GET."""
-        return (d[key] if self._has_key(d, key) else default)
+        return (d.get(key) if self._has_key(d, key) else default)
 
     def _count_positive_votes(self, votes: List[Dict[str, Any]]) -> int:
         """Compute count_positive_votes."""
-        return len([v for v in votes if (v.get("can_reach_vm")== True)])
+        return len([v for v in votes if (v.get("can_reach_vm") == True)])
 
     def _build_cabal_votes_map(self, votes: List[Dict[str, Any]]) -> Dict[str, bool]:
         """Compute build_cabal_votes_map."""
-        result = { }
+        result = {}
         for v in votes:
-            pass
+            result = v.get("can_reach_vm")
         return result
 
     def _check_vm_connectivity(self, vm_endpoint: str) -> bool:
@@ -630,23 +627,23 @@ class Witness(Actor):
             if msgs:
                 _msg = msgs[0]
                 self.store("vm_allocated_msg", _msg.payload)
-                self.store("vm_allocated_at", _msg.payload.self.load("allocated_at"))
+                self.store("vm_allocated_at", _msg.payload.get("allocated_at"))
                 self.transition_to(WitnessState.VERIFYING_VM)
                 self.message_queue.remove(_msg)  # Only remove processed message
 
 
         elif self.state == WitnessState.VERIFYING_VM:
             # Auto transition
-            # Compute: can_reach_vm = FunctionCallExpr(name='check_vm_connectivity', args=[EnumRefExpr(enum_name='vm_allocated_msg', value='consumer_wireguard_endpoint', line=342, column=54)], line=342, column=32)
+            # Compute: can_reach_vm = FunctionCallExpr(name='check_vm_connectivity', args=[FieldAccessExpr(object=Identifier(name='vm_allocated_msg', line=0, column=0), field='consumer_wireguard_endpoint', line=0, column=0)], line=0, column=0)
             self.store("can_reach_vm", self._compute_can_reach_vm())
-            # Compute: can_see_consumer_connected = FunctionCallExpr(name='check_consumer_connected', args=[Identifier(name='session_id', line=343, column=71)], line=343, column=46)
+            # Compute: can_see_consumer_connected = FunctionCallExpr(name='check_consumer_connected', args=[Identifier(name='session_id', line=0, column=0)], line=0, column=0)
             self.store("can_see_consumer_connected", self._compute_can_see_consumer_connected())
             self.store("witness", self.peer_id)
-            # Compute: vote_data = StructLiteralExpr(fields={'session_id': FunctionCallExpr(name='LOAD', args=[Identifier(name='session_id', line=345, column=48)], line=345, column=43), 'witness': Identifier(name='peer_id', line=345, column=70), 'can_reach_vm': FunctionCallExpr(name='LOAD', args=[Identifier(name='can_reach_vm', line=345, column=98)], line=345, column=93), 'can_see_consumer_connected': FunctionCallExpr(name='LOAD', args=[Identifier(name='can_see_consumer_connected', line=345, column=146)], line=345, column=141), 'timestamp': FunctionCallExpr(name='NOW', args=[], line=345, column=186)}, spread=None, line=345, column=29)
+            # Compute: vote_data = StructLiteralExpr(fields={'session_id': FunctionCallExpr(name='LOAD', args=[Identifier(name='session_id', line=0, column=0)], line=0, column=0), 'witness': Identifier(name='peer_id', line=0, column=0), 'can_reach_vm': FunctionCallExpr(name='LOAD', args=[Identifier(name='can_reach_vm', line=0, column=0)], line=0, column=0), 'can_see_consumer_connected': FunctionCallExpr(name='LOAD', args=[Identifier(name='can_see_consumer_connected', line=0, column=0)], line=0, column=0), 'timestamp': FunctionCallExpr(name='NOW', args=[], line=0, column=0)}, spread=None, line=0, column=0)
             self.store("vote_data", self._compute_vote_data())
-            # Compute: vote_signature = FunctionCallExpr(name='SIGN', args=[FunctionCallExpr(name='LOAD', args=[Identifier(name='vote_data', line=346, column=44)], line=346, column=39)], line=346, column=34)
+            # Compute: vote_signature = FunctionCallExpr(name='SIGN', args=[FunctionCallExpr(name='LOAD', args=[Identifier(name='vote_data', line=0, column=0)], line=0, column=0)], line=0, column=0)
             self.store("vote_signature", self._compute_vote_signature())
-            # Compute: my_connectivity_vote = StructLiteralExpr(fields={'signature': FunctionCallExpr(name='LOAD', args=[Identifier(name='vote_signature', line=347, column=78)], line=347, column=73)}, spread=FunctionCallExpr(name='LOAD', args=[Identifier(name='vote_data', line=347, column=50)], line=347, column=45), line=347, column=40)
+            # Compute: my_connectivity_vote = StructLiteralExpr(fields={'signature': FunctionCallExpr(name='LOAD', args=[Identifier(name='vote_signature', line=0, column=0)], line=0, column=0)}, spread=FunctionCallExpr(name='LOAD', args=[Identifier(name='vote_data', line=0, column=0)], line=0, column=0), line=0, column=0)
             self.store("my_connectivity_vote", self._compute_my_connectivity_vote())
             for recipient in self.load("other_witnesses", []):
                 msg_payload = self._build_vm_connectivity_vote_payload()
@@ -684,16 +681,16 @@ class Witness(Actor):
             if self.current_time - self.load('state_entered_at', 0) > CONNECTIVITY_VOTE_TIMEOUT:
                 self.transition_to(WitnessState.EVALUATING_CONNECTIVITY)
 
-            # Auto transition with guard: BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=360, column=66)], line=360, column=59), op=<BinaryOperator.GTE: 10>, right=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='other_witnesses', line=360, column=96)], line=360, column=89), op=<BinaryOperator.ADD: 1>, right=Literal(value=1, type='number', line=360, column=115), line=360, column=113), line=360, column=86)
+            # Auto transition with guard: BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.GTE: 10>, right=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='other_witnesses', line=0, column=0)], line=0, column=0), op=<BinaryOperator.ADD: 1>, right=Literal(value=1, type='number', line=0, column=0), line=0, column=0), line=0, column=0)
             if self._check_LENGTH_connectivity_votes_gte_LENGTH_other_witnesses_1():
                 self.transition_to(WitnessState.EVALUATING_CONNECTIVITY)
 
         elif self.state == WitnessState.EVALUATING_CONNECTIVITY:
-            # Auto transition with guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=366, column=60)], line=366, column=53), op=<BinaryOperator.GT: 8>, right=Literal(value=0, type='number', line=366, column=82), line=366, column=80), op=<BinaryOperator.AND: 11>, right=BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='count_positive_votes', args=[Identifier(name='connectivity_votes', line=366, column=109)], line=366, column=88), op=<BinaryOperator.DIV: 4>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=366, column=138)], line=366, column=131), line=366, column=129), op=<BinaryOperator.GTE: 10>, right=Identifier(name='CONNECTIVITY_THRESHOLD', line=366, column=161), line=366, column=158), line=366, column=84)
+            # Auto transition with guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.GT: 8>, right=Literal(value=0, type='number', line=0, column=0), line=0, column=0), op=<BinaryOperator.AND: 11>, right=BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='count_positive_votes', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.DIV: 4>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), line=0, column=0), op=<BinaryOperator.GTE: 10>, right=Identifier(name='CONNECTIVITY_THRESHOLD', line=0, column=0), line=0, column=0), line=0, column=0)
             if self._check_LENGTH_connectivity_votes_gt_0_and_count_positive_votes_conn():
                 self.store("connectivity_verified", True)
                 self.transition_to(WitnessState.MONITORING)
-            # Auto transition with guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=371, column=62)], line=371, column=55), op=<BinaryOperator.EQ: 5>, right=Literal(value=0, type='number', line=371, column=85), line=371, column=82), op=<BinaryOperator.OR: 12>, right=BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='count_positive_votes', args=[Identifier(name='connectivity_votes', line=371, column=111)], line=371, column=90), op=<BinaryOperator.DIV: 4>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=371, column=140)], line=371, column=133), line=371, column=131), op=<BinaryOperator.LT: 7>, right=Identifier(name='CONNECTIVITY_THRESHOLD', line=371, column=162), line=371, column=160), line=371, column=87)
+            # Auto transition with guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.EQ: 5>, right=Literal(value=0, type='number', line=0, column=0), line=0, column=0), op=<BinaryOperator.OR: 12>, right=BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='count_positive_votes', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.DIV: 4>, right=FunctionCallExpr(name='LENGTH', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), line=0, column=0), op=<BinaryOperator.LT: 7>, right=Identifier(name='CONNECTIVITY_THRESHOLD', line=0, column=0), line=0, column=0), line=0, column=0)
             elif self._check_LENGTH_connectivity_votes_eq_0_or_count_positive_votes_conne():
                 self.store("connectivity_verified", False)
                 self.store("abort_reason", "vm_unreachable")
@@ -705,8 +702,8 @@ class Witness(Actor):
             if msgs:
                 _msg = msgs[0]
                 self.store("vm_cancelled_msg", _msg.payload)
-                self.store("actual_duration_seconds", _msg.payload.self.load("actual_duration_seconds"))
-                self.store("termination_reason", _msg.payload.self.load("reason"))
+                self.store("actual_duration_seconds", _msg.payload.get("actual_duration_seconds"))
+                self.store("termination_reason", _msg.payload.get("reason"))
                 self.transition_to(WitnessState.ATTESTING)
                 self.message_queue.remove(_msg)  # Only remove processed message
 
@@ -720,21 +717,21 @@ class Witness(Actor):
 
 
         elif self.state == WitnessState.HANDLING_MISUSE:
-            # Auto transition with guard: BinaryExpr(left=FieldAccessExpr(object=FunctionCallExpr(name='LOAD', args=[Identifier(name='misuse_accusation', line=389, column=52)], line=389, column=47), field='evidence', line=389, column=47), op=<BinaryOperator.NEQ: 6>, right=Literal(value='', type='string', line=389, column=83), line=389, column=80)
+            # Auto transition with guard: BinaryExpr(left=FieldAccessExpr(object=FunctionCallExpr(name='LOAD', args=[Identifier(name='misuse_accusation', line=0, column=0)], line=0, column=0), field='evidence', line=0, column=0), op=<BinaryOperator.NEQ: 6>, right=Literal(value='', type='string', line=0, column=0), line=0, column=0)
             if self._check_LOAD_misuse_accusation_evidence_neq():
                 self.store("abort_reason", "consumer_misuse")
                 self.transition_to(WitnessState.VOTING_ABORT)
-            # Auto transition with guard: BinaryExpr(left=FieldAccessExpr(object=FunctionCallExpr(name='LOAD', args=[Identifier(name='misuse_accusation', line=394, column=50)], line=394, column=45), field='evidence', line=394, column=45), op=<BinaryOperator.EQ: 5>, right=Literal(value='', type='string', line=394, column=81), line=394, column=78)
+            # Auto transition with guard: BinaryExpr(left=FieldAccessExpr(object=FunctionCallExpr(name='LOAD', args=[Identifier(name='misuse_accusation', line=0, column=0)], line=0, column=0), field='evidence', line=0, column=0), op=<BinaryOperator.EQ: 5>, right=Literal(value='', type='string', line=0, column=0), line=0, column=0)
             elif self._check_LOAD_misuse_accusation_evidence_eq():
                 self.transition_to(WitnessState.MONITORING)
 
         elif self.state == WitnessState.VOTING_ABORT:
             # Auto transition
-            # Compute: abort_vote_data = StructLiteralExpr(fields={'session_id': FunctionCallExpr(name='LOAD', args=[Identifier(name='session_id', line=398, column=54)], line=398, column=49), 'witness': Identifier(name='peer_id', line=398, column=76), 'reason': FunctionCallExpr(name='LOAD', args=[Identifier(name='abort_reason', line=398, column=98)], line=398, column=93), 'timestamp': FunctionCallExpr(name='NOW', args=[], line=398, column=124)}, spread=None, line=398, column=35)
+            # Compute: abort_vote_data = StructLiteralExpr(fields={'session_id': FunctionCallExpr(name='LOAD', args=[Identifier(name='session_id', line=0, column=0)], line=0, column=0), 'witness': Identifier(name='peer_id', line=0, column=0), 'reason': FunctionCallExpr(name='LOAD', args=[Identifier(name='abort_reason', line=0, column=0)], line=0, column=0), 'timestamp': FunctionCallExpr(name='NOW', args=[], line=0, column=0)}, spread=None, line=0, column=0)
             self.store("abort_vote_data", self._compute_abort_vote_data())
-            # Compute: abort_vote_signature = FunctionCallExpr(name='SIGN', args=[FunctionCallExpr(name='LOAD', args=[Identifier(name='abort_vote_data', line=399, column=50)], line=399, column=45)], line=399, column=40)
+            # Compute: abort_vote_signature = FunctionCallExpr(name='SIGN', args=[FunctionCallExpr(name='LOAD', args=[Identifier(name='abort_vote_data', line=0, column=0)], line=0, column=0)], line=0, column=0)
             self.store("abort_vote_signature", self._compute_abort_vote_signature())
-            # Compute: my_abort_vote = StructLiteralExpr(fields={'signature': FunctionCallExpr(name='LOAD', args=[Identifier(name='abort_vote_signature', line=400, column=77)], line=400, column=72)}, spread=FunctionCallExpr(name='LOAD', args=[Identifier(name='abort_vote_data', line=400, column=43)], line=400, column=38), line=400, column=33)
+            # Compute: my_abort_vote = StructLiteralExpr(fields={'signature': FunctionCallExpr(name='LOAD', args=[Identifier(name='abort_vote_signature', line=0, column=0)], line=0, column=0)}, spread=FunctionCallExpr(name='LOAD', args=[Identifier(name='abort_vote_data', line=0, column=0)], line=0, column=0), line=0, column=0)
             self.store("my_abort_vote", self._compute_my_abort_vote())
             for recipient in self.load("other_witnesses", []):
                 msg_payload = self._build_abort_vote_payload()
@@ -770,7 +767,7 @@ class Witness(Actor):
                 self.store("termination_reason", self.load("abort_reason"))
                 self.transition_to(WitnessState.ATTESTING)
 
-            # Auto transition with guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='abort_votes', line=412, column=58)], line=412, column=51), op=<BinaryOperator.DIV: 4>, right=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='other_witnesses', line=412, column=81)], line=412, column=74), op=<BinaryOperator.ADD: 1>, right=Literal(value=1, type='number', line=412, column=100), line=412, column=98), line=412, column=71), op=<BinaryOperator.GTE: 10>, right=Identifier(name='ABORT_THRESHOLD', line=412, column=106), line=412, column=103)
+            # Auto transition with guard: BinaryExpr(left=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='abort_votes', line=0, column=0)], line=0, column=0), op=<BinaryOperator.DIV: 4>, right=BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='other_witnesses', line=0, column=0)], line=0, column=0), op=<BinaryOperator.ADD: 1>, right=Literal(value=1, type='number', line=0, column=0), line=0, column=0), line=0, column=0), op=<BinaryOperator.GTE: 10>, right=Identifier(name='ABORT_THRESHOLD', line=0, column=0), line=0, column=0)
             if self._check_LENGTH_abort_votes_LENGTH_other_witnesses_1_gte_ABORT_THRESH():
                 self.store("session_aborted", True)
                 self.store("termination_reason", self.load("abort_reason"))
@@ -778,11 +775,11 @@ class Witness(Actor):
 
         elif self.state == WitnessState.ATTESTING:
             # Auto transition
-            # Compute: attestation = StructLiteralExpr(fields={'session_id': FunctionCallExpr(name='LOAD', args=[Identifier(name='session_id', line=428, column=50)], line=428, column=45), 'vm_allocated_hash': FunctionCallExpr(name='HASH', args=[FunctionCallExpr(name='LOAD', args=[Identifier(name='vm_allocated_msg', line=428, column=92)], line=428, column=87)], line=428, column=82), 'vm_cancelled_hash': FunctionCallExpr(name='HASH', args=[FunctionCallExpr(name='LOAD', args=[Identifier(name='vm_cancelled_msg', line=428, column=141)], line=428, column=136)], line=428, column=131), 'connectivity_verified': FunctionCallExpr(name='LOAD', args=[Identifier(name='connectivity_verified', line=428, column=189)], line=428, column=184), 'actual_duration_seconds': FunctionCallExpr(name='LOAD', args=[Identifier(name='actual_duration_seconds', line=428, column=243)], line=428, column=238), 'termination_reason': FunctionCallExpr(name='LOAD', args=[Identifier(name='termination_reason', line=428, column=294)], line=428, column=289), 'cabal_votes': FunctionCallExpr(name='LOAD', args=[Identifier(name='connectivity_votes', line=428, column=333)], line=428, column=328), 'cabal_signatures': ListLiteralExpr(elements=[], line=428, column=372), 'created_at': FunctionCallExpr(name='NOW', args=[], line=428, column=388)}, spread=None, line=428, column=31)
+            # Compute: attestation = StructLiteralExpr(fields={'session_id': FunctionCallExpr(name='LOAD', args=[Identifier(name='session_id', line=0, column=0)], line=0, column=0), 'vm_allocated_hash': FunctionCallExpr(name='HASH', args=[FunctionCallExpr(name='LOAD', args=[Identifier(name='vm_allocated_msg', line=0, column=0)], line=0, column=0)], line=0, column=0), 'vm_cancelled_hash': FunctionCallExpr(name='HASH', args=[FunctionCallExpr(name='LOAD', args=[Identifier(name='vm_cancelled_msg', line=0, column=0)], line=0, column=0)], line=0, column=0), 'connectivity_verified': FunctionCallExpr(name='LOAD', args=[Identifier(name='connectivity_verified', line=0, column=0)], line=0, column=0), 'actual_duration_seconds': FunctionCallExpr(name='LOAD', args=[Identifier(name='actual_duration_seconds', line=0, column=0)], line=0, column=0), 'termination_reason': FunctionCallExpr(name='LOAD', args=[Identifier(name='termination_reason', line=0, column=0)], line=0, column=0), 'cabal_votes': FunctionCallExpr(name='LOAD', args=[Identifier(name='connectivity_votes', line=0, column=0)], line=0, column=0), 'cabal_signatures': ListLiteralExpr(elements=[], line=0, column=0), 'created_at': FunctionCallExpr(name='NOW', args=[], line=0, column=0)}, spread=None, line=0, column=0)
             self.store("attestation", self._compute_attestation())
-            # Compute: my_signature = FunctionCallExpr(name='SIGN', args=[FunctionCallExpr(name='LOAD', args=[Identifier(name='attestation', line=429, column=42)], line=429, column=37)], line=429, column=32)
+            # Compute: my_signature = FunctionCallExpr(name='SIGN', args=[FunctionCallExpr(name='LOAD', args=[Identifier(name='attestation', line=0, column=0)], line=0, column=0)], line=0, column=0)
             self.store("my_signature", self._compute_my_signature())
-            self.store("attestation_signatures", [{ self.load("witness"): self.peer_id, self.load("signature"): self.load("my_signature") }])
+            self.store("attestation_signatures", [{"witness": self.peer_id, "signature": self.load("my_signature")}])
             for recipient in self.load("other_witnesses", []):
                 msg_payload = self._build_attestation_share_payload()
                 outgoing.append(Message(
@@ -801,18 +798,18 @@ class Witness(Actor):
             if msgs:
                 _msg = msgs[0]
                 _list = self.load("attestation_signatures") or []
-                _list.append(_msg.payload.self.load("attestation").get("cabal_signatures"))
+                _list.append(_msg.payload.get("attestation").get("cabal_signatures"))
                 self.store("attestation_signatures", _list)
                 self.transition_to(WitnessState.COLLECTING_ATTESTATION_SIGS)
                 self.message_queue.remove(_msg)  # Only remove processed message
 
-            # Auto transition with guard: BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='attestation_signatures', line=441, column=77)], line=441, column=70), op=<BinaryOperator.GTE: 10>, right=Identifier(name='ATTESTATION_THRESHOLD', line=441, column=104), line=441, column=101)
+            # Auto transition with guard: BinaryExpr(left=FunctionCallExpr(name='LENGTH', args=[Identifier(name='attestation_signatures', line=0, column=0)], line=0, column=0), op=<BinaryOperator.GTE: 10>, right=Identifier(name='ATTESTATION_THRESHOLD', line=0, column=0), line=0, column=0)
             if self._check_LENGTH_attestation_signatures_gte_ATTESTATION_THRESHOLD():
                 self.transition_to(WitnessState.PROPAGATING_ATTESTATION)
 
         elif self.state == WitnessState.PROPAGATING_ATTESTATION:
             # Auto transition
-            # Compute: final_attestation = StructLiteralExpr(fields={'cabal_signatures': FunctionCallExpr(name='LOAD', args=[Identifier(name='attestation_signatures', line=445, column=84)], line=445, column=79)}, spread=FunctionCallExpr(name='LOAD', args=[Identifier(name='attestation', line=445, column=47)], line=445, column=42), line=445, column=37)
+            # Compute: final_attestation = StructLiteralExpr(fields={'cabal_signatures': FunctionCallExpr(name='LOAD', args=[Identifier(name='attestation_signatures', line=0, column=0)], line=0, column=0)}, spread=FunctionCallExpr(name='LOAD', args=[Identifier(name='attestation', line=0, column=0)], line=0, column=0), line=0, column=0)
             self.store("final_attestation", self._compute_final_attestation())
             msg_payload = self._build_attestation_result_payload()
             outgoing.append(Message(
@@ -843,18 +840,6 @@ class Witness(Actor):
 
         return outgoing
 
-    def _build_vm_connectivity_vote_payload(self) -> Dict[str, Any]:
-        """Build payload for VM_CONNECTIVITY_VOTE message."""
-        payload = {
-            "session_id": self._serialize_value(self.load("session_id")),
-            "witness": self._serialize_value(self.load("witness")),
-            "can_reach_vm": self._serialize_value(self.load("can_reach_vm")),
-            "can_see_consumer_connected": self._serialize_value(self.load("can_see_consumer_connected")),
-            "timestamp": self.current_time,
-        }
-        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
-        return payload
-
     def _build_abort_vote_payload(self) -> Dict[str, Any]:
         """Build payload for ABORT_VOTE message."""
         payload = {
@@ -882,9 +867,21 @@ class Witness(Actor):
         }
         return payload
 
+    def _build_vm_connectivity_vote_payload(self) -> Dict[str, Any]:
+        """Build payload for VM_CONNECTIVITY_VOTE message."""
+        payload = {
+            "session_id": self._serialize_value(self.load("session_id")),
+            "witness": self._serialize_value(self.load("witness")),
+            "can_reach_vm": self._serialize_value(self.load("can_reach_vm")),
+            "can_see_consumer_connected": self._serialize_value(self.load("can_see_consumer_connected")),
+            "timestamp": self.current_time,
+        }
+        payload["signature"] = sign(self.chain.private_key, hash_data(payload))
+        return payload
+
     def _check_message_payload_witness_neq_peer_id(self) -> bool:
         # Schema: (message.payload.witness != peer_id)...
-        return (_msg.payload.self.load("witness") != self.peer_id)
+        return (_msg.payload.get("witness") != self.peer_id)
 
     def _check_LENGTH_connectivity_votes_gte_LENGTH_other_witnesses_1(self) -> bool:
         # Schema: (LENGTH(connectivity_votes) >= (LENGTH(other_witnesses) + 1)...
@@ -961,7 +958,7 @@ class Witness(Actor):
     def _compute_attestation(self) -> Any:
         """Compute attestation."""
         # Schema: { session_id: LOAD(session_id), vm_allocated_hash: HASH(LOAD...
-        return {"session_id": self.load("session_id"), "vm_allocated_hash": hash_data(self._to_hashable(self.load("vm_allocated_msg"))), "vm_cancelled_hash": hash_data(self._to_hashable(self.load("vm_cancelled_msg"))), "connectivity_verified": self.load("connectivity_verified"), "actual_duration_seconds": self.load("actual_duration_seconds"), "termination_reason": self.load("termination_reason"), "cabal_votes": self.load("connectivity_votes"), "cabal_signatures": [], "created_at": self.current_time}
+        return {"session_id": self.load("session_id"), "vm_allocated_hash": hash_data(self.load("vm_allocated_msg")), "vm_cancelled_hash": hash_data(self.load("vm_cancelled_msg")), "connectivity_verified": self.load("connectivity_verified"), "actual_duration_seconds": self.load("actual_duration_seconds"), "termination_reason": self.load("termination_reason"), "cabal_votes": self.load("connectivity_votes"), "cabal_signatures": [], "created_at": self.current_time}
 
     def _compute_my_signature(self) -> Any:
         """Compute my_signature."""
@@ -1094,14 +1091,11 @@ class Witness(Actor):
     def _COMPUTE_CONSENSUS(self, verdicts: List[str], threshold: int) -> str:
         """Compute COMPUTE_CONSENSUS."""
         accept_count = len([v for v in verdicts if (v == self.load("ACCEPT"))])
-        if (accept_count >= threshold):
-            return "ACCEPT"
-        else:
-            return "REJECT"
+        return ("ACCEPT" if (accept_count >= threshold) else "REJECT")
 
     def _EXTRACT_FIELD(self, records: List[Any], field: str) -> List[Any]:
         """Compute EXTRACT_FIELD."""
-        return [r[field] for r in records]
+        return [r.get(field) for r in records]
 
     def _COUNT_MATCHING(self, items: List[Any], predicate: Any) -> int:
         """Compute COUNT_MATCHING."""
@@ -1131,17 +1125,17 @@ class Witness(Actor):
 
     def _GET(self, d: Dict[str, Any], key: str, default: Any) -> Any:
         """Compute GET."""
-        return (d[key] if self._has_key(d, key) else default)
+        return (d.get(key) if self._has_key(d, key) else default)
 
     def _count_positive_votes(self, votes: List[Dict[str, Any]]) -> int:
         """Compute count_positive_votes."""
-        return len([v for v in votes if (v.get("can_reach_vm")== True)])
+        return len([v for v in votes if (v.get("can_reach_vm") == True)])
 
     def _build_cabal_votes_map(self, votes: List[Dict[str, Any]]) -> Dict[str, bool]:
         """Compute build_cabal_votes_map."""
-        result = { }
+        result = {}
         for v in votes:
-            pass
+            result = v.get("can_reach_vm")
         return result
 
     def _check_vm_connectivity(self, vm_endpoint: str) -> bool:
@@ -1370,14 +1364,11 @@ class Consumer(Actor):
     def _COMPUTE_CONSENSUS(self, verdicts: List[str], threshold: int) -> str:
         """Compute COMPUTE_CONSENSUS."""
         accept_count = len([v for v in verdicts if (v == self.load("ACCEPT"))])
-        if (accept_count >= threshold):
-            return "ACCEPT"
-        else:
-            return "REJECT"
+        return ("ACCEPT" if (accept_count >= threshold) else "REJECT")
 
     def _EXTRACT_FIELD(self, records: List[Any], field: str) -> List[Any]:
         """Compute EXTRACT_FIELD."""
-        return [r[field] for r in records]
+        return [r.get(field) for r in records]
 
     def _COUNT_MATCHING(self, items: List[Any], predicate: Any) -> int:
         """Compute COUNT_MATCHING."""
@@ -1407,17 +1398,17 @@ class Consumer(Actor):
 
     def _GET(self, d: Dict[str, Any], key: str, default: Any) -> Any:
         """Compute GET."""
-        return (d[key] if self._has_key(d, key) else default)
+        return (d.get(key) if self._has_key(d, key) else default)
 
     def _count_positive_votes(self, votes: List[Dict[str, Any]]) -> int:
         """Compute count_positive_votes."""
-        return len([v for v in votes if (v.get("can_reach_vm")== True)])
+        return len([v for v in votes if (v.get("can_reach_vm") == True)])
 
     def _build_cabal_votes_map(self, votes: List[Dict[str, Any]]) -> Dict[str, bool]:
         """Compute build_cabal_votes_map."""
-        result = { }
+        result = {}
         for v in votes:
-            pass
+            result = v.get("can_reach_vm")
         return result
 
     def _check_vm_connectivity(self, vm_endpoint: str) -> bool:

@@ -1,5 +1,10 @@
 # Chain Simulator Design
 
+**See also:**
+- [Protocol Format](FORMAT.md) for state machine DSL and primitives
+- [Code Generation](GENERATION.md) for how schemas produce executable actor code
+- [Design Philosophy](DESIGN_PHILOSOPHY.md) for why we use this approach
+
 ## Goals
 
 1. **Realistic transaction simulation** - Execute sequences of protocol transactions with physically accurate network modeling
@@ -2144,7 +2149,7 @@ class TestHappyPathEscrowLock:
 
 #### 3.1 Protocol Actor Integration
 
-- [ ] Adapt `Consumer`, `Provider`, `Witness` from escrow_lock.py to work with simulator
+- [ ] Adapt `Consumer`, `Provider`, `Witness` from escrow_lock_generated.py to work with simulator
 - [ ] Implement message routing between protocol actors and simulator
 
 **Tests (test_protocol_integration.py)**:
@@ -2202,9 +2207,9 @@ class TestWitnessConsensusWithNetwork:
         provider = create_protocol_provider("provider", engine)
         witnesses = [create_protocol_witness(f"witness_{i}", engine) for i in range(5)]
 
-        # Give witnesses cached balance info
+        # Give witnesses cached balance info (populates both cached_chains and peer_balances)
         for w in witnesses:
-            w.cached_chains["consumer"] = {"balance": 100.0}
+            w.set_cached_chain("consumer", {"balance": 100.0})
 
         consumer.initiate_lock("provider", 10.0)
         engine.run(until_time=30.0)  # Allow time for cross-region messages
@@ -2226,7 +2231,7 @@ class TestWitnessConsensusWithNetwork:
         witnesses = [create_protocol_witness(f"witness_{i}", engine) for i in range(5)]
 
         for w in witnesses:
-            w.cached_chains["consumer"] = {"balance": 100.0}
+            w.set_cached_chain("consumer", {"balance": 100.0})
 
         consumer.initiate_lock("provider", 10.0)
 
@@ -2255,7 +2260,7 @@ class TestDoubleSpendWithNetwork:
         witnesses = [create_protocol_witness(f"w_{i}", engine) for i in range(5)]
 
         for w in witnesses:
-            w.cached_chains["consumer"] = {"balance": 50.0}  # Not enough for both
+            w.set_cached_chain("consumer", {"balance": 50.0})  # Not enough for both
 
         # Initiate two locks nearly simultaneously
         consumer.initiate_lock("provider_a", 40.0)

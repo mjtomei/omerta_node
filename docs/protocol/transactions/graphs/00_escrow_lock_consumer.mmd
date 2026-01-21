@@ -1,7 +1,7 @@
 stateDiagram-v2
     [*] --> IDLE
     FAILED --> [*]
-    IDLE --> SENDING_LOCK_INTENT : initiate_lock\n[has_provider_checkpoint]
+    IDLE --> SENDING_LOCK_INTENT : initiate_lock\n[provider_chain_checkpoint != n...]
     SENDING_LOCK_INTENT --> WAITING_FOR_WITNESS_COMMITMENT : [auto]
     WAITING_FOR_WITNESS_COMMITMENT --> VERIFYING_PROVIDER_CHAIN : WITNESS_SELECTION_COMMITMENT
     WAITING_FOR_WITNESS_COMMITMENT --> FAILED : LOCK_REJECTED
@@ -12,6 +12,7 @@ stateDiagram-v2
     WAITING_FOR_RESULT --> REVIEWING_RESULT : LOCK_RESULT_FOR_SIGNATURE
     WAITING_FOR_RESULT --> FAILED : timeout(RECRUITMENT_TIMEOUT)
     REVIEWING_RESULT --> SIGNING_RESULT : [auto]\n[result_valid_and_accepted]
+    REVIEWING_RESULT --> FAILED : [auto]\n[NOT result_valid_and_accepted]
     SIGNING_RESULT --> LOCKED : [auto]
     LOCKED --> LOCKED : LIVENESS_PING
     LOCKED --> SENDING_TOPUP : initiate_topup

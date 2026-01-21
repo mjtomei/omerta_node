@@ -133,7 +133,7 @@ def create_protocol_agents_from_trace(
         ConsumerAgent, ProviderAgent, WitnessAgent,
         create_protocol_agent,
     )
-    from ...transactions.escrow_lock import Consumer, Provider, Witness
+    from ...transactions.escrow_lock_generated import Consumer, Provider, Witness
 
     # Create chains for all nodes
     chains: Dict[str, Chain] = {}
@@ -166,7 +166,7 @@ def create_protocol_agents_from_trace(
             actor = Consumer(peer_id=node_id, chain=chain)
             agent = ConsumerAgent(agent_id=node_id, protocol_actor=actor)
         elif role == "provider":
-            actor = Provider(peer_id=node_id, chain=chain, network=None)
+            actor = Provider(peer_id=node_id, chain=chain)
             agent = ProviderAgent(agent_id=node_id, protocol_actor=actor)
         else:
             actor = Witness(peer_id=node_id, chain=chain)

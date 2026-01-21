@@ -8,7 +8,7 @@ digraph {
 
 
     IDLE -> VALIDATING_CHECKPOINT [label="LOCK_INTENT"];
-    VALIDATING_CHECKPOINT -> SELECTING_WITNESSES [label="auto\n[checkpoint_exists_in_chai...]"];
+    VALIDATING_CHECKPOINT -> SELECTING_WITNESSES [label="auto\n[CHAIN_CONTAINS_HASH (my_c...]"];
     SENDING_REJECTION -> IDLE [label="auto"];
     SELECTING_WITNESSES -> SENDING_COMMITMENT [label="auto"];
     SENDING_COMMITMENT -> WAITING_FOR_LOCK [label="auto"];

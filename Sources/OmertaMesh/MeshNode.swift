@@ -179,8 +179,11 @@ public actor MeshNode {
     var peerPropagationQueue: [PeerId: (info: PeerEndpointInfo, count: Int)] = [:]
     let gossipFanout = 5  // Number of peers to forward each new peer info to
 
-    /// Our observed public endpoint as reported by peers (no STUN needed)
+    /// Our observed public IPv4 endpoint as reported by peers (no STUN needed)
     private var observedPublicEndpoint: String?
+
+    /// Our observed public IPv6 endpoint as reported by peers
+    private var observedIPv6Endpoint: String?
 
     /// Callback when our observed public endpoint changes
     private var endpointChangeHandler: ((String, String?) async -> Void)?
@@ -339,7 +342,8 @@ public actor MeshNode {
     /// Send a ping to a specific endpoint (for keepalive)
     private func sendPingToEndpoint(peerId: PeerId, endpoint: String, timeout: TimeInterval) async -> Bool {
         // Build our recentPeers to send (with machineId and NAT type)
-        let peerInfoList = await buildPeerEndpointInfoList()
+        // Pass currentEndpoint to advertise IPv6 if we're on IPv4
+        let peerInfoList = await buildPeerEndpointInfoList(currentEndpoint: endpoint)
         let sentPeers = Array(peerInfoList.prefix(5))
         let myNATType = await getPredictedNATType().type
         let ping = MeshMessage.ping(recentPeers: sentPeers, myNATType: myNATType)
@@ -622,7 +626,7 @@ public actor MeshNode {
             let myPeers: [PeerEndpointInfo]
             if requestFullList || isNewOrReconnecting {
                 // Explicit request or new/reconnecting peer gets full peer list to bootstrap their view of the network
-                myPeers = await buildPeerEndpointInfoList()
+                myPeers = await buildPeerEndpointInfoList(currentEndpoint: endpoint)
                 if requestFullList {
                     logger.info("Peer \(peerId.prefix(8))... requested full list - sending \(myPeers.count) known peers")
                 } else if hasEndpoints {
@@ -632,7 +636,7 @@ public actor MeshNode {
                 }
             } else {
                 // Known peer gets recent peers + propagation queue items (delta gossip)
-                myPeers = await buildPeerEndpointInfoListWithPropagation(excluding: peerId)
+                myPeers = await buildPeerEndpointInfoListWithPropagation(excluding: peerId, currentEndpoint: endpoint)
             }
 
             // Get our predicted NAT type (unknown until integrated with NATPredictor in Phase 2)
@@ -982,8 +986,6 @@ public actor MeshNode {
 
     /// Request peer list from known peers
     public func requestPeers() async {
-        // Build our peer list to share (with machineId and NAT type)
-        let myPeers = await buildPeerEndpointInfoList()
         let myNATType = await getPredictedNATType().type
 
         // Send ping to all known peers
@@ -992,6 +994,8 @@ public actor MeshNode {
             guard let endpoint = await endpointManager.getAllEndpoints(peerId: peerId).first else {
                 continue
             }
+            // Build peer list with currentEndpoint to conditionally advertise IPv6
+            let myPeers = await buildPeerEndpointInfoList(currentEndpoint: endpoint)
             await send(.ping(recentPeers: myPeers, myNATType: myNATType), to: endpoint)
         }
     }
@@ -1011,26 +1015,41 @@ public actor MeshNode {
 
     /// Update our observed public endpoint based on peer reports
     /// Called when we receive a pong message that tells us our endpoint
+    /// Tracks IPv4 and IPv6 endpoints separately
     private func updateObservedEndpoint(_ newEndpoint: String, reportedBy peerId: PeerId) async {
-        let oldEndpoint = observedPublicEndpoint
+        // Determine if this is IPv4 or IPv6
+        let isIPv6 = EndpointUtils.isIPv6(newEndpoint)
 
         // Record observation for NAT prediction
         let isBootstrap = bootstrapPeers.contains(peerId)
         await natPredictor.recordObservation(endpoint: newEndpoint, from: peerId, isBootstrap: isBootstrap)
 
-        // Only log if endpoint changed or is first report
-        if oldEndpoint != newEndpoint {
-            if let old = oldEndpoint {
-                logger.info("Observed endpoint changed from \(old) to \(newEndpoint) (reported by \(peerId.prefix(8))...)")
-            } else {
-                logger.info("Observed endpoint set to \(newEndpoint) (reported by \(peerId.prefix(8))...)")
+        if isIPv6 {
+            // Update IPv6 endpoint
+            if observedIPv6Endpoint != newEndpoint {
+                if let old = observedIPv6Endpoint {
+                    logger.info("Observed IPv6 endpoint changed from \(old) to \(newEndpoint) (reported by \(peerId.prefix(8))...)")
+                } else {
+                    logger.info("Observed IPv6 endpoint set to \(newEndpoint) (reported by \(peerId.prefix(8))...)")
+                }
+                observedIPv6Endpoint = newEndpoint
             }
+        } else {
+            // Update IPv4 endpoint
+            let oldEndpoint = observedPublicEndpoint
+            if oldEndpoint != newEndpoint {
+                if let old = oldEndpoint {
+                    logger.info("Observed endpoint changed from \(old) to \(newEndpoint) (reported by \(peerId.prefix(8))...)")
+                } else {
+                    logger.info("Observed endpoint set to \(newEndpoint) (reported by \(peerId.prefix(8))...)")
+                }
 
-            observedPublicEndpoint = newEndpoint
+                observedPublicEndpoint = newEndpoint
 
-            // Notify handler if set
-            if let handler = endpointChangeHandler {
-                await handler(newEndpoint, oldEndpoint)
+                // Notify handler if set
+                if let handler = endpointChangeHandler {
+                    await handler(newEndpoint, oldEndpoint)
+                }
             }
         }
     }
@@ -1464,7 +1483,8 @@ public actor MeshNode {
         }
 
         // Build our recentPeers to send (with machineId and NAT type)
-        let peerInfoList = await buildPeerEndpointInfoList()
+        // Pass currentEndpoint to advertise IPv6 if we're on IPv4
+        let peerInfoList = await buildPeerEndpointInfoList(currentEndpoint: endpoint)
         let sentPeers = Array(peerInfoList.prefix(5))
         let myNATType = await getPredictedNATType().type
         let ping = MeshMessage.ping(recentPeers: sentPeers, myNATType: myNATType, requestFullList: requestFullList)
@@ -1576,8 +1596,25 @@ public actor MeshNode {
     }
 
     /// Build a list of peer endpoint info for gossip (includes machineId, natType, and isFirstHand)
-    func buildPeerEndpointInfoList() async -> [PeerEndpointInfo] {
+    /// - Parameter currentEndpoint: The endpoint we're currently communicating over (to check if IPv6 upgrade should be advertised)
+    /// If we have an IPv6 endpoint AND are currently communicating over IPv4, includes ourselves to enable upgrade
+    func buildPeerEndpointInfoList(currentEndpoint: String? = nil) async -> [PeerEndpointInfo] {
         var result: [PeerEndpointInfo] = []
+
+        // Include ourselves with IPv6 endpoint for upgrade path
+        // Only if we're currently on IPv4 (otherwise they already have our IPv6)
+        let isCurrentlyIPv4 = currentEndpoint.map { !EndpointUtils.isIPv6($0) } ?? true
+        if isCurrentlyIPv4, let ipv6Endpoint = observedIPv6Endpoint {
+            let myNATType = await getPredictedNATType().type
+            result.append(PeerEndpointInfo(
+                peerId: peerId,
+                machineId: machineId,
+                endpoint: ipv6Endpoint,
+                natType: myNATType,
+                isFirstHand: true  // We know ourselves first-hand!
+            ))
+        }
+
         for peerId in await endpointManager.allPeerIds {
             guard peerId != self.peerId else { continue }
             let natType = await endpointManager.getNATType(peerId: peerId) ?? .unknown
@@ -1601,8 +1638,26 @@ public actor MeshNode {
 
     /// Build peer list including propagation queue items, decrementing their counts
     /// Used for regular keepalive responses to existing peers (delta gossip)
-    func buildPeerEndpointInfoListWithPropagation(excluding excludePeerId: PeerId) async -> [PeerEndpointInfo] {
+    /// - Parameters:
+    ///   - excludePeerId: Peer ID to exclude from the list
+    ///   - currentEndpoint: The endpoint we're currently communicating over
+    /// If we have an IPv6 endpoint AND are currently on IPv4, includes ourselves for upgrade
+    func buildPeerEndpointInfoListWithPropagation(excluding excludePeerId: PeerId, currentEndpoint: String? = nil) async -> [PeerEndpointInfo] {
         var result: [PeerEndpointInfo] = []
+
+        // Include ourselves with IPv6 endpoint for upgrade path
+        // Only if we're currently on IPv4
+        let isCurrentlyIPv4 = currentEndpoint.map { !EndpointUtils.isIPv6($0) } ?? true
+        if isCurrentlyIPv4, let ipv6Endpoint = observedIPv6Endpoint {
+            let myNATType = await getPredictedNATType().type
+            result.append(PeerEndpointInfo(
+                peerId: peerId,
+                machineId: machineId,
+                endpoint: ipv6Endpoint,
+                natType: myNATType,
+                isFirstHand: true
+            ))
+        }
 
         // Add known peers (up to 5)
         for peerId in await endpointManager.allPeerIds {

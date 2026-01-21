@@ -15,9 +15,17 @@ from enum import Enum
 # Cryptographic Primitives (simplified for simulation)
 # =============================================================================
 
+class _EnumEncoder(json.JSONEncoder):
+    """JSON encoder that handles Enum values."""
+    def default(self, obj):
+        if isinstance(obj, Enum):
+            return obj.name
+        return super().default(obj)
+
+
 def hash_data(data: dict) -> str:
     """Compute deterministic hash of a dictionary."""
-    canonical = json.dumps(data, sort_keys=True, separators=(',', ':'))
+    canonical = json.dumps(data, sort_keys=True, separators=(',', ':'), cls=_EnumEncoder)
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 

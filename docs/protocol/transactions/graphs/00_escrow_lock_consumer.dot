@@ -8,7 +8,7 @@ digraph {
 
     FAILED [shape=box, style="rounded,bold"];
 
-    IDLE -> SENDING_LOCK_INTENT [label="initiate_lock\n[has_provider_checkpoint]"];
+    IDLE -> SENDING_LOCK_INTENT [label="initiate_lock\n[provider_chain_checkpoint...]"];
     SENDING_LOCK_INTENT -> WAITING_FOR_WITNESS_COMMITMENT [label="auto"];
     WAITING_FOR_WITNESS_COMMITMENT -> VERIFYING_PROVIDER_CHAIN [label="WITNESS_SELECTION_COMMITMENT"];
     WAITING_FOR_WITNESS_COMMITMENT -> FAILED [label="LOCK_REJECTED"];
@@ -19,6 +19,7 @@ digraph {
     WAITING_FOR_RESULT -> REVIEWING_RESULT [label="LOCK_RESULT_FOR_SIGNATURE"];
     WAITING_FOR_RESULT -> FAILED [label="timeout(RECRUITMENT_TIMEOUT)"];
     REVIEWING_RESULT -> SIGNING_RESULT [label="auto\n[result_valid_and_accepted]"];
+    REVIEWING_RESULT -> FAILED [label="auto\n[NOT result_valid_and_acce...]"];
     SIGNING_RESULT -> LOCKED [label="auto"];
     LOCKED -> LOCKED [label="LIVENESS_PING"];
     LOCKED -> SENDING_TOPUP [label="initiate_topup"];
