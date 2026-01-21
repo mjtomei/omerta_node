@@ -156,19 +156,13 @@ public actor FreshnessManager {
     // MARK: - Path Failure Reporting
 
     /// Report a connection failure to a peer
+    /// Note: Path failures are tracked locally only, not broadcast to network
     public func reportConnectionFailure(
         peerId: PeerId,
         path: ReachabilityPath
     ) async {
-        // Report locally
-        if let message = await pathFailureReporter.reportFailure(peerId: peerId, path: path) {
-            // Broadcast to network (prefer services)
-            if let services = services {
-                await services.broadcast(message, maxHops: config.pathFailureConfig.maxPropagationHops)
-            } else {
-                await broadcastMessage?(message, config.pathFailureConfig.maxPropagationHops)
-            }
-        }
+        // Report locally (returns message but we no longer broadcast it)
+        _ = await pathFailureReporter.reportFailure(peerId: peerId, path: path)
 
         // Invalidate local cache (prefer services)
         if let services = services {

@@ -203,13 +203,13 @@ public actor MeshNode {
     // MARK: - Channel System
 
     /// Registered channel handlers
-    /// Key is channel hash (UInt64) for O(1) lookup, value is (channelName, handler)
-    private var channelHandlers: [UInt64: (name: String, handler: @Sendable (PeerId, Data) async -> Void)] = [:]
+    /// Key is channel hash (UInt16) for O(1) lookup matching wire format, value is (channelName, handler)
+    private var channelHandlers: [UInt16: (name: String, handler: @Sendable (PeerId, Data) async -> Void)] = [:]
 
     /// Queued messages for channels without handlers
-    /// Key is channel hash for consistent lookup
+    /// Key is channel hash (UInt16) for consistent lookup with wire format
     /// Messages are queued until a handler registers, then delivered immediately
-    private var channelQueues: [UInt64: [(from: PeerId, data: Data, channel: String, timestamp: Date)]] = [:]
+    private var channelQueues: [UInt16: [(from: PeerId, data: Data, channelHash: UInt16, timestamp: Date)]] = [:]
 
     /// Maximum messages to queue per channel (prevents memory exhaustion)
     private let maxQueuedMessagesPerChannel = 100
@@ -469,17 +469,42 @@ public actor MeshNode {
     private func handleIncomingData(_ data: Data, from address: NIOCore.SocketAddress) async {
         logger.info("Received \(data.count) bytes from \(address)")
 
-        // Decrypt the data first
+        // Try v2 wire format first (fast path rejection for non-Omerta packets)
+        if BinaryEnvelopeV2.isValidPrefix(data) {
+            do {
+                // Use decodeV2WithHash to get the raw channel hash for routing
+                let (envelope, channelHash) = try MeshEnvelope.decodeV2WithHash(data, networkKey: config.encryptionKey)
+                await processEnvelope(envelope, from: address, channelHash: channelHash)
+                return
+            } catch EnvelopeError.networkMismatch {
+                logger.debug("Packet for different network from \(address)")
+                return
+            } catch {
+                logger.warning("Failed to decode v2 envelope from \(address): \(error)")
+                return
+            }
+        }
+
+        // Fall back to v1 format for backward compatibility during migration
         guard let decryptedData = try? MessageEncryption.decrypt(data, key: config.encryptionKey) else {
             logger.warning("Failed to decrypt message from \(address) (\(data.count) bytes)")
             return
         }
 
-        // Decode the envelope
-        guard let envelope = try? JSONCoding.decoder.decode(MeshEnvelope.self, from: decryptedData) else {
+        guard let envelope = try? MeshEnvelope.decode(decryptedData) else {
             logger.debug("Failed to decode message from \(address)")
             return
         }
+
+        await processEnvelope(envelope, from: address, channelHash: nil)
+    }
+
+    /// Process a decoded envelope
+    /// - Parameters:
+    ///   - envelope: The decoded envelope
+    ///   - address: Source address
+    ///   - channelHash: Raw channel hash from v2 format (nil for v1 format, uses string-based lookup)
+    private func processEnvelope(_ envelope: MeshEnvelope, from address: NIOCore.SocketAddress, channelHash: UInt16? = nil) async {
 
         // Check for duplicates
         if seenMessageIds.contains(envelope.messageId) {
@@ -560,7 +585,7 @@ public actor MeshNode {
                 await send(response, to: endpointString)
             }
         } else {
-            await handleDefaultMessage(envelope.payload, from: envelope.fromPeerId, endpoint: endpointString, channel: envelope.channel, hopCount: envelope.hopCount)
+            await handleDefaultMessage(envelope.payload, from: envelope.fromPeerId, endpoint: endpointString, channel: envelope.channel, channelHash: channelHash, hopCount: envelope.hopCount)
         }
 
         // Check if we should attempt direct connection (Phase 8: Direct connection on relayed message)
@@ -577,9 +602,10 @@ public actor MeshNode {
     ///   - message: The message payload
     ///   - peerId: Sender's peer ID
     ///   - endpoint: Sender's endpoint
-    ///   - channel: Channel for routing (empty for internal mesh messages)
+    ///   - channel: Channel string (original name for v1, hash string for v2)
+    ///   - channelHash: Raw channel hash from v2 format (nil for v1, uses string-based lookup)
     ///   - hopCount: Current hop count
-    private func handleDefaultMessage(_ message: MeshMessage, from peerId: PeerId, endpoint: String, channel: String = "", hopCount: Int = 0) async {
+    private func handleDefaultMessage(_ message: MeshMessage, from peerId: PeerId, endpoint: String, channel: String = "", channelHash: UInt16? = nil, hopCount: Int = 0) async {
         switch message {
         case .ping(let recentPeers, let theirNATType, let requestFullList):
             // Check if this is a NEW or RECONNECTING peer BEFORE recording
@@ -781,8 +807,12 @@ public actor MeshNode {
 
         case .data(let payload):
             // Route based on channel
-            if !channel.isEmpty {
-                // Channel-based routing (new system)
+            if let hash = channelHash, hash != 0 {
+                // v2 format: use channel hash directly for O(1) routing
+                logger.info("Routing .data(\(payload.count) bytes) to channel hash \(hash) from \(peerId.prefix(16))...")
+                await handleChannelMessageByHash(from: peerId, channelHash: hash, data: payload)
+            } else if !channel.isEmpty {
+                // v1 format: compute hash from channel string
                 logger.info("Routing .data(\(payload.count) bytes) to channel '\(channel)' from \(peerId.prefix(16))...")
                 await handleChannelMessage(from: peerId, channel: channel, data: payload)
             } else if let handler = applicationMessageHandler {
@@ -832,19 +862,8 @@ public actor MeshNode {
                 continue
             }
 
-            do {
-                let envelope = try MeshEnvelope.signed(
-                    from: identity,
-                    machineId: machineId,
-                    to: nil,
-                    payload: message
-                )
-
-                let data = try JSONCoding.encoder.encode(envelope)
-                try await socket.send(data, to: endpoint)
-            } catch {
-                logger.debug("Failed to forward to \(peerId): \(error)")
-            }
+            // Use the standard send method which handles v2 encryption
+            await send(message, to: endpoint)
         }
     }
 
@@ -866,9 +885,8 @@ public actor MeshNode {
                 payload: message
             )
 
-            // Encode to JSON then encrypt
-            let jsonData = try JSONCoding.encoder.encode(envelope)
-            let encryptedData = try MessageEncryption.encrypt(jsonData, key: config.encryptionKey)
+            // Encode using v2 wire format with layered encryption
+            let encryptedData = try envelope.encodeV2(networkKey: config.encryptionKey)
             logger.info("Sending \(encryptedData.count) bytes to \(endpoint)")
             try await socket.send(encryptedData, to: endpoint)
 
@@ -1311,11 +1329,8 @@ public actor MeshNode {
             payload: message
         )
 
-        // Encode the envelope
-        let jsonData = try JSONCoding.encoder.encode(envelope)
-
-        // Encrypt the payload with our network encryption key
-        let encryptedPayload = try MessageEncryption.encrypt(jsonData, key: config.encryptionKey)
+        // Encode using v2 wire format (inner payload for relay)
+        let encryptedPayload = try envelope.encodeV2(networkKey: config.encryptionKey)
 
         // Try relays in order (most recent first)
         for relay in relays {
@@ -1988,9 +2003,8 @@ extension MeshNode: MeshNodeServices {
             payload: message
         )
 
-        // Encode and encrypt the payload
-        let jsonData = try JSONCoding.encoder.encode(envelope)
-        let encryptedPayload = try MessageEncryption.encrypt(jsonData, key: config.encryptionKey)
+        // Encode using v2 wire format (inner payload for relay)
+        let encryptedPayload = try envelope.encodeV2(networkKey: config.encryptionKey)
 
         logger.info("Sending via relay \(relayPeerId.prefix(8))... to \(targetPeerId.prefix(8))... [channel: \(channel.isEmpty ? "<mesh>" : channel)]")
         await send(.relayForward(targetPeerId: targetPeerId, payload: encryptedPayload), to: relayEndpoint)
@@ -2009,7 +2023,7 @@ extension MeshNode: MeshNodeServices {
             throw MeshNodeError.invalidChannel(channel)
         }
 
-        let hash = ChannelUtils.hash(channel)
+        let hash = ChannelHash.hash(channel)
 
         // Check for hash collision with existing handler
         if let existing = channelHandlers[hash], existing.name != channel {
@@ -2021,10 +2035,10 @@ extension MeshNode: MeshNodeServices {
 
         // Deliver any queued messages for this channel
         if var queue = channelQueues.removeValue(forKey: hash) {
-            // Filter out expired messages and ensure channel name matches (collision safety)
+            // Filter out expired messages (v2 wire format uses hash-only matching)
             let now = Date()
             queue = queue.filter {
-                now.timeIntervalSince($0.timestamp) < queuedMessageMaxAge && $0.channel == channel
+                now.timeIntervalSince($0.timestamp) < queuedMessageMaxAge
             }
 
             if !queue.isEmpty {
@@ -2040,7 +2054,7 @@ extension MeshNode: MeshNodeServices {
     /// Unregister a handler for a channel
     /// - Parameter channel: Channel name to stop listening on
     public func offChannel(_ channel: String) {
-        let hash = ChannelUtils.hash(channel)
+        let hash = ChannelHash.hash(channel)
         channelHandlers.removeValue(forKey: hash)
         // Also clear the queue for this channel
         channelQueues.removeValue(forKey: hash)
@@ -2061,41 +2075,41 @@ extension MeshNode: MeshNodeServices {
         try await sendWithAutoRouting(message, to: peerId, channel: channel)
     }
 
-    /// Handle incoming message on a channel
+    /// Handle incoming message on a channel (string-based, for v1 compatibility)
     /// Called by handleIncomingData when a message arrives with a non-empty channel
     /// Uses hash-based lookup for O(1) routing with collision verification
     internal func handleChannelMessage(from peerId: PeerId, channel: String, data: Data) async {
-        let hash = ChannelUtils.hash(channel)
+        let hash = ChannelHash.hash(channel)
+        await handleChannelMessageByHash(from: peerId, channelHash: hash, data: data)
+    }
 
-        if let entry = channelHandlers[hash], entry.name == channel {
-            // Handler registered and channel name matches (collision check) - deliver immediately
+    /// Handle incoming message on a channel by hash (for v2 wire format)
+    /// Used directly when decoding v2 envelopes which only contain the hash
+    internal func handleChannelMessageByHash(from peerId: PeerId, channelHash: UInt16, data: Data) async {
+        if let entry = channelHandlers[channelHash] {
+            // Handler registered - deliver immediately
             await entry.handler(peerId, data)
-        } else if let entry = channelHandlers[hash] {
-            // Hash collision detected - handler exists but channel name doesn't match
-            logger.warning("Channel hash collision detected: '\(channel)' collides with '\(entry.name)', queueing message")
-            // Fall through to queue the message
-            queueChannelMessage(from: peerId, channel: channel, data: data, hash: hash)
         } else {
             // No handler - queue the message
-            queueChannelMessage(from: peerId, channel: channel, data: data, hash: hash)
+            queueChannelMessage(from: peerId, channelHash: channelHash, data: data)
         }
     }
 
     /// Queue a message for a channel that doesn't have a handler registered yet
-    private func queueChannelMessage(from peerId: PeerId, channel: String, data: Data, hash: UInt64) {
-        var queue = channelQueues[hash] ?? []
+    private func queueChannelMessage(from peerId: PeerId, channelHash: UInt16, data: Data) {
+        var queue = channelQueues[channelHash] ?? []
 
         // Enforce queue size limit
         if queue.count >= maxQueuedMessagesPerChannel {
             // Drop oldest message
             queue.removeFirst()
-            logger.warning("Channel queue overflow for '\(channel)', dropping oldest message")
+            logger.warning("Channel queue overflow for hash \(channelHash), dropping oldest message")
         }
 
-        queue.append((from: peerId, data: data, channel: channel, timestamp: Date()))
-        channelQueues[hash] = queue
+        queue.append((from: peerId, data: data, channelHash: channelHash, timestamp: Date()))
+        channelQueues[channelHash] = queue
 
-        logger.debug("Queued message for channel '\(channel)' (queue size: \(queue.count))")
+        logger.debug("Queued message for channel hash \(channelHash) (queue size: \(queue.count))")
     }
 
     /// Clear expired messages from all channel queues
@@ -2108,8 +2122,7 @@ extension MeshNode: MeshNodeServices {
                 channelQueues.removeValue(forKey: hash)
             } else if filtered.count != queue.count {
                 channelQueues[hash] = filtered
-                let channelName = queue.first?.channel ?? "unknown"
-                logger.debug("Cleaned up \(queue.count - filtered.count) expired message(s) from channel '\(channelName)'")
+                logger.debug("Cleaned up \(queue.count - filtered.count) expired message(s) from channel hash \(hash)")
             }
         }
     }

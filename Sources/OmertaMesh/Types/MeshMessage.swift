@@ -325,6 +325,12 @@ public struct MeshEnvelope: Codable, Sendable {
         channel: String = "",
         payload: MeshMessage
     ) throws -> MeshEnvelope {
+        // Round timestamp to millisecond precision for wire format compatibility
+        // This ensures signature verification works after encode/decode
+        let now = Date()
+        let milliseconds = floor(now.timeIntervalSince1970 * 1000)
+        let roundedTimestamp = Date(timeIntervalSince1970: milliseconds / 1000)
+
         var envelope = MeshEnvelope(
             messageId: messageId,
             fromPeerId: keypair.peerId,
@@ -332,6 +338,7 @@ public struct MeshEnvelope: Codable, Sendable {
             machineId: machineId,
             toPeerId: toPeerId,
             channel: channel,
+            timestamp: roundedTimestamp,
             payload: payload
         )
 

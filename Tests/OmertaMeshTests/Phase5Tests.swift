@@ -557,6 +557,8 @@ final class Phase5Tests: XCTestCase {
     }
 
     /// Test manager reportConnectionFailure
+    /// Note: pathFailed broadcast was intentionally removed for security (prevents information leakage)
+    /// Failure tracking is now local only
     func testFreshnessManagerReportConnectionFailure() async throws {
         let manager = FreshnessManager()
         let path = ReachabilityPath.direct(endpoint: "1.2.3.4:5000")
@@ -580,8 +582,10 @@ final class Phase5Tests: XCTestCase {
         // Report failure
         await manager.reportConnectionFailure(peerId: "peer-to-fail", path: path)
 
-        XCTAssertTrue(broadcastCalled, "Should broadcast failure")
+        // Failures are no longer broadcast (security: prevents information leakage)
+        XCTAssertFalse(broadcastCalled, "Should NOT broadcast failure (security fix)")
 
+        // But failures should still be tracked locally
         let isFailed = await manager.isPathFailed(peerId: "peer-to-fail", path: path)
         XCTAssertTrue(isFailed)
     }
