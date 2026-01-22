@@ -69,3 +69,5 @@ logs/
 # Generated transaction files
 docs/protocol/transactions/*.md
 simulations/transactions/*_generated.py
+CLAUDE.md
+DEPLOYMENT.md
