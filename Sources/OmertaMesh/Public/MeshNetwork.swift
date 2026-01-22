@@ -125,7 +125,8 @@ public actor MeshNetwork: ChannelProvider {
                 freshnessQueryInterval: config.freshnessQueryInterval,
                 holePunchTimeout: config.holePunchTimeout,
                 holePunchProbeCount: config.holePunchProbeCount,
-                holePunchProbeInterval: config.holePunchProbeInterval
+                holePunchProbeInterval: config.holePunchProbeInterval,
+                forceRelayOnly: config.forceRelayOnly
             )
 
             // Create event logger if enabled
@@ -233,7 +234,28 @@ public actor MeshNetwork: ChannelProvider {
         // Determine connection method based on NAT types
         let targetNATType = peerInfo.natType
 
-        // If we have an endpoint (e.g., from bootstrap), try direct connection first
+        // When forceRelayOnly is enabled, skip direct and hole punch attempts
+        if config.forceRelayOnly {
+            logger.info("forceRelayOnly: Skipping direct/holepunch for \(targetPeerId.prefix(16))..., using relay")
+
+            if let relayId = await node.getConnectedRelays().first {
+                let connection = DirectConnection(
+                    peerId: targetPeerId,
+                    endpoint: peerInfo.endpoint,
+                    isDirect: false,
+                    relayPeerId: relayId,
+                    natType: targetNATType,
+                    method: .relay
+                )
+                await connectionTracker.setConnection(connection)
+                await eventPublisher.publish(.peerConnected(peerId: targetPeerId, endpoint: peerInfo.endpoint, isDirect: false))
+                return connection
+            }
+
+            throw MeshError.noRelaysAvailable
+        }
+
+        // Normal flow: If we have an endpoint (e.g., from bootstrap), try direct connection first
         // This works for LAN connections even when NAT type is unknown
         if !peerInfo.endpoint.isEmpty {
             logger.debug("Trying direct connection to \(targetPeerId) at \(peerInfo.endpoint)")

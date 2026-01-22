@@ -71,6 +71,7 @@ struct DaemonConfig {
     var canRelay: Bool = true
     var canCoordinateHolePunch: Bool = true
     var enableEventLogging: Bool = false
+    var forceRelayOnly: Bool = false
 
     /// Default config file path
     static var defaultPath: String {
@@ -128,6 +129,8 @@ struct DaemonConfig {
                 config.canCoordinateHolePunch = cleanValue.lowercased() == "true" || cleanValue == "1"
             case "enable-event-logging", "enableeventlogging", "enable_event_logging", "event-logging", "eventlogging":
                 config.enableEventLogging = cleanValue.lowercased() == "true" || cleanValue == "1"
+            case "force-relay", "forcerelay", "force_relay", "force-relay-only", "forcerelayonly", "force_relay_only":
+                config.forceRelayOnly = cleanValue.lowercased() == "true" || cleanValue == "1"
             default:
                 // Unknown key, ignore
                 break
@@ -168,6 +171,10 @@ struct DaemonConfig {
         # Enable persistent event logging for debugging (default: false)
         # Logs are written to ~/.config/Omerta*/logs/ in JSONL format
         enable-event-logging=false
+
+        # Force all communication through relays (skip direct/holepunch) (default: false)
+        # Useful for testing relay code paths even when direct connectivity is available
+        force-relay=false
 
         # Auto-shutdown after N seconds (optional, for testing)
         # timeout=3600
@@ -278,6 +285,9 @@ struct Start: AsyncParsableCommand {
     @Flag(name: .long, help: "Enable persistent event logging for debugging")
     var enableEventLogging: Bool = false
 
+    @Flag(name: .long, help: "Force all communication through relays (skip direct/holepunch)")
+    var forceRelay: Bool = false
+
     @Option(name: .long, help: "Auto-shutdown after N seconds (for testing)")
     var timeout: Int?
 
@@ -311,6 +321,7 @@ struct Start: AsyncParsableCommand {
         let effectiveCanRelay = !noRelay && fileConfig.canRelay
         let effectiveCanHolePunch = !noHolePunch && fileConfig.canCoordinateHolePunch
         let effectiveEventLogging = enableEventLogging || fileConfig.enableEventLogging
+        let effectiveForceRelay = forceRelay || fileConfig.forceRelayOnly
 
         print("Starting Omerta Provider Daemon...")
         if effectiveDryRun {
@@ -416,6 +427,7 @@ struct Start: AsyncParsableCommand {
             canRelay: effectiveCanRelay,
             canHolePunch: effectiveCanHolePunch,
             enableEventLogging: effectiveEventLogging,
+            forceRelayOnly: effectiveForceRelay,
             shutdownCoordinator: shutdownCoordinator
         )
     }
@@ -432,6 +444,7 @@ struct Start: AsyncParsableCommand {
         canRelay: Bool,
         canHolePunch: Bool,
         enableEventLogging: Bool,
+        forceRelayOnly: Bool,
         shutdownCoordinator: ShutdownCoordinator
     ) async throws {
         // Build mesh config with encryption key and bootstrap peers from network
@@ -441,7 +454,8 @@ struct Start: AsyncParsableCommand {
             canRelay: canRelay,
             canCoordinateHolePunch: canHolePunch,
             bootstrapPeers: bootstrapPeers,
-            enableEventLogging: enableEventLogging
+            enableEventLogging: enableEventLogging,
+            forceRelayOnly: forceRelayOnly
         )
 
         // Create mesh daemon configuration
@@ -537,6 +551,9 @@ struct Start: AsyncParsableCommand {
             }
             print("Relay: \(canRelay ? "enabled" : "disabled")")
             print("Hole Punch: \(canHolePunch ? "enabled" : "disabled")")
+            if forceRelayOnly {
+                print("Force Relay Only: ENABLED (direct connections disabled)")
+            }
             if !bootstrapPeers.isEmpty {
                 print("Bootstrap Peers: \(bootstrapPeers.joined(separator: ", "))")
             }
@@ -1605,6 +1622,7 @@ struct ConfigShow: AsyncParsableCommand {
                 print("  dry-run:      \(loadedConfig.dryRun)")
                 print("  can-relay:    \(loadedConfig.canRelay)")
                 print("  hole-punch:   \(loadedConfig.canCoordinateHolePunch)")
+                print("  force-relay:  \(loadedConfig.forceRelayOnly)")
                 if let timeout = loadedConfig.timeout {
                     print("  timeout:      \(timeout)s")
                 } else {
@@ -1629,6 +1647,7 @@ struct ConfigShow: AsyncParsableCommand {
             print("  dry-run:      false")
             print("  can-relay:    true")
             print("  hole-punch:   true")
+            print("  force-relay:  false")
             print("  timeout:      (none)")
             print("")
             print("Generate a config file with:")

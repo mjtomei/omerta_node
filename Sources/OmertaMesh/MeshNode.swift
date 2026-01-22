@@ -43,6 +43,10 @@ public actor MeshNode {
         /// Use .permissive for LAN testing, .allowAll for localhost testing
         public let endpointValidationMode: EndpointValidator.ValidationMode
 
+        /// Force all communication through relays (skip direct and hole punch)
+        /// Useful for testing relay code paths even when direct connectivity is available
+        public let forceRelayOnly: Bool
+
         public init(
             encryptionKey: Data,
             port: UInt16 = 0,
@@ -60,7 +64,8 @@ public actor MeshNode {
             holePunchTimeout: TimeInterval = 10,
             holePunchProbeCount: Int = 5,
             holePunchProbeInterval: TimeInterval = 0.2,
-            endpointValidationMode: EndpointValidator.ValidationMode = .permissive
+            endpointValidationMode: EndpointValidator.ValidationMode = .permissive,
+            forceRelayOnly: Bool = false
         ) {
             self.encryptionKey = encryptionKey
             self.port = port
@@ -79,6 +84,7 @@ public actor MeshNode {
             self.holePunchProbeCount = holePunchProbeCount
             self.holePunchProbeInterval = holePunchProbeInterval
             self.endpointValidationMode = endpointValidationMode
+            self.forceRelayOnly = forceRelayOnly
         }
     }
 
@@ -779,6 +785,13 @@ public actor MeshNode {
             // Update keepalive monitoring - pong means connection is healthy
             if await connectionKeepalive.isMonitoring(peerId: peerId) {
                 await connectionKeepalive.recordSuccessfulCommunication(peerId: peerId)
+            }
+
+            // In forceRelayOnly mode, add any responsive peer as a potential relay
+            // This enables testing relay code paths on LAN where direct connectivity exists
+            if config.forceRelayOnly && !connectedRelays.contains(peerId) {
+                connectedRelays.insert(peerId)
+                logger.info("forceRelayOnly: Added \(peerId.prefix(16))... as connected relay")
             }
 
         case .whoHasRecent, .iHaveRecent, .pathFailed:
@@ -1941,6 +1954,7 @@ extension MeshNode: MeshNodeServices {
 
     /// Send a message with automatic routing strategy
     /// Priority: IPv6 > direct (if reachable) > relay
+    /// When forceRelayOnly is enabled, skips direct attempts and always uses relay
     /// - Parameters:
     ///   - message: Message to send
     ///   - peerId: Target peer ID
@@ -1951,7 +1965,29 @@ extension MeshNode: MeshNodeServices {
             EndpointUtils.preferredEndpoint(from: await endpointManager.getAllEndpoints(peerId: peerId))
         }
 
-        // 1. Try IPv6 first (always works, no NAT)
+        // When forceRelayOnly is enabled, skip all direct attempts and use relay
+        if config.forceRelayOnly {
+            logger.debug("forceRelayOnly: Skipping direct send, using relay for \(peerId.prefix(16))...")
+
+            // Try potential relays first
+            let potentialRelays = getPotentialRelays(for: peerId)
+            if !potentialRelays.isEmpty {
+                try await sendViaRelay(message, to: peerId, channel: channel)
+                return
+            }
+
+            // Try connected relays
+            if let relay = connectedRelays.first {
+                try await sendViaSpecificRelay(message, to: peerId, via: relay, channel: channel)
+                return
+            }
+
+            // No relays available
+            logger.warning("forceRelayOnly: No relays available for \(peerId.prefix(16))...")
+            throw MeshNodeError.noRelayAvailable
+        }
+
+        // Normal routing: 1. Try IPv6 first (always works, no NAT)
         if let endpoint = await getBestPeerEndpoint(),
            EndpointUtils.isIPv6(endpoint) {
             try await send(message, to: endpoint, channel: channel)

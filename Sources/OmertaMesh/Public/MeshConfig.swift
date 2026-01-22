@@ -96,6 +96,12 @@ public struct MeshConfig: Sendable {
     /// Custom directory for event logs (default: ~/.omerta/logs/mesh)
     public var eventLogDir: String?
 
+    // MARK: - Debug Settings
+
+    /// Force all communication through relays (skip direct and hole punch)
+    /// Useful for testing relay code paths even when direct connectivity is available
+    public var forceRelayOnly: Bool
+
     // MARK: - Initialization
 
     public init(
@@ -119,7 +125,8 @@ public struct MeshConfig: Sendable {
         recentContactMaxAge: TimeInterval = 300,
         freshnessQueryInterval: TimeInterval = 30,
         enableEventLogging: Bool = false,
-        eventLogDir: String? = nil
+        eventLogDir: String? = nil,
+        forceRelayOnly: Bool = false
     ) {
         self.encryptionKey = encryptionKey
         self.storageDirectory = storageDirectory
@@ -142,6 +149,7 @@ public struct MeshConfig: Sendable {
         self.freshnessQueryInterval = freshnessQueryInterval
         self.enableEventLogging = enableEventLogging
         self.eventLogDir = eventLogDir
+        self.forceRelayOnly = forceRelayOnly
     }
 
     /// Create a config from a NetworkKey
@@ -152,7 +160,8 @@ public struct MeshConfig: Sendable {
         canRelay: Bool = false,
         canCoordinateHolePunch: Bool = false,
         enableEventLogging: Bool = false,
-        eventLogDir: String? = nil
+        eventLogDir: String? = nil,
+        forceRelayOnly: Bool = false
     ) {
         self.encryptionKey = networkKey.networkKey
         self.storageDirectory = storageDirectory
@@ -175,6 +184,7 @@ public struct MeshConfig: Sendable {
         self.freshnessQueryInterval = 30
         self.enableEventLogging = enableEventLogging
         self.eventLogDir = eventLogDir
+        self.forceRelayOnly = forceRelayOnly
     }
 
     // MARK: - Preset Configurations
@@ -272,6 +282,7 @@ public class MeshConfigBuilder {
     private var freshnessQueryInterval: TimeInterval = 30
     private var enableEventLogging: Bool = false
     private var eventLogDir: String?
+    private var forceRelayOnly: Bool = false
 
     public init(encryptionKey: Data) {
         self.encryptionKey = encryptionKey
@@ -349,6 +360,12 @@ public class MeshConfigBuilder {
         return self
     }
 
+    @discardableResult
+    public func forceRelayOnly(_ force: Bool) -> Self {
+        self.forceRelayOnly = force
+        return self
+    }
+
     public func build() throws -> MeshConfig {
         let config = MeshConfig(
             encryptionKey: encryptionKey,
@@ -371,7 +388,8 @@ public class MeshConfigBuilder {
             recentContactMaxAge: recentContactMaxAge,
             freshnessQueryInterval: freshnessQueryInterval,
             enableEventLogging: enableEventLogging,
-            eventLogDir: eventLogDir
+            eventLogDir: eventLogDir,
+            forceRelayOnly: forceRelayOnly
         )
         try config.validate()
         return config
@@ -399,7 +417,8 @@ public class MeshConfigBuilder {
             recentContactMaxAge: recentContactMaxAge,
             freshnessQueryInterval: freshnessQueryInterval,
             enableEventLogging: enableEventLogging,
-            eventLogDir: eventLogDir
+            eventLogDir: eventLogDir,
+            forceRelayOnly: forceRelayOnly
         )
     }
 }
