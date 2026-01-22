@@ -384,12 +384,7 @@ public actor MeshNode {
 
         if currentPort == nil {
             logger.debug("MeshNode.start() - binding socket to port \(config.port)")
-            #if os(macOS)
-            // Use IPv4 on macOS due to NIO IPv6 dual-stack send issues
-            try await socket.bind(host: "0.0.0.0", port: Int(config.port))
-            #else
             try await socket.bind(port: Int(config.port))
-            #endif
             logger.debug("MeshNode.start() - socket bound successfully")
             await setupReceiveHandler()
             await setupFreshnessManager()
