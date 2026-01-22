@@ -1599,6 +1599,13 @@ public actor MeshNode {
                     connectionType: .direct
                 )
 
+                // In forceRelayOnly mode, add any responsive peer as a potential relay
+                // This enables testing relay code paths on LAN where direct connectivity exists
+                if config.forceRelayOnly && !connectedRelays.contains(targetPeerId) {
+                    connectedRelays.insert(targetPeerId)
+                    logger.info("forceRelayOnly: Added \(targetPeerId.prefix(16))... as connected relay")
+                }
+
                 // Log latency sample
                 await eventLogger?.recordLatencySample(peerId: targetPeerId, latencyMs: Double(latencyMs))
 
