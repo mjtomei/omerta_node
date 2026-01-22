@@ -60,7 +60,7 @@ public actor MeshNode {
             holePunchTimeout: TimeInterval = 10,
             holePunchProbeCount: Int = 5,
             holePunchProbeInterval: TimeInterval = 0.2,
-            endpointValidationMode: EndpointValidator.ValidationMode = .strict
+            endpointValidationMode: EndpointValidator.ValidationMode = .permissive
         ) {
             self.encryptionKey = encryptionKey
             self.port = port
