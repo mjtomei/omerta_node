@@ -789,7 +789,7 @@ public actor MeshNode {
 
             // In forceRelayOnly mode, add any responsive peer as a potential relay
             // This enables testing relay code paths on LAN where direct connectivity exists
-            logger.debug("Pong handler: config.forceRelayOnly=\(config.forceRelayOnly), peerId=\(peerId.prefix(16))")
+            logger.info("Pong handler: config.forceRelayOnly=\(config.forceRelayOnly), peerId=\(peerId.prefix(16))")
             if config.forceRelayOnly && !connectedRelays.contains(peerId) {
                 connectedRelays.insert(peerId)
                 logger.info("forceRelayOnly: Added \(peerId.prefix(16))... as connected relay")
