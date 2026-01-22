@@ -462,6 +462,9 @@ struct Start: AsyncParsableCommand {
         // Create control socket for CLI communication
         let controlSocket = ControlSocketServer(networkId: networkId)
 
+        // Create MeshServices coordinator for Message/Health/Cloister services
+        let meshServices = MeshServices(provider: await daemon.mesh)
+
         do {
             // Set up heartbeat channel handler for incoming heartbeats when acting as consumer BEFORE starting
             try await daemon.onChannel(VMChannels.heartbeat) { [daemon, vmTracker] peerId, data in
@@ -475,12 +478,36 @@ struct Start: AsyncParsableCommand {
 
             try await daemon.start()
 
+            // Start mesh services for Message/Health/Cloister
+            try await meshServices.startAllHandlers()
+
+            // Set up message handler (logs received messages)
+            await meshServices.setMessageHandler { peerId, message in
+                let logger = Logger(label: "io.omerta.daemon.message")
+                logger.info("Received message from \(peerId.prefix(8))...: type=\(message.messageType ?? "none")")
+            }
+
+            // Set up cloister request handler (auto-accept for now)
+            await meshServices.setCloisterRequestHandler { peerId, networkName in
+                let logger = Logger(label: "io.omerta.daemon.cloister")
+                logger.info("Accepting cloister request from \(peerId.prefix(8))... for '\(networkName)'")
+                return true
+            }
+
+            // Set up invite handler (auto-accept for now)
+            await meshServices.setInviteShareHandler { peerId, networkNameHint in
+                let logger = Logger(label: "io.omerta.daemon.cloister")
+                logger.info("Accepting invite from \(peerId.prefix(8))... for '\(networkNameHint ?? "unknown")'")
+                return true
+            }
+
             // Start control socket and wire up command handler
-            await controlSocket.setCommandHandler { [daemon, vmTracker, shutdownCoordinator] command in
+            await controlSocket.setCommandHandler { [daemon, vmTracker, shutdownCoordinator, meshServices] command in
                 await self.handleControlCommand(
                     command,
                     daemon: daemon,
                     vmTracker: vmTracker,
+                    meshServices: meshServices,
                     identity: identity,
                     networkKey: keyData,
                     networkId: networkId,
@@ -594,6 +621,9 @@ struct Start: AsyncParsableCommand {
                 networkId: networkId
             )
 
+            print("Stopping mesh services...")
+            await meshServices.stopAllHandlers()
+
             print("Stopping control socket...")
             await controlSocket.stop()
 
@@ -615,6 +645,7 @@ struct Start: AsyncParsableCommand {
         _ command: ControlCommand,
         daemon: MeshProviderDaemon,
         vmTracker: VMTracker,
+        meshServices: MeshServices,
         identity: OmertaMesh.IdentityKeypair,
         networkKey: Data,
         networkId: String,
@@ -731,6 +762,42 @@ struct Start: AsyncParsableCommand {
                     message: accepted ? "Shutdown initiated" : "Shutdown already in progress"
                 ))
             }
+
+        // Message service commands
+        case .sendMessage(let peerId, let content, let requestReceipt, let timeout):
+            return await handleSendMessage(
+                peerId: peerId,
+                content: content,
+                requestReceipt: requestReceipt,
+                timeout: timeout,
+                meshServices: meshServices
+            )
+
+        // Health service commands
+        case .healthCheck(let peerId, let timeout):
+            return await handleHealthCheck(
+                peerId: peerId,
+                timeout: timeout,
+                meshServices: meshServices
+            )
+
+        // Cloister service commands
+        case .negotiateNetwork(let peerId, let networkName, let timeout):
+            return await handleNegotiateNetwork(
+                peerId: peerId,
+                networkName: networkName,
+                timeout: timeout,
+                meshServices: meshServices
+            )
+
+        case .shareNetworkInvite(let peerId, let networkKeyData, let networkName, let timeout):
+            return await handleShareInvite(
+                peerId: peerId,
+                networkKey: networkKeyData,
+                networkName: networkName,
+                timeout: timeout,
+                meshServices: meshServices
+            )
         }
     }
 
@@ -848,6 +915,156 @@ struct Start: AsyncParsableCommand {
             return .vmList(vmInfos)
         } catch {
             return .error("Failed to load VMs: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Message Service Handlers
+
+    private func handleSendMessage(
+        peerId: String,
+        content: String,
+        requestReceipt: Bool,
+        timeout: Int,
+        meshServices: MeshServices
+    ) async -> ControlResponse {
+        do {
+            let client = try await meshServices.messageClient()
+            let contentData = Data(content.utf8)
+
+            if requestReceipt {
+                let receipt = try await client.sendWithReceipt(
+                    contentData,
+                    to: peerId,
+                    timeout: TimeInterval(timeout)
+                )
+                return .sendMessageResult(ControlResponse.SendMessageResultData(
+                    success: true,
+                    messageId: receipt.messageId,
+                    receiptStatus: receipt.status.rawValue,
+                    error: nil
+                ))
+            } else {
+                let messageId = try await client.send(contentData, to: peerId)
+                return .sendMessageResult(ControlResponse.SendMessageResultData(
+                    success: true,
+                    messageId: messageId,
+                    receiptStatus: nil,
+                    error: nil
+                ))
+            }
+        } catch {
+            return .sendMessageResult(ControlResponse.SendMessageResultData(
+                success: false,
+                messageId: nil,
+                receiptStatus: nil,
+                error: error.localizedDescription
+            ))
+        }
+    }
+
+    // MARK: - Health Service Handlers
+
+    private func handleHealthCheck(
+        peerId: String,
+        timeout: Int,
+        meshServices: MeshServices
+    ) async -> ControlResponse {
+        do {
+            let client = try await meshServices.healthClient()
+            let response = try await client.check(
+                peer: peerId,
+                timeout: TimeInterval(timeout)
+            )
+
+            let metricsData: ControlResponse.HealthMetricsData?
+            if let metrics = response.metrics {
+                metricsData = ControlResponse.HealthMetricsData(
+                    uptimeSeconds: metrics.uptimeSeconds,
+                    peerCount: metrics.peerCount,
+                    directConnectionCount: metrics.directConnectionCount,
+                    relayCount: metrics.relayCount
+                )
+            } else {
+                metricsData = nil
+            }
+
+            // Note: Actual RTT would need to be computed client-side
+            // For now, we report 0 since HealthResponse only contains status/metrics
+            return .healthCheckResult(ControlResponse.HealthCheckResultData(
+                peerId: peerId,
+                status: response.status.rawValue,
+                latencyMs: 0,
+                metrics: metricsData
+            ))
+        } catch ServiceError.timeout {
+            return .healthCheckResult(nil)
+        } catch {
+            return .error(error.localizedDescription)
+        }
+    }
+
+    // MARK: - Cloister Service Handlers
+
+    private func handleNegotiateNetwork(
+        peerId: String,
+        networkName: String,
+        timeout: Int,
+        meshServices: MeshServices
+    ) async -> ControlResponse {
+        do {
+            let client = try await meshServices.cloisterClient()
+            let result = try await client.negotiate(
+                with: peerId,
+                networkName: networkName,
+                timeout: TimeInterval(timeout)
+            )
+
+            return .negotiateNetworkResult(ControlResponse.NegotiateNetworkResultData(
+                success: true,
+                networkId: result.networkId,
+                networkKey: result.networkKey,
+                sharedWith: result.sharedWith,
+                error: nil
+            ))
+        } catch {
+            return .negotiateNetworkResult(ControlResponse.NegotiateNetworkResultData(
+                success: false,
+                networkId: nil,
+                networkKey: nil,
+                sharedWith: nil,
+                error: error.localizedDescription
+            ))
+        }
+    }
+
+    private func handleShareInvite(
+        peerId: String,
+        networkKey: Data,
+        networkName: String?,
+        timeout: Int,
+        meshServices: MeshServices
+    ) async -> ControlResponse {
+        do {
+            let client = try await meshServices.cloisterClient()
+            let result = try await client.shareInvite(
+                networkKey,
+                with: peerId,
+                networkName: networkName,
+                timeout: TimeInterval(timeout)
+            )
+            return .shareInviteResult(ControlResponse.ShareInviteResultData(
+                success: true,
+                accepted: result.accepted,
+                joinedNetworkId: result.joinedNetworkId,
+                error: result.rejectReason
+            ))
+        } catch {
+            return .shareInviteResult(ControlResponse.ShareInviteResultData(
+                success: false,
+                accepted: false,
+                joinedNetworkId: nil,
+                error: error.localizedDescription
+            ))
         }
     }
 

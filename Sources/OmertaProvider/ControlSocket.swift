@@ -28,6 +28,16 @@ public enum ControlCommand: Codable {
     case status
     case peers
     case shutdown(graceful: Bool, timeoutSeconds: Int)
+
+    // Message service commands
+    case sendMessage(peerId: String, content: String, requestReceipt: Bool, timeout: Int)
+
+    // Health service commands
+    case healthCheck(peerId: String, timeout: Int)
+
+    // Cloister service commands
+    case negotiateNetwork(peerId: String, networkName: String, timeout: Int)
+    case shareNetworkInvite(peerId: String, networkKey: Data, networkName: String?, timeout: Int)
 }
 
 /// Response from the daemon
@@ -41,6 +51,16 @@ public enum ControlResponse: Codable {
     case peers([PeerData])
     case shutdownAck(ShutdownData)
     case error(String)
+
+    // Message service responses
+    case sendMessageResult(SendMessageResultData)
+
+    // Health service responses
+    case healthCheckResult(HealthCheckResultData?)
+
+    // Cloister service responses
+    case negotiateNetworkResult(NegotiateNetworkResultData)
+    case shareInviteResult(ShareInviteResultData)
 
     public struct PingResultData: Codable {
         public let peerId: String
@@ -153,6 +173,84 @@ public enum ControlResponse: Codable {
             self.inFlightRequests = inFlightRequests
             self.activeVMs = activeVMs
             self.message = message
+        }
+    }
+
+    // MARK: - Message Service Data
+
+    public struct SendMessageResultData: Codable {
+        public let success: Bool
+        public let messageId: UUID?
+        public let receiptStatus: String?  // "delivered", "pending", nil
+        public let error: String?
+
+        public init(success: Bool, messageId: UUID?, receiptStatus: String?, error: String?) {
+            self.success = success
+            self.messageId = messageId
+            self.receiptStatus = receiptStatus
+            self.error = error
+        }
+    }
+
+    // MARK: - Health Service Data
+
+    public struct HealthCheckResultData: Codable {
+        public let peerId: String
+        public let status: String  // "healthy", "degraded", "unreachable"
+        public let latencyMs: Int
+        public let metrics: HealthMetricsData?
+
+        public init(peerId: String, status: String, latencyMs: Int, metrics: HealthMetricsData?) {
+            self.peerId = peerId
+            self.status = status
+            self.latencyMs = latencyMs
+            self.metrics = metrics
+        }
+    }
+
+    public struct HealthMetricsData: Codable {
+        public let uptimeSeconds: Double
+        public let peerCount: Int
+        public let directConnectionCount: Int
+        public let relayCount: Int
+
+        public init(uptimeSeconds: Double, peerCount: Int, directConnectionCount: Int, relayCount: Int) {
+            self.uptimeSeconds = uptimeSeconds
+            self.peerCount = peerCount
+            self.directConnectionCount = directConnectionCount
+            self.relayCount = relayCount
+        }
+    }
+
+    // MARK: - Cloister Service Data
+
+    public struct NegotiateNetworkResultData: Codable {
+        public let success: Bool
+        public let networkId: String?
+        public let networkKey: Data?
+        public let sharedWith: String?
+        public let error: String?
+
+        public init(success: Bool, networkId: String?, networkKey: Data?, sharedWith: String?, error: String?) {
+            self.success = success
+            self.networkId = networkId
+            self.networkKey = networkKey
+            self.sharedWith = sharedWith
+            self.error = error
+        }
+    }
+
+    public struct ShareInviteResultData: Codable {
+        public let success: Bool
+        public let accepted: Bool
+        public let joinedNetworkId: String?
+        public let error: String?
+
+        public init(success: Bool, accepted: Bool, joinedNetworkId: String?, error: String?) {
+            self.success = success
+            self.accepted = accepted
+            self.joinedNetworkId = joinedNetworkId
+            self.error = error
         }
     }
 }

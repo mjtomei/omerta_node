@@ -26,6 +26,17 @@ public actor CloisterHandler {
     /// Whether the handler is running
     private var isRunning: Bool = false
 
+    /// Pending invite sessions (waiting for round 2 payload)
+    private var pendingInviteSessions: [UUID: PendingInviteSession] = [:]
+
+    /// State for pending invite sessions
+    private struct PendingInviteSession {
+        let session: KeyExchangeSession
+        let fromPeerId: PeerId
+        let networkNameHint: String?
+        let expiresAt: Date
+    }
+
     /// Initialize with a channel provider
     public init(provider: any ChannelProvider) {
         self.provider = provider
@@ -39,14 +50,22 @@ public actor CloisterHandler {
             throw ServiceError.alreadyRunning
         }
 
+        let myPeerId = await provider.peerId
+
         // Register negotiation request handler
         try await provider.onChannel(CloisterChannels.negotiate) { [weak self] fromPeerId, data in
             await self?.handleNegotiationRequest(data, from: fromPeerId)
         }
 
-        // Register invite share handler
-        try await provider.onChannel(CloisterChannels.share) { [weak self] fromPeerId, data in
-            await self?.handleInviteShare(data, from: fromPeerId)
+        // Register invite key exchange handler (round 1)
+        try await provider.onChannel(CloisterChannels.inviteKeyExchange) { [weak self] fromPeerId, data in
+            await self?.handleInviteKeyExchange(data, from: fromPeerId)
+        }
+
+        // Register invite payload handler (round 2)
+        let payloadChannel = CloisterChannels.invitePayload(for: myPeerId)
+        try await provider.onChannel(payloadChannel) { [weak self] fromPeerId, data in
+            await self?.handleInvitePayload(data, from: fromPeerId)
         }
 
         isRunning = true
@@ -55,8 +74,11 @@ public actor CloisterHandler {
 
     /// Stop listening for cloister requests
     public func stop() async {
+        let myPeerId = await provider.peerId
         await provider.offChannel(CloisterChannels.negotiate)
-        await provider.offChannel(CloisterChannels.share)
+        await provider.offChannel(CloisterChannels.inviteKeyExchange)
+        await provider.offChannel(CloisterChannels.invitePayload(for: myPeerId))
+        pendingInviteSessions.removeAll()
         isRunning = false
         logger.info("Cloister handler stopped")
     }
@@ -202,66 +224,168 @@ public actor CloisterHandler {
         }
     }
 
-    private func handleInviteShare(_ data: Data, from peerId: PeerId) async {
-        guard let share = try? JSONCoding.decoder.decode(NetworkInviteShare.self, from: data) else {
-            logger.warning("Failed to decode invite share from \(peerId.prefix(8))...")
+    /// Handle invite key exchange request (round 1)
+    /// Creates session and sends back our public key
+    private func handleInviteKeyExchange(_ data: Data, from peerId: PeerId) async {
+        guard let request = try? JSONCoding.decoder.decode(InviteKeyExchangeRequest.self, from: data) else {
+            logger.warning("Failed to decode invite key exchange request from \(peerId.prefix(8))...")
             return
         }
 
-        logger.debug("Received invite share from \(peerId.prefix(8))..., hint: \(share.networkNameHint ?? "none")")
+        logger.debug("Received invite key exchange from \(peerId.prefix(8))..., hint: \(request.networkNameHint ?? "none")")
 
         // Check if we should accept
         let accepted: Bool
         if let handler = inviteHandler {
-            accepted = await handler(peerId, share.networkNameHint)
+            accepted = await handler(peerId, request.networkNameHint)
         } else {
             accepted = false
             logger.warning("No invite handler set, rejecting invite from \(peerId.prefix(8))...")
         }
 
-        // Generate our ephemeral keypair for key derivation
-        let privateKey = Curve25519.KeyAgreement.PrivateKey()
-        let publicKeyData = Data(privateKey.publicKey.rawRepresentation)
+        // Create our key exchange session
+        let session = KeyExchangeSession()
+        let ourPublicKey = await session.publicKey
 
         if !accepted {
-            await sendInviteAck(
-                requestId: share.requestId,
+            await sendInviteKeyExchangeResponse(
+                requestId: request.requestId,
                 to: peerId,
+                publicKey: ourPublicKey,
                 accepted: false,
-                publicKey: publicKeyData,
                 rejectReason: "Invite not accepted"
             )
             return
         }
 
         do {
-            let theirPublicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: share.ephemeralPublicKey)
+            // Complete our side of the key exchange
+            try await session.completeExchange(peerPublicKey: request.ephemeralPublicKey)
 
-            // Derive shared secret
-            let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: theirPublicKey)
-
-            // Derive symmetric key for invite decryption
-            let inviteKey = sharedSecret.hkdfDerivedSymmetricKey(
-                using: SHA256.self,
-                salt: Data(),
-                sharedInfo: Data("omerta-invite-key".utf8),
-                outputByteCount: 32
+            // Store session for round 2
+            let expiresAt = Date().addingTimeInterval(60) // 60 second timeout
+            pendingInviteSessions[request.requestId] = PendingInviteSession(
+                session: session,
+                fromPeerId: peerId,
+                networkNameHint: request.networkNameHint,
+                expiresAt: expiresAt
             )
 
-            // Decrypt the invite
-            let sealedBox = try ChaChaPoly.SealedBox(combined: share.encryptedInvite)
+            // Send our public key back
+            await sendInviteKeyExchangeResponse(
+                requestId: request.requestId,
+                to: peerId,
+                publicKey: ourPublicKey,
+                accepted: true
+            )
+
+            logger.debug("Sent invite key exchange response to \(peerId.prefix(8))..., awaiting payload")
+
+        } catch {
+            logger.error("Key exchange failed with \(peerId.prefix(8))...: \(error)")
+            await sendInviteKeyExchangeResponse(
+                requestId: request.requestId,
+                to: peerId,
+                publicKey: ourPublicKey,
+                accepted: false,
+                rejectReason: "Key exchange failed"
+            )
+        }
+    }
+
+    /// Send invite key exchange response (round 1)
+    private func sendInviteKeyExchangeResponse(
+        requestId: UUID,
+        to peerId: PeerId,
+        publicKey: Data,
+        accepted: Bool,
+        rejectReason: String? = nil
+    ) async {
+        let response = InviteKeyExchangeResponse(
+            requestId: requestId,
+            ephemeralPublicKey: publicKey,
+            accepted: accepted,
+            rejectReason: rejectReason
+        )
+
+        do {
+            let responseData = try JSONCoding.encoder.encode(response)
+            let responseChannel = CloisterChannels.inviteKeyExchangeResponse(for: peerId)
+            try await provider.sendOnChannel(responseData, to: peerId, channel: responseChannel)
+        } catch {
+            logger.error("Failed to send invite key exchange response to \(peerId.prefix(8))...: \(error)")
+        }
+    }
+
+    /// Handle invite payload (round 2)
+    /// Decrypts the network key and joins the network
+    private func handleInvitePayload(_ data: Data, from peerId: PeerId) async {
+        guard let payload = try? JSONCoding.decoder.decode(InvitePayload.self, from: data) else {
+            logger.warning("Failed to decode invite payload from \(peerId.prefix(8))...")
+            return
+        }
+
+        // Find and remove the pending session
+        guard let sessionData = pendingInviteSessions.removeValue(forKey: payload.requestId) else {
+            logger.warning("Received invite payload for unknown request: \(payload.requestId)")
+            await sendInviteFinalAck(
+                requestId: payload.requestId,
+                to: peerId,
+                success: false,
+                error: "No pending session found"
+            )
+            return
+        }
+
+        // Check if session has expired
+        if Date() > sessionData.expiresAt {
+            logger.warning("Invite session expired for request: \(payload.requestId)")
+            await sendInviteFinalAck(
+                requestId: payload.requestId,
+                to: peerId,
+                success: false,
+                error: "Session expired"
+            )
+            return
+        }
+
+        // Verify the peer ID matches
+        guard sessionData.fromPeerId == peerId else {
+            logger.warning("Invite payload from wrong peer: expected \(sessionData.fromPeerId.prefix(8))..., got \(peerId.prefix(8))...")
+            await sendInviteFinalAck(
+                requestId: payload.requestId,
+                to: peerId,
+                success: false,
+                error: "Peer ID mismatch"
+            )
+            return
+        }
+
+        do {
+            // Derive the invite key
+            let inviteKey = try await sessionData.session.deriveInviteKey()
+
+            // Decrypt the network key
+            let sealedBox = try ChaChaPoly.SealedBox(combined: payload.encryptedNetworkKey)
             let networkKey = try ChaChaPoly.open(sealedBox, using: inviteKey)
+
+            // Optionally decrypt network name
+            var networkName = sessionData.networkNameHint ?? "shared-network"
+            if let encryptedName = payload.encryptedNetworkName {
+                let nameSealedBox = try ChaChaPoly.SealedBox(combined: encryptedName)
+                let nameData = try ChaChaPoly.open(nameSealedBox, using: inviteKey)
+                networkName = String(data: nameData, encoding: .utf8) ?? networkName
+            }
 
             // Compute network ID
             let hash = SHA256.hash(data: networkKey)
             let networkId = hash.prefix(8).map { String(format: "%02x", $0) }.joined()
 
-            // Send ack
-            await sendInviteAck(
-                requestId: share.requestId,
+            // Send success ack
+            await sendInviteFinalAck(
+                requestId: payload.requestId,
                 to: peerId,
-                accepted: true,
-                publicKey: publicKeyData,
+                success: true,
                 joinedNetworkId: networkId
             )
 
@@ -269,7 +393,7 @@ public actor CloisterHandler {
             let result = CloisterResult(
                 networkKey: networkKey,
                 networkId: networkId,
-                networkName: share.networkNameHint ?? "shared-network",
+                networkName: networkName,
                 sharedWith: peerId
             )
 
@@ -280,39 +404,37 @@ public actor CloisterHandler {
             logger.info("Successfully received invite from \(peerId.prefix(8))..., networkId: \(networkId)")
 
         } catch {
-            logger.error("Failed to process invite from \(peerId.prefix(8))...: \(error)")
-            await sendInviteAck(
-                requestId: share.requestId,
+            logger.error("Failed to process invite payload from \(peerId.prefix(8))...: \(error)")
+            await sendInviteFinalAck(
+                requestId: payload.requestId,
                 to: peerId,
-                accepted: false,
-                publicKey: publicKeyData,
-                rejectReason: "Failed to decrypt invite"
+                success: false,
+                error: "Failed to decrypt invite: \(error.localizedDescription)"
             )
         }
     }
 
-    private func sendInviteAck(
+    /// Send final invite acknowledgment (round 2)
+    private func sendInviteFinalAck(
         requestId: UUID,
         to peerId: PeerId,
-        accepted: Bool,
-        publicKey: Data,
+        success: Bool,
         joinedNetworkId: String? = nil,
-        rejectReason: String? = nil
+        error: String? = nil
     ) async {
-        let ack = NetworkInviteAck(
+        let ack = InviteFinalAck(
             requestId: requestId,
-            ephemeralPublicKey: publicKey,
-            accepted: accepted,
+            success: success,
             joinedNetworkId: joinedNetworkId,
-            rejectReason: rejectReason
+            error: error
         )
 
         do {
             let ackData = try JSONCoding.encoder.encode(ack)
-            let ackChannel = CloisterChannels.shareAck(for: peerId)
+            let ackChannel = CloisterChannels.inviteFinalAck(for: peerId)
             try await provider.sendOnChannel(ackData, to: peerId, channel: ackChannel)
         } catch {
-            logger.error("Failed to send invite ack to \(peerId.prefix(8))...: \(error)")
+            logger.error("Failed to send invite final ack to \(peerId.prefix(8))...: \(error)")
         }
     }
 }

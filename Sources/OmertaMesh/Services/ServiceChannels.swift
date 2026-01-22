@@ -43,10 +43,10 @@ public enum CloisterChannels {
         "cloister-response-\(peerId)"
     }
 
-    /// Channel for invite sharing
+    /// Channel for invite sharing (legacy single-round)
     public static let share = "cloister-share"
 
-    /// Per-peer invite share acknowledgment channel
+    /// Per-peer invite share acknowledgment channel (legacy)
     /// - Parameter peerId: The peer ID to receive acknowledgments
     public static func shareAck(for peerId: PeerId) -> String {
         "cloister-share-ack-\(peerId)"
@@ -59,5 +59,28 @@ public enum CloisterChannels {
     /// - Parameter peerId: The peer ID to route the response to
     public static func deriveResponse(for peerId: PeerId) -> String {
         "cloister-derive-response-\(peerId)"
+    }
+
+    // MARK: - Two-Round Invite Protocol Channels
+
+    /// Channel for invite key exchange requests (round 1)
+    public static let inviteKeyExchange = "cloister-invite-kex"
+
+    /// Per-peer invite key exchange response channel (round 1)
+    /// - Parameter peerId: The peer ID to route the response to
+    public static func inviteKeyExchangeResponse(for peerId: PeerId) -> String {
+        "cloister-invite-kex-resp-\(peerId)"
+    }
+
+    /// Per-peer channel for encrypted invite payload (round 2)
+    /// - Parameter peerId: The peer ID to receive the payload
+    public static func invitePayload(for peerId: PeerId) -> String {
+        "cloister-invite-payload-\(peerId)"
+    }
+
+    /// Per-peer channel for final invite acknowledgment (round 2)
+    /// - Parameter peerId: The peer ID to receive the acknowledgment
+    public static func inviteFinalAck(for peerId: PeerId) -> String {
+        "cloister-invite-final-ack-\(peerId)"
     }
 }

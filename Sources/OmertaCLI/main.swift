@@ -653,7 +653,9 @@ struct Network: AsyncParsableCommand {
             NetworkLeave.self,
             NetworkShow.self,
             NetworkBootstrap.self,
-            NetworkInvite.self
+            NetworkInvite.self,
+            NetworkNegotiate.self,
+            NetworkShare.self
         ]
     )
 }
@@ -1202,6 +1204,191 @@ struct NetworkInvite: AsyncParsableCommand {
             print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         } catch {
             print("Error encoding invite link: \(error)")
+            throw ExitCode.failure
+        }
+    }
+}
+
+struct NetworkNegotiate: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "negotiate",
+        abstract: "Create a private network with a peer via key exchange"
+    )
+
+    @Argument(help: "Peer ID or prefix to negotiate with")
+    var peer: String
+
+    @Option(name: .shortAndLong, help: "Name for the new network")
+    var name: String
+
+    @Option(name: .long, help: "Network ID or prefix for the mesh (default: first available)")
+    var network: String?
+
+    @Option(name: .long, help: "Timeout in seconds")
+    var timeout: Int = 30
+
+    mutating func run() async throws {
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+        let networkId = try await resolveNetworkForDaemon(
+            positionalArg: nil,
+            networkFlag: network,
+            store: networkStore
+        )
+
+        let client = ControlSocketClient(networkId: networkId)
+        guard client.isDaemonRunning() else {
+            print("Error: omertad is not running for network '\(networkId.prefix(16))...'")
+            throw ExitCode.failure
+        }
+
+        // Resolve peer ID prefix
+        var resolvedPeerId = peer
+        if peer.count < 64 {
+            let peersResponse = try await client.send(.peers)
+            if case .peers(let knownPeers) = peersResponse {
+                let (resolved, error) = resolvePeerId(peer, knownPeers: knownPeers)
+                if let id = resolved {
+                    resolvedPeerId = id
+                } else if let err = error, !err.contains("not found") {
+                    print(err)
+                    throw ExitCode.failure
+                }
+            }
+        }
+
+        print("Negotiating private network '\(name)' with \(resolvedPeerId.prefix(16))...")
+
+        let response = try await client.send(
+            .negotiateNetwork(
+                peerId: resolvedPeerId,
+                networkName: name,
+                timeout: timeout
+            )
+        )
+
+        switch response {
+        case .negotiateNetworkResult(let result):
+            if result.success {
+                print("")
+                print("Network created successfully!")
+                print("  Network ID: \(result.networkId ?? "unknown")")
+                print("  Shared with: \(result.sharedWith?.prefix(16) ?? "unknown")...")
+
+                // Save the new network to store
+                if let networkKeyData = result.networkKey {
+                    // Create a NetworkKey with no bootstrap peers initially
+                    let networkKey = NetworkKey(
+                        networkKey: networkKeyData,
+                        networkName: name,
+                        bootstrapPeers: []
+                    )
+                    let newNetwork = try await networkStore.join(networkKey, name: name)
+                    print("")
+                    print("The network has been saved to your local store.")
+                    print("Start a daemon on this network with:")
+                    print("  omertad start --network \(newNetwork.id)")
+                }
+            } else {
+                print("Error: \(result.error ?? "Unknown error")")
+                throw ExitCode.failure
+            }
+        case .error(let msg):
+            print("Error: \(msg)")
+            throw ExitCode.failure
+        default:
+            print("Unexpected response")
+            throw ExitCode.failure
+        }
+    }
+}
+
+struct NetworkShare: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "share",
+        abstract: "Share a network invite with a peer"
+    )
+
+    @Argument(help: "Peer ID or prefix to share with")
+    var peer: String
+
+    @Option(name: .shortAndLong, help: "Network ID or prefix to share (required)")
+    var shareNetwork: String
+
+    @Option(name: .long, help: "Network ID or prefix for the mesh connection (default: first available)")
+    var network: String?
+
+    @Option(name: .long, help: "Timeout in seconds")
+    var timeout: Int = 30
+
+    mutating func run() async throws {
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+
+        // Resolve the mesh network we'll use for communication
+        let meshNetworkId = try await resolveNetworkForDaemon(
+            positionalArg: nil,
+            networkFlag: network,
+            store: networkStore
+        )
+
+        // Resolve the network we want to share
+        let (resolvedNetworkToShare, shareError) = await resolveNetwork(shareNetwork, store: networkStore)
+        guard let networkToShare = resolvedNetworkToShare else {
+            print(shareError ?? "Network to share not found: \(shareNetwork)")
+            throw ExitCode.failure
+        }
+
+        let client = ControlSocketClient(networkId: meshNetworkId)
+        guard client.isDaemonRunning() else {
+            print("Error: omertad is not running for network '\(meshNetworkId.prefix(16))...'")
+            throw ExitCode.failure
+        }
+
+        // Resolve peer ID prefix
+        var resolvedPeerId = peer
+        if peer.count < 64 {
+            let peersResponse = try await client.send(.peers)
+            if case .peers(let knownPeers) = peersResponse {
+                let (resolved, error) = resolvePeerId(peer, knownPeers: knownPeers)
+                if let id = resolved {
+                    resolvedPeerId = id
+                } else if let err = error, !err.contains("not found") {
+                    print(err)
+                    throw ExitCode.failure
+                }
+            }
+        }
+
+        print("Sharing network '\(networkToShare.name)' with \(resolvedPeerId.prefix(16))...")
+
+        let response = try await client.send(
+            .shareNetworkInvite(
+                peerId: resolvedPeerId,
+                networkKey: networkToShare.key.networkKey,
+                networkName: networkToShare.name,
+                timeout: timeout
+            )
+        )
+
+        switch response {
+        case .shareInviteResult(let result):
+            if result.success {
+                if result.accepted {
+                    let joinedId = result.joinedNetworkId ?? String(networkToShare.id.prefix(16))
+                    print("Invite accepted! Peer joined network: \(joinedId)")
+                } else {
+                    print("Invite declined: \(result.error ?? "Peer rejected the invite")")
+                }
+            } else {
+                print("Error: \(result.error ?? "Unknown error")")
+                throw ExitCode.failure
+            }
+        case .error(let msg):
+            print("Error: \(msg)")
+            throw ExitCode.failure
+        default:
+            print("Unexpected response")
             throw ExitCode.failure
         }
     }
@@ -3579,7 +3766,9 @@ struct Mesh: AsyncParsableCommand {
             MeshStatus.self,
             MeshPeers.self,
             MeshConnect.self,
-            MeshPing.self
+            MeshPing.self,
+            MeshSend.self,
+            MeshHealth.self
         ]
     )
 }
@@ -3958,6 +4147,171 @@ struct MeshPing: AsyncParsableCommand {
         if successCount > 0 {
             let avgLatency = totalLatency / successCount
             print("  avg latency: \(avgLatency)ms")
+        }
+    }
+}
+
+struct MeshSend: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "send",
+        abstract: "Send a message to a mesh peer"
+    )
+
+    @Argument(help: "Peer ID or prefix")
+    var peer: String
+
+    @Argument(help: "Message content")
+    var message: String
+
+    @Option(name: .long, help: "Network ID or prefix (default: first available)")
+    var network: String?
+
+    @Flag(name: .shortAndLong, help: "Wait for delivery receipt")
+    var receipt: Bool = false
+
+    @Option(name: .long, help: "Timeout in seconds")
+    var timeout: Int = 10
+
+    mutating func run() async throws {
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+        let networkId = try await resolveNetworkForDaemon(
+            positionalArg: nil,
+            networkFlag: network,
+            store: networkStore
+        )
+
+        let client = ControlSocketClient(networkId: networkId)
+        guard client.isDaemonRunning() else {
+            print("Error: omertad is not running")
+            throw ExitCode.failure
+        }
+
+        // Resolve peer ID prefix
+        var resolvedPeerId = peer
+        if peer.count < 64 {
+            let peersResponse = try await client.send(.peers)
+            if case .peers(let knownPeers) = peersResponse {
+                let (resolved, error) = resolvePeerId(peer, knownPeers: knownPeers)
+                if let id = resolved {
+                    resolvedPeerId = id
+                } else if let err = error, !err.contains("not found") {
+                    print(err)
+                    throw ExitCode.failure
+                }
+            }
+        }
+
+        let response = try await client.send(
+            .sendMessage(
+                peerId: resolvedPeerId,
+                content: message,
+                requestReceipt: receipt,
+                timeout: timeout
+            )
+        )
+
+        switch response {
+        case .sendMessageResult(let result):
+            if result.success {
+                print("Message sent to \(resolvedPeerId.prefix(16))...")
+                if let messageId = result.messageId {
+                    print("  Message ID: \(messageId)")
+                }
+                if let status = result.receiptStatus {
+                    print("  Receipt: \(status)")
+                }
+            } else {
+                print("Error: \(result.error ?? "Unknown error")")
+                throw ExitCode.failure
+            }
+        case .error(let msg):
+            print("Error: \(msg)")
+            throw ExitCode.failure
+        default:
+            print("Unexpected response")
+            throw ExitCode.failure
+        }
+    }
+}
+
+struct MeshHealth: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "health",
+        abstract: "Check health of a mesh peer"
+    )
+
+    @Argument(help: "Peer ID or prefix")
+    var peer: String
+
+    @Option(name: .long, help: "Network ID or prefix (default: first available)")
+    var network: String?
+
+    @Option(name: .long, help: "Timeout in seconds")
+    var timeout: Int = 10
+
+    @Flag(name: .shortAndLong, help: "Show detailed metrics")
+    var verbose: Bool = false
+
+    mutating func run() async throws {
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+        let networkId = try await resolveNetworkForDaemon(
+            positionalArg: nil,
+            networkFlag: network,
+            store: networkStore
+        )
+
+        let client = ControlSocketClient(networkId: networkId)
+        guard client.isDaemonRunning() else {
+            print("Error: omertad is not running")
+            throw ExitCode.failure
+        }
+
+        // Resolve peer ID prefix
+        var resolvedPeerId = peer
+        if peer.count < 64 {
+            let peersResponse = try await client.send(.peers)
+            if case .peers(let knownPeers) = peersResponse {
+                let (resolved, error) = resolvePeerId(peer, knownPeers: knownPeers)
+                if let id = resolved {
+                    resolvedPeerId = id
+                } else if let err = error, !err.contains("not found") {
+                    print(err)
+                    throw ExitCode.failure
+                }
+            }
+        }
+
+        print("Checking health of \(resolvedPeerId.prefix(16))...")
+
+        let response = try await client.send(
+            .healthCheck(peerId: resolvedPeerId, timeout: timeout)
+        )
+
+        switch response {
+        case .healthCheckResult(let result):
+            if let result = result {
+                print("")
+                print("Status: \(result.status)")
+                print("Latency: \(result.latencyMs)ms")
+                if verbose, let metrics = result.metrics {
+                    print("")
+                    print("Metrics:")
+                    print("  Uptime: \(Int(metrics.uptimeSeconds))s")
+                    print("  Peers: \(metrics.peerCount)")
+                    print("  Direct connections: \(metrics.directConnectionCount)")
+                    print("  Relay connections: \(metrics.relayCount)")
+                }
+            } else {
+                print("Peer unreachable (timeout)")
+            }
+        case .error(let msg):
+            print("Error: \(msg)")
+            throw ExitCode.failure
+        default:
+            print("Unexpected response")
+            throw ExitCode.failure
         }
     }
 }

@@ -281,6 +281,106 @@ public struct NetworkInviteAck: Codable, Sendable {
     }
 }
 
+// MARK: - Two-Round Invite Protocol Messages
+
+/// Initial invite request (round 1: client sends public key)
+public struct InviteKeyExchangeRequest: Codable, Sendable {
+    /// Unique request ID
+    public let requestId: UUID
+
+    /// Client's ephemeral X25519 public key
+    public let ephemeralPublicKey: Data
+
+    /// Optional unencrypted hint about the network name
+    public let networkNameHint: String?
+
+    public init(
+        requestId: UUID = UUID(),
+        ephemeralPublicKey: Data,
+        networkNameHint: String? = nil
+    ) {
+        self.requestId = requestId
+        self.ephemeralPublicKey = ephemeralPublicKey
+        self.networkNameHint = networkNameHint
+    }
+}
+
+/// Invite key exchange response (round 1: handler sends public key + accept/reject)
+public struct InviteKeyExchangeResponse: Codable, Sendable {
+    /// Matching request ID
+    public let requestId: UUID
+
+    /// Handler's ephemeral X25519 public key
+    public let ephemeralPublicKey: Data
+
+    /// Whether the handler accepted the invite request
+    public let accepted: Bool
+
+    /// Rejection reason (if not accepted)
+    public let rejectReason: String?
+
+    public init(
+        requestId: UUID,
+        ephemeralPublicKey: Data,
+        accepted: Bool,
+        rejectReason: String? = nil
+    ) {
+        self.requestId = requestId
+        self.ephemeralPublicKey = ephemeralPublicKey
+        self.accepted = accepted
+        self.rejectReason = rejectReason
+    }
+}
+
+/// Encrypted invite payload (round 2: client sends encrypted network key)
+public struct InvitePayload: Codable, Sendable {
+    /// Matching request ID
+    public let requestId: UUID
+
+    /// Network key encrypted with derived invite key (ChaCha20-Poly1305)
+    public let encryptedNetworkKey: Data
+
+    /// Optional encrypted network name
+    public let encryptedNetworkName: Data?
+
+    public init(
+        requestId: UUID,
+        encryptedNetworkKey: Data,
+        encryptedNetworkName: Data? = nil
+    ) {
+        self.requestId = requestId
+        self.encryptedNetworkKey = encryptedNetworkKey
+        self.encryptedNetworkName = encryptedNetworkName
+    }
+}
+
+/// Final invite acknowledgment (round 2: handler confirms receipt)
+public struct InviteFinalAck: Codable, Sendable {
+    /// Matching request ID
+    public let requestId: UUID
+
+    /// Whether the invite was successfully processed
+    public let success: Bool
+
+    /// Network ID that the handler joined
+    public let joinedNetworkId: String?
+
+    /// Error message if not successful
+    public let error: String?
+
+    public init(
+        requestId: UUID,
+        success: Bool,
+        joinedNetworkId: String? = nil,
+        error: String? = nil
+    ) {
+        self.requestId = requestId
+        self.success = success
+        self.joinedNetworkId = joinedNetworkId
+        self.error = error
+    }
+}
+
 /// Result of a successful cloister negotiation
 public struct CloisterResult: Sendable {
     /// The derived network key
