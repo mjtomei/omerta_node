@@ -73,7 +73,7 @@ public actor PeerEndpointManager {
     ///   - logger: Override logger
     public init(
         networkId: String,
-        validationMode: EndpointValidator.ValidationMode = .strict,
+        validationMode: EndpointValidator.ValidationMode = .permissive,
         storagePath: URL? = nil,
         logger: Logger? = nil
     ) {
@@ -93,7 +93,7 @@ public actor PeerEndpointManager {
     public init(storagePath: URL? = nil, logger: Logger? = nil) {
         // Use a placeholder network ID derived from path or random
         self.networkId = "legacy-\(UUID().uuidString.prefix(8))"
-        self.validationMode = .strict
+        self.validationMode = .permissive
         self.storagePath = storagePath ?? URL(fileURLWithPath: OmertaConfig.getRealUserHome())
             .appendingPathComponent(".omerta/mesh/peer_endpoints.json")
         self.logger = logger ?? Logger(label: "io.omerta.mesh.endpoints")

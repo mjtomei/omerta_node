@@ -54,7 +54,7 @@ public actor PeerStore {
     ///   - maxStoredPeers: Maximum number of peers to store
     public init(
         networkId: String,
-        validationMode: EndpointValidator.ValidationMode = .strict,
+        validationMode: EndpointValidator.ValidationMode = .permissive,
         storePath: URL? = nil,
         maxStoredPeers: Int = 500
     ) {
@@ -73,7 +73,7 @@ public actor PeerStore {
     @available(*, deprecated, message: "Use init(networkId:) instead")
     public init(storePath: URL, maxStoredPeers: Int = 500) {
         self.networkId = "legacy-\(UUID().uuidString.prefix(8))"
-        self.validationMode = .strict
+        self.validationMode = .permissive
         self.storePath = storePath
         self.maxStoredPeers = maxStoredPeers
         self.logger = Logger(label: "io.omerta.mesh.peerstore")
