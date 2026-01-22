@@ -755,6 +755,10 @@ public actor EphemeralVPN: VPNProvider {
         config: String,
         interfaceName: String
     ) async throws {
+        // Check for WireGuard tools before attempting to use them
+        let checker = DependencyChecker()
+        try await checker.verifyDependencies([DependencyChecker.wireguardQuick])
+
         // Check if we have root privileges (needed for WireGuard)
         // Either running as root directly, or sudo is available without password
         if getuid() != 0 {

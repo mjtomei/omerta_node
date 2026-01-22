@@ -399,23 +399,6 @@ struct Start: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        // Check dependencies (skip for consumer-only mode)
-        if !effectiveNoProvider {
-            print("")
-            print("Checking system dependencies...")
-            let checker = DependencyChecker()
-            do {
-                try await checker.verifyProviderMode()
-                print("All dependencies satisfied")
-            } catch let error as DependencyChecker.MissingDependenciesError {
-                print("\nMissing dependencies:")
-                print(error.description)
-                print("\nRun the installation script:")
-                print("  curl -sSL https://raw.githubusercontent.com/omerta/omerta/main/Scripts/install.sh | bash")
-                throw ExitCode.failure
-            }
-            print("")
-        }
 
         // Create shutdown coordinator
         let shutdownCoordinator = ShutdownCoordinator()
