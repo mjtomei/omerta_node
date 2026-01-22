@@ -246,7 +246,7 @@ public actor PeerEndpointManager {
     }
 
     /// Get all endpoints for all machines with this peerId (for broadcast)
-    /// Filters out invalid endpoints. Sorted with IPv6 first.
+    /// Filters out invalid endpoints. IPv6 first, then preserves recency order within each type.
     public func getAllEndpoints(peerId: PeerId) -> [String] {
         var endpoints: [String] = []
         for (key, machine) in machines {
@@ -256,11 +256,14 @@ public actor PeerEndpointManager {
         }
         // Filter on read (defense in depth)
         let validEndpoints = EndpointValidator.filterValid(endpoints, mode: validationMode)
-        // Deduplicate while preserving order
+        // Deduplicate while preserving order (most recently seen first within each machine)
         var seen = Set<String>()
         let deduped = validEndpoints.filter { seen.insert($0).inserted }
-        // Sort with IPv6 first
-        return EndpointUtils.sortPreferringIPv6(deduped)
+        // Partition into IPv6 and IPv4, preserving recency order within each
+        // (don't alphabetically sort - that loses recency information)
+        let ipv6 = deduped.filter { EndpointUtils.isIPv6($0) }
+        let ipv4 = deduped.filter { !EndpointUtils.isIPv6($0) }
+        return ipv6 + ipv4
     }
 
     /// Get all machines with this peerId
