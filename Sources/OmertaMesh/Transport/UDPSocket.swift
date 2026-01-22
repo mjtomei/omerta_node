@@ -113,8 +113,13 @@ public actor UDPSocket {
         let envelope = AddressedEnvelope(remoteAddress: sendAddress, data: buffer)
 
         logger.info("UDP sending \(data.count) bytes to \(sendAddress)")
-        try await channel.writeAndFlush(envelope)
-        logger.info("UDP sent \(data.count) bytes to \(sendAddress)")
+        do {
+            try await channel.writeAndFlush(envelope)
+            logger.info("UDP sent \(data.count) bytes to \(sendAddress)")
+        } catch {
+            logger.error("UDP send failed to \(sendAddress): \(error)")
+            throw UDPSocketError.sendFailed(destination: "\(sendAddress)", byteCount: data.count, underlying: error)
+        }
     }
 
     /// Send data to a host:port string
@@ -228,7 +233,7 @@ public enum UDPSocketError: Error, CustomStringConvertible {
     case alreadyRunning
     case notRunning
     case invalidEndpoint(String)
-    case sendFailed(Error)
+    case sendFailed(destination: String, byteCount: Int, underlying: Error)
     case addressMismatch(String)
 
     public var description: String {
@@ -239,8 +244,8 @@ public enum UDPSocketError: Error, CustomStringConvertible {
             return "UDP socket is not running"
         case .invalidEndpoint(let endpoint):
             return "Invalid endpoint: \(endpoint)"
-        case .sendFailed(let error):
-            return "Send failed: \(error)"
+        case .sendFailed(let destination, let byteCount, let underlying):
+            return "Send failed to \(destination) (\(byteCount) bytes): \(underlying)"
         case .addressMismatch(let reason):
             return "Address mismatch: \(reason)"
         }

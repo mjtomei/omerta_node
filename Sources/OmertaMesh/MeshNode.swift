@@ -582,7 +582,7 @@ public actor MeshNode {
         // Handle through message handler or default
         if let handler = messageHandler {
             if let response = await handler(envelope.payload, envelope.fromPeerId) {
-                await send(response, to: endpointString)
+                try? await send(response, to: endpointString)
             }
         } else {
             await handleDefaultMessage(envelope.payload, from: envelope.fromPeerId, endpoint: endpointString, channel: envelope.channel, channelHash: channelHash, hopCount: envelope.hopCount)
@@ -645,7 +645,7 @@ public actor MeshNode {
 
             // Get our predicted NAT type (unknown until integrated with NATPredictor in Phase 2)
             let myNATType = await getPredictedNATType().type
-            await send(.pong(recentPeers: myPeers, yourEndpoint: endpoint, myNATType: myNATType), to: endpoint)
+            try? await send(.pong(recentPeers: myPeers, yourEndpoint: endpoint, myNATType: myNATType), to: endpoint)
 
             // Learn about new peers from the ping WITH machineId and NAT type
             // Get sender's machine ID for contact tracking
@@ -791,7 +791,7 @@ public actor MeshNode {
 
             // Send response if any
             if let response = response {
-                await send(response, to: endpoint)
+                try? await send(response, to: endpoint)
             }
 
             // Forward if needed
@@ -802,7 +802,7 @@ public actor MeshNode {
         case .holePunchRequest, .holePunchInvite, .holePunchExecute, .holePunchResult:
             // Handle hole punch messages
             if let response = await holePunchManager.handleMessage(message, from: peerId) {
-                await send(response, to: endpoint)
+                try? await send(response, to: endpoint)
             }
 
         case .data(let payload):
@@ -863,7 +863,7 @@ public actor MeshNode {
             }
 
             // Use the standard send method which handles v2 encryption
-            await send(message, to: endpoint)
+            try? await send(message, to: endpoint)
         }
     }
 
@@ -874,26 +874,23 @@ public actor MeshNode {
     ///   - message: Message to send
     ///   - endpoint: Target endpoint
     ///   - channel: Channel for routing (default: empty for internal mesh messages)
-    public func send(_ message: MeshMessage, to endpoint: String, channel: String = "") async {
-        do {
-            // Create signed envelope with embedded public key
-            let envelope = try MeshEnvelope.signed(
-                from: identity,
-                machineId: machineId,
-                to: nil,
-                channel: channel,
-                payload: message
-            )
+    /// - Throws: If message encoding or socket send fails
+    public func send(_ message: MeshMessage, to endpoint: String, channel: String = "") async throws {
+        // Create signed envelope with embedded public key
+        let envelope = try MeshEnvelope.signed(
+            from: identity,
+            machineId: machineId,
+            to: nil,
+            channel: channel,
+            payload: message
+        )
 
-            // Encode using v2 wire format with layered encryption
-            let encryptedData = try envelope.encodeV2(networkKey: config.encryptionKey)
-            logger.info("Sending \(encryptedData.count) bytes to \(endpoint)")
-            try await socket.send(encryptedData, to: endpoint)
+        // Encode using v2 wire format with layered encryption
+        let encryptedData = try envelope.encodeV2(networkKey: config.encryptionKey)
+        logger.info("Sending \(encryptedData.count) bytes to \(endpoint)")
+        try await socket.send(encryptedData, to: endpoint)
 
-            logger.info("Sent \(type(of: message)) (\(encryptedData.count) bytes) to \(endpoint) [channel: \(channel.isEmpty ? "<mesh>" : channel)]")
-        } catch {
-            logger.error("Failed to send message: \(error)")
-        }
+        logger.info("Sent \(type(of: message)) (\(encryptedData.count) bytes) to \(endpoint) [channel: \(channel.isEmpty ? "<mesh>" : channel)]")
     }
 
     /// Send a message and wait for a response
@@ -927,7 +924,15 @@ public actor MeshNode {
 
             // Send the message
             Task {
-                await self.send(message, to: endpoint)
+                do {
+                    try await self.send(message, to: endpoint)
+                } catch {
+                    // Send failed - resume continuation with error
+                    if let pending = self.pendingResponses.removeValue(forKey: requestId) {
+                        pending.timer.cancel()
+                        pending.continuation.resume(throwing: error)
+                    }
+                }
             }
         }
     }
@@ -1002,7 +1007,7 @@ public actor MeshNode {
             }
             // Build peer list with currentEndpoint to conditionally advertise IPv6
             let myPeers = await buildPeerEndpointInfoList(currentEndpoint: endpoint)
-            await send(.ping(recentPeers: myPeers, myNATType: myNATType), to: endpoint)
+            try? await send(.ping(recentPeers: myPeers, myNATType: myNATType), to: endpoint)
         }
     }
 
@@ -1251,7 +1256,7 @@ public actor MeshNode {
         // Check if we know an endpoint for the target
         guard let targetEndpoint = await endpointManager.getAllEndpoints(peerId: targetPeerId).first else {
             logger.warning("Relay forward failed: no endpoint for target \(targetPeerId.prefix(8))...")
-            await send(.relayForwardResult(targetPeerId: targetPeerId, success: false), to: senderEndpoint)
+            try? await send(.relayForwardResult(targetPeerId: targetPeerId, success: false), to: senderEndpoint)
             return
         }
 
@@ -1260,10 +1265,10 @@ public actor MeshNode {
         do {
             try await socket.send(payload, to: targetEndpoint)
             logger.info("Relayed \(payload.count) bytes to \(targetPeerId.prefix(8))... at \(targetEndpoint)")
-            await send(.relayForwardResult(targetPeerId: targetPeerId, success: true), to: senderEndpoint)
+            try? await send(.relayForwardResult(targetPeerId: targetPeerId, success: true), to: senderEndpoint)
         } catch {
             logger.error("Relay forward to \(targetPeerId.prefix(8))... failed: \(error)")
-            await send(.relayForwardResult(targetPeerId: targetPeerId, success: false), to: senderEndpoint)
+            try? await send(.relayForwardResult(targetPeerId: targetPeerId, success: false), to: senderEndpoint)
         }
     }
 
@@ -1339,7 +1344,7 @@ public actor MeshNode {
             }
 
             logger.info("Sending via relay \(relay.relayPeerId.prefix(8))... to \(targetPeerId.prefix(8))... [channel: \(channel.isEmpty ? "<mesh>" : channel)]")
-            await send(.relayForward(targetPeerId: targetPeerId, payload: encryptedPayload), to: relayEndpoint)
+            try await send(.relayForward(targetPeerId: targetPeerId, payload: encryptedPayload), to: relayEndpoint)
             return // Successfully sent to relay
         }
 
@@ -1370,10 +1375,10 @@ public actor MeshNode {
             )
 
             // Send as peerInfo message (self-authenticating)
-            await send(.peerInfo(announcement), to: endpoint)
+            try await send(.peerInfo(announcement), to: endpoint)
             logger.info("Sent announcement to \(endpoint) (peerId=\(identity.peerId))")
         } catch {
-            logger.error("Failed to create announcement: \(error)")
+            logger.error("Failed to send announcement: \(error)")
         }
     }
 
@@ -1416,7 +1421,7 @@ public actor MeshNode {
         logger.info("sendToPeer: Sending to \(peerId.prefix(16))... via \(endpoints[0])")
         // For fire-and-forget sends, try the best endpoint only
         // Use sendToPeerWithFallback for request-response patterns
-        await send(message, to: endpoints[0])
+        try await send(message, to: endpoints[0])
     }
 
     /// Send to peer with fallback through multiple endpoints
@@ -1881,7 +1886,7 @@ extension MeshNode: MeshNodeServices {
     public func send(_ message: MeshMessage, to peerId: PeerId, strategy: RoutingStrategy) async throws {
         switch strategy {
         case .direct(let endpoint):
-            await send(message, to: endpoint)
+            try await send(message, to: endpoint)
         case .auto:
             try await sendWithAutoRouting(message, to: peerId)
         case .relay(let relayPeerId):
@@ -1949,7 +1954,7 @@ extension MeshNode: MeshNodeServices {
         // 1. Try IPv6 first (always works, no NAT)
         if let endpoint = await getBestPeerEndpoint(),
            EndpointUtils.isIPv6(endpoint) {
-            await send(message, to: endpoint, channel: channel)
+            try await send(message, to: endpoint, channel: channel)
             return
         }
 
@@ -1957,7 +1962,7 @@ extension MeshNode: MeshNodeServices {
         let peerNATType = await endpointManager.getNATType(peerId: peerId) ?? .unknown
         if peerNATType.isDirectlyReachable,
            let endpoint = await getBestPeerEndpoint() {
-            await send(message, to: endpoint, channel: channel)
+            try await send(message, to: endpoint, channel: channel)
             return
         }
 
@@ -1976,7 +1981,7 @@ extension MeshNode: MeshNodeServices {
 
         // 5. Last resort: try direct anyway
         if let endpoint = await getBestPeerEndpoint() {
-            await send(message, to: endpoint, channel: channel)
+            try await send(message, to: endpoint, channel: channel)
             return
         }
 
@@ -2007,7 +2012,7 @@ extension MeshNode: MeshNodeServices {
         let encryptedPayload = try envelope.encodeV2(networkKey: config.encryptionKey)
 
         logger.info("Sending via relay \(relayPeerId.prefix(8))... to \(targetPeerId.prefix(8))... [channel: \(channel.isEmpty ? "<mesh>" : channel)]")
-        await send(.relayForward(targetPeerId: targetPeerId, payload: encryptedPayload), to: relayEndpoint)
+        try await send(.relayForward(targetPeerId: targetPeerId, payload: encryptedPayload), to: relayEndpoint)
     }
 
     // MARK: - Channel System

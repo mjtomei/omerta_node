@@ -733,6 +733,50 @@ public actor MyClient {
 
 ## Error Handling
 
+### Send Operations
+
+All `send` operations now properly propagate errors. Operations that were previously fire-and-forget now explicitly handle errors:
+
+```swift
+// Sending throws on failure
+do {
+    try await mesh.send(message, to: endpoint)
+} catch let error as UDPSocketError {
+    // Network-level failure
+    switch error {
+    case .sendFailed(let destination, let byteCount, let underlying):
+        print("Failed to send \(byteCount) bytes to \(destination): \(underlying)")
+        // underlying contains the system error (e.g., "host unreachable")
+    case .notRunning:
+        print("Socket not running")
+    default:
+        print("Send error: \(error)")
+    }
+}
+
+// For fire-and-forget scenarios, use try? explicitly
+try? await mesh.send(response, to: endpoint)  // Errors logged but ignored
+```
+
+### UDPSocketError
+
+Low-level socket errors with full context:
+
+```swift
+public enum UDPSocketError: Error {
+    case alreadyRunning
+    case notRunning
+    case invalidEndpoint(String)
+    case sendFailed(destination: String, byteCount: Int, underlying: Error)
+    case addressMismatch(String)
+}
+```
+
+The `sendFailed` case includes:
+- `destination`: The target address that failed
+- `byteCount`: Number of bytes attempted to send
+- `underlying`: The system-level error (e.g., EHOSTUNREACH, ENETUNREACH)
+
 ### MeshError
 
 Core mesh errors for network operations:

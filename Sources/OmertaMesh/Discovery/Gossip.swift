@@ -165,7 +165,7 @@ public actor Gossip {
             }
         }) else { return }
 
-        await node.send(.announce(announcement), to: endpoint)
+        try? await node.send(.announce(announcement), to: endpoint)
     }
 
     private func markGossiped(_ id: String) {

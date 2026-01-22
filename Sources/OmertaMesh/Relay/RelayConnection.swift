@@ -162,7 +162,7 @@ public actor RelayConnection {
     public func endSession(_ sessionId: String) async {
         guard activeSessions > 0 else { return }
 
-        await node.send(.relayEnd(sessionId: sessionId), to: relayEndpoint)
+        try? await node.send(.relayEnd(sessionId: sessionId), to: relayEndpoint)
         activeSessions -= 1
         logger.debug("Relay session ended: \(sessionId)")
     }
@@ -173,7 +173,7 @@ public actor RelayConnection {
             throw RelayError.notConnected
         }
 
-        await node.send(.relayData(sessionId: sessionId, data: data), to: relayEndpoint)
+        try await node.send(.relayData(sessionId: sessionId, data: data), to: relayEndpoint)
     }
 
     // MARK: - Heartbeat
