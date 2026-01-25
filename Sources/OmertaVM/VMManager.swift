@@ -1042,19 +1042,10 @@ public actor VMManager {
 
         // Network device configuration
         let networkDevice = VZVirtioNetworkDeviceConfiguration()
-        if let vmRead = vmNetworkRead, let vmWrite = vmNetworkWrite {
-            // File handle networking for packet capture (full isolation)
-            // VM reads from vmRead, writes to vmWrite
-            networkDevice.attachment = VZFileHandleNetworkDeviceAttachment(
-                fileHandleForReading: vmRead,
-                fileHandleForWriting: vmWrite
-            )
-            logger.info("Using file handle network attachment for packet capture")
-        } else {
-            // NAT networking (for test mode or when packet capture not needed)
-            networkDevice.attachment = VZNATNetworkDeviceAttachment()
-            logger.info("Using NAT network attachment")
-        }
+        // macOS uses NAT networking - packet capture not yet supported on macOS
+        // (VZFileHandleNetworkDeviceAttachment API changed in newer SDKs)
+        networkDevice.attachment = VZNATNetworkDeviceAttachment()
+        logger.info("Using NAT network attachment")
         config.networkDevices = [networkDevice]
 
         // Storage devices
