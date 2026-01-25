@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -179,16 +178,8 @@ func (s *Stack) InjectPacket(packet []byte) error {
 	switch version {
 	case 4:
 		proto = ipv4.ProtocolNumber
-		if len(packet) >= 20 {
-			iph := header.IPv4(packet)
-			log.Printf("[netstack] Injecting IPv4 packet: %s:%d -> %s:%d, proto=%d, len=%d",
-				iph.SourceAddress(), getSourcePort(packet),
-				iph.DestinationAddress(), getDestPort(packet),
-				iph.Protocol(), len(packet))
-		}
 	case 6:
 		proto = ipv6.ProtocolNumber
-		log.Printf("[netstack] Injecting IPv6 packet: len=%d", len(packet))
 	default:
 		return fmt.Errorf("unknown IP version: %d", version)
 	}
@@ -201,32 +192,6 @@ func (s *Stack) InjectPacket(packet []byte) error {
 
 	s.endpoint.InjectInbound(proto, pkb)
 	return nil
-}
-
-// Helper to get source port from IP packet
-func getSourcePort(packet []byte) uint16 {
-	if len(packet) < 22 {
-		return 0
-	}
-	iph := header.IPv4(packet)
-	offset := iph.HeaderLength()
-	if len(packet) < int(offset)+2 {
-		return 0
-	}
-	return uint16(packet[offset])<<8 | uint16(packet[offset+1])
-}
-
-// Helper to get dest port from IP packet
-func getDestPort(packet []byte) uint16 {
-	if len(packet) < 24 {
-		return 0
-	}
-	iph := header.IPv4(packet)
-	offset := iph.HeaderLength()
-	if len(packet) < int(offset)+4 {
-		return 0
-	}
-	return uint16(packet[offset+2])<<8 | uint16(packet[offset+3])
 }
 
 // Start begins processing packets and forwarding connections
@@ -293,7 +258,6 @@ func (s *Stack) readOutboundPackets() {
 			// Make a copy since the buffer will be reused
 			packet := make([]byte, len(data))
 			copy(packet, data)
-			log.Printf("[netstack] Returning packet: %d bytes", len(packet))
 			s.returnPacket(packet)
 		}
 
@@ -308,13 +272,10 @@ func (s *Stack) handleTCPConnection(r *tcp.ForwarderRequest) {
 		id.LocalAddress, id.LocalPort,
 		id.RemoteAddress, id.RemotePort)
 
-	log.Printf("[netstack] TCP connection request: %s", key)
-
 	// Create endpoint
 	var wq waiter.Queue
 	ep, err := r.CreateEndpoint(&wq)
 	if err != nil {
-		log.Printf("[netstack] Failed to create endpoint: %v", err)
 		r.Complete(true) // RST
 		return
 	}
@@ -322,15 +283,12 @@ func (s *Stack) handleTCPConnection(r *tcp.ForwarderRequest) {
 
 	// Connect to real destination
 	dstAddr := fmt.Sprintf("%s:%d", id.LocalAddress.String(), id.LocalPort)
-	log.Printf("[netstack] Dialing real destination: %s", dstAddr)
 
 	realConn, dialErr := net.DialTimeout("tcp", dstAddr, TCPConnectTimeout)
 	if dialErr != nil {
-		log.Printf("[netstack] Failed to dial %s: %v", dstAddr, dialErr)
 		ep.Close()
 		return
 	}
-	log.Printf("[netstack] Connected to %s", dstAddr)
 
 	// Create gonet adapter
 	conn := gonet.NewTCPConn(&wq, ep)
