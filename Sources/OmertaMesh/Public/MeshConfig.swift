@@ -102,6 +102,10 @@ public struct MeshConfig: Sendable {
     /// Useful for testing relay code paths even when direct connectivity is available
     public var forceRelayOnly: Bool
 
+    /// Allow localhost endpoints (127.0.0.1, ::1) for testing
+    /// Default is false - localhost is rejected in production
+    public var allowLocalhost: Bool
+
     // MARK: - Initialization
 
     public init(
@@ -126,7 +130,8 @@ public struct MeshConfig: Sendable {
         freshnessQueryInterval: TimeInterval = 30,
         enableEventLogging: Bool = false,
         eventLogDir: String? = nil,
-        forceRelayOnly: Bool = false
+        forceRelayOnly: Bool = false,
+        allowLocalhost: Bool = false
     ) {
         self.encryptionKey = encryptionKey
         self.storageDirectory = storageDirectory
@@ -150,6 +155,7 @@ public struct MeshConfig: Sendable {
         self.enableEventLogging = enableEventLogging
         self.eventLogDir = eventLogDir
         self.forceRelayOnly = forceRelayOnly
+        self.allowLocalhost = allowLocalhost
     }
 
     /// Create a config from a NetworkKey
@@ -161,7 +167,8 @@ public struct MeshConfig: Sendable {
         canCoordinateHolePunch: Bool = false,
         enableEventLogging: Bool = false,
         eventLogDir: String? = nil,
-        forceRelayOnly: Bool = false
+        forceRelayOnly: Bool = false,
+        allowLocalhost: Bool = false
     ) {
         self.encryptionKey = networkKey.networkKey
         self.storageDirectory = storageDirectory
@@ -185,6 +192,7 @@ public struct MeshConfig: Sendable {
         self.enableEventLogging = enableEventLogging
         self.eventLogDir = eventLogDir
         self.forceRelayOnly = forceRelayOnly
+        self.allowLocalhost = allowLocalhost
     }
 
     // MARK: - Preset Configurations
@@ -283,6 +291,7 @@ public class MeshConfigBuilder {
     private var enableEventLogging: Bool = false
     private var eventLogDir: String?
     private var forceRelayOnly: Bool = false
+    private var allowLocalhost: Bool = false
 
     public init(encryptionKey: Data) {
         self.encryptionKey = encryptionKey
@@ -366,6 +375,12 @@ public class MeshConfigBuilder {
         return self
     }
 
+    @discardableResult
+    public func allowLocalhost(_ allow: Bool) -> Self {
+        self.allowLocalhost = allow
+        return self
+    }
+
     public func build() throws -> MeshConfig {
         let config = MeshConfig(
             encryptionKey: encryptionKey,
@@ -389,7 +404,8 @@ public class MeshConfigBuilder {
             freshnessQueryInterval: freshnessQueryInterval,
             enableEventLogging: enableEventLogging,
             eventLogDir: eventLogDir,
-            forceRelayOnly: forceRelayOnly
+            forceRelayOnly: forceRelayOnly,
+            allowLocalhost: allowLocalhost
         )
         try config.validate()
         return config
@@ -418,7 +434,8 @@ public class MeshConfigBuilder {
             freshnessQueryInterval: freshnessQueryInterval,
             enableEventLogging: enableEventLogging,
             eventLogDir: eventLogDir,
-            forceRelayOnly: forceRelayOnly
+            forceRelayOnly: forceRelayOnly,
+            allowLocalhost: allowLocalhost
         )
     }
 }

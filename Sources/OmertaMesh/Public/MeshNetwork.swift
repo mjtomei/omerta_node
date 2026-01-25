@@ -123,6 +123,7 @@ public actor MeshNetwork: ChannelProvider {
                 holePunchTimeout: config.holePunchTimeout,
                 holePunchProbeCount: config.holePunchProbeCount,
                 holePunchProbeInterval: config.holePunchProbeInterval,
+                endpointValidationMode: config.allowLocalhost ? .allowAll : .permissive,
                 forceRelayOnly: config.forceRelayOnly
             )
 
