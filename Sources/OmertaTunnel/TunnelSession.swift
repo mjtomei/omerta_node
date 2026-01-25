@@ -293,7 +293,17 @@ public actor TunnelSession {
     }
 
     private func handleReturnData(from sender: PeerId, data: Data) {
-        guard sender == remotePeer else { return }
+        guard sender == remotePeer else {
+            logger.debug("Ignoring return packet - wrong sender", metadata: [
+                "expected": "\(remotePeer.prefix(16))...",
+                "actual": "\(sender.prefix(16))..."
+            ])
+            return
+        }
+        logger.info("Received return packet", metadata: [
+            "size": "\(data.count)",
+            "from": "\(sender.prefix(16))..."
+        ])
         returnPacketContinuation?.yield(data)
     }
 }

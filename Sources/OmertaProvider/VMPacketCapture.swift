@@ -149,6 +149,7 @@ public actor VMPacketCapture {
 
     /// Forward packets from tunnel to VM
     private func forwardInbound() async {
+        logger.info("Starting inbound forwarding task", metadata: ["vmId": "\(vmId)"])
         for await packet in await tunnelSession.returnPackets {
             guard !Task.isCancelled else { break }
 
@@ -156,6 +157,10 @@ public actor VMPacketCapture {
                 try await packetSource.write(packet)
                 packetsFromTunnel += 1
                 bytesFromTunnel += UInt64(packet.count)
+                logger.info("Wrote return packet to VM", metadata: [
+                    "vmId": "\(vmId)",
+                    "size": "\(packet.count)"
+                ])
             } catch {
                 logger.warning("Failed to write packet to VM", metadata: [
                     "error": "\(error)",
@@ -163,6 +168,7 @@ public actor VMPacketCapture {
                 ])
             }
         }
+        logger.info("Inbound forwarding task ended", metadata: ["vmId": "\(vmId)"])
     }
 }
 
