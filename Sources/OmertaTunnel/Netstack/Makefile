@@ -34,9 +34,9 @@ endif
 
 all: $(ARCHIVE)
 
-$(ARCHIVE): tunnel_netstack.go exports.go go.mod
+$(ARCHIVE): tunnel_netstack.go cmd/main.go go.mod
 	@echo "Building netstack C archive for $(GOOS)/$(GOARCH)..."
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) go build $(GOFLAGS) -o $(ARCHIVE) .
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) go build $(GOFLAGS) -o $(ARCHIVE) ./cmd
 	@echo "Created $(ARCHIVE) and $(HEADER)"
 
 # Download dependencies

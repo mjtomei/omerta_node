@@ -1,4 +1,4 @@
-package netstack
+package main
 
 /*
 #include <stdlib.h>
@@ -18,15 +18,17 @@ import "C"
 import (
 	"sync"
 	"unsafe"
+
+	netstack "github.com/omerta/tunnel-netstack"
 )
 
 // Global registry for stack instances
 var (
-	stacksMu   sync.RWMutex
-	stacks     = make(map[uint64]*Stack)
-	nextID     uint64 = 1
-	callbacks  = make(map[uint64]C.ReturnPacketCallback)
-	contexts   = make(map[uint64]unsafe.Pointer)
+	stacksMu  sync.RWMutex
+	stacks    = make(map[uint64]*netstack.Stack)
+	nextID    uint64 = 1
+	callbacks = make(map[uint64]C.ReturnPacketCallback)
+	contexts  = make(map[uint64]unsafe.Pointer)
 )
 
 //export NetstackCreate
@@ -34,12 +36,12 @@ var (
 // Returns a handle (>0) on success, 0 on failure.
 // gatewayIP should be like "10.200.0.1"
 func NetstackCreate(gatewayIP *C.char, mtu C.uint32_t) C.uint64_t {
-	cfg := Config{
+	cfg := netstack.Config{
 		GatewayIP: C.GoString(gatewayIP),
 		MTU:       uint32(mtu),
 	}
 
-	stack, err := NewStack(cfg)
+	stack, err := netstack.NewStack(cfg)
 	if err != nil {
 		return 0
 	}
@@ -144,13 +146,11 @@ func NetstackGetStats(handle C.uint64_t, tcpConns *C.uint32_t, udpConns *C.uint3
 		return -1
 	}
 
-	stack.mu.RLock()
-	*tcpConns = C.uint32_t(len(stack.tcpConns))
-	*udpConns = C.uint32_t(len(stack.udpConns))
-	stack.mu.RUnlock()
+	stats := stack.GetStats()
+	*tcpConns = C.uint32_t(stats.TCPConns)
+	*udpConns = C.uint32_t(stats.UDPConns)
 
 	return 0
 }
 
-// Required for cgo to generate the C header
 func main() {}

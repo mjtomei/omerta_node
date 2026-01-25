@@ -37,6 +37,12 @@ const (
 	UDPIdleTimeout    = 60 * time.Second
 )
 
+// Stats holds connection statistics
+type Stats struct {
+	TCPConns int
+	UDPConns int
+}
+
 // Stack represents a userspace TCP/IP stack instance
 type Stack struct {
 	stack    *stack.Stack
@@ -207,6 +213,16 @@ func (s *Stack) Stop() {
 	s.mu.Unlock()
 
 	s.stack.Close()
+}
+
+// GetStats returns current connection statistics
+func (s *Stack) GetStats() Stats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return Stats{
+		TCPConns: len(s.tcpConns),
+		UDPConns: len(s.udpConns),
+	}
 }
 
 // readOutboundPackets reads packets from the stack and sends them back
