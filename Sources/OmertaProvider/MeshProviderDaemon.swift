@@ -5,6 +5,7 @@ import OmertaVM
 import OmertaVPN
 import OmertaMesh
 import OmertaConsumer
+import OmertaTunnel
 
 /// Channel names for VM protocol (provider-side)
 /// Must match VMChannels in MeshConsumerClient
@@ -132,6 +133,17 @@ public actor MeshProviderDaemon: ChannelProvider {
         let maxHeartbeatFailures: Int  // From timeoutMinutes (1 failure per minute)
     }
 
+    // MARK: - Tunnel State
+
+    /// Tunnel manager for creating sessions with consumers
+    private var tunnelManager: TunnelManager?
+
+    /// Active tunnel sessions by VM ID
+    private var tunnelSessions: [UUID: TunnelSession] = [:]
+
+    /// Active packet captures by VM ID
+    private var packetCaptures: [UUID: VMPacketCapture] = [:]
+
     // MARK: - Heartbeat State
 
     /// Track consecutive heartbeat failures per consumer
@@ -204,6 +216,10 @@ public actor MeshProviderDaemon: ChannelProvider {
         // Start mesh network
         try await mesh.start()
 
+        // Initialize tunnel manager for VM traffic routing
+        tunnelManager = TunnelManager(provider: mesh)
+        try await tunnelManager?.start()
+
         isRunning = true
         startedAt = Date()
 
@@ -235,6 +251,23 @@ public actor MeshProviderDaemon: ChannelProvider {
 
         // Notify consumers before stopping VMs
         await notifyConsumersOfShutdown()
+
+        // Stop all packet captures and tunnel sessions
+        for (vmId, capture) in packetCaptures {
+            await capture.stop()
+            logger.info("Stopped packet capture during shutdown", metadata: ["vmId": "\(vmId)"])
+        }
+        packetCaptures.removeAll()
+
+        for (vmId, session) in tunnelSessions {
+            await session.leave()
+            logger.info("Closed tunnel session during shutdown", metadata: ["vmId": "\(vmId)"])
+        }
+        tunnelSessions.removeAll()
+
+        // Stop tunnel manager
+        await tunnelManager?.stop()
+        tunnelManager = nil
 
         // Stop all active VMs
         for (vmId, _) in activeVMs {
@@ -479,6 +512,9 @@ public actor MeshProviderDaemon: ChannelProvider {
                 "vmIP": "\(vmResult.vmIP)"
             ])
 
+            // Set up tunnel for VM traffic routing
+            await setupVMTunnel(vmId: request.vmId, consumerPeerId: consumerPeerId)
+
             // Log VM creation success
             await eventLogger?.recordVMCreated(
                 vmId: request.vmId,
@@ -575,6 +611,10 @@ public actor MeshProviderDaemon: ChannelProvider {
         // Stop the VM
         do {
             let durationMs = Int(Date().timeIntervalSince(activeVM.createdAt) * 1000)
+
+            // Clean up packet capture and tunnel session
+            await cleanupVMTunnel(vmId: request.vmId)
+
             try await vmManager.stopVM(vmId: request.vmId)
             activeVMs.removeValue(forKey: request.vmId)
             totalVMsReleased += 1
@@ -633,6 +673,64 @@ public actor MeshProviderDaemon: ChannelProvider {
             logger.warning("Received ACK for unknown VM", metadata: [
                 "vmId": "\(ack.vmId.uuidString.prefix(8))..."
             ])
+        }
+    }
+
+    // MARK: - Tunnel Setup
+
+    /// Set up tunnel for VM traffic routing
+    /// Provider acts as traffic source, consumer as traffic exit (via netstack)
+    private func setupVMTunnel(vmId: UUID, consumerPeerId: String) async {
+        guard let tunnelManager = tunnelManager else {
+            logger.warning("Tunnel manager not initialized, skipping tunnel setup", metadata: [
+                "vmId": "\(vmId)"
+            ])
+            return
+        }
+
+        do {
+            // Create tunnel session with consumer
+            let session = try await tunnelManager.createSession(with: consumerPeerId)
+            tunnelSessions[vmId] = session
+
+            // Enable traffic routing - provider is source, consumer is exit
+            try await session.enableTrafficRouting(asExit: false)
+
+            logger.info("Tunnel session created for VM", metadata: [
+                "vmId": "\(vmId)",
+                "consumer": "\(consumerPeerId.prefix(16))..."
+            ])
+
+            // TODO: Set up VMPacketCapture when VM network interface is available
+            // This requires getting the TAP interface (Linux) or file handles (macOS)
+            // from SimpleVMManager after VM creation
+            //
+            // For now, the tunnel session is ready for manual packet injection.
+            // Full integration requires:
+            // 1. SimpleVMManager to expose the VM's network interface
+            // 2. Creating appropriate PacketSource (TAPPacketSource or FileHandlePacketSource)
+            // 3. Creating VMPacketCapture to bridge the two
+
+        } catch {
+            logger.error("Failed to set up tunnel for VM", metadata: [
+                "vmId": "\(vmId)",
+                "error": "\(error)"
+            ])
+        }
+    }
+
+    /// Clean up tunnel session and packet capture for a VM
+    private func cleanupVMTunnel(vmId: UUID) async {
+        // Stop packet capture first
+        if let capture = packetCaptures.removeValue(forKey: vmId) {
+            await capture.stop()
+            logger.info("Stopped packet capture for VM", metadata: ["vmId": "\(vmId)"])
+        }
+
+        // Then close tunnel session
+        if let session = tunnelSessions.removeValue(forKey: vmId) {
+            await session.leave()
+            logger.info("Closed tunnel session for VM", metadata: ["vmId": "\(vmId)"])
         }
     }
 
