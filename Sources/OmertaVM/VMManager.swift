@@ -879,35 +879,21 @@ public actor VMManager {
         try await createRawOverlay(basePath: baseImagePath, overlayPath: rawOverlayPath)
         logger.info("Created raw overlay disk", metadata: ["path": "\(rawOverlayPath)"])
 
-        // 3. Generate cloud-init ISO (SSH only - mesh tunnel handles traffic)
-        let seedISOPath = "\(vmDiskDir)/\(vmId.uuidString)-seed.iso"
-
         logger.info("VM start request (macOS)", metadata: [
             "vm_id": "\(vmId)",
             "has_reverse_tunnel": "\(reverseTunnelConfig != nil)"
         ])
 
-        // Create simple cloud-init with SSH setup
-        try createSimpleCloudInitISOMacOS(
-            at: seedISOPath,
-            sshPublicKey: sshPublicKey,
-            sshUser: sshUser,
-            instanceId: vmId,
-            reverseTunnelConfig: reverseTunnelConfig
-        )
-        logger.info("Created cloud-init ISO (macOS)", metadata: [
-            "path": "\(seedISOPath)",
-            "iso_exists": "\(FileManager.default.fileExists(atPath: seedISOPath))"
-        ])
-
-        // 4. Create network socket pair for packet capture
-        // VZFileHandleNetworkDeviceAttachment requires a Unix datagram socket pair
+        // 3. Determine networking mode and VM IP
+        // This must be done BEFORE cloud-init so we can configure static IP if needed
         var networkSocketPair: UnixDatagramSocketPair? = nil
         let vmIP: String
+        let useStaticIP: Bool
 
         if reverseTunnelConfig != nil {
             // Reverse tunnel mode: use NAT, VM gets DHCP address
             vmIP = generateVMNATIP()
+            useStaticIP = false
             logger.info("Reverse tunnel mode: using NAT networking", metadata: ["vm_ip": "\(vmIP)"])
         } else {
             // Normal mode: use Unix datagram socket pair for packet capture
@@ -924,13 +910,32 @@ public actor VMManager {
                 hostWrite: hostWriteHandle
             )
 
-            // VM uses the VPN IP directly (configured via cloud-init)
+            // VM uses the VPN IP directly (configured via cloud-init with static IP)
             vmIP = vpnIP ?? "10.200.200.2"
+            useStaticIP = true
             logger.info("Normal mode: using Unix datagram socket pair for packet capture", metadata: [
                 "vm_id": "\(vmId)",
                 "vm_ip": "\(vmIP)"
             ])
         }
+
+        // 4. Generate cloud-init ISO (SSH only - mesh tunnel handles traffic)
+        let seedISOPath = "\(vmDiskDir)/\(vmId.uuidString)-seed.iso"
+
+        // Create simple cloud-init with SSH setup and optional static IP
+        try createSimpleCloudInitISOMacOS(
+            at: seedISOPath,
+            sshPublicKey: sshPublicKey,
+            sshUser: sshUser,
+            instanceId: vmId,
+            reverseTunnelConfig: reverseTunnelConfig,
+            staticIP: useStaticIP ? vmIP : nil
+        )
+        logger.info("Created cloud-init ISO (macOS)", metadata: [
+            "path": "\(seedISOPath)",
+            "iso_exists": "\(FileManager.default.fileExists(atPath: seedISOPath))",
+            "static_ip": "\(useStaticIP ? vmIP : "none")"
+        ])
 
         // 5. Create VM configuration
         let config = try await createVMConfiguration(
@@ -1335,7 +1340,8 @@ public actor VMManager {
         sshPublicKey: String,
         sshUser: String,
         instanceId: UUID,
-        reverseTunnelConfig: ReverseTunnelConfig?
+        reverseTunnelConfig: ReverseTunnelConfig?,
+        staticIP: String? = nil
     ) throws {
         let hostname = "omerta-vm-\(instanceId.uuidString.prefix(8).lowercased())"
 
@@ -1354,6 +1360,29 @@ public actor VMManager {
             "ssh_pwauth: false",
             ""
         ]
+
+        // Add static network configuration if provided (for VZFileHandleNetworkDeviceAttachment)
+        // Without this, the VM would expect DHCP which isn't provided by the file handle attachment
+        if let ip = staticIP {
+            // Get just the IP without the /24 suffix
+            let ipOnly = ip.split(separator: "/").first.map(String.init) ?? ip
+            lines.append("# Static network configuration for mesh tunnel routing")
+            lines.append("write_files:")
+            lines.append("  - path: /etc/netplan/99-static.yaml")
+            lines.append("    permissions: '0600'")
+            lines.append("    content: |")
+            lines.append("      network:")
+            lines.append("        version: 2")
+            lines.append("        ethernets:")
+            lines.append("          enp0s1:")
+            lines.append("            dhcp4: false")
+            lines.append("            addresses:")
+            lines.append("              - \(ipOnly)/24")
+            lines.append("            routes:")
+            lines.append("              - to: default")
+            lines.append("                via: \(ipOnly.split(separator: ".").dropLast().joined(separator: ".")).1")
+            lines.append("")
+        }
 
         // Add write_files for tunnel key if needed
         if let tunnel = reverseTunnelConfig {
@@ -1375,6 +1404,13 @@ public actor VMManager {
 
         // Add runcmd
         lines.append("runcmd:")
+
+        // Apply static network configuration if provided
+        if staticIP != nil {
+            lines.append("  - netplan apply")
+            lines.append("  - sleep 2")
+        }
+
         lines.append("  - systemctl enable ssh")
         lines.append("  - systemctl start ssh")
 
