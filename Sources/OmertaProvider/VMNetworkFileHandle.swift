@@ -83,12 +83,7 @@ public actor FileHandlePacketSource: PacketSource {
         }
 
         do {
-            // Write packet length prefix (4 bytes, big endian)
-            var length = UInt32(packet.count).bigEndian
-            let lengthData = Data(bytes: &length, count: 4)
-            try hostWrite.write(contentsOf: lengthData)
-
-            // Write packet data
+            // Unix datagram sockets: each write is a complete message, no length prefix needed
             try hostWrite.write(contentsOf: packet)
         } catch {
             throw PacketCaptureError.writeFailed(error.localizedDescription)
@@ -98,29 +93,16 @@ public actor FileHandlePacketSource: PacketSource {
     // MARK: - Private
 
     private func readLoop() async {
+        // Buffer for reading datagrams - max Ethernet frame is ~1518 bytes, jumbo is ~9000
+        let maxPacketSize = 10000
+
         while !Task.isCancelled {
             do {
-                // Read packet length prefix (4 bytes, big endian)
-                guard let lengthData = try hostRead.read(upToCount: 4),
-                      lengthData.count == 4 else {
+                // Unix datagram sockets: each read returns one complete datagram (no length prefix)
+                guard let packetData = try hostRead.read(upToCount: maxPacketSize),
+                      !packetData.isEmpty else {
                     // EOF or error
                     break
-                }
-
-                let length = lengthData.withUnsafeBytes { buffer in
-                    UInt32(bigEndian: buffer.load(as: UInt32.self))
-                }
-
-                guard length > 0, length <= 65536 else {
-                    logger.warning("Invalid packet length", metadata: ["length": "\(length)"])
-                    continue
-                }
-
-                // Read packet data
-                guard let packetData = try hostRead.read(upToCount: Int(length)),
-                      packetData.count == Int(length) else {
-                    logger.warning("Incomplete packet read")
-                    continue
                 }
 
                 inboundContinuation.yield(packetData)
