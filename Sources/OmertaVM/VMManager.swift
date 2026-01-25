@@ -1493,9 +1493,60 @@ public actor VMManager {
         let metaDataPath = tempDir.appendingPathComponent("meta-data")
         try metaData.write(to: metaDataPath, atomically: true, encoding: .utf8)
 
+        // Write network-config if static IP is specified
+        // This is the proper cloud-init way to configure networking
+        if let ip = staticIP {
+            let ipOnly = ip.split(separator: "/").first.map(String.init) ?? ip
+            let gatewayIP = ipOnly.split(separator: ".").dropLast().joined(separator: ".") + ".1"
+
+            // Use network-config version 2 (netplan format)
+            // Configure multiple possible interface names with optional: true
+            let networkConfig = """
+            version: 2
+            ethernets:
+              enp0s1:
+                optional: true
+                dhcp4: false
+                dhcp6: false
+                addresses:
+                  - \(ipOnly)/24
+                routes:
+                  - to: 0.0.0.0/0
+                    via: \(gatewayIP)
+                nameservers:
+                  addresses: [8.8.8.8, 8.8.4.4]
+              ens3:
+                optional: true
+                dhcp4: false
+                dhcp6: false
+                addresses:
+                  - \(ipOnly)/24
+                routes:
+                  - to: 0.0.0.0/0
+                    via: \(gatewayIP)
+                nameservers:
+                  addresses: [8.8.8.8, 8.8.4.4]
+              eth0:
+                optional: true
+                dhcp4: false
+                dhcp6: false
+                addresses:
+                  - \(ipOnly)/24
+                routes:
+                  - to: 0.0.0.0/0
+                    via: \(gatewayIP)
+                nameservers:
+                  addresses: [8.8.8.8, 8.8.4.4]
+            """
+
+            let networkConfigPath = tempDir.appendingPathComponent("network-config")
+            try networkConfig.write(to: networkConfigPath, atomically: true, encoding: .utf8)
+        }
+
         logger.info("Created simple cloud-init for macOS", metadata: [
             "hostname": "\(hostname)",
-            "reverse_tunnel": "\(reverseTunnelConfig != nil)"
+            "reverse_tunnel": "\(reverseTunnelConfig != nil)",
+            "static_ip": "\(staticIP ?? "none")"
         ])
 
         // Create ISO using platform-specific method
