@@ -1375,11 +1375,11 @@ public actor VMManager {
             lines.append("      network:")
             lines.append("        version: 2")
             lines.append("        ethernets:")
-            // Use wildcard match on driver to work across different VZ/QEMU configurations
-            // On ARM64 QEMU the interface is typically enp0s1, but VZ may use different names
+            // Match any Ethernet interface - VZ uses enp0s1, QEMU may use ens3, etc.
+            // Using name: "en*" to match both enp0s1 and ens* patterns
             lines.append("          id0:")
             lines.append("            match:")
-            lines.append("              driver: virtio*")
+            lines.append("              name: \"en*\"")
             lines.append("            dhcp4: false")
             lines.append("            dhcp6: false")
             lines.append("            addresses:")
