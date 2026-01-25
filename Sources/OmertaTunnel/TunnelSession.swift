@@ -114,11 +114,17 @@ public actor TunnelSession {
 
                 // Register handler for incoming traffic from remote peer
                 // This receives packets from the source and injects them into netstack
+                logger.info("Registering traffic channel handler", metadata: [
+                    "channel": "\(trafficChannel)",
+                    "remotePeer": "\(remotePeer.prefix(16))..."
+                ])
                 try await provider.onChannel(trafficChannel) { [weak self] sender, data in
                     await self?.handleTrafficPacket(from: sender, data: data)
                 }
 
-                logger.info("Traffic routing enabled (exit point)")
+                logger.info("Traffic routing enabled (exit point)", metadata: [
+                    "channel": "\(trafficChannel)"
+                ])
             } catch {
                 throw TunnelError.netstackError(error.localizedDescription)
             }
@@ -240,11 +246,31 @@ public actor TunnelSession {
     }
 
     private func handleTrafficPacket(from sender: PeerId, data: Data) async {
-        guard role == .trafficExit, sender == remotePeer else { return }
+        guard role == .trafficExit else {
+            logger.debug("Ignoring traffic packet - not exit role", metadata: [
+                "role": "\(role)",
+                "sender": "\(sender.prefix(16))..."
+            ])
+            return
+        }
+
+        guard sender == remotePeer else {
+            logger.debug("Ignoring traffic packet - wrong sender", metadata: [
+                "expected": "\(remotePeer.prefix(16))...",
+                "actual": "\(sender.prefix(16))..."
+            ])
+            return
+        }
+
+        logger.info("Received traffic packet", metadata: [
+            "size": "\(data.count)",
+            "from": "\(sender.prefix(16))..."
+        ])
 
         // Inject into netstack
         do {
             try netstackBridge?.injectPacket(data)
+            logger.debug("Injected packet into netstack", metadata: ["size": "\(data.count)"])
         } catch {
             logger.warning("Failed to inject traffic packet: \(error)")
         }
