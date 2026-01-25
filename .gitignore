@@ -71,3 +71,4 @@ docs/protocol/transactions/*.md
 simulations/transactions/*_generated.py
 CLAUDE.md
 DEPLOYMENT.md
+Sources/CNetstack/libnetstack.a

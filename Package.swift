@@ -47,6 +47,28 @@ let package = Package(
             path: "Sources/OmertaMesh"
         ),
 
+        // C library for netstack (Go compiled as C archive)
+        .systemLibrary(
+            name: "CNetstack",
+            path: "Sources/CNetstack"
+        ),
+
+        // Tunnel utility (persistent sessions + traffic routing via netstack)
+        .target(
+            name: "OmertaTunnel",
+            dependencies: [
+                "OmertaMesh",
+                "CNetstack",
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            path: "Sources/OmertaTunnel",
+            exclude: ["Netstack"],  // Exclude Go source files
+            linkerSettings: [
+                .linkedLibrary("netstack", .when(platforms: [.macOS, .linux])),
+                .unsafeFlags(["-L", "Sources/CNetstack"], .when(platforms: [.macOS, .linux])),
+            ]
+        ),
+
         // VPN layer (WireGuard, tunneling, filtering)
         .target(
             name: "OmertaVPN",
@@ -180,6 +202,11 @@ let package = Package(
             name: "OmertaDaemonTests",
             dependencies: ["OmertaDaemon", "OmertaCore"],
             path: "Tests/OmertaDaemonTests"
+        ),
+        .testTarget(
+            name: "OmertaTunnelTests",
+            dependencies: ["OmertaTunnel", "OmertaMesh"],
+            path: "Tests/OmertaTunnelTests"
         ),
     ]
 )
