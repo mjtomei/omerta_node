@@ -6,6 +6,13 @@ package netstack
 
 // Callback type for returning packets to Swift
 typedef void (*ReturnPacketCallback)(void* context, const uint8_t* data, size_t len);
+
+// Helper function to invoke the callback (can't call function pointers directly from Go)
+static inline void invokeCallback(ReturnPacketCallback cb, void* ctx, const uint8_t* data, size_t len) {
+    if (cb != NULL) {
+        cb(ctx, data, len);
+    }
+}
 */
 import "C"
 import (
@@ -64,7 +71,7 @@ func NetstackSetCallback(handle C.uint64_t, callback C.ReturnPacketCallback, con
 			stacksMu.RUnlock()
 
 			if cb != nil && len(packet) > 0 {
-				C.ReturnPacketCallback(cb)(ctx, (*C.uint8_t)(unsafe.Pointer(&packet[0])), C.size_t(len(packet)))
+				C.invokeCallback(cb, ctx, (*C.uint8_t)(unsafe.Pointer(&packet[0])), C.size_t(len(packet)))
 			}
 		})
 	}

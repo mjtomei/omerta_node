@@ -125,8 +125,8 @@ func NewStack(cfg Config) (*Stack, error) {
 	})
 
 	// Enable forwarding
-	s.SetForwarding(ipv4.ProtocolNumber, true)
-	s.SetForwarding(ipv6.ProtocolNumber, true)
+	s.SetForwardingDefaultAndAllNICs(ipv4.ProtocolNumber, true)
+	s.SetForwardingDefaultAndAllNICs(ipv6.ProtocolNumber, true)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -187,7 +187,7 @@ func (s *Stack) Start() {
 	s.stack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpFwd.HandlePacket)
 
 	// Set up UDP forwarder
-	udpFwd := udp.NewForwarder(s.stack, s.handleUDPPacket)
+	udpFwd := udp.NewForwarder(s.stack, udp.ForwarderHandler(s.handleUDPPacket))
 	s.stack.SetTransportProtocolHandler(udp.ProtocolNumber, udpFwd.HandlePacket)
 }
 
@@ -316,7 +316,7 @@ func (s *Stack) handleUDPPacket(r *udp.ForwarderRequest) {
 			return
 		}
 
-		conn := gonet.NewUDPConn(s.stack, &wq, ep)
+		conn := gonet.NewUDPConn(&wq, ep)
 
 		fwd = &udpForwarder{
 			virtual: conn,

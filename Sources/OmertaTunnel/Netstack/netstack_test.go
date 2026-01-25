@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 )
 
@@ -256,10 +257,10 @@ func createUDPPacket(srcIP string, srcPort uint16, dstIP string, dstPort uint16,
 	return packet
 }
 
-func tcpipAddrFromString(s string) [4]byte {
+func tcpipAddrFromString(s string) tcpip.Address {
 	ip := net.ParseIP(s).To4()
 	if ip == nil {
-		return [4]byte{}
+		return tcpip.Address{}
 	}
-	return [4]byte{ip[0], ip[1], ip[2], ip[3]}
+	return tcpip.AddrFrom4([4]byte{ip[0], ip[1], ip[2], ip[3]})
 }
