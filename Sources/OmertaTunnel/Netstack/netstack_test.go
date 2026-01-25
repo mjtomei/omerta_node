@@ -287,18 +287,50 @@ func TestEndToEndUDP(t *testing.T) {
 	t.Error("Did not receive echo response with expected payload")
 }
 
-// TestEndToEndTCP tests real TCP connection through netstack to external server
+// TestEndToEndTCP tests real TCP connection through netstack to local HTTP server
 func TestEndToEndTCP(t *testing.T) {
-	// Test against example.com:80 - skip if no network
-	targetIP := "93.184.216.34" // example.com
-	targetPort := uint16(80)
-
-	// Quick connectivity check
-	conn, err := net.DialTimeout("tcp", "93.184.216.34:80", 2*time.Second)
+	// Start a local HTTP server on all interfaces
+	listener, err := net.Listen("tcp4", "0.0.0.0:0")
 	if err != nil {
-		t.Skipf("Cannot reach example.com, skipping: %v", err)
+		t.Fatalf("Failed to start TCP listener: %v", err)
 	}
-	conn.Close()
+	defer listener.Close()
+
+	serverAddr := listener.Addr().(*net.TCPAddr)
+	t.Logf("HTTP server listening on %s", serverAddr)
+
+	// Get local non-loopback IP
+	localIP := getLocalIP(t)
+	if localIP == "" {
+		t.Skip("No non-loopback network interface found")
+	}
+	t.Logf("Using local IP: %s", localIP)
+
+	// Simple HTTP server
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		conn, err := listener.Accept()
+		if err != nil {
+			t.Logf("Accept error: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		// Read request
+		buf := make([]byte, 1024)
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		n, err := conn.Read(buf)
+		if err != nil {
+			t.Logf("Server read error: %v", err)
+			return
+		}
+		t.Logf("Server received request: %s", string(buf[:n]))
+
+		// Send response
+		response := "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nHello from netstack test server!"
+		conn.Write([]byte(response))
+	}()
 
 	cfg := Config{
 		GatewayIP: "10.200.0.1",
@@ -334,6 +366,9 @@ func TestEndToEndTCP(t *testing.T) {
 	seqNum := uint32(1000)
 	var ackNum uint32
 
+	targetIP := localIP
+	targetPort := uint16(serverAddr.Port)
+
 	// Step 1: Send SYN
 	t.Log("Sending SYN...")
 	synPacket := createTCPPacket(srcIP, srcPort, targetIP, targetPort, seqNum, 0, header.TCPFlagSyn, nil)
@@ -357,7 +392,7 @@ func TestEndToEndTCP(t *testing.T) {
 	}
 
 	// Step 3: Send HTTP GET request
-	httpRequest := []byte("GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
+	httpRequest := []byte("GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
 	t.Log("Sending HTTP GET request...")
 	dataPacket := createTCPPacket(srcIP, srcPort, targetIP, targetPort, seqNum, ackNum, header.TCPFlagAck|header.TCPFlagPsh, httpRequest)
 	if err := stack.InjectPacket(dataPacket); err != nil {
@@ -393,12 +428,7 @@ func TestEndToEndTCP(t *testing.T) {
 
 	t.Logf("Received %d bytes of HTTP response", len(httpResponse))
 	if len(httpResponse) > 0 {
-		// Show first 500 bytes
-		preview := httpResponse
-		if len(preview) > 500 {
-			preview = preview[:500]
-		}
-		t.Logf("Response preview:\n%s", string(preview))
+		t.Logf("Response:\n%s", string(httpResponse))
 	}
 
 	// Verify we got an HTTP response
