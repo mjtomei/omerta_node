@@ -1366,6 +1366,7 @@ public actor VMManager {
         if let ip = staticIP {
             // Get just the IP without the /24 suffix
             let ipOnly = ip.split(separator: "/").first.map(String.init) ?? ip
+            let gatewayIP = ipOnly.split(separator: ".").dropLast().joined(separator: ".") + ".1"
             lines.append("# Static network configuration for mesh tunnel routing")
             lines.append("write_files:")
             lines.append("  - path: /etc/netplan/99-static.yaml")
@@ -1374,13 +1375,20 @@ public actor VMManager {
             lines.append("      network:")
             lines.append("        version: 2")
             lines.append("        ethernets:")
-            lines.append("          enp0s1:")
+            // Use wildcard match on driver to work across different VZ/QEMU configurations
+            // On ARM64 QEMU the interface is typically enp0s1, but VZ may use different names
+            lines.append("          id0:")
+            lines.append("            match:")
+            lines.append("              driver: virtio*")
             lines.append("            dhcp4: false")
+            lines.append("            dhcp6: false")
             lines.append("            addresses:")
             lines.append("              - \(ipOnly)/24")
             lines.append("            routes:")
             lines.append("              - to: default")
-            lines.append("                via: \(ipOnly.split(separator: ".").dropLast().joined(separator: ".")).1")
+            lines.append("                via: \(gatewayIP)")
+            lines.append("            nameservers:")
+            lines.append("              addresses: [8.8.8.8, 8.8.4.4]")
             lines.append("")
         }
 
@@ -1407,8 +1415,18 @@ public actor VMManager {
 
         // Apply static network configuration if provided
         if staticIP != nil {
-            lines.append("  - netplan apply")
+            // Disable IPv6 to force IPv4 traffic (netstack handles IPv4)
+            lines.append("  - sysctl -w net.ipv6.conf.all.disable_ipv6=1")
+            lines.append("  - sysctl -w net.ipv6.conf.default.disable_ipv6=1")
+            // Debug: log interface names before applying netplan
+            lines.append("  - ip link show > /var/log/interfaces-before.log 2>&1 || true")
+            lines.append("  - ls -la /sys/class/net/ >> /var/log/interfaces-before.log 2>&1 || true")
+            // Apply the static network configuration
+            lines.append("  - netplan apply 2>&1 | tee /var/log/netplan-apply.log || true")
             lines.append("  - sleep 2")
+            // Debug: log interface state after netplan
+            lines.append("  - ip addr show > /var/log/interfaces-after.log 2>&1 || true")
+            lines.append("  - ip route show >> /var/log/interfaces-after.log 2>&1 || true")
         }
 
         lines.append("  - systemctl enable ssh")
