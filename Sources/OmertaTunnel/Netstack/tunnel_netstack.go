@@ -119,6 +119,17 @@ func NewStack(cfg Config) (*Stack, error) {
 		return nil, fmt.Errorf("failed to add address: %v", err)
 	}
 
+	// Enable promiscuous mode so the NIC accepts packets to any address
+	// This is required for transparent proxying
+	if err := s.SetPromiscuousMode(nicID, true); err != nil {
+		return nil, fmt.Errorf("failed to set promiscuous mode: %v", err)
+	}
+
+	// Enable spoofing so we can send packets from any source address
+	if err := s.SetSpoofing(nicID, true); err != nil {
+		return nil, fmt.Errorf("failed to enable spoofing: %v", err)
+	}
+
 	// Add default route (all traffic goes through this NIC)
 	s.SetRouteTable([]tcpip.Route{
 		{
