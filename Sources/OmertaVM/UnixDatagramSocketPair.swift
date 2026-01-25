@@ -31,6 +31,10 @@ public struct UnixDatagramSocketPair: Sendable {
         setsockopt(sockets[1], SOL_SOCKET, SO_RCVBUF, &size, socklen_t(MemoryLayout<Int32>.size))
         setsockopt(sockets[1], SOL_SOCKET, SO_SNDBUF, &size, socklen_t(MemoryLayout<Int32>.size))
 
+        // Set host socket (sockets[1]) to non-blocking mode for packet capture
+        let flags = fcntl(sockets[1], F_GETFL, 0)
+        _ = fcntl(sockets[1], F_SETFL, flags | O_NONBLOCK)
+
         return UnixDatagramSocketPair(vmSocket: sockets[0], hostSocket: sockets[1])
     }
 
