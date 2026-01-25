@@ -57,6 +57,8 @@ public actor VMManager {
         // Virtualization.framework VM reference (macOS only)
         // Not Sendable by default, but we only access on main actor
         public let vzVM: VZVirtualMachine?
+        // Socket pair for packet capture (host socket FD)
+        public let networkSocketPair: UnixDatagramSocketPair?
         #endif
     }
 
@@ -252,7 +254,8 @@ public actor VMManager {
                 overlayDiskPath: nil,
                 seedISOPath: nil,
                 createdAt: Date(),
-                vzVM: nil
+                vzVM: nil,
+                networkSocketPair: nil
             )
             #else
             let runningVM = RunningVM(
@@ -897,10 +900,9 @@ public actor VMManager {
             "iso_exists": "\(FileManager.default.fileExists(atPath: seedISOPath))"
         ])
 
-        // 4. Create network pipes for packet capture
-        // Traffic is routed through mesh tunnel transparently
-        var vmNetworkRead: FileHandle? = nil
-        var vmNetworkWrite: FileHandle? = nil
+        // 4. Create network socket pair for packet capture
+        // VZFileHandleNetworkDeviceAttachment requires a Unix datagram socket pair
+        var networkSocketPair: UnixDatagramSocketPair? = nil
         let vmIP: String
 
         if reverseTunnelConfig != nil {
@@ -908,21 +910,23 @@ public actor VMManager {
             vmIP = generateVMNATIP()
             logger.info("Reverse tunnel mode: using NAT networking", metadata: ["vm_ip": "\(vmIP)"])
         } else {
-            // Normal mode: use file handle networking for packet capture
-            // Create pipes: VM reads from one, writes to other; we do the opposite
-            let pipes = try createNetworkPipes()
-            vmNetworkRead = pipes.vmRead
-            vmNetworkWrite = pipes.vmWrite
+            // Normal mode: use Unix datagram socket pair for packet capture
+            // VM socket is passed to VZFileHandleNetworkDeviceAttachment
+            // Host socket is used to read/write packets for the mesh tunnel
+            let socketPair = try UnixDatagramSocketPair.create()
+            networkSocketPair = socketPair
 
-            // Store host-side handles for packet capture
+            // Store host-side handles for packet capture (using host socket)
+            let hostReadHandle = FileHandle(fileDescriptor: socketPair.hostSocket, closeOnDealloc: false)
+            let hostWriteHandle = FileHandle(fileDescriptor: socketPair.hostSocket, closeOnDealloc: false)
             vmNetworkHandles[vmId] = VMNetworkHandles(
-                hostRead: pipes.hostRead,
-                hostWrite: pipes.hostWrite
+                hostRead: hostReadHandle,
+                hostWrite: hostWriteHandle
             )
 
             // VM uses the VPN IP directly (configured via cloud-init)
             vmIP = vpnIP ?? "10.200.200.2"
-            logger.info("Normal mode: using file handle networking for packet capture", metadata: [
+            logger.info("Normal mode: using Unix datagram socket pair for packet capture", metadata: [
                 "vm_id": "\(vmId)",
                 "vm_ip": "\(vmIP)"
             ])
@@ -934,8 +938,7 @@ public actor VMManager {
             requirements: requirements,
             diskPath: rawOverlayPath,
             seedISOPath: seedISOPath,
-            vmNetworkRead: vmNetworkRead,
-            vmNetworkWrite: vmNetworkWrite
+            networkSocketPair: networkSocketPair
         )
 
         // 6. Create and start VM (must be on main queue)
@@ -972,7 +975,8 @@ public actor VMManager {
             overlayDiskPath: rawOverlayPath,
             seedISOPath: seedISOPath,
             createdAt: Date(),
-            vzVM: vm
+            vzVM: vm,
+            networkSocketPair: networkSocketPair
         )
         activeVMs[vmId] = runningVM
 
@@ -1003,15 +1007,13 @@ public actor VMManager {
     ///   - requirements: CPU/memory requirements
     ///   - diskPath: Path to the disk image
     ///   - seedISOPath: Path to the cloud-init ISO
-    ///   - vmNetworkRead: File handle for VM to read network packets (nil for NAT mode)
-    ///   - vmNetworkWrite: File handle for VM to write network packets (nil for NAT mode)
+    ///   - networkSocketPair: Unix datagram socket pair for packet capture (nil for NAT mode)
     private func createVMConfiguration(
         vmId: UUID,
         requirements: ResourceRequirements,
         diskPath: String,
         seedISOPath: String,
-        vmNetworkRead: FileHandle? = nil,
-        vmNetworkWrite: FileHandle? = nil
+        networkSocketPair: UnixDatagramSocketPair? = nil
     ) async throws -> VZVirtualMachineConfiguration {
         let config = VZVirtualMachineConfiguration()
 
@@ -1042,10 +1044,19 @@ public actor VMManager {
 
         // Network device configuration
         let networkDevice = VZVirtioNetworkDeviceConfiguration()
-        // macOS uses NAT networking - packet capture not yet supported on macOS
-        // (VZFileHandleNetworkDeviceAttachment API changed in newer SDKs)
-        networkDevice.attachment = VZNATNetworkDeviceAttachment()
-        logger.info("Using NAT network attachment")
+        if let socketPair = networkSocketPair {
+            // Use VZFileHandleNetworkDeviceAttachment for packet capture
+            // The VM socket connects to the file handle attachment
+            let vmFileHandle = FileHandle(fileDescriptor: socketPair.vmSocket, closeOnDealloc: false)
+            let attachment = VZFileHandleNetworkDeviceAttachment(fileHandle: vmFileHandle)
+            networkDevice.attachment = attachment
+            logger.info("Using VZFileHandleNetworkDeviceAttachment for packet capture")
+        } else {
+            // Fall back to NAT networking (reverse tunnel mode or no packet capture needed)
+            networkDevice.attachment = VZNATNetworkDeviceAttachment()
+            logger.info("Using NAT network attachment")
+        }
+        networkDevice.macAddress = VZMACAddress.randomLocallyAdministered()
         config.networkDevices = [networkDevice]
 
         // Storage devices
@@ -1097,39 +1108,6 @@ public actor VMManager {
         ])
 
         return config
-    }
-
-    /// Create network pipes for VM packet capture
-    /// Returns file handles for both VM side and host side
-    private func createNetworkPipes() throws -> (
-        vmRead: FileHandle,
-        vmWrite: FileHandle,
-        hostRead: FileHandle,
-        hostWrite: FileHandle
-    ) {
-        // Create two pipes:
-        // Pipe 1: VM writes -> Host reads (VM's outbound traffic)
-        // Pipe 2: Host writes -> VM reads (VM's inbound traffic)
-
-        var vmToHostPipe: [Int32] = [0, 0]
-        var hostToVMPipe: [Int32] = [0, 0]
-
-        guard pipe(&vmToHostPipe) == 0 else {
-            throw VMError.networkPipeCreationFailed("Failed to create vmToHost pipe: \(String(cString: strerror(errno)))")
-        }
-
-        guard pipe(&hostToVMPipe) == 0 else {
-            close(vmToHostPipe[0])
-            close(vmToHostPipe[1])
-            throw VMError.networkPipeCreationFailed("Failed to create hostToVM pipe: \(String(cString: strerror(errno)))")
-        }
-
-        return (
-            vmRead: FileHandle(fileDescriptor: hostToVMPipe[0], closeOnDealloc: true),
-            vmWrite: FileHandle(fileDescriptor: vmToHostPipe[1], closeOnDealloc: true),
-            hostRead: FileHandle(fileDescriptor: vmToHostPipe[0], closeOnDealloc: true),
-            hostWrite: FileHandle(fileDescriptor: hostToVMPipe[1], closeOnDealloc: true)
-        )
     }
 
     #endif  // os(macOS) - Virtualization.framework functions
