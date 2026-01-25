@@ -12,8 +12,10 @@ While there are still legitimate security concerns like VM escapes and malicious
 
 TODOs
 CORE
-- review plan for wireguard related changes
+- work through plan for tunnel between provider and consumer
+- fix IPv6 NAT detection and add contact request message for NAT hole punching that uses relay only for initial message
 - finish working through manual tests
+  - make sure we handle a diverse set of cases where inbound traffic isn't allowed for both IPv4 and IPv6
   - make sure we are testing relay functionality with artificial constraints on peer nodes
 - separate out OmertaMesh into its own repo and establish API
 - separate out blockchain protocol and docs and research docs into their own repo
@@ -35,6 +37,12 @@ CORE
   - add reasonable rate limiting to UDP socket wrapper
 
 ENHANCEMENTS
+- implement nested VMs on provider side to speed up packet forwarding
+  - can have own tunnel utility inside provider VM if that doesn't work
+  - can have VM join mesh and incorporate into proof of availability
+    - gossip system stats, performance counters, and microbenchmark results constantly so they can be monitored, per-peer stats profiles can be compared for similar machines, cycle metrics so it's difficult to fake statistical similarity and has dependence on unknown uarch parameters
+      - goal is to make it so that the cost of faking is accurately simulating the hardware you were supposed to be running anyways
+    - use consumer peer node as relay and exit node, firewall rules on provider guarantee this
 - implement VPN functionality using the Tunnel utility for internet connections and the mesh for LAN connections
 - implement kernel accelerated, DPU accelerated, and FPGA accelerated mesh nodes
 - look for common traffic analysis attacks and add padding to reduce data leakage

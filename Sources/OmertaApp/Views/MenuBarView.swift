@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct MenuBarView: View {
-    @ObservedObject private var vmManager = VMManager.shared
+    @ObservedObject private var vmManager = VMViewModel.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -144,7 +144,7 @@ struct VMRowView: View {
 
     private func releaseVM() {
         Task {
-            await VMManager.shared.releaseVM(vm.id)
+            await VMViewModel.shared.releaseVM(vm.id)
         }
     }
 }

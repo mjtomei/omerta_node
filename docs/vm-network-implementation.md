@@ -600,7 +600,7 @@ Each phase produces a testable artifact.
 
 **Goal:** Linux QEMU VMs use Phase 9 cloud-init network isolation.
 
-**File:** `Sources/OmertaVM/SimpleVMManager.swift`
+**File:** `Sources/OmertaVM/VMManager.swift`
 
 **Deliverable:** Linux QEMU VMs boot with WireGuard + iptables configured via cloud-init.
 
@@ -700,7 +700,7 @@ Each phase produces a testable artifact.
 |------|-------|---------|
 | `Sources/OmertaProvider/ProviderVPNManager.swift` | 10 | Use VMNetworkManager |
 | `Sources/OmertaVM/VirtualizationManager.swift` | 10 | Support all network modes |
-| `Sources/OmertaVM/SimpleVMManager.swift` | 11.5 | Use VMNetworkConfig in Linux QEMU |
+| `Sources/OmertaVM/VMManager.swift` | 11.5 | Use VMNetworkConfig in Linux QEMU |
 
 ---
 

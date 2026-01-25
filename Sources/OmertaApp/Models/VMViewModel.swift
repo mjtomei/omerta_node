@@ -4,8 +4,8 @@ import Combine
 
 /// Manages VM state for the GUI
 @MainActor
-class VMManager: ObservableObject {
-    static let shared = VMManager()
+class VMViewModel: ObservableObject {
+    static let shared = VMViewModel()
 
     @Published var activeVMs: [VMInfo] = []
     @Published var isExtensionActive: Bool = false

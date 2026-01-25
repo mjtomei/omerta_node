@@ -243,7 +243,7 @@ This is the same for consumer VM and provider VMs - uniform policy.
 | Module | Purpose | Changes |
 |--------|---------|---------|
 | OmertaCore | Config, types, crypto | Keep as-is |
-| OmertaVM | VM management, cloud-init | Keep SimpleVMManager + CloudInitGenerator |
+| OmertaVM | VM management, cloud-init | Keep VMManager + CloudInitGenerator |
 | OmertaProvider | Provider daemon logic | Simplify, remove unused code |
 | OmertaConsumer | Consumer client logic | Simplify to wg-quick for CLI |
 | OmertaCLI | CLI binary | Refactor from monolith |
@@ -534,7 +534,7 @@ jobs:
 **Files to Modify:**
 | File | Changes |
 |------|---------|
-| `Sources/OmertaVM/SimpleVMManager.swift` | Accept consumer endpoint, use Phase 9 cloud-init |
+| `Sources/OmertaVM/VMManager.swift` | Accept consumer endpoint, use Phase 9 cloud-init |
 | `Sources/OmertaProvider/UDPControlServer.swift` | Pass consumer endpoint to VM creation |
 | `Sources/OmertaConsumer/ConsumerClient.swift` | Ensure WireGuard server starts before request |
 
@@ -578,7 +578,7 @@ swift test --filter ConsumerProviderHandshake
 **Files to Modify:**
 | File | Changes |
 |------|---------|
-| `Sources/OmertaVM/SimpleVMManager.swift` | Use VMNetworkConfig for cloud-init |
+| `Sources/OmertaVM/VMManager.swift` | Use VMNetworkConfig for cloud-init |
 | `Sources/OmertaVM/CloudInitGenerator.swift` | Ensure WireGuard + iptables scripts work |
 | `Sources/OmertaProvider/ProviderVPNManager.swift` | Generate WireGuard keys for VM |
 
@@ -2832,7 +2832,7 @@ See `vm-network-architecture.md` for detailed implementation of VM-side isolatio
 
 | File | Phase | Changes |
 |------|-------|---------|
-| `Sources/OmertaVM/SimpleVMManager.swift` | 1, 2 | Accept consumer endpoint, use Phase 9 cloud-init |
+| `Sources/OmertaVM/VMManager.swift` | 1, 2 | Accept consumer endpoint, use Phase 9 cloud-init |
 | `Sources/OmertaProvider/UDPControlServer.swift` | 1 | Pass consumer endpoint to VM creation |
 | `Sources/OmertaConsumer/ConsumerClient.swift` | 1, 3 | Start WG server before request |
 | `Sources/OmertaVM/CloudInitGenerator.swift` | 2 | Ensure WG + iptables work |
@@ -3241,7 +3241,7 @@ public struct OmertaConfig: Codable, Sendable {
 ```swift
 public actor MeshProviderDaemon {
     private let mesh: MeshNetwork
-    private let vmManager: SimpleVMManager
+    private let vmManager: VMManager
     private let config: Configuration
 
     public struct Configuration {
@@ -3257,7 +3257,7 @@ public actor MeshProviderDaemon {
         meshConfig.canCoordinateHolePunch = true
 
         self.mesh = MeshNetwork(peerId: config.peerId, config: meshConfig)
-        self.vmManager = SimpleVMManager()
+        self.vmManager = VMManager()
         self.config = config
     }
 

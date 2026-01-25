@@ -58,41 +58,14 @@ public actor DependencyChecker {
     }
 
     // MARK: - Standard Dependencies
+    // Note: WireGuard dependencies removed - mesh tunnels (OmertaTunnel) replace WireGuard
+    // No external dependencies required for mesh networking
 
-    /// WireGuard CLI tools (required for VPN functionality)
-    public static let wireguard = Dependency(
-        name: "WireGuard Tools",
-        command: "wg",
-        installInstructions: """
-        macOS: brew install wireguard-tools
-        Linux: sudo apt install wireguard-tools (Debian/Ubuntu)
-               sudo dnf install wireguard-tools (Fedora)
-               sudo pacman -S wireguard-tools (Arch)
-        """
-    )
+    /// All required dependencies for provider mode (none - mesh tunnels are pure Swift)
+    public static let providerDependencies: [Dependency] = []
 
-    /// WireGuard quick script (required for tunnel management)
-    public static let wireguardQuick = Dependency(
-        name: "WireGuard Quick",
-        command: "wg-quick",
-        installInstructions: """
-        Installed with wireguard-tools:
-        macOS: brew install wireguard-tools
-        Linux: Part of wireguard-tools package
-        """
-    )
-
-    /// All required dependencies for provider mode
-    public static let providerDependencies: [Dependency] = [
-        wireguard,
-        wireguardQuick
-    ]
-
-    /// All required dependencies for requester mode
-    public static let requesterDependencies: [Dependency] = [
-        wireguard,
-        wireguardQuick
-    ]
+    /// All required dependencies for requester mode (none - mesh tunnels are pure Swift)
+    public static let requesterDependencies: [Dependency] = []
 
     // MARK: - Checking
 

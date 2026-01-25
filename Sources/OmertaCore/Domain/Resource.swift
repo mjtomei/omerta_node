@@ -198,47 +198,6 @@ public struct ResourceUsage: Sendable {
     }
 }
 
-// MARK: - VPN Configuration
-
-/// VPN configuration for consumer-hosted WireGuard server
-/// Consumer sends this to provider so provider can connect back
-public struct VPNConfiguration: Sendable, Codable {
-    /// Consumer's WireGuard public key
-    public let consumerPublicKey: String
-
-    /// Consumer's WireGuard endpoint (IP:port) - where provider connects
-    public let consumerEndpoint: String
-
-    /// Consumer's IP within VPN network (e.g., 10.99.0.1)
-    public let consumerVPNIP: String
-
-    /// Requested VM IP within VPN network (e.g., 10.99.0.2)
-    public let vmVPNIP: String
-
-    /// VPN subnet (e.g., "10.99.0.0/24")
-    public let vpnSubnet: String
-
-    /// Pre-shared key for WireGuard (base64-encoded, derived from network key)
-    /// Both sides already have this from network joining
-    public let presharedKey: String?
-
-    public init(
-        consumerPublicKey: String,
-        consumerEndpoint: String,
-        consumerVPNIP: String = "10.99.0.1",
-        vmVPNIP: String = "10.99.0.2",
-        vpnSubnet: String = "10.99.0.0/24",
-        presharedKey: String? = nil
-    ) {
-        self.consumerPublicKey = consumerPublicKey
-        self.consumerEndpoint = consumerEndpoint
-        self.consumerVPNIP = consumerVPNIP
-        self.vmVPNIP = vmVPNIP
-        self.vpnSubnet = vpnSubnet
-        self.presharedKey = presharedKey
-    }
-}
-
 // MARK: - Reverse SSH Tunnel Configuration
 
 /// Configuration for VM to establish a reverse SSH tunnel back to the host

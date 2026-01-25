@@ -16,7 +16,7 @@ let package = Package(
         .executable(name: "omerta-mesh", targets: ["OmertaMeshCLI"]),
         .library(name: "OmertaCore", targets: ["OmertaCore"]),
         .library(name: "OmertaMesh", targets: ["OmertaMesh"]),
-        .library(name: "OmertaVPN", targets: ["OmertaVPN"]),
+        // OmertaVPN removed - WireGuard replaced by mesh tunnels (OmertaTunnel)
     ],
     dependencies: [
         // Networking
@@ -73,16 +73,7 @@ let package = Package(
             ]
         ),
 
-        // VPN layer (WireGuard, tunneling, filtering)
-        .target(
-            name: "OmertaVPN",
-            dependencies: [
-                "OmertaCore",
-                .product(name: "Logging", package: "swift-log"),
-                .product(name: "Crypto", package: "swift-crypto"),
-            ],
-            path: "Sources/OmertaVPN"
-        ),
+        // OmertaVPN removed - WireGuard replaced by mesh tunnels (OmertaTunnel)
 
         // VM management (macOS only)
         .target(
@@ -100,7 +91,6 @@ let package = Package(
             dependencies: [
                 "OmertaCore",
                 "OmertaVM",
-                "OmertaVPN",
                 "OmertaConsumer",
                 "OmertaMesh",
                 "OmertaTunnel",
@@ -127,7 +117,6 @@ let package = Package(
             name: "OmertaConsumer",
             dependencies: [
                 "OmertaCore",
-                "OmertaVPN",
                 "OmertaMesh",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
@@ -171,18 +160,10 @@ let package = Package(
         ),
         .testTarget(
             name: "OmertaVMTests",
-            dependencies: ["OmertaVM", "OmertaVPN"],
+            dependencies: ["OmertaVM"],
             path: "Tests/OmertaVMTests"
         ),
-        .testTarget(
-            name: "OmertaVPNTests",
-            dependencies: [
-                "OmertaVPN",
-                "OmertaCore",
-                .product(name: "Crypto", package: "swift-crypto"),
-            ],
-            path: "Tests/OmertaVPNTests"
-        ),
+        // OmertaVPNTests removed - WireGuard replaced by mesh tunnels
         .testTarget(
             name: "OmertaProviderTests",
             dependencies: ["OmertaProvider", "OmertaConsumer", "OmertaCore", "OmertaTunnel", "OmertaMesh"],

@@ -2,7 +2,7 @@ import Foundation
 import Logging
 import OmertaCore
 import OmertaVM
-import OmertaVPN
+// OmertaVPN removed - using mesh tunnels instead of WireGuard
 import OmertaMesh
 import OmertaConsumer
 import OmertaTunnel
@@ -112,7 +112,7 @@ public actor MeshProviderDaemon: ChannelProvider {
     }
 
     /// VM manager
-    private let vmManager: SimpleVMManager
+    private let vmManager: VMManager
 
     /// Whether the daemon is running
     private var isRunning: Bool = false
@@ -128,7 +128,6 @@ public actor MeshProviderDaemon: ChannelProvider {
         let vmId: UUID
         let consumerPeerId: String
         let vmIP: String
-        let vmWireGuardPublicKey: String
         let createdAt: Date
         let maxHeartbeatFailures: Int  // From timeoutMinutes (1 failure per minute)
     }
@@ -174,7 +173,7 @@ public actor MeshProviderDaemon: ChannelProvider {
         meshConfig.canCoordinateHolePunch = true
 
         self.mesh = MeshNetwork(identity: config.identity, config: meshConfig)
-        self.vmManager = SimpleVMManager(dryRun: config.dryRun)
+        self.vmManager = VMManager(dryRun: config.dryRun)
 
         var logger = Logger(label: "io.omerta.provider.mesh")
         logger.logLevel = .info
@@ -465,26 +464,19 @@ public actor MeshProviderDaemon: ChannelProvider {
         )
 
         do {
-            // Get connection info to determine consumer endpoint
-            let connection = await mesh.connection(to: consumerPeerId)
-            let consumerEndpoint = connection?.endpoint ?? request.consumerEndpoint
-
-            // Use VM VPN IP from request (consumer assigns this when creating WireGuard tunnel)
+            // Use VM IP from request (traffic routes through mesh tunnels)
             let vmVPNIP = request.vmVPNIP
 
-            logger.info("Using VPN IPs from consumer", metadata: [
-                "vmVPNIP": "\(vmVPNIP)",
-                "consumerVPNIP": "\(request.consumerVPNIP)"
+            logger.info("Starting VM with mesh tunnel routing", metadata: [
+                "vmVPNIP": "\(vmVPNIP)"
             ])
 
-            // Start VM
+            // Start VM (traffic routes through mesh tunnel)
             let vmResult = try await vmManager.startVM(
                 vmId: request.vmId,
                 requirements: request.requirements,
                 sshPublicKey: request.sshPublicKey,
                 sshUser: request.sshUser,
-                consumerPublicKey: request.consumerPublicKey,
-                consumerEndpoint: consumerEndpoint,
                 vpnIP: vmVPNIP,
                 reverseTunnelConfig: nil
             )
@@ -495,7 +487,6 @@ public actor MeshProviderDaemon: ChannelProvider {
                 vmId: request.vmId,
                 consumerPeerId: consumerPeerId,
                 vmIP: vmResult.vmIP,
-                vmWireGuardPublicKey: vmResult.vmWireGuardPublicKey,
                 createdAt: Date(),
                 maxHeartbeatFailures: maxFailures
             )
@@ -525,11 +516,12 @@ public actor MeshProviderDaemon: ChannelProvider {
             )
 
             // Send success response and wait for ACK
+            // No WireGuard keys needed - traffic routes through mesh tunnels
             let response = MeshVMResponse(
                 type: "vm_created",
                 vmId: request.vmId,
                 vmIP: vmResult.vmIP,
-                providerPublicKey: vmResult.vmWireGuardPublicKey,
+                providerPublicKey: nil,  // Mesh tunnels don't need WireGuard keys
                 error: nil
             )
 
@@ -701,15 +693,42 @@ public actor MeshProviderDaemon: ChannelProvider {
                 "consumer": "\(consumerPeerId.prefix(16))..."
             ])
 
-            // TODO: Set up VMPacketCapture when VM network interface is available
-            // This requires getting the TAP interface (Linux) or file handles (macOS)
-            // from SimpleVMManager after VM creation
-            //
-            // For now, the tunnel session is ready for manual packet injection.
-            // Full integration requires:
-            // 1. SimpleVMManager to expose the VM's network interface
-            // 2. Creating appropriate PacketSource (TAPPacketSource or FileHandlePacketSource)
-            // 3. Creating VMPacketCapture to bridge the two
+            // Set up VMPacketCapture to bridge VM network to tunnel
+            #if os(Linux)
+            // Linux: Use TAP interface
+            if let tapName = await vmManager.getTAPInterface(vmId: vmId) {
+                let packetSource = TAPPacketSource(tapName: tapName, vmId: vmId)
+                let capture = VMPacketCapture(vmId: vmId, packetSource: packetSource, tunnelSession: session)
+                try await capture.start()
+                packetCaptures[vmId] = capture
+
+                logger.info("Packet capture started for VM (TAP)", metadata: [
+                    "vmId": "\(vmId)",
+                    "tap": "\(tapName)"
+                ])
+            } else {
+                logger.warning("No TAP interface available for VM", metadata: ["vmId": "\(vmId)"])
+            }
+            #elseif os(macOS)
+            // macOS: Use file handles
+            if let handles = await vmManager.getNetworkHandles(vmId: vmId) {
+                let packetSource = FileHandlePacketSource(
+                    hostRead: handles.hostRead,
+                    hostWrite: handles.hostWrite,
+                    vmId: vmId
+                )
+                let capture = VMPacketCapture(vmId: vmId, packetSource: packetSource, tunnelSession: session)
+                try await capture.start()
+                packetCaptures[vmId] = capture
+
+                logger.info("Packet capture started for VM (file handles)", metadata: [
+                    "vmId": "\(vmId)"
+                ])
+            } else {
+                // No file handles means test mode (NAT networking)
+                logger.info("No file handles available for VM (test mode)", metadata: ["vmId": "\(vmId)"])
+            }
+            #endif
 
         } catch {
             logger.error("Failed to set up tunnel for VM", metadata: [

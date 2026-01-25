@@ -2,7 +2,7 @@ import Foundation
 import ArgumentParser
 import OmertaCore
 import OmertaVM
-import OmertaVPN
+// OmertaVPN removed - WireGuard replaced by mesh tunnels
 import OmertaConsumer
 import OmertaProvider
 import OmertaMesh
@@ -1394,319 +1394,39 @@ struct NetworkShare: AsyncParsableCommand {
     }
 }
 
-// MARK: - VPN Command
+// MARK: - VPN Command (Deprecated - Mesh tunnels replace WireGuard)
 struct VPN: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
-        abstract: "VPN management commands",
+        abstract: "VPN management commands (deprecated - use mesh tunnels)",
         subcommands: [
-            VPNStatus.self,
-            VPNTest.self,
-            VPNNetlinkTest.self,
-            VPNMacOSTest.self
+            VPNDeprecated.self
         ]
     )
 }
 
-struct VPNMacOSTest: AsyncParsableCommand {
+struct VPNDeprecated: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
-        commandName: "macos-test",
-        abstract: "Test native macOS WireGuard implementation (macOS only)"
+        commandName: "info",
+        abstract: "Show VPN deprecation notice"
     )
 
-    @Flag(name: .long, help: "Dry run - don't actually create interfaces")
-    var dryRun: Bool = false
-
     mutating func run() async throws {
-        #if os(macOS)
-        print("=== Native macOS VPN Test ===")
+        print("VPN Commands Deprecated")
+        print("=======================")
         print("")
-
-        // 1. Test /dev/pf access
-        print("1. Testing /dev/pf access...")
-        let pfFd = open("/dev/pf", O_RDWR)
-        if pfFd >= 0 {
-            print("   ✓ Successfully opened /dev/pf (fd=\(pfFd))")
-            close(pfFd)
-        } else {
-            print("   ✗ Failed to open /dev/pf: \(String(cString: strerror(errno)))")
-            print("     (This requires root privileges)")
-        }
-
-        // 2. Test routing socket
+        print("WireGuard-based VPN has been replaced by mesh tunnels (OmertaTunnel).")
+        print("VM traffic now routes through the encrypted mesh network automatically.")
         print("")
-        print("2. Testing PF_ROUTE socket...")
-        let routeSock = socket(PF_ROUTE, SOCK_RAW, 0)
-        if routeSock >= 0 {
-            print("   ✓ Successfully created routing socket (fd=\(routeSock))")
-            close(routeSock)
-        } else {
-            print("   ✗ Failed to create routing socket: \(String(cString: strerror(errno)))")
-        }
-
-        // 3. Test utun creation
+        print("No external VPN setup is required. The mesh handles:")
+        print("  - NAT traversal (IPv6 + hole punching + relay)")
+        print("  - End-to-end encryption")
+        print("  - Traffic routing to VMs")
         print("")
-        print("3. Testing utun interface creation...")
-
-        if dryRun {
-            print("   [DRY RUN] Would create utun interface")
-            print("")
-            print("=== Test completed (dry run) ===")
-            return
-        }
-
-        do {
-            let (fd, ifName) = try MacOSUtunManager.createInterface()
-            print("   ✓ Created utun interface: \(ifName) (fd=\(fd))")
-
-            // 4. Configure interface
-            print("")
-            print("4. Configuring interface...")
-            let testIP = "10.200.200.1"
-            try MacOSUtunManager.addIPv4Address(interface: ifName, address: testIP, prefixLength: 24)
-            print("   ✓ Added IP address: \(testIP)/24")
-
-            try MacOSUtunManager.setMTU(interface: ifName, mtu: 1420)
-            print("   ✓ Set MTU to 1420")
-
-            try MacOSUtunManager.setInterfaceUp(interface: ifName, up: true)
-            print("   ✓ Interface is UP")
-
-            // 5. Verify with ifconfig
-            print("")
-            print("5. Verifying interface with ifconfig...")
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
-            process.arguments = [ifName]
-            let outputPipe = Pipe()
-            process.standardOutput = outputPipe
-            process.standardError = outputPipe
-            try process.run()
-            process.waitUntilExit()
-            let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            print(output)
-
-            // 6. Test routing
-            print("6. Testing route addition...")
-            try MacOSRoutingManager.addRoute(destination: "10.200.201.0", prefixLength: 24, interface: ifName)
-            print("   ✓ Added route 10.200.201.0/24 via \(ifName)")
-
-            // Verify route
-            let routeProcess = Process()
-            routeProcess.executableURL = URL(fileURLWithPath: "/sbin/route")
-            routeProcess.arguments = ["get", "10.200.201.1"]
-            let routePipe = Pipe()
-            routeProcess.standardOutput = routePipe
-            routeProcess.standardError = routePipe
-            try? routeProcess.run()
-            routeProcess.waitUntilExit()
-            let routeOutput = String(data: routePipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            if routeOutput.contains(ifName) {
-                print("   ✓ Route verified")
-            }
-
-            // Clean up route
-            try? MacOSRoutingManager.deleteRoute(destination: "10.200.201.0", prefixLength: 24)
-            print("   ✓ Route deleted")
-
-            // 7. Test pf rules (if /dev/pf accessible)
-            print("")
-            print("7. Testing pf rules...")
-            do {
-                try MacOSPacketFilterManager.enable()
-                print("   ✓ pf enabled")
-
-                let anchor = "omerta/test-\(Int.random(in: 1000...9999))"
-                // pf rules - macOS pf syntax (needs newline at end)
-                let rules = "pass on \(ifName)\n"
-                try MacOSPacketFilterManager.loadRulesIntoAnchor(anchor: anchor, rules: rules)
-                print("   ✓ Loaded rules into anchor: \(anchor)")
-
-                try MacOSPacketFilterManager.flushAnchor(anchor: anchor)
-                print("   ✓ Flushed anchor")
-            } catch {
-                print("   ⚠ pf test skipped: \(error)")
-            }
-
-            // 8. Clean up - close fd destroys interface
-            print("")
-            print("8. Cleaning up...")
-            MacOSUtunManager.closeInterface(fd: fd)
-            print("   ✓ Interface \(ifName) destroyed")
-
-            print("")
-            print("=== Test completed successfully ===")
-
-        } catch {
-            print("   ✗ Failed: \(error)")
-            throw ExitCode.failure
-        }
-        #else
-        print("Native macOS implementation is only available on macOS")
-        throw ExitCode.failure
-        #endif
+        print("Use 'omerta mesh status' to check mesh network connectivity.")
     }
 }
 
-struct VPNNetlinkTest: AsyncParsableCommand {
-    static var configuration = CommandConfiguration(
-        commandName: "netlink-test",
-        abstract: "Test native Linux WireGuard netlink implementation (Linux only)"
-    )
-
-    @Flag(name: .long, help: "Dry run - don't actually create interfaces")
-    var dryRun: Bool = false
-
-    mutating func run() async throws {
-        #if os(Linux)
-        print("=== WireGuard Native Netlink Test ===")
-        print("")
-
-        // 1. Generate test keys
-        print("1. Generating WireGuard keys using Swift Crypto...")
-        let keyData = SymmetricKey(size: .bits256)
-        let privateKeyData = keyData.withUnsafeBytes { Data($0) }
-        let privateKey = privateKeyData.base64EncodedString()
-
-        let curve25519Private = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: privateKeyData)
-        let publicKey = curve25519Private.publicKey.rawRepresentation.base64EncodedString()
-
-        print("   Private key: \(privateKey.prefix(20))...")
-        print("   Public key:  \(publicKey.prefix(20))...")
-
-        let interfaceName = "wg-test-\(Int.random(in: 1000...9999))"
-        let vpnAddress = "10.200.200.1"
-        let prefixLength: UInt8 = 24
-
-        print("")
-        print("2. Creating WireGuard interface '\(interfaceName)' with native netlink...")
-
-        if dryRun {
-            print("   [DRY RUN] Would create interface with:")
-            print("     - Name: \(interfaceName)")
-            print("     - Address: \(vpnAddress)/\(prefixLength)")
-            print("     - Private key: \(privateKey.prefix(20))...")
-            print("")
-            print("=== Test completed (dry run) ===")
-            return
-        }
-
-        let wg = LinuxWireGuardManager()
-
-        // Create interface
-        try wg.createInterface(
-            name: interfaceName,
-            privateKeyBase64: privateKey,
-            listenPort: 0,
-            address: vpnAddress,
-            prefixLength: prefixLength,
-            peers: []
-        )
-        print("   ✓ Interface created successfully")
-
-        // Verify with ip command
-        print("")
-        print("3. Verifying interface with 'ip link show'...")
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/sbin/ip")
-        process.arguments = ["link", "show", interfaceName]
-        let outputPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = outputPipe
-        try process.run()
-        process.waitUntilExit()
-        let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        print(output)
-
-        // Check IP address
-        print("4. Checking IP address with 'ip addr show'...")
-        let addrProcess = Process()
-        addrProcess.executableURL = URL(fileURLWithPath: "/sbin/ip")
-        addrProcess.arguments = ["addr", "show", interfaceName]
-        let addrPipe = Pipe()
-        addrProcess.standardOutput = addrPipe
-        addrProcess.standardError = addrPipe
-        try addrProcess.run()
-        addrProcess.waitUntilExit()
-        let addrOutput = String(data: addrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        print(addrOutput)
-
-        // Clean up
-        print("5. Cleaning up - deleting interface...")
-        try wg.deleteInterface(name: interfaceName)
-        print("   ✓ Interface deleted successfully")
-
-        print("")
-        print("=== Test completed successfully ===")
-        #else
-        print("Native netlink implementation is only available on Linux")
-        throw ExitCode.failure
-        #endif
-    }
-}
-
-struct VPNStatus: AsyncParsableCommand {
-    static var configuration = CommandConfiguration(
-        commandName: "status",
-        abstract: "Show VPN tunnel status"
-    )
-
-    @Option(name: .long, help: "VM ID")
-    var vmId: String?
-
-    mutating func run() async throws {
-        print("VPN Status")
-        print("==========")
-        print("")
-
-        // List WireGuard interfaces
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: WireGuardPaths.wg)
-        process.arguments = ["show"]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        try process.run()
-        process.waitUntilExit()
-
-        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-
-        if output.isEmpty {
-            print("No active WireGuard tunnels")
-        } else {
-            print(output)
-        }
-    }
-}
-
-struct VPNTest: AsyncParsableCommand {
-    static var configuration = CommandConfiguration(
-        commandName: "test",
-        abstract: "Test VPN connectivity"
-    )
-
-    @Option(name: .long, help: "VPN server IP")
-    var serverIP: String
-
-    mutating func run() async throws {
-        print("Testing VPN connectivity to \(serverIP)...")
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/sbin/ping")
-        process.arguments = ["-c", "3", serverIP]
-
-        try process.run()
-        process.waitUntilExit()
-
-        if process.terminationStatus == 0 {
-            print("VPN server is reachable")
-        } else {
-            print("Cannot reach VPN server")
-            throw ExitCode.failure
-        }
-    }
-}
+// Old VPN test commands removed - WireGuard replaced by mesh tunnels
 
 // MARK: - Status Command
 struct Status: AsyncParsableCommand {
@@ -1815,7 +1535,7 @@ struct VMRequest: AsyncParsableCommand {
     @Flag(name: .long, help: "Dry run - skip VPN setup (for testing without sudo)")
     var dryRun: Bool = false
 
-    @Flag(name: .long, help: "Wait for WireGuard connection before exiting")
+    @Flag(name: .long, help: "Wait for VM connection before exiting")
     var wait: Bool = false
 
     @Option(name: .long, help: "Timeout in seconds when using --wait (default: 120)")
@@ -2023,13 +1743,12 @@ struct VMRequest: AsyncParsableCommand {
         } else {
             print("SSH: ssh -i \(sshPrivateKeyPath) \(sshUser)@\(vmIP)")
         }
-        print("VPN Interface: wg\(vmIdPrefix)")
         print("Heartbeat Timeout: \(timeout) minutes")
 
-        // Wait for WireGuard connection if requested
+        // Wait for VM connection if requested
         if wait && !dryRun {
             print("")
-            print("Waiting for VM to establish WireGuard connection...")
+            print("Waiting for VM to become reachable...")
             var connected = false
             for _ in 0..<waitTimeout {
                 try await Task.sleep(for: .seconds(1))
@@ -2040,10 +1759,9 @@ struct VMRequest: AsyncParsableCommand {
             }
             if !connected {
                 print("Warning: Could not verify VM connectivity within \(waitTimeout)s")
-                print("The VM may still be booting. You can check connection status with:")
-                print("  sudo wg show wg\(vmIdPrefix)")
+                print("The VM may still be booting.")
             } else {
-                print("WireGuard connection established!")
+                print("VM connection established!")
             }
         }
 
@@ -2140,29 +1858,7 @@ struct VMList: AsyncParsableCommand {
     }
 
     private func checkForOrphanedResources(trackedInterfaces: Set<String>) async {
-        // Try to get WireGuard status (may fail without sudo, that's OK)
-        guard let status = try? WireGuardCleanup.getCleanupStatus() else {
-            return
-        }
-
-        // Find orphaned interfaces (active but not tracked)
-        let orphanedInterfaces = status.activeInterfaces.filter { !trackedInterfaces.contains($0) }
-        let orphanedProcessCount = status.orphanedProcesses.count
-
-        if orphanedInterfaces.isEmpty && orphanedProcessCount == 0 {
-            return
-        }
-
-        print("")
-        print("⚠️  Orphaned resources detected:")
-        if !orphanedInterfaces.isEmpty {
-            print("   \(orphanedInterfaces.count) WireGuard interface\(orphanedInterfaces.count == 1 ? "" : "s") not tracked")
-        }
-        if orphanedProcessCount > 0 {
-            print("   \(orphanedProcessCount) orphaned wireguard-go process\(orphanedProcessCount == 1 ? "" : "es")")
-        }
-        print("")
-        print("Run 'sudo omerta vm cleanup' to remove orphaned resources.")
+        // No-op: WireGuard cleanup removed - using mesh tunnels
     }
 
     private func formatDate(_ date: Date) -> String {
@@ -2302,12 +1998,9 @@ struct VMRelease: AsyncParsableCommand {
         // If daemon didn't handle it, do local cleanup
         if !usedDaemon {
             // Local cleanup only (no provider notification without daemon)
+            // No VPN teardown needed - using mesh tunnels
             do {
-                // 1. Tear down VPN tunnel
-                let ephemeralVPN = EphemeralVPN()
-                try await ephemeralVPN.destroyVPN(for: selectedVM.vmId)
-
-                // 2. Remove from tracker
+                // Remove from tracker
                 try await tracker.removeVM(selectedVM.vmId)
             } catch {
                 print("")
@@ -2687,7 +2380,7 @@ struct VMFiles {
 struct VMCleanup: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "cleanup",
-        abstract: "Clean up orphaned WireGuard interfaces, QEMU processes, VM disks, and resources"
+        abstract: "Clean up orphaned QEMU processes, VM disks, and resources"
     )
 
     @Flag(name: .long, help: "Clean up all Omerta resources, not just orphaned ones")
@@ -2707,134 +2400,18 @@ struct VMCleanup: AsyncParsableCommand {
         print("==============")
         print("")
 
-        // Check if we have sudo access (needed for killing processes and stopping interfaces)
-        if !checkSudoAccess() {
-            print("Error: This command requires sudo privileges.")
-            print("")
-            print("Run with sudo:")
-            print("  sudo omerta vm cleanup")
-            throw ExitCode.failure
-        }
-
-        // Get current status
-        let status: CleanupStatus
-        do {
-            status = try WireGuardCleanup.getCleanupStatus()
-        } catch {
-            print("Error checking WireGuard status: \(error)")
-            print("")
-            print("Make sure you have sudo access for 'wg' and 'wg-quick'")
-            throw ExitCode.failure
-        }
-
         // Load tracked VMs
         let tracker = VMTracker()
         let trackedVMs = try await tracker.loadPersistedVMs()
-        let trackedInterfaces = Set(trackedVMs.map { $0.vpnInterface })
-
-        // Identify orphaned vs tracked interfaces
-        var orphanedInterfaces: [String] = []
-        var trackedActiveInterfaces: [String] = []
-
-        for iface in status.activeInterfaces {
-            if trackedInterfaces.contains(iface) {
-                trackedActiveInterfaces.append(iface)
-            } else {
-                orphanedInterfaces.append(iface)
-            }
-        }
-
-        // ========== WireGuard Interfaces ==========
-        print("WireGuard Interfaces")
-        print("--------------------")
-        print("Active Omerta interfaces: \(status.activeInterfaces.count)")
-        for iface in status.activeInterfaces {
-            let isTracked = trackedInterfaces.contains(iface)
-            let marker = isTracked ? "[tracked]" : "[orphaned]"
-            print("  \(marker) \(iface)")
-        }
-        if status.activeInterfaces.isEmpty {
-            print("  (none)")
-        }
-        print("")
-
-        if !status.orphanedProcesses.isEmpty {
-            print("Orphaned wireguard-go processes: \(status.orphanedProcesses.count)")
-            for proc in status.orphanedProcesses {
-                print("  PID \(proc.pid): \(proc.command)")
-            }
-            print("")
-        }
-
-        if !status.configFiles.isEmpty {
-            print("Config files: \(status.configFiles.count)")
-            for file in status.configFiles {
-                print("  \(file)")
-            }
-            print("  in: \(status.configDirectory)")
-            print("")
-        }
 
         print("Tracked VMs: \(trackedVMs.count)")
         for vm in trackedVMs {
-            let hasInterface = status.activeInterfaces.contains(vm.vpnInterface)
-            let marker = hasInterface ? "[active]" : "[no interface]"
-            print("  \(marker) \(vm.vmId.uuidString.prefix(8))... \(vm.vmIP) (\(vm.vpnInterface))")
+            print("  \(vm.vmId.uuidString.prefix(8))... \(vm.vmIP)")
         }
         if trackedVMs.isEmpty {
             print("  (none)")
         }
         print("")
-
-        // ========== Firewall Rules (macOS pf anchors) ==========
-        #if os(macOS)
-        print("Firewall Rules (pf anchors)")
-        print("---------------------------")
-
-        // Get firewall markers (created by omerta)
-        let markers = ProviderVPNManager.listFirewallMarkers()
-
-        // Get all omerta pf anchors
-        let anchors = ProviderVPNManager.listOmertaAnchors()
-
-        // Categorize anchors
-        var markeredAnchors: [(anchor: String, marker: ProviderVPNManager.FirewallMarker)] = []
-        var unmarkedAnchors: [String] = []
-
-        for anchor in anchors {
-            if let marker = markers.first(where: { $0.anchor == anchor }) {
-                markeredAnchors.append((anchor, marker))
-            } else {
-                unmarkedAnchors.append(anchor)
-            }
-        }
-
-        // Show orphaned markers (marker exists but no anchor - already cleaned)
-        let orphanedMarkers = markers.filter { marker in
-            guard let anchor = marker.anchor else { return true }
-            return !anchors.contains(anchor)
-        }
-
-        if anchors.isEmpty {
-            print("  No omerta pf anchors found")
-        } else {
-            print("  Active anchors: \(anchors.count)")
-            for (anchor, marker) in markeredAnchors {
-                print("    [omerta] \(anchor) (created: \(marker.createdAt ?? "unknown"))")
-            }
-            for anchor in unmarkedAnchors {
-                print("    [unknown] \(anchor)")
-            }
-        }
-
-        if !orphanedMarkers.isEmpty {
-            print("  Orphaned markers (no anchor): \(orphanedMarkers.count)")
-            for marker in orphanedMarkers {
-                print("    \(marker.path)")
-            }
-        }
-        print("")
-        #endif
 
         // ========== QEMU Processes ==========
         let vmDisksDir = "\(OmertaConfig.defaultConfigDir)/vm-disks"
@@ -2909,45 +2486,17 @@ struct VMCleanup: AsyncParsableCommand {
         }
         print("")
 
-        // Determine what to clean
-        let interfacesToClean: [String]
-        if all {
-            interfacesToClean = status.activeInterfaces
-        } else {
-            interfacesToClean = orphanedInterfaces
-        }
-
-        // Check for stale VMs (tracked but no interface)
-        let staleVMs = trackedVMs.filter { !status.activeInterfaces.contains($0.vpnInterface) }
-
-        let hasOrphanedProcesses = !status.orphanedProcesses.isEmpty
-        let hasInterfacesToClean = !interfacesToClean.isEmpty
-        let hasConfigFiles = !status.configFiles.isEmpty
-        let hasStaleVMs = !staleVMs.isEmpty
+        // Check for stale VMs in tracking
+        let hasStaleVMs = !trackedVMs.isEmpty
         let hasVMFilesToClean = !vmFilesToClean.isEmpty
         let hasRunningVMsToKill = all && !runningVMs.isEmpty && disks
 
-        #if os(macOS)
-        let hasMarkeredAnchors = !markeredAnchors.isEmpty
-        let hasUnmarkedAnchors = !unmarkedAnchors.isEmpty
-        let hasOrphanedMarkers = !orphanedMarkers.isEmpty
-        let hasFirewallWork = hasMarkeredAnchors || hasUnmarkedAnchors || hasOrphanedMarkers
-        #else
-        let hasFirewallWork = false
-        let hasMarkeredAnchors = false
-        let hasUnmarkedAnchors = false
-        let hasOrphanedMarkers = false
-        let markeredAnchors: [(anchor: String, marker: ProviderVPNManager.FirewallMarker)] = []
-        let unmarkedAnchors: [String] = []
-        let orphanedMarkers: [ProviderVPNManager.FirewallMarker] = []
-        #endif
-
-        if !hasInterfacesToClean && !hasConfigFiles && !hasOrphanedProcesses && !hasFirewallWork && !hasVMFilesToClean && !hasRunningVMsToKill && (!hasStaleVMs || !all) {
+        if !hasVMFilesToClean && !hasRunningVMsToKill && (!hasStaleVMs || !all) {
             print("Nothing to clean up!")
-            if hasStaleVMs {
+            if hasStaleVMs && !all {
                 print("")
-                print("Note: \(staleVMs.count) stale VM(s) tracked with no interface.")
-                print("Use --all to clear stale tracking.")
+                print("Note: \(trackedVMs.count) VM(s) tracked.")
+                print("Use --all to clear VM tracking.")
             }
             if !orphanedVMs.isEmpty && !disks {
                 print("")
@@ -2959,29 +2508,9 @@ struct VMCleanup: AsyncParsableCommand {
 
         if dryRun {
             print("[DRY RUN] Would clean up:")
-            for proc in status.orphanedProcesses {
-                print("  - Kill orphaned wireguard-go process: PID \(proc.pid)")
-            }
-            for iface in interfacesToClean {
-                print("  - Stop interface: \(iface)")
-            }
-            for file in status.configFiles {
-                print("  - Remove config: \(file)")
-            }
-            #if os(macOS)
-            for (anchor, _) in markeredAnchors {
-                print("  - Remove pf anchor: \(anchor) [auto - has marker]")
-            }
-            for anchor in unmarkedAnchors {
-                print("  - Remove pf anchor: \(anchor) [requires confirmation]")
-            }
-            for marker in orphanedMarkers {
-                print("  - Remove orphaned marker: \(marker.path)")
-            }
-            #endif
             if all {
-                for vm in staleVMs {
-                    print("  - Remove stale tracking: \(vm.vmId.uuidString.prefix(8))...")
+                for vm in trackedVMs {
+                    print("  - Remove VM tracking: \(vm.vmId.uuidString.prefix(8))...")
                 }
             }
             if hasRunningVMsToKill {
@@ -3000,25 +2529,9 @@ struct VMCleanup: AsyncParsableCommand {
 
         // Confirm
         if !force {
-            if hasOrphanedProcesses {
-                print("This will kill \(status.orphanedProcesses.count) orphaned wireguard-go process(es).")
+            if all && hasStaleVMs {
+                print("This will remove \(trackedVMs.count) VM tracking entries.")
             }
-            if all {
-                if hasInterfacesToClean {
-                    print("This will stop ALL Omerta WireGuard interfaces (\(interfacesToClean.count)).")
-                    print("WARNING: Active VMs will lose connectivity!")
-                }
-                if hasStaleVMs {
-                    print("This will remove \(staleVMs.count) stale VM tracking entries.")
-                }
-            } else if hasInterfacesToClean {
-                print("This will clean up \(interfacesToClean.count) orphaned interfaces.")
-            }
-            #if os(macOS)
-            if hasMarkeredAnchors {
-                print("This will remove \(markeredAnchors.count) pf anchor(s) created by omerta.")
-            }
-            #endif
             if hasRunningVMsToKill {
                 print("This will KILL \(runningVMs.count) running QEMU process(es).")
                 print("WARNING: Running VMs will be terminated!")
@@ -3039,99 +2552,11 @@ struct VMCleanup: AsyncParsableCommand {
         print("")
         print("Cleaning up...")
 
-        // Kill orphaned processes first
-        var processesKilled = 0
-        if hasOrphanedProcesses {
-            for proc in status.orphanedProcesses {
-                print("  Killing PID \(proc.pid)...", terminator: " ")
-                do {
-                    let killed = try WireGuardCleanup.killOrphanedProcesses([proc])
-                    if killed > 0 {
-                        print("done")
-                        processesKilled += 1
-                    } else {
-                        print("failed")
-                    }
-                } catch {
-                    print("failed: \(error)")
-                }
-            }
-        }
-
-        // Stop interfaces
-        var cleanedCount = 0
-        for iface in interfacesToClean {
-            print("  Stopping \(iface)...", terminator: " ")
-            do {
-                try WireGuardCleanup.stopInterface(iface)
-                print("done")
-                cleanedCount += 1
-            } catch {
-                print("failed: \(error)")
-            }
-        }
-
-        // Clean up config files
-        WireGuardCleanup.cleanupConfigFiles()
-
-        // ========== Firewall Cleanup ==========
-        #if os(macOS)
-        var anchorsRemoved = 0
-
-        // Remove anchors with markers automatically
-        for (anchor, marker) in markeredAnchors {
-            print("  Removing pf anchor \(anchor)...", terminator: " ")
-            if ProviderVPNManager.removePFAnchor(anchor) {
-                print("done")
-                anchorsRemoved += 1
-                // Also remove the marker file
-                try? FileManager.default.removeItem(atPath: marker.path)
-            } else {
-                print("failed")
-            }
-        }
-
-        // For unmarked anchors, ask user unless --force
-        for anchor in unmarkedAnchors {
-            if force {
-                print("  Removing unknown pf anchor \(anchor)...", terminator: " ")
-                if ProviderVPNManager.removePFAnchor(anchor) {
-                    print("done")
-                    anchorsRemoved += 1
-                } else {
-                    print("failed")
-                }
-            } else {
-                print("")
-                print("  Found pf anchor '\(anchor)' without marker file.")
-                print("  This may have been created by omerta or another tool.")
-                print("  Remove this anchor? (y/n): ", terminator: "")
-
-                if let response = readLine()?.lowercased(), response == "y" || response == "yes" {
-                    print("  Removing...", terminator: " ")
-                    if ProviderVPNManager.removePFAnchor(anchor) {
-                        print("done")
-                        anchorsRemoved += 1
-                    } else {
-                        print("failed")
-                    }
-                } else {
-                    print("  Skipped.")
-                }
-            }
-        }
-
-        // Clean up orphaned markers
-        for marker in orphanedMarkers {
-            try? FileManager.default.removeItem(atPath: marker.path)
-        }
-        #endif
-
-        // If --all, also clear stale VM tracking
-        if all && !staleVMs.isEmpty {
+        // If --all, clear VM tracking
+        if all && !trackedVMs.isEmpty {
             print("")
-            print("Clearing stale VM tracking...")
-            for vm in staleVMs {
+            print("Clearing VM tracking...")
+            for vm in trackedVMs {
                 try await tracker.removeVM(vm.vmId)
                 print("  Removed \(vm.vmId.uuidString.prefix(8))...")
             }
@@ -3222,9 +2647,6 @@ struct VMCleanup: AsyncParsableCommand {
 
         print("")
         print("Cleanup complete!")
-        if processesKilled > 0 {
-            print("  WireGuard processes killed: \(processesKilled)")
-        }
         if qemuProcessesKilled > 0 {
             print("  QEMU processes killed: \(qemuProcessesKilled)")
         }
@@ -3233,16 +2655,8 @@ struct VMCleanup: AsyncParsableCommand {
             print("  TAP interfaces removed: \(tapInterfacesCleaned)")
         }
         #endif
-        if cleanedCount > 0 {
-            print("  Interfaces stopped: \(cleanedCount)")
-        }
-        #if os(macOS)
-        if anchorsRemoved > 0 {
-            print("  Firewall anchors removed: \(anchorsRemoved)")
-        }
-        #endif
         if all && hasStaleVMs {
-            print("  Stale VMs removed: \(staleVMs.count)")
+            print("  VMs removed from tracking: \(trackedVMs.count)")
         }
         if vmsCleanedUp > 0 {
             print("  VMs cleaned up: \(vmsCleanedUp) (\(vmFilesRemoved) files)")
@@ -3401,7 +2815,7 @@ struct Kill: AsyncParsableCommand {
     @Flag(name: .long, help: "Force kill (SIGKILL instead of SIGTERM)")
     var force: Bool = false
 
-    @Flag(name: .long, help: "Also clean up WireGuard interfaces")
+    @Flag(name: .long, help: "Deprecated - mesh tunnels don't require interface cleanup")
     var cleanup: Bool = false
 
     @Option(name: .long, help: "Graceful shutdown timeout in seconds (no timeout by default)")
@@ -3520,72 +2934,10 @@ struct Kill: AsyncParsableCommand {
             }
         }
 
-        // Cleanup WireGuard interfaces if requested
+        // Cleanup flag is deprecated (WireGuard replaced by mesh tunnels)
         if cleanup {
             print("")
-            print("Cleaning up WireGuard interfaces...")
-
-            #if os(macOS)
-            // On macOS, remove utun interfaces created by omerta
-            let listUtun = Process()
-            listUtun.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
-            listUtun.arguments = ["-l"]
-            let utunPipe = Pipe()
-            listUtun.standardOutput = utunPipe
-            try? listUtun.run()
-            listUtun.waitUntilExit()
-
-            let interfaces = String(data: utunPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            let utunInterfaces = interfaces.split(separator: " ").filter { $0.hasPrefix("utun") && Int($0.dropFirst(4)) ?? 0 >= 10 }
-
-            for iface in utunInterfaces {
-                let down = Process()
-                down.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
-                down.arguments = [String(iface), "down"]
-                down.standardOutput = FileHandle.nullDevice
-                down.standardError = FileHandle.nullDevice
-                try? down.run()
-                down.waitUntilExit()
-                print("  Brought down \(iface)")
-            }
-            #else
-            // On Linux, use WireGuardCleanup to properly stop interfaces with sudo
-            do {
-                let status = try WireGuardCleanup.getCleanupStatus()
-                for iface in status.activeInterfaces {
-                    do {
-                        try WireGuardCleanup.stopInterface(iface)
-                        print("  Deleted \(iface)")
-                    } catch {
-                        print("  Failed to delete \(iface): \(error)")
-                    }
-                }
-            } catch {
-                // Fallback: try listing interfaces manually
-                let listWg = Process()
-                listWg.executableURL = URL(fileURLWithPath: "/bin/bash")
-                listWg.arguments = ["-c", "ip link show | grep -oE 'wg[0-9A-F]+' | sort -u"]
-                let wgPipe = Pipe()
-                listWg.standardOutput = wgPipe
-                try? listWg.run()
-                listWg.waitUntilExit()
-
-                let wgInterfaces = String(data: wgPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .split(separator: "\n") ?? []
-
-                for iface in wgInterfaces {
-                    do {
-                        try WireGuardCleanup.stopInterface(String(iface))
-                        print("  Deleted \(iface)")
-                    } catch {
-                        print("  Failed to delete \(iface): \(error)")
-                    }
-                }
-            }
-            #endif
-
-            print("Cleanup complete")
+            print("Note: --cleanup flag is deprecated. Mesh tunnels don't require interface cleanup.")
         }
     }
 }

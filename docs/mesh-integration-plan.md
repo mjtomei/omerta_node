@@ -238,7 +238,7 @@ public struct OmertaConfig: Codable, Sendable {
 ```swift
 public actor MeshProviderDaemon {
     private let mesh: MeshNetwork
-    private let vmManager: SimpleVMManager
+    private let vmManager: VMManager
     private let config: Configuration
 
     public struct Configuration {
@@ -254,7 +254,7 @@ public actor MeshProviderDaemon {
         meshConfig.canCoordinateHolePunch = true
 
         self.mesh = MeshNetwork(peerId: config.peerId, config: meshConfig)
-        self.vmManager = SimpleVMManager()
+        self.vmManager = VMManager()
         self.config = config
     }
 

@@ -1,7 +1,6 @@
 import Foundation
 import Logging
 import OmertaCore
-import OmertaVPN
 import OmertaMesh
 
 /// Channel names for VM protocol
@@ -25,6 +24,7 @@ public enum VMChannels {
 
 /// Lightweight consumer client for VM requests
 /// Uses MeshNetwork channels for NAT-aware routing (IPv6 > direct > relay fallback)
+/// Traffic to VMs is routed through the mesh tunnel (no WireGuard required)
 public actor MeshConsumerClient {
     // MARK: - Properties
 
@@ -36,9 +36,6 @@ public actor MeshConsumerClient {
 
     /// Our peer ID for response channel
     private let myPeerId: PeerId
-
-    /// Ephemeral VPN manager
-    private let ephemeralVPN: EphemeralVPN
 
     /// VM tracker for persistence
     private let vmTracker: VMTracker
@@ -66,7 +63,7 @@ public actor MeshConsumerClient {
     ///   - providerPeerId: The provider's peer ID
     ///   - networkId: Network ID for VM tracking
     ///   - persistencePath: Path to persist active VM info
-    ///   - dryRun: If true, don't actually create VPN tunnels
+    ///   - dryRun: If true, don't actually create tunnels
     public init(
         meshNetwork: MeshNetwork,
         providerPeerId: PeerId,
@@ -84,7 +81,6 @@ public actor MeshConsumerClient {
         self.providerPeerId = providerPeerId
         self.myPeerId = myPeerId
         self.networkId = networkId
-        self.ephemeralVPN = EphemeralVPN(dryRun: dryRun)
         self.vmTracker = VMTracker(persistencePath: persistencePath)
         self.dryRun = dryRun
 
@@ -164,10 +160,9 @@ public actor MeshConsumerClient {
             "reason": "\(notification.reason)"
         ])
 
-        // Clean up local VPN tunnels for affected VMs
+        // Clean up tracked VMs for affected VMs
         for vmId in notification.vmIds {
             logger.info("Cleaning up VM due to provider shutdown", metadata: ["vmId": "\(vmId.uuidString.prefix(8))..."])
-            try? await ephemeralVPN.destroyVPN(for: vmId)
             try? await vmTracker.removeVM(vmId)
         }
     }
@@ -188,7 +183,7 @@ public actor MeshConsumerClient {
         sshUser: String = "omerta",
         timeoutMinutes: Int = 10
     ) async throws -> VMConnection {
-        // Get provider endpoint for VPN setup (we need it for WireGuard)
+        // Get provider endpoint
         var providerEndpoint: String? = await meshNetwork.connection(to: providerPeerId)?.endpoint
         if providerEndpoint == nil {
             providerEndpoint = try? await meshNetwork.connect(to: providerPeerId).endpoint
@@ -202,20 +197,23 @@ public actor MeshConsumerClient {
             "timeoutMinutes": "\(timeoutMinutes)"
         ])
 
-        // 1. Create VPN tunnel
+        // Generate VM ID
         let vmId = UUID()
-        let vpnConfig = try await ephemeralVPN.createVPNForJob(vmId, providerEndpoint: providerEndpoint)
-        logger.info("VPN tunnel created", metadata: ["vmId": "\(vmId)"])
+
+        // With the mesh tunnel approach, the VM gets an IP that routes through the mesh
+        // The consumer and provider are already connected via the mesh network
+        // No WireGuard keys needed - traffic goes through the encrypted mesh channel
+        let vmTunnelIP = generateTunnelIP(for: vmId)
 
         do {
-            // 2. Build VM request
+            // Build VM request (no WireGuard keys - using mesh tunnels)
             let request = MeshVMRequest(
                 vmId: vmId,
                 requirements: requirements,
-                consumerPublicKey: vpnConfig.consumerPublicKey,
-                consumerEndpoint: vpnConfig.consumerEndpoint,
-                consumerVPNIP: vpnConfig.consumerVPNIP,
-                vmVPNIP: vpnConfig.vmVPNIP,
+                consumerPublicKey: "",  // Not needed - mesh handles encryption
+                consumerEndpoint: "",   // Not needed - mesh handles routing
+                consumerVPNIP: "",      // Not needed - using mesh tunnels
+                vmVPNIP: vmTunnelIP,
                 sshPublicKey: sshPublicKey,
                 sshUser: sshUser,
                 timeoutMinutes: timeoutMinutes
@@ -223,7 +221,7 @@ public actor MeshConsumerClient {
 
             let requestData = try JSONEncoder().encode(request)
 
-            // 3. Send request and wait for response (via channels)
+            // Send request and wait for response (via channels)
             let vmResponse = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<MeshVMResponse, Error>) in
                 // Store continuation
                 pendingResponses[vmId] = continuation
@@ -255,43 +253,30 @@ public actor MeshConsumerClient {
                 throw MeshConsumerError.providerError(error)
             }
 
-            guard let providerPublicKey = vmResponse.providerPublicKey else {
-                // Send negative ACK for invalid response
-                await sendAck(vmId: vmId, success: false)
-                throw MeshConsumerError.invalidResponse
-            }
-
-            // Use the WireGuard tunnel IP we assigned
-            let sshIP = vpnConfig.vmVPNIP
+            // Use the mesh tunnel IP
+            let sshIP = vmResponse.vmIP ?? vmTunnelIP
 
             logger.info("Provider response received", metadata: [
                 "vmId": "\(vmId)",
-                "sshIP": "\(sshIP)",
-                "providerReportedIP": "\(vmResponse.vmIP ?? "none")"
+                "sshIP": "\(sshIP)"
             ])
 
             // Send positive ACK to confirm we received the response
             await sendAck(vmId: vmId, success: true)
 
-            // 4. Add provider as peer on consumer's WireGuard
-            try await ephemeralVPN.addProviderPeer(
-                jobId: vmId,
-                providerPublicKey: providerPublicKey
-            )
-
-            // 5. Build connection info
+            // Build connection info (no VPN interface - using mesh tunnel)
             let vmConnection = VMConnection(
                 vmId: vmId,
                 provider: PeerInfo(peerId: providerPeerId, endpoint: providerEndpoint),
                 vmIP: sshIP,
                 sshKeyPath: sshKeyPath,
                 sshUser: sshUser,
-                vpnInterface: "wg\(vmId.uuidString.prefix(8))",
+                vpnInterface: "mesh-\(vmId.uuidString.prefix(8))",  // Conceptual - traffic via mesh
                 createdAt: Date(),
                 networkId: networkId
             )
 
-            // 6. Track VM
+            // Track VM
             try await vmTracker.trackVM(vmConnection)
 
             logger.info("VM request completed", metadata: [
@@ -302,12 +287,10 @@ public actor MeshConsumerClient {
             return vmConnection
 
         } catch {
-            // Clean up VPN on failure
-            logger.warning("VM request failed, cleaning up", metadata: [
+            logger.warning("VM request failed", metadata: [
                 "vmId": "\(vmId)",
                 "error": "\(error)"
             ])
-            try? await ephemeralVPN.destroyVPN(for: vmId)
             throw error
         }
     }
@@ -316,7 +299,7 @@ public actor MeshConsumerClient {
     public func releaseVM(_ vmConnection: VMConnection, forceLocalCleanup: Bool = false) async throws {
         logger.info("Releasing VM", metadata: ["vmId": "\(vmConnection.vmId)"])
 
-        // 1. Send release request to provider
+        // Send release request to provider
         do {
             let request = MeshVMReleaseRequest(vmId: vmConnection.vmId)
             let requestData = try JSONEncoder().encode(request)
@@ -361,10 +344,7 @@ public actor MeshConsumerClient {
             ])
         }
 
-        // 2. Tear down VPN
-        try? await ephemeralVPN.destroyVPN(for: vmConnection.vmId)
-
-        // 3. Stop tracking
+        // Stop tracking
         try await vmTracker.removeVM(vmConnection.vmId)
 
         logger.info("VM released", metadata: ["vmId": "\(vmConnection.vmId)"])
@@ -376,6 +356,15 @@ public actor MeshConsumerClient {
     }
 
     // MARK: - Private Methods
+
+    /// Generate a tunnel IP for a VM based on its ID
+    private func generateTunnelIP(for vmId: UUID) -> String {
+        // Use job ID bytes to generate a unique IP in 10.x.y.2
+        let jobBytes = withUnsafeBytes(of: vmId.uuid) { Array($0) }
+        let subnetByte1 = Int(jobBytes[0] % 200) + 50  // 50-249
+        let subnetByte2 = Int(jobBytes[1] % 250) + 1   // 1-250
+        return "10.\(subnetByte1).\(subnetByte2).2"
+    }
 
     /// Send ACK to provider confirming we received their response
     private func sendAck(vmId: UUID, success: Bool) async {

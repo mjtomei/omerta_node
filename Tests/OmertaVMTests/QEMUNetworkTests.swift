@@ -1,5 +1,5 @@
 // QEMUNetworkTests.swift
-// Phase 11.5: Linux QEMU Network Parity Tests
+// Phase 11.5: Linux QEMU Network Tests
 
 import XCTest
 @testable import OmertaVM
@@ -7,11 +7,10 @@ import XCTest
 
 #if os(Linux)
 /// Tests for Linux QEMU VM networking
-/// These tests verify that QEMU VMs on Linux have the same network isolation
-/// capabilities as Virtualization.framework VMs on macOS
+/// These tests verify that QEMU VMs on Linux work properly with mesh tunnel networking
 final class QEMUNetworkTests: XCTestCase {
 
-    var vmManager: SimpleVMManager!
+    var vmManager: VMManager!
     var tempDirectory: URL!
     var createdVMIds: [UUID] = []
 
@@ -23,7 +22,7 @@ final class QEMUNetworkTests: XCTestCase {
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
 
         // Use dry-run mode for unit tests (no actual QEMU process)
-        vmManager = SimpleVMManager(dryRun: true)
+        vmManager = VMManager(dryRun: true)
         createdVMIds = []
     }
 
@@ -35,73 +34,36 @@ final class QEMUNetworkTests: XCTestCase {
         try await super.tearDown()
     }
 
-    // MARK: - Cloud-Init Generation Tests
+    // MARK: - VM Start Tests
 
-    func testQEMUVMGeneratesCloudInitISO() async throws {
-        // Given: Consumer endpoint info
-        let consumerPublicKey = Data((0..<32).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
-        let consumerEndpoint = "203.0.113.50:51820"
+    func testQEMUVMStart() async throws {
         let vmId = UUID()
         createdVMIds.append(vmId)
 
-        // When: We start a VM (dry-run mode)
+        // Start VM (dry-run mode)
         let result = try await vmManager.startVM(
             vmId: vmId,
             requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
-            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
-            consumerPublicKey: consumerPublicKey,
-            consumerEndpoint: consumerEndpoint
+            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta"
         )
 
-        // Then: VM has WireGuard public key
-        XCTAssertFalse(result.vmWireGuardPublicKey.isEmpty,
-                      "VM should have WireGuard public key")
-        XCTAssertNotEqual(result.vmWireGuardPublicKey, "test-mode-no-wireguard",
-                         "Should not be in test mode")
+        // VM should have an IP assigned
+        XCTAssertFalse(result.vmIP.isEmpty, "VM should have an IP address")
     }
 
-    func testQEMUVMPublicKeyIsValidBase64() async throws {
-        let consumerPublicKey = Data((0..<32).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
-        let consumerEndpoint = "203.0.113.50:51820"
-        let vmId = UUID()
-        createdVMIds.append(vmId)
-
-        let result = try await vmManager.startVM(
-            vmId: vmId,
-            requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
-            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
-            consumerPublicKey: consumerPublicKey,
-            consumerEndpoint: consumerEndpoint
-        )
-
-        // Verify the public key is valid base64
-        let keyData = Data(base64Encoded: result.vmWireGuardPublicKey)
-        XCTAssertNotNil(keyData, "VM public key should be valid base64")
-        XCTAssertEqual(keyData?.count, 32, "WireGuard public key should be 32 bytes")
-    }
-
-    func testQEMUVMUniqueKeysPerInstance() async throws {
-        let consumerPublicKey = Data((0..<32).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
-        let consumerEndpoint = "203.0.113.50:51820"
-
+    func testQEMUVMUniqueIPs() async throws {
         // Start multiple VMs
-        var results: [SimpleVMManager.VMStartResult] = []
+        var results: [VMManager.VMStartResult] = []
         for _ in 0..<3 {
             let vmId = UUID()
             createdVMIds.append(vmId)
             let result = try await vmManager.startVM(
                 vmId: vmId,
                 requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
-                sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
-                consumerPublicKey: consumerPublicKey,
-                consumerEndpoint: consumerEndpoint
+                sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta"
             )
             results.append(result)
         }
-
-        // Verify all have unique keys
-        let publicKeys = Set(results.map { $0.vmWireGuardPublicKey })
-        XCTAssertEqual(publicKeys.count, 3, "Each VM should have unique WireGuard key")
 
         // Verify all have unique IPs
         let vmIPs = Set(results.map { $0.vmIP })
@@ -111,8 +73,6 @@ final class QEMUNetworkTests: XCTestCase {
     // MARK: - Network Configuration Tests
 
     func testQEMUVMGetsExpectedIP() async throws {
-        let consumerPublicKey = Data((0..<32).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
-        let consumerEndpoint = "203.0.113.50:51820"
         let expectedVPNIP = "10.200.200.2"
         let vmId = UUID()
         createdVMIds.append(vmId)
@@ -121,8 +81,6 @@ final class QEMUNetworkTests: XCTestCase {
             vmId: vmId,
             requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
             sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
-            consumerPublicKey: consumerPublicKey,
-            consumerEndpoint: consumerEndpoint,
             vpnIP: expectedVPNIP
         )
 
@@ -131,8 +89,6 @@ final class QEMUNetworkTests: XCTestCase {
     }
 
     func testQEMUVMCustomVPNIP() async throws {
-        let consumerPublicKey = Data((0..<32).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
-        let consumerEndpoint = "203.0.113.50:51820"
         let customVPNIP = "10.99.0.5"
         let vmId = UUID()
         createdVMIds.append(vmId)
@@ -141,8 +97,6 @@ final class QEMUNetworkTests: XCTestCase {
             vmId: vmId,
             requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
             sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
-            consumerPublicKey: consumerPublicKey,
-            consumerEndpoint: consumerEndpoint,
             vpnIP: customVPNIP
         )
 
@@ -153,16 +107,12 @@ final class QEMUNetworkTests: XCTestCase {
     // MARK: - VM Lifecycle Tests
 
     func testQEMUVMStartStop() async throws {
-        let consumerPublicKey = Data((0..<32).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
-        let consumerEndpoint = "203.0.113.50:51820"
         let vmId = UUID()
 
         let _ = try await vmManager.startVM(
             vmId: vmId,
             requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
-            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
-            consumerPublicKey: consumerPublicKey,
-            consumerEndpoint: consumerEndpoint
+            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta"
         )
 
         // VM should be tracked
@@ -178,9 +128,6 @@ final class QEMUNetworkTests: XCTestCase {
     }
 
     func testQEMUVMActiveCount() async throws {
-        let consumerPublicKey = Data((0..<32).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
-        let consumerEndpoint = "203.0.113.50:51820"
-
         // Start two VMs
         let vmId1 = UUID()
         let vmId2 = UUID()
@@ -190,16 +137,12 @@ final class QEMUNetworkTests: XCTestCase {
         let _ = try await vmManager.startVM(
             vmId: vmId1,
             requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
-            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
-            consumerPublicKey: consumerPublicKey,
-            consumerEndpoint: consumerEndpoint
+            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta"
         )
         let _ = try await vmManager.startVM(
             vmId: vmId2,
             requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
-            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
-            consumerPublicKey: consumerPublicKey,
-            consumerEndpoint: consumerEndpoint
+            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta"
         )
 
         // Count should show both
@@ -213,26 +156,6 @@ final class QEMUNetworkTests: XCTestCase {
         // Count should show one
         let countAfter = await vmManager.getActiveVMCount()
         XCTAssertEqual(countAfter, 1, "Should have 1 running VM")
-    }
-
-    // MARK: - Test Mode Tests
-
-    func testQEMUTestModeNoWireGuard() async throws {
-        // Test mode is triggered by test:// prefix in endpoint
-        let vmId = UUID()
-        createdVMIds.append(vmId)
-
-        let result = try await vmManager.startVM(
-            vmId: vmId,
-            requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
-            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
-            consumerPublicKey: "test-key",
-            consumerEndpoint: "test://localhost"
-        )
-
-        // Test mode should not have real WireGuard key
-        XCTAssertEqual(result.vmWireGuardPublicKey, "test-mode-no-wireguard",
-                      "Test mode should indicate no WireGuard")
     }
 }
 
@@ -322,33 +245,11 @@ final class QEMUAvailabilityTests: XCTestCase {
 
 // MARK: - Cross-Platform QEMU Config Tests
 
-/// Tests that run on both platforms to verify QEMU config generation
+/// Tests that run on both platforms to verify basic cloud-init config
 final class QEMUConfigTests: XCTestCase {
 
-    func testCloudInitConfigForQEMU() throws {
-        // Generate config that would be used for QEMU VM
-        let consumerPublicKey = Data((0..<32).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
-        let vmPrivateKey = Data((0..<32).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
-
-        let config = VMNetworkConfigFactory.createForConsumer(
-            consumerPublicKey: consumerPublicKey,
-            consumerEndpoint: "203.0.113.50:51820",
-            vmPrivateKey: vmPrivateKey,
-            vmAddress: "10.200.200.2/24",
-            packageConfig: .debian
-        )
-
-        let userData = CloudInitGenerator.generateNetworkIsolationUserData(config: config)
-
-        // Verify cloud-init is valid for any Linux VM (QEMU or Virtualization.framework)
-        XCTAssertTrue(userData.hasPrefix("#cloud-config"))
-        XCTAssertTrue(userData.contains("wg-quick up wg0"))
-        XCTAssertTrue(userData.contains("iptables -P OUTPUT DROP"))
-        XCTAssertTrue(userData.contains("/etc/omerta/firewall.sh"))
-    }
-
-    func testNetplanConfigForQEMU() throws {
-        // QEMU VMs may use Netplan for network configuration
+    func testNetplanConfigGeneration() throws {
+        // Test Netplan v2 format generation for static IP configuration
         let networkConfig = CloudInitGenerator.NetworkConfig(
             ipAddress: "10.100.0.2",
             gateway: "10.100.0.1",
@@ -363,5 +264,24 @@ final class QEMUConfigTests: XCTestCase {
         XCTAssertTrue(netplanYaml.contains("ethernets:"))
         XCTAssertTrue(netplanYaml.contains("10.100.0.2/24"))
         XCTAssertTrue(netplanYaml.contains("via: 10.100.0.1"))
+    }
+
+    func testBasicCloudInitUserData() throws {
+        let sshKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta"
+        let userData = CloudInitGenerator.generateUserData(sshPublicKey: sshKey)
+
+        // Verify cloud-init format
+        XCTAssertTrue(userData.hasPrefix("#cloud-config"))
+        XCTAssertTrue(userData.contains("ssh_authorized_keys"))
+        XCTAssertTrue(userData.contains(sshKey))
+        XCTAssertTrue(userData.contains("sudo: ALL=(ALL) NOPASSWD:ALL"))
+    }
+
+    func testCloudInitMetaData() throws {
+        let instanceId = UUID()
+        let metaData = CloudInitGenerator.generateMetaData(instanceId: instanceId)
+
+        XCTAssertTrue(metaData.contains("instance-id:"))
+        XCTAssertTrue(metaData.contains("local-hostname:"))
     }
 }

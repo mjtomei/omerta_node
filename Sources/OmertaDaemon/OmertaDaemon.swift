@@ -3,7 +3,7 @@ import ArgumentParser
 import Logging
 import OmertaCore
 import OmertaVM
-import OmertaVPN
+// OmertaVPN removed - WireGuard replaced by mesh tunnels
 import OmertaProvider
 import OmertaConsumer
 import OmertaMesh
@@ -1113,9 +1113,7 @@ struct Start: AsyncParsableCommand {
                 print("  Released VM \(vm.vmId.uuidString.prefix(8))")
             } catch {
                 print("  Warning: Failed to release VM \(vm.vmId.uuidString.prefix(8)): \(error)")
-                // Still try to clean up VPN locally
-                let ephemeralVPN = EphemeralVPN()
-                try? await ephemeralVPN.destroyVPN(for: vm.vmId)
+                // Clean up local tracking (no VPN cleanup needed - using mesh tunnels)
                 try? await vmTracker.removeVM(vm.vmId)
             }
         }
@@ -1202,32 +1200,12 @@ struct Start: AsyncParsableCommand {
             ])
 
             for vmId in orphanedIds {
-                if let vm = vmsFromProvider.first(where: { $0.vmId == vmId }) {
-                    // Tear down WireGuard interface
-                    let interfaceName = vm.vpnInterface
-                    logger.info("Tearing down orphaned VM", metadata: [
-                        "vmId": "\(vmId.uuidString.prefix(8))...",
-                        "interface": "\(interfaceName)"
-                    ])
-
-                    // Try to remove the WireGuard interface
-                    do {
-                        let process = Process()
-                        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-                        process.arguments = ["ip", "link", "delete", interfaceName]
-                        try process.run()
-                        process.waitUntilExit()
-                    } catch {
-                        logger.debug("Failed to delete interface (may not exist)", metadata: [
-                            "interface": "\(interfaceName)",
-                            "error": "\(error)"
-                        ])
-                    }
-
-                    // Remove from tracker
-                    try? await vmTracker.removeVM(vmId)
-                    logger.info("Orphaned VM cleaned up", metadata: ["vmId": "\(vmId.uuidString.prefix(8))..."])
-                }
+                logger.info("Cleaning up orphaned VM", metadata: [
+                    "vmId": "\(vmId.uuidString.prefix(8))..."
+                ])
+                // Remove from tracker (mesh tunnels don't require interface cleanup)
+                try? await vmTracker.removeVM(vmId)
+                logger.info("Orphaned VM cleaned up", metadata: ["vmId": "\(vmId.uuidString.prefix(8))..."])
             }
         }
     }
@@ -1264,20 +1242,8 @@ struct Start: AsyncParsableCommand {
 
         logger.info("Cleaning up \(affectedVMs.count) VM(s) from shutting-down provider")
 
-        let ephemeralVPN = EphemeralVPN()
-
+        // No VPN cleanup needed - using mesh tunnels
         for vm in affectedVMs {
-            // Tear down VPN
-            do {
-                try await ephemeralVPN.destroyVPN(for: vm.vmId)
-                logger.info("VPN torn down", metadata: ["vmId": "\(vm.vmId.uuidString.prefix(8))..."])
-            } catch {
-                logger.warning("Failed to tear down VPN", metadata: [
-                    "vmId": "\(vm.vmId.uuidString.prefix(8))...",
-                    "error": "\(error)"
-                ])
-            }
-
             // Remove from tracker
             try? await vmTracker.removeVM(vm.vmId)
             logger.info("VM cleaned up due to provider shutdown", metadata: [
@@ -1501,7 +1467,7 @@ struct Status: AsyncParsableCommand {
         print("  - Accepts VM requests via mesh network")
         print("  - Handles NAT traversal with hole punching")
         print("  - Creates isolated VMs accessible via SSH")
-        print("  - Routes all VM traffic through WireGuard tunnel")
+        print("  - Routes VM traffic through mesh tunnel (OmertaTunnel)")
         print("  - Messages encrypted with network key (ChaCha20-Poly1305)")
         print("")
         print("Available commands:")

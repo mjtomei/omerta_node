@@ -2,22 +2,22 @@
 // Phase 4.5: Standalone VM Tests
 //
 // Tests VM boot and connectivity functionality without requiring full consumer setup.
-// These tests validate test mode cloud-init generation and VM lifecycle in isolation.
+// These tests validate cloud-init generation and VM lifecycle in isolation.
 
 import XCTest
 @testable import OmertaVM
 @testable import OmertaCore
 
-/// Tests for standalone VM functionality (no consumer WireGuard required)
+/// Tests for standalone VM functionality
 /// These tests use dry-run mode to verify configuration generation
 final class StandaloneVMTests: XCTestCase {
 
-    var vmManager: SimpleVMManager!
+    var vmManager: VMManager!
 
     override func setUp() async throws {
         try await super.setUp()
         // Use dry-run mode for unit tests
-        vmManager = SimpleVMManager(dryRun: true)
+        vmManager = VMManager(dryRun: true)
     }
 
     override func tearDown() async throws {
@@ -25,98 +25,16 @@ final class StandaloneVMTests: XCTestCase {
         try await super.tearDown()
     }
 
-    // MARK: - Test Mode Detection Tests
+    // MARK: - VM Lifecycle Tests
 
-    func testTestModeDetectedByEndpointPrefix() async throws {
-        // Given: A test:// endpoint
+    func testVMStartStop() async throws {
         let vmId = UUID()
-        let testEndpoint = "test://direct-ssh"
-
-        // When: Starting a VM with test endpoint
-        let result = try await vmManager.startVM(
-            vmId: vmId,
-            requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
-            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
-            consumerPublicKey: "test-key",
-            consumerEndpoint: testEndpoint
-        )
-
-        // Then: Test mode indicator returned instead of real WireGuard key
-        XCTAssertEqual(result.vmWireGuardPublicKey, "test-mode-no-wireguard",
-                      "Test mode should return placeholder instead of WireGuard key")
-
-        // Cleanup
-        try await vmManager.stopVM(vmId: vmId)
-    }
-
-    func testNormalModeHasWireGuardKey() async throws {
-        // Given: A normal endpoint (not test://)
-        let vmId = UUID()
-        let normalEndpoint = "192.168.1.100:51820"
-        let consumerPublicKey = Data((0..<32).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
-
-        // When: Starting a VM with normal endpoint
-        let result = try await vmManager.startVM(
-            vmId: vmId,
-            requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
-            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
-            consumerPublicKey: consumerPublicKey,
-            consumerEndpoint: normalEndpoint
-        )
-
-        // Then: Real WireGuard key generated
-        XCTAssertNotEqual(result.vmWireGuardPublicKey, "test-mode-no-wireguard",
-                         "Normal mode should generate real WireGuard key")
-
-        // Verify it's valid base64
-        let keyData = Data(base64Encoded: result.vmWireGuardPublicKey)
-        XCTAssertNotNil(keyData, "WireGuard key should be valid base64")
-        XCTAssertEqual(keyData?.count, 32, "WireGuard key should be 32 bytes")
-
-        // Cleanup
-        try await vmManager.stopVM(vmId: vmId)
-    }
-
-    func testVariousTestModeEndpoints() async throws {
-        // Test different test:// endpoint formats
-        let testEndpoints = [
-            "test://tap-ping",
-            "test://direct-ssh",
-            "test://console-boot",
-            "test://reverse-ssh",
-            "test://anything"
-        ]
-
-        for endpoint in testEndpoints {
-            let vmId = UUID()
-            let result = try await vmManager.startVM(
-                vmId: vmId,
-                requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
-                sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
-                consumerPublicKey: "test-key",
-                consumerEndpoint: endpoint
-            )
-
-            XCTAssertEqual(result.vmWireGuardPublicKey, "test-mode-no-wireguard",
-                          "Endpoint '\(endpoint)' should trigger test mode")
-
-            try await vmManager.stopVM(vmId: vmId)
-        }
-    }
-
-    // MARK: - VM Lifecycle in Test Mode
-
-    func testTestModeVMStartStop() async throws {
-        let vmId = UUID()
-        let testEndpoint = "test://direct-ssh"
 
         // Start VM
         let _ = try await vmManager.startVM(
             vmId: vmId,
             requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
-            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
-            consumerPublicKey: "test-key",
-            consumerEndpoint: testEndpoint
+            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta"
         )
 
         // VM should be running
@@ -131,23 +49,19 @@ final class StandaloneVMTests: XCTestCase {
         XCTAssertFalse(isRunningAfter, "VM should not be running after stop")
     }
 
-    func testMultipleTestModeVMs() async throws {
+    func testMultipleVMs() async throws {
         var vmIds: [UUID] = []
 
-        // Start 3 test mode VMs
-        for i in 0..<3 {
+        // Start 3 VMs
+        for _ in 0..<3 {
             let vmId = UUID()
             vmIds.append(vmId)
 
-            let result = try await vmManager.startVM(
+            let _ = try await vmManager.startVM(
                 vmId: vmId,
                 requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
-                sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
-                consumerPublicKey: "test-key",
-                consumerEndpoint: "test://vm-\(i)"
+                sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta"
             )
-
-            XCTAssertEqual(result.vmWireGuardPublicKey, "test-mode-no-wireguard")
         }
 
         // All should be running
@@ -164,18 +78,15 @@ final class StandaloneVMTests: XCTestCase {
         XCTAssertEqual(finalCount, 0, "No VMs should be running after stop")
     }
 
-    // MARK: - Test Mode IP Assignment
+    // MARK: - VM IP Assignment Tests
 
-    func testTestModeVMGetsIP() async throws {
+    func testVMGetsIP() async throws {
         let vmId = UUID()
-        let testEndpoint = "test://direct-ssh"
 
         let result = try await vmManager.startVM(
             vmId: vmId,
             requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
-            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
-            consumerPublicKey: "test-key",
-            consumerEndpoint: testEndpoint
+            sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta"
         )
 
         // VM should have an IP
@@ -185,7 +96,7 @@ final class StandaloneVMTests: XCTestCase {
         try await vmManager.stopVM(vmId: vmId)
     }
 
-    func testTestModeWithCustomVPNIP() async throws {
+    func testVMWithCustomVPNIP() async throws {
         let vmId = UUID()
         let customIP = "10.99.0.42"
 
@@ -193,8 +104,6 @@ final class StandaloneVMTests: XCTestCase {
             vmId: vmId,
             requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
             sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
-            consumerPublicKey: "test-key",
-            consumerEndpoint: "test://direct-ssh",
             vpnIP: customIP
         )
 
@@ -205,7 +114,7 @@ final class StandaloneVMTests: XCTestCase {
         try await vmManager.stopVM(vmId: vmId)
     }
 
-    func testTestModeUniqueIPsPerVM() async throws {
+    func testUniqueIPsPerVM() async throws {
         var vmIPs: Set<String> = []
         var vmIds: [UUID] = []
 
@@ -217,9 +126,7 @@ final class StandaloneVMTests: XCTestCase {
             let result = try await vmManager.startVM(
                 vmId: vmId,
                 requirements: ResourceRequirements(cpuCores: 1, memoryMB: 512),
-                sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta",
-                consumerPublicKey: "test-key",
-                consumerEndpoint: "test://direct-ssh"
+                sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test@omerta"
             )
 
             vmIPs.insert(result.vmIP)
@@ -237,7 +144,7 @@ final class StandaloneVMTests: XCTestCase {
 
 // MARK: - TAP Network Configuration Tests
 
-/// Tests specific to Linux TAP networking in test mode
+/// Tests specific to Linux TAP networking
 final class TAPNetworkConfigTests: XCTestCase {
 
     func testTAPSubnetCalculation() {
@@ -284,42 +191,19 @@ final class TAPNetworkConfigTests: XCTestCase {
     }
 }
 
-// MARK: - Test Mode Cloud-Init Validation Tests
+// MARK: - Cloud-Init Validation Tests
 
-/// Tests that validate the expected content of test mode cloud-init configurations
-final class TestModeCloudInitTests: XCTestCase {
+/// Tests that validate cloud-init configuration generation
+final class BasicCloudInitTests: XCTestCase {
 
-    func testLinuxTestModeExpectedFeatures() {
-        // Document expected features of Linux test mode cloud-init
+    func testCloudInitExpectedFeatures() {
+        // Document expected features of cloud-init configuration
         // (Actual generation is tested via integration tests)
 
         // Expected features:
         // 1. SSH user created with sudo access
         // 2. SSH key injected
-        // 3. Firewall blocks internet
-        // 4. Firewall allows TAP subnet for SSH and ping
-        // 5. Static IP on TAP interface
-
-        let expectedFirewallRules = [
-            "iptables -P INPUT DROP",       // Default deny inbound
-            "iptables -P OUTPUT DROP",      // Default deny outbound
-            "iptables -A INPUT -i lo -j ACCEPT",  // Allow loopback
-            "iptables -A INPUT -p tcp --dport 22",  // Allow SSH
-            "iptables -A INPUT -p icmp"     // Allow ping
-        ]
-
-        // These rules should block internet access while allowing TAP
-        XCTAssertEqual(expectedFirewallRules.count, 5, "Test mode should have specific firewall rules")
-    }
-
-    func testMacOSTestModeExpectedFeatures() {
-        // Document expected features of macOS test mode cloud-init
-
-        // Expected features:
-        // 1. SSH user created with sudo access
-        // 2. SSH key injected
-        // 3. Password auth enabled (fallback)
-        // 4. Optional reverse tunnel config
+        // 3. SSH enabled on boot
 
         let expectedUserConfig = [
             "sudo: ALL=(ALL) NOPASSWD:ALL",
@@ -327,7 +211,7 @@ final class TestModeCloudInitTests: XCTestCase {
             "ssh_authorized_keys"
         ]
 
-        XCTAssertEqual(expectedUserConfig.count, 3, "Test mode should configure sudo user with SSH")
+        XCTAssertEqual(expectedUserConfig.count, 3, "Cloud-init should configure sudo user with SSH")
     }
 
     func testReverseTunnelConfigRequired() {
@@ -348,22 +232,11 @@ final class TestModeCloudInitTests: XCTestCase {
     }
 }
 
-// MARK: - Platform-Specific Test Mode Tests
+// MARK: - Platform-Specific Tests
 
 #if os(Linux)
 /// Linux-specific standalone VM tests
 final class LinuxStandaloneVMTests: XCTestCase {
-
-    func testLinuxTestModesAvailable() {
-        // Linux supports TAP-based test modes
-        let supportedModes = ["tap-ping", "direct-ssh"]
-
-        for mode in supportedModes {
-            let endpoint = "test://\(mode)"
-            XCTAssertTrue(endpoint.hasPrefix("test://"),
-                         "Mode \(mode) should be available on Linux")
-        }
-    }
 
     func testLinuxTAPNetworkRange() {
         // Linux TAP networks use 192.168.x.0/24 range by default
@@ -379,17 +252,6 @@ final class LinuxStandaloneVMTests: XCTestCase {
 #if os(macOS)
 /// macOS-specific standalone VM tests
 final class MacOSStandaloneVMTests: XCTestCase {
-
-    func testMacOSTestModesAvailable() {
-        // macOS supports console and reverse-ssh test modes
-        let supportedModes = ["console-boot", "reverse-ssh"]
-
-        for mode in supportedModes {
-            let endpoint = "test://\(mode)"
-            XCTAssertTrue(endpoint.hasPrefix("test://"),
-                         "Mode \(mode) should be available on macOS")
-        }
-    }
 
     func testMacOSNATNetworkRange() {
         // macOS Virtualization.framework uses 192.168.64.x range
