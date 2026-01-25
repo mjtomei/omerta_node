@@ -352,22 +352,6 @@ func TestEndToEndTCP(t *testing.T) {
 		mu.Lock()
 		returnedPackets = append(returnedPackets, append([]byte{}, packet...))
 		mu.Unlock()
-
-		// Debug: print packet info
-		if len(packet) >= header.IPv4MinimumSize {
-			ipHdr := header.IPv4(packet)
-			if ipHdr.Protocol() == uint8(header.TCPProtocolNumber) && len(packet) >= int(ipHdr.HeaderLength())+header.TCPMinimumSize {
-				tcpHdr := header.TCP(packet[ipHdr.HeaderLength():])
-				t.Logf("Callback received TCP packet: %s:%d -> %s:%d, flags=0x%x (SYN=%v ACK=%v RST=%v)",
-					ipHdr.SourceAddress(), tcpHdr.SourcePort(),
-					ipHdr.DestinationAddress(), tcpHdr.DestinationPort(),
-					tcpHdr.Flags(),
-					tcpHdr.Flags()&header.TCPFlagSyn != 0,
-					tcpHdr.Flags()&header.TCPFlagAck != 0,
-					tcpHdr.Flags()&header.TCPFlagRst != 0)
-			}
-		}
-
 		select {
 		case packetReceived <- struct{}{}:
 		default:
