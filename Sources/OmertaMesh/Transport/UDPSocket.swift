@@ -66,6 +66,13 @@ public actor UDPSocket {
     }
 
     /// Attempt to bind with dual-stack support
+    /// - Parameters:
+    ///   - port: The port to bind to
+    ///   - preferredHost: The host to bind to. If a specific IPv6 address is provided,
+    ///     it will be used instead of the dual-stack `::` address. This is important
+    ///     on systems with IPv6 privacy extensions (e.g., macOS) where binding to `::`
+    ///     causes outbound packets to use a temporary address instead of the stable
+    ///     "secured" address that we advertise to peers.
     private func bindDualStack(port: Int, preferredHost: String) async throws -> (Channel, Bool) {
         // If explicitly requesting IPv4, use it
         if preferredHost == "0.0.0.0" {
@@ -73,7 +80,20 @@ public actor UDPSocket {
             return (channel, false)
         }
 
-        // Try IPv6 dual-stack first
+        // If a specific IPv6 address is provided (not ::), bind to it directly
+        // This ensures outbound packets use the same source address we advertise
+        if preferredHost != "::" && isIPv6Address(preferredHost) {
+            do {
+                logger.info("Binding to specific IPv6 address: \(preferredHost)")
+                let channel = try await makeBootstrap().bind(host: preferredHost, port: port).get()
+                return (channel, true)
+            } catch {
+                logger.warning("Bind to specific IPv6 \(preferredHost) failed: \(error), falling back to dual-stack")
+                // Fall through to dual-stack
+            }
+        }
+
+        // Try IPv6 dual-stack (accepts both IPv4 and IPv6)
         do {
             let channel = try await makeBootstrap().bind(host: "::", port: port).get()
             return (channel, true)

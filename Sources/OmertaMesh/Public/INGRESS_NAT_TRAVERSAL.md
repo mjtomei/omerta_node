@@ -21,6 +21,8 @@ has a public IP.
 2. **Both sides monitor** — consumer and provider independently track connection health
 3. **Consumer forwards traffic** — VM traffic exits through consumer's network
 4. **Transport-agnostic** — tunnel layer doesn't care what's inside the packets
+5. **Extensible gossip** — OmertaMesh provides generic gossip; utilities register their own channel types
+6. **Usage-based priority** — nodes prioritize gossip they use, forward everything else best-effort
 
 ---
 
@@ -104,6 +106,42 @@ Isolation is provided by the platform, not firewall rules (stays in userspace):
 5. **All IP protocols** — netstack handles everything, not just TCP/UDP
 6. **Battle-tested** — same stack used by Tailscale and WireGuard
 7. **No WireGuard dependency** — mesh handles encryption/auth
+
+### Extensible Gossip with Usage-Based Priority
+
+**Architecture Choice:** Functionality-specific features (like relay availability for VM
+networking) are NOT built into core OmertaMesh. Instead:
+
+1. **Extensible gossip via registration** — OmertaMesh provides generic gossip
+   infrastructure, but does NOT know about relay-specific (or other utility-specific)
+   message types:
+   - Utilities register their gossip channel types through an API
+   - OmertaMesh handles propagation without understanding the payload
+   - Nodes only process channels they've registered handlers for
+
+2. **Usage-based gossip priority** — Nodes prioritize gossip for channels they
+   actively use, but still forward other gossip with spare bandwidth:
+   - Registered channels: high priority, always propagate
+   - Unregistered channels: best-effort, forwarded when bandwidth allows
+   - Popular gossip spreads fast (many nodes prioritize it)
+   - Niche gossip still propagates, just slower
+   - No configuration needed — natural flow based on actual usage
+
+3. **Single network, multiple channels** — No need for separate networks per function:
+   - All gossip flows through the same mesh network
+   - Channel registration determines what each node processes
+   - Simpler topology, no bridging complexity
+   - Nodes are good citizens — they help propagate all gossip, prioritizing their own
+
+4. **OmertaTunnel owns relay logic** — Relay discovery, capacity tracking, and
+   coordination live in OmertaTunnel (or higher layers), not OmertaMesh. The mesh
+   just provides:
+   - A registration API for custom gossip channels
+   - Priority-based propagation
+   - Generic peer metadata storage
+
+This keeps OmertaMesh focused on core networking (encryption, routing, NAT traversal)
+while gossip naturally flows based on what nodes actually use.
 
 ### Build Notes
 
@@ -407,146 +445,13 @@ go test -v
 # Expected: TestEndToEndUDP and TestEndToEndTCP pass
 ```
 
-**Option 3: Full stack test (Phase 5)**
+**Option 3: Full stack test (Phase 4)**
 Full manual testing of the tunnel utility happens as part of VM integration
-testing in Phase 5, where Provider and Consumer use the complete stack.
+testing in Phase 4, where Provider and Consumer use the complete stack.
 
 ---
 
-### Phase 3: Relay Discovery and Gossip Integration
-
-**Goal:** Track and propagate which peers are willing to act as relays. Use
-the same gossip mechanism as endpoint announcements. Request relay nodes to
-join ephemeral networks.
-
-**Key Design:**
-- Relay availability is gossiped using the same interface as endpoint changes
-- **Relay capacity is PER-MACHINE (per peer ID), not per-endpoint**
-  - A machine may advertise multiple endpoints (IPv4, IPv6, etc.)
-  - But relay capacity is a single value for the whole machine
-  - Stored locally in `~/.omerta/mesh/relay-config.json` (machine-level file)
-  - Gossiped out as part of PeerAnnouncement (one announcement per peer ID)
-
-#### Files to Create
-
-| File | Description |
-|------|-------------|
-| `Sources/OmertaTunnel/RelayCoordinator.swift` | Relay selection/request |
-| `Sources/OmertaMesh/Gossip/GossipDataProvider.swift` | Unified gossip interface |
-| `Tests/OmertaTunnelTests/RelayCoordinatorTests.swift` | Relay tests |
-| `Tests/OmertaMeshTests/GossipDataProviderTests.swift` | Gossip tests |
-
-#### Files to Modify
-
-| File | Changes |
-|------|---------|
-| `Sources/OmertaMesh/Types/MeshMessage.swift` | Add relay capacity fields to PeerAnnouncement |
-| `Sources/OmertaMesh/Discovery/PeerStore.swift` | Persists PeerAnnouncement (auto-stores relay capacity) |
-| `Sources/OmertaMesh/MeshNode.swift` | Integrate GossipDataProvider |
-| `Sources/OmertaMesh/Public/MeshConfig.swift` | Add relay capacity config |
-
-#### API Changes
-
-```swift
-// Unified gossip interface - single mechanism for all gossip data
-public protocol GossipDataProvider: Sendable {
-    associatedtype Data: Codable & Sendable
-
-    var current: Data { get async }
-    var updates: AsyncStream<Data> { get }
-}
-
-// IMPORTANT: Relay capacity is PER-MACHINE (per peer ID), NOT per-endpoint.
-// A machine may have multiple endpoints (IPv4, IPv6, different interfaces)
-// but has a single relay capacity for the whole machine.
-
-// Peer announcement now includes machine-level relay info
-// (endpoints are a list, relay capacity is a single value for the machine)
-public struct PeerAnnouncement: Codable, Sendable {
-    let peerId: PeerId
-    let publicKey: Data
-    let reachability: [ReachabilityPath]  // Multiple endpoints per machine
-    let capabilities: Set<String>
-    let timestamp: Date
-    let ttlSeconds: Int
-    let signature: Data
-
-    // NEW: Machine-level relay metadata (single value per peer, not per endpoint)
-    let relayCapacity: Int          // 0 = not a relay, >0 = available slots
-    let relayCurrentLoad: Int       // How many sessions currently relaying
-    let relayNetworks: [NetworkId]  // Networks currently relaying for
-}
-
-// Local per-machine state for relay willingness (stored on disk)
-// This is the SOURCE OF TRUTH for this machine's relay config.
-// The values here get gossiped out via PeerAnnouncement.
-public struct RelayConfig: Codable {
-    var enabled: Bool = false
-    var maxCapacity: Int = 10       // Total slots this machine offers
-    var currentLoad: Int = 0        // Slots currently in use
-    // Stored at: ~/.omerta/mesh/relay-config.json (machine-level, not per-network)
-}
-
-// Relay coordinator (in OmertaTunnel, uses gossiped data)
-// Works at the network level, not session level
-public actor RelayCoordinator {
-    func availableRelays() async -> [PeerId]
-    func requestRelay(for session: TunnelSession) async throws -> PeerId
-    func releaseRelay(_ relayPeerId: PeerId, for session: TunnelSession) async
-}
-```
-
-**Storage Locations:**
-- **RelayConfig** (machine-level): `~/.omerta/mesh/relay-config.json`
-  - Single file per machine, not per-network
-  - Controls whether this machine acts as a relay
-- **PeerAnnouncement** (gossiped): Contains relay capacity from RelayConfig
-  - Gossiped to all peers so they know who can relay
-  - One announcement per peer ID, with machine-level relay capacity
-
-#### Unit Tests
-
-| Test | Description |
-|------|-------------|
-| `testRelayCapacityGossiped` | Relay announces capacity, peers receive it |
-| `testRelayCapacityUpdates` | Capacity changes, gossip propagates update |
-| `testEndpointAndRelayTogether` | Both endpoint and relay in same gossip |
-| `testAvailableRelays` | Query available relays, correct list returned |
-| `testRequestRelay` | Request relay, verify accepted |
-| `testRelayAtCapacity` | Request when full, verify fallback |
-| `testRelayForwarding` | Send data through relay, verify delivery |
-
-#### Manual Testing
-
-```bash
-# Terminal 1: Start bootstrap/relay node
-omertad start --port 18001 --relay-capacity 10
-
-# Verify relay capacity is gossiped
-omerta mesh peers --show-metadata
-# Output:
-#   <bootstrap-id>: endpoint=..., relay_capacity=10
-
-# Terminal 2: Start provider
-omertad start --port 18002 --bootstrap localhost:18001
-
-# Verify provider sees relay availability
-omerta mesh relays
-# Output: Available relays: <bootstrap-id> (10 slots)
-
-# The relay is used at the mesh network level when establishing
-# the ephemeral network connection (not at the tunnel session level).
-# If direct connection fails, the mesh falls back to relay automatically.
-
-# Verify relay load updated when connection uses relay
-omerta mesh peers --show-metadata
-# Output:
-#   <bootstrap-id>: endpoint=..., relay_capacity=10, current_load=1
-```
-
----
-
-### Phase 4: Tunnel Traffic Routing Integration
+### Phase 3: Tunnel Traffic Routing Integration
 
 **Goal:** Connect TunnelSession's traffic routing to netstack. The tunnel utility
 now handles all traffic routing internally — consumers just use the TunnelSession
@@ -616,11 +521,11 @@ go test -v -run TestEndToEnd
 # --- PASS: TestEndToEndTCP
 ```
 
-Full stack testing happens in Phase 5 with VM integration.
+Full stack testing happens in Phase 4 with VM integration.
 
 ---
 
-### Phase 5: VM Integration
+### Phase 4: VM Integration
 
 **Goal:** Connect VM network interface to TunnelSession. Provider captures VM
 packets and uses TunnelSession.injectPacket(). Consumer receives via netstack
@@ -640,7 +545,7 @@ packets and uses TunnelSession.injectPacket(). Consumer receives via netstack
 | File | Changes |
 |------|---------|
 | `Sources/OmertaProvider/MeshProviderDaemon.swift` | Create tunnel, wire up packet capture |
-| `Sources/OmertaVM/SimpleVMManager.swift` | Configure VM for packet capture |
+| `Sources/OmertaVM/VMManager.swift` | Configure VM for packet capture |
 
 #### API Changes
 
@@ -725,13 +630,302 @@ tcpdump -i eth0 host 1.1.1.1
 
 ---
 
+### Phase 5: Relay Discovery and Gossip Integration
+
+**Goal:** Track and propagate which peers are willing to act as relays. Use
+the same gossip mechanism as endpoint announcements. Request relay nodes to
+join ephemeral networks.
+
+**Key Design:**
+- **Extensible gossip** — OmertaMesh provides generic gossip infrastructure;
+  relay-specific messages are registered by OmertaTunnel, not hardcoded
+- **Usage-based priority** — Nodes prioritize gossip for channels they use,
+  but still forward all other gossip with spare bandwidth
+- **Single network** — No separate networks for different functions; all gossip
+  flows through the same mesh with channel-based filtering
+- **Relay capacity is PER-MACHINE (per peer ID), not per-endpoint**
+  - A machine may advertise multiple endpoints (IPv4, IPv6, etc.)
+  - But relay capacity is a single value for the whole machine
+  - Stored locally in `~/.omerta/mesh/relay-config.json` (machine-level file)
+
+#### Files to Create
+
+| File | Description |
+|------|-------------|
+| `Sources/OmertaTunnel/RelayCoordinator.swift` | Relay selection/request |
+| `Sources/OmertaMesh/Gossip/GossipRouter.swift` | Channel registration + priority routing |
+| `Sources/OmertaMesh/Gossip/PeerMetadataStore.swift` | Generic key-value metadata per peer |
+| `Tests/OmertaTunnelTests/RelayCoordinatorTests.swift` | Relay tests |
+| `Tests/OmertaMeshTests/GossipRouterTests.swift` | Gossip routing tests |
+
+#### Files to Modify
+
+| File | Changes |
+|------|---------|
+| `Sources/OmertaMesh/Discovery/PeerStore.swift` | Add generic metadata storage hooks |
+| `Sources/OmertaMesh/MeshNode.swift` | Integrate GossipRouter |
+| `Sources/OmertaMesh/Public/MeshNetwork.swift` | Expose gossip registration API |
+| `Sources/OmertaMesh/Public/MeshConfig.swift` | Add GossipConfig (budget, recency half-life) |
+
+#### API Changes
+
+```swift
+// === OmertaMesh: Generic Gossip Infrastructure ===
+// OmertaMesh does NOT know about relay-specific types. It provides:
+// 1. A registration API for custom gossip channels
+// 2. Usage-based priority routing
+// 3. Generic peer metadata storage
+
+/// Gossip entry - opaque to OmertaMesh except for channel ID
+public struct GossipEntry: Codable, Sendable {
+    let channelId: String
+    let peerId: PeerId
+    let payload: Data
+    let timestamp: Date
+}
+
+/// Gossip router - handles registration and priority-based propagation
+public actor GossipRouter {
+    /// Channels this node has registered handlers for (high priority)
+    private var activeChannels: Set<String>
+
+    /// Register a handler for a channel - marks it as active (high priority)
+    func register<T: Codable>(
+        channel: String,
+        handler: @escaping (PeerId, T) async -> Void
+    )
+
+    /// Publish data on a channel
+    func publish<T: Codable>(channel: String, data: T) async throws
+
+    /// Stream of updates for a channel (must be registered)
+    func updates<T: Codable>(channel: String) -> AsyncStream<(PeerId, T)>
+
+    /// Prioritize gossip for propagation:
+    /// - Active channels: always propagate
+    /// - Other channels: propagate with spare bandwidth
+    func prioritize(_ entries: [GossipEntry], bandwidth: Int) -> [GossipEntry]
+}
+
+/// Generic per-peer metadata storage - utilities store their data here
+public actor PeerMetadataStore {
+    /// Store metadata for a peer (key-value, any Codable)
+    func set<T: Codable>(_ key: String, value: T, for peer: PeerId) async
+
+    /// Retrieve metadata for a peer
+    func get<T: Codable>(_ key: String, for peer: PeerId) async -> T?
+
+    /// Get all peers with a given metadata key
+    func peers<T: Codable>(with key: String) async -> [(PeerId, T)]
+
+    /// Stream metadata updates for a key across all peers
+    func updates<T: Codable>(for key: String) -> AsyncStream<(PeerId, T)>
+}
+
+// === OmertaTunnel: Relay-Specific Types ===
+// These are defined in OmertaTunnel, NOT OmertaMesh
+
+/// Relay announcement - published via GossipRouter
+public struct RelayAnnouncement: Codable, Sendable {
+    static let channelId = "relay"
+
+    let peerId: PeerId
+    let capacity: Int           // 0 = not a relay, >0 = available slots
+    let currentLoad: Int        // How many sessions currently relaying
+    let timestamp: Date
+}
+
+/// Local per-machine state for relay willingness (stored on disk)
+public struct RelayConfig: Codable {
+    var enabled: Bool = false
+    var maxCapacity: Int = 10       // Total slots this machine offers
+    var currentLoad: Int = 0        // Slots currently in use
+    // Stored at: ~/.omerta/mesh/relay-config.json (machine-level, not per-network)
+}
+
+/// Relay coordinator (in OmertaTunnel, uses gossiped data)
+public actor RelayCoordinator {
+    init(gossipRouter: GossipRouter, metadataStore: PeerMetadataStore)
+
+    func start() async  // Registers "relay" channel with router
+    func stop() async
+
+    func availableRelays() async -> [PeerId]
+    func requestRelay(for session: TunnelSession) async throws -> PeerId
+    func releaseRelay(_ relayPeerId: PeerId, for session: TunnelSession) async
+}
+```
+
+**Usage Pattern:**
+```swift
+// In OmertaTunnel initialization:
+let router = meshNetwork.gossipRouter
+let metadataStore = meshNetwork.peerMetadataStore
+
+let relayCoordinator = RelayCoordinator(
+    gossipRouter: router,
+    metadataStore: metadataStore
+)
+await relayCoordinator.start()  // Registers "relay" channel
+
+// This node now:
+// 1. Receives relay announcements (registered handler processes them)
+// 2. Prioritizes relay gossip when propagating to peers
+// 3. Still forwards other gossip types with spare bandwidth
+```
+
+**Gossip Priority Example:**
+```
+Node A (uses relay)          Node B (uses relay + vm-status)    Node C (uses nothing extra)
+───────────────────          ───────────────────────────────    ────────────────────────────
+Receives gossip:             Receives gossip:                   Receives gossip:
+ - relay: process + high pri  - relay: process + high pri        - relay: forward, low pri
+ - vm-status: forward, low    - vm-status: process + high pri    - vm-status: forward, low
+ - other: forward, low        - other: forward, low              - other: forward, low
+
+All gossip flows everywhere, but nodes prioritize what they use.
+Popular channels spread faster because more nodes prioritize them.
+```
+
+**Gossip Prioritization Algorithm:**
+
+Gossip bandwidth is controlled by a configurable bytes/second budget. Prioritization
+uses both recency and activity weighting:
+
+```swift
+// Config
+public struct GossipConfig {
+    var budgetBytesPerSecond: Int = 10_000  // 10 KB/s default
+    var recencyHalfLifeSeconds: Double = 60  // Weight halves every 60s
+}
+
+// Channel activity tracking
+struct ChannelActivity {
+    var lastPublishTime: Date?      // When we last published on this channel
+    var lastReceiveTime: Date?      // When we last processed a message
+    var publishCount: Int = 0       // Total publishes by this node
+    var receiveCount: Int = 0       // Total messages processed
+}
+
+// Priority calculation
+func priority(for entry: GossipEntry, activity: ChannelActivity?) -> Double {
+    // Base priority: is this an active channel?
+    let isActive = activity != nil
+    var score: Double = isActive ? 1000.0 : 1.0
+
+    // Factor 1: Recency of gossip entry (newer = higher priority)
+    let entryAgeSeconds = Date().timeIntervalSince(entry.timestamp)
+    let entryRecency = pow(0.5, entryAgeSeconds / config.recencyHalfLifeSeconds)
+    score *= entryRecency
+
+    // Factor 2: Recency of channel activity (recently used channels = higher)
+    if let activity = activity {
+        let lastActivity = max(
+            activity.lastPublishTime ?? .distantPast,
+            activity.lastReceiveTime ?? .distantPast
+        )
+        let activityAgeSeconds = Date().timeIntervalSince(lastActivity)
+        let activityRecency = pow(0.5, activityAgeSeconds / config.recencyHalfLifeSeconds)
+        score *= (1.0 + activityRecency)  // Boost, not multiply to zero
+    }
+
+    // Factor 3: Activity level (more active on channel = higher priority)
+    if let activity = activity {
+        let activityLevel = Double(activity.publishCount + activity.receiveCount)
+        score *= (1.0 + log1p(activityLevel) * 0.1)  // Gentle boost
+    }
+
+    return score
+}
+
+// Gossip round: select entries within budget
+func selectForGossip(_ entries: [GossipEntry]) -> [GossipEntry] {
+    let scored = entries.map { ($0, priority(for: $0, activity: channelActivity[$0.channelId])) }
+    let sorted = scored.sorted { $0.1 > $1.1 }
+
+    var selected: [GossipEntry] = []
+    var bytesUsed = 0
+    let budget = config.budgetBytesPerSecond  // Per round, assuming 1s rounds
+
+    for (entry, _) in sorted {
+        let entrySize = entry.payload.count + 50  // Payload + overhead estimate
+        if bytesUsed + entrySize <= budget {
+            selected.append(entry)
+            bytesUsed += entrySize
+        }
+    }
+
+    return selected
+}
+```
+
+**Priority Factors Summary:**
+
+| Factor | Effect | Rationale |
+|--------|--------|-----------|
+| Active channel | 1000× boost | Prioritize what we use |
+| Entry age | Exponential decay | Fresh gossip is more valuable |
+| Channel activity recency | 1-2× boost | Recently used channels matter more |
+| Channel activity level | ~1.3× boost at 10 msgs | Reward sustained participation |
+
+**Storage Locations:**
+- **RelayConfig** (machine-level): `~/.omerta/mesh/relay-config.json`
+  - Single file per machine
+  - Controls whether this machine acts as a relay
+- **RelayAnnouncement** (gossiped): Published via GossipRouter on "relay" channel
+  - Stored in PeerMetadataStore under "relay" key for quick lookups
+
+#### Unit Tests
+
+| Test | Description |
+|------|-------------|
+| `testGossipChannelRegistration` | Register channel, verify handler called on receive |
+| `testGossipPriorityActiveChannels` | Active channels prioritized over inactive |
+| `testGossipBestEffortForwarding` | Unregistered channels still forwarded with spare bandwidth |
+| `testPeerMetadataStorage` | Store/retrieve metadata for peers |
+| `testRelayAnnouncementGossiped` | Relay announces capacity, peers receive it |
+| `testRelayCapacityUpdates` | Capacity changes, gossip propagates update |
+| `testAvailableRelays` | Query available relays, correct list returned |
+| `testRequestRelay` | Request relay, verify accepted |
+| `testRelayAtCapacity` | Request when full, verify fallback |
+
+#### Manual Testing
+
+```bash
+# Terminal 1: Start bootstrap/relay node
+omertad start --port 18001 --relay-capacity 10
+
+# Verify relay capacity is gossiped
+omerta mesh peers --show-metadata
+# Output:
+#   <bootstrap-id>: endpoint=..., relay_capacity=10
+
+# Terminal 2: Start provider
+omertad start --port 18002 --bootstrap localhost:18001
+
+# Verify provider sees relay availability
+omerta mesh relays
+# Output: Available relays: <bootstrap-id> (10 slots)
+
+# The relay is used at the mesh network level when establishing
+# the ephemeral network connection (not at the tunnel session level).
+# If direct connection fails, the mesh falls back to relay automatically.
+
+# Verify relay load updated when connection uses relay
+omerta mesh peers --show-metadata
+# Output:
+#   <bootstrap-id>: endpoint=..., relay_capacity=10, current_load=1
+```
+
+---
+
 ### Phase 6: Complete Network Isolation
 
 **Goal:** Ensure absolutely no internet traffic goes through the provider host,
 including DNS. All traffic must flow through the mesh to the consumer.
 
 **Note:** Isolation is built into the network namespace/file handle setup from
-Phase 5. This phase validates that isolation through tests. No separate
+Phase 4. This phase validates that isolation through tests. No separate
 verification code is needed — the tests themselves serve as verification.
 
 **DNS Handling:** We defer DNS interception until tests reveal whether it's
@@ -748,7 +942,7 @@ If tests show DNS leaking to the host, we'll add interception code.
 
 | File | Changes |
 |------|---------|
-| `Sources/OmertaVM/SimpleVMManager.swift` | Ensure DNS points to mesh gateway |
+| `Sources/OmertaVM/VMManager.swift` | Ensure DNS points to mesh gateway |
 
 #### API Changes
 
@@ -768,7 +962,7 @@ None — isolation is inherent in the architecture, validated by tests.
 #### Manual Testing
 
 ```bash
-# Start provider and VM as in Phase 5
+# Start provider and VM as in Phase 4
 omertad start --port 18002
 omerta vm create --name isolated-vm --image ubuntu-22.04 --remote-bridge
 omerta vm start isolated-vm
@@ -1221,7 +1415,7 @@ The mesh with netstack replaces WireGuard for VM networking.
 | `Sources/OmertaCLI/main.swift` | Remove VPN commands, add tunnel commands |
 | `Sources/OmertaConsumer/MeshConsumerClient.swift` | Remove WireGuard setup |
 | `Sources/OmertaProvider/MeshProviderDaemon.swift` | Remove VPN manager |
-| `Sources/OmertaVM/SimpleVMManager.swift` | Remove WireGuard config |
+| `Sources/OmertaVM/VMManager.swift` | Remove WireGuard config |
 | `Sources/OmertaVM/CloudInitGenerator.swift` | Remove WireGuard setup |
 | `Sources/OmertaCore/Domain/Resource.swift` | Remove VPN resource types |
 | `Sources/OmertaCore/System/DependencyChecker.swift` | Remove wg-quick check |
@@ -1745,7 +1939,7 @@ ip netns exec vm-${VM_ID} ip link set veth-vm-${VM_ID} mtu 1400
 
 ### 3.5 Strict Isolation Guarantees
 
-> **Existing code:** See `SimpleVMManager.swift` for Linux/macOS VM isolation
+> **Existing code:** See `VMManager.swift` for Linux/macOS VM isolation
 > setup and `VMNetworkManager.swift` for macOS VZFileHandleNetworkDeviceAttachment
 > handling. The new VMPacketCapture builds on this existing isolation infrastructure.
 
@@ -2658,4 +2852,74 @@ actor BenchmarkRunner {
 | High latency | `tc qdisc add netem delay 500ms` | Throughput degrades gracefully |
 | Packet loss | `tc qdisc add netem loss 10%` | TCP retransmits, completes |
 | Consumer OOM | Limit memory, flood connections | Graceful degradation, no crash |
+
+---
+
+## 9. Experimental Findings: T-Mobile NAT Behavior (January 2026)
+
+### 9.1 Test Environment
+
+- **Local machine**: T-Mobile Home Internet (CGNAT)
+- **Mac**: T-Mobile Phone Hotspot
+- **Bootstrap**: AWS (non-T-Mobile IP)
+
+### 9.2 IPv6 Privacy Extensions Issue
+
+On macOS with IPv6 privacy extensions enabled, the system maintains multiple IPv6 addresses:
+- **Secured address**: Stable address used for incoming connections
+- **Temporary address**: Rotating address used by default for outbound connections
+- **CLAT46 address**: For NAT64 translation
+
+**Problem discovered**: When binding to `::` (any address), macOS uses the temporary address for outbound packets, but we advertise the secured address to peers. This causes source address mismatch.
+
+**Fix implemented**: Detect the local IPv6 address via `getBestLocalIPv6Address()` and bind the UDP socket to that specific address instead of `::`.
+
+### 9.3 T-Mobile Peer-to-Peer Blocking
+
+T-Mobile appears to block direct peer-to-peer IPv6 communication between their consumer devices:
+
+| Source | Destination | Result |
+|--------|-------------|--------|
+| Local (T-Mobile Home) | Mac (T-Mobile Hotspot) | BLOCKED initially |
+| Mac (T-Mobile Hotspot) | Local (T-Mobile Home) | BLOCKED initially |
+| Bootstrap (AWS) | Mac (T-Mobile Hotspot) | SUCCESS |
+| Mac | Bootstrap | SUCCESS |
+| Local | Bootstrap | SUCCESS |
+
+### 9.4 Firewall/NAT Pinhole Behavior
+
+The T-Mobile NAT/firewall has specific behaviors:
+
+1. **Endpoint-dependent NAT on Local**: Local's NAT only accepts packets from IPs it has directly sent to. Sending to Bootstrap does NOT open the pinhole for Mac.
+
+2. **Firewall on Mac**: Mac requires outbound traffic to open the firewall for that specific peer. Unlike local, Mac accepts traffic from non-T-Mobile IPs (AWS) without prior outbound.
+
+3. **Communication pattern that works**:
+   ```
+   1. Mac sends packet to Bootstrap (opens Mac's firewall to internet)
+   2. Local sends packet to Mac (Mac receives it)
+   3. Mac can now respond to Local
+   4. Bidirectional communication established
+   ```
+
+4. **Communication pattern that fails**:
+   ```
+   1. Mac sends to Bootstrap
+   2. Mac tries to send to Local
+   → Local's endpoint-dependent NAT rejects (never sent to Mac)
+   ```
+
+### 9.5 Working Relay Strategy
+
+For T-Mobile peer-to-peer:
+1. **Both peers must send outbound first** before receiving
+2. **Hole punching via relay**: Relay coordinates timing so both peers send packets to each other simultaneously
+3. **Relay fallback**: If hole punching fails, relay traffic through AWS bootstrap
+
+### 9.6 Key Takeaways
+
+1. **Bind to specific IPv6 address** on macOS to ensure source address matches advertised address
+2. **T-Mobile blocks peer-to-peer** between their consumer devices but allows internet traffic
+3. **Endpoint-dependent NAT** requires precise hole punching coordination
+4. **Relay infrastructure** is essential for T-Mobile-to-T-Mobile connectivity
 

@@ -389,8 +389,13 @@ public actor MeshNode {
         logger.debug("MeshNode.start() - current socket port: \(currentPort?.description ?? "nil"), config.port: \(config.port)")
 
         if currentPort == nil {
-            logger.debug("MeshNode.start() - binding socket to port \(config.port)")
-            try await socket.bind(port: Int(config.port))
+            // Detect best local IPv6 address to bind to
+            // This is important on systems with IPv6 privacy extensions (macOS)
+            // where binding to "::" causes outbound to use temporary addresses
+            // instead of the stable address we advertise to peers
+            let bindHost = EndpointUtils.getBestLocalIPv6Address() ?? "::"
+            logger.debug("MeshNode.start() - binding socket to \(bindHost):\(config.port)")
+            try await socket.bind(host: bindHost, port: Int(config.port))
             logger.debug("MeshNode.start() - socket bound successfully")
             await setupReceiveHandler()
             await setupFreshnessManager()
