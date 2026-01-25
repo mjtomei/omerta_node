@@ -144,7 +144,9 @@ public final class NetstackBridge: @unchecked Sendable {
 
         let result = packet.withUnsafeBytes { buffer -> Int32 in
             guard let baseAddress = buffer.baseAddress else { return -1 }
-            return NetstackInjectPacket(h, baseAddress.assumingMemoryBound(to: UInt8.self), buffer.count)
+            // Cast to mutable pointer - the C function doesn't actually modify the data
+            let mutablePtr = UnsafeMutablePointer(mutating: baseAddress.assumingMemoryBound(to: UInt8.self))
+            return NetstackInjectPacket(h, mutablePtr, buffer.count)
         }
 
         if result != 0 {
