@@ -3,6 +3,7 @@
 
 import XCTest
 @testable import OmertaVM
+@testable import OmertaCore
 
 #if os(macOS)
 import Virtualization

@@ -115,7 +115,7 @@ final class MacOSPacketCaptureIntegrationTests: XCTestCase {
         }
 
         // Read with timeout
-        let receivedData = await withTaskGroup(of: Data?.self) { group in
+        let receivedData: Data? = await withTaskGroup(of: Data?.self) { group in
             group.addTask {
                 try? await Task.sleep(for: .milliseconds(200))
                 return nil // Timeout
@@ -132,6 +132,7 @@ final class MacOSPacketCaptureIntegrationTests: XCTestCase {
             return nil
         }
 
+        XCTAssertNotNil(receivedData, "Should receive data")
         XCTAssertEqual(receivedData, testData, "Async read should receive data")
     }
 
