@@ -217,6 +217,21 @@ public actor MeshProviderDaemon: ChannelProvider {
 
         // Initialize tunnel manager for VM traffic routing
         tunnelManager = TunnelManager(provider: mesh)
+
+        // Set up handler for incoming tunnel sessions (when we're the consumer/exit point)
+        // This enables traffic routing so VM packets are routed to the internet
+        await tunnelManager?.setSessionEstablishedHandler { [weak self] session in
+            guard let self = self else { return }
+            let remotePeer = await session.remotePeer
+            do {
+                // We're the exit point - enable netstack to process VM packets
+                try await session.enableTrafficRouting(asExit: true)
+                await self.logIncomingSession(remotePeer: remotePeer, error: nil)
+            } catch {
+                await self.logIncomingSession(remotePeer: remotePeer, error: error)
+            }
+        }
+
         try await tunnelManager?.start()
 
         isRunning = true
@@ -364,6 +379,22 @@ public actor MeshProviderDaemon: ChannelProvider {
         logger.info("Registered channel handlers", metadata: [
             "channels": "\([ProviderChannels.request, ProviderChannels.release, ProviderChannels.ack, ProviderChannels.heartbeat])"
         ])
+    }
+
+    // MARK: - Incoming Session Handling
+
+    /// Log incoming session establishment (called from session handler)
+    private func logIncomingSession(remotePeer: PeerId, error: Error?) {
+        if let error = error {
+            logger.error("Failed to enable traffic routing for incoming session", metadata: [
+                "peer": "\(remotePeer.prefix(16))...",
+                "error": "\(error)"
+            ])
+        } else {
+            logger.info("Traffic routing enabled for incoming session (exit point)", metadata: [
+                "peer": "\(remotePeer.prefix(16))..."
+            ])
+        }
     }
 
     // MARK: - Channel Handlers
