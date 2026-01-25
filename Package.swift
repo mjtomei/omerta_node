@@ -103,6 +103,7 @@ let package = Package(
                 "OmertaVPN",
                 "OmertaConsumer",
                 "OmertaMesh",
+                "OmertaTunnel",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "Logging", package: "swift-log"),
@@ -184,7 +185,7 @@ let package = Package(
         ),
         .testTarget(
             name: "OmertaProviderTests",
-            dependencies: ["OmertaProvider", "OmertaConsumer", "OmertaCore"],
+            dependencies: ["OmertaProvider", "OmertaConsumer", "OmertaCore", "OmertaTunnel", "OmertaMesh"],
             path: "Tests/OmertaProviderTests"
         ),
         .testTarget(
