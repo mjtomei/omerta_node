@@ -82,12 +82,21 @@ public actor FileHandlePacketSource: PacketSource {
             throw PacketCaptureError.notStarted
         }
 
-        do {
-            // Unix datagram sockets: each write is a complete message, no length prefix needed
-            try hostWrite.write(contentsOf: packet)
-        } catch {
-            throw PacketCaptureError.writeFailed(error.localizedDescription)
+        // Unix datagram sockets: each write is a complete message, no length prefix needed
+        let fd = hostWrite.fileDescriptor
+        let result = packet.withUnsafeBytes { buffer in
+            Darwin.write(fd, buffer.baseAddress, packet.count)
         }
+
+        if result < 0 {
+            let err = errno
+            throw PacketCaptureError.writeFailed("Socket write failed: errno \(err)")
+        }
+
+        logger.debug("Wrote packet to VM", metadata: [
+            "vmId": "\(vmId)",
+            "size": "\(packet.count)"
+        ])
     }
 
     // MARK: - Private
@@ -95,25 +104,45 @@ public actor FileHandlePacketSource: PacketSource {
     private func readLoop() async {
         // Buffer for reading datagrams - max Ethernet frame is ~1518 bytes, jumbo is ~9000
         let maxPacketSize = 10000
+        var buffer = [UInt8](repeating: 0, count: maxPacketSize)
+        let fd = hostRead.fileDescriptor
+
+        logger.info("Starting packet read loop", metadata: ["vmId": "\(vmId)", "fd": "\(fd)"])
 
         while !Task.isCancelled {
-            do {
-                // Unix datagram sockets: each read returns one complete datagram (no length prefix)
-                guard let packetData = try hostRead.read(upToCount: maxPacketSize),
-                      !packetData.isEmpty else {
-                    // EOF or error
-                    break
-                }
+            // Use raw socket read for datagram sockets (FileHandle.read may not work correctly)
+            let bytesRead = Darwin.read(fd, &buffer, maxPacketSize)
 
+            if bytesRead > 0 {
+                let packetData = Data(buffer.prefix(bytesRead))
+                logger.debug("Read packet from VM", metadata: [
+                    "vmId": "\(vmId)",
+                    "size": "\(bytesRead)"
+                ])
                 inboundContinuation.yield(packetData)
-
-            } catch {
+            } else if bytesRead == 0 {
+                // EOF
+                logger.info("Socket EOF", metadata: ["vmId": "\(vmId)"])
+                break
+            } else {
+                // Error
+                let err = errno
+                if err == EAGAIN || err == EWOULDBLOCK {
+                    // Non-blocking and no data available, sleep briefly
+                    try? await Task.sleep(for: .milliseconds(1))
+                    continue
+                }
                 if !Task.isCancelled {
-                    logger.warning("File handle read error", metadata: ["error": "\(error)"])
+                    logger.warning("Socket read error", metadata: [
+                        "vmId": "\(vmId)",
+                        "errno": "\(err)"
+                    ])
                 }
                 break
             }
         }
+
+        logger.info("Packet read loop ended", metadata: ["vmId": "\(vmId)"])
     }
 }
 
