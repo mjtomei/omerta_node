@@ -138,6 +138,198 @@ final class TunnelManagerTests: XCTestCase {
 
         await manager.stop()
     }
+
+    // MARK: - Handshake Protocol Tests
+
+    func testIncomingSessionRequest() async throws {
+        let provider = MockChannelProvider()
+        let manager = TunnelManager(provider: provider)
+
+        var handlerCalled = false
+        var receivedPeerId: PeerId?
+
+        await manager.setSessionRequestHandler { peerId in
+            handlerCalled = true
+            receivedPeerId = peerId
+            return true
+        }
+
+        var establishedSession: TunnelSession?
+        await manager.setSessionEstablishedHandler { session in
+            establishedSession = session
+        }
+
+        try await manager.start()
+
+        // Simulate incoming session request
+        let handshake = SessionHandshake(type: .request)
+        let data = try JSONEncoder().encode(handshake)
+        await provider.simulateMessage(from: "remote-initiator", on: "tunnel-handshake", data: data)
+
+        // Handler should have been called
+        XCTAssertTrue(handlerCalled)
+        XCTAssertEqual(receivedPeerId, "remote-initiator")
+
+        // Session should be established
+        XCTAssertNotNil(establishedSession)
+        let remotePeer = await establishedSession?.remotePeer
+        XCTAssertEqual(remotePeer, "remote-initiator")
+
+        // Ack should have been sent
+        let messages = await provider.getSentMessages()
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].to, "remote-initiator")
+        XCTAssertEqual(messages[0].channel, "tunnel-handshake")
+
+        // Verify it's an ack
+        let sentHandshake = try JSONDecoder().decode(SessionHandshake.self, from: messages[0].data)
+        XCTAssertEqual(sentHandshake.type, .ack)
+
+        await manager.stop()
+    }
+
+    func testIncomingSessionRejected() async throws {
+        let provider = MockChannelProvider()
+        let manager = TunnelManager(provider: provider)
+
+        // Handler rejects the session
+        await manager.setSessionRequestHandler { _ in
+            return false
+        }
+
+        try await manager.start()
+
+        // Simulate incoming session request
+        let handshake = SessionHandshake(type: .request)
+        let data = try JSONEncoder().encode(handshake)
+        await provider.simulateMessage(from: "unwanted-peer", on: "tunnel-handshake", data: data)
+
+        // No session should be created
+        let currentSession = await manager.currentSession()
+        XCTAssertNil(currentSession)
+
+        // Reject should have been sent
+        let messages = await provider.getSentMessages()
+        XCTAssertEqual(messages.count, 1)
+        let sentHandshake = try JSONDecoder().decode(SessionHandshake.self, from: messages[0].data)
+        XCTAssertEqual(sentHandshake.type, .reject)
+
+        await manager.stop()
+    }
+
+    func testReceiveCloseFromRemote() async throws {
+        let provider = MockChannelProvider()
+        let manager = TunnelManager(provider: provider)
+
+        try await manager.start()
+
+        // Create a session
+        let session = try await manager.createSession(with: "remote-peer")
+        XCTAssertNotNil(session)
+
+        // Simulate remote closing the session
+        let closeHandshake = SessionHandshake(type: .close)
+        let data = try JSONEncoder().encode(closeHandshake)
+        await provider.simulateMessage(from: "remote-peer", on: "tunnel-handshake", data: data)
+
+        // Session should be nil now
+        let currentSession = await manager.currentSession()
+        XCTAssertNil(currentSession)
+
+        // Original session should be disconnected
+        let state = await session.state
+        XCTAssertEqual(state, .disconnected)
+
+        await manager.stop()
+    }
+
+    func testDefaultAcceptsWithoutHandler() async throws {
+        let provider = MockChannelProvider()
+        let manager = TunnelManager(provider: provider)
+
+        // No handler set - should accept by default
+        try await manager.start()
+
+        let handshake = SessionHandshake(type: .request)
+        let data = try JSONEncoder().encode(handshake)
+        await provider.simulateMessage(from: "any-peer", on: "tunnel-handshake", data: data)
+
+        // Session should be created
+        let currentSession = await manager.currentSession()
+        XCTAssertNotNil(currentSession)
+
+        await manager.stop()
+    }
+
+    // MARK: - Edge Cases
+
+    func testCreateSessionBeforeStart() async throws {
+        let provider = MockChannelProvider()
+        let manager = TunnelManager(provider: provider)
+
+        // Try to create session before starting
+        do {
+            _ = try await manager.createSession(with: "peer")
+            XCTFail("Expected error")
+        } catch {
+            XCTAssertEqual(error as? TunnelError, .notConnected)
+        }
+    }
+
+    func testNewSessionClosesExisting() async throws {
+        let provider = MockChannelProvider()
+        let manager = TunnelManager(provider: provider)
+
+        try await manager.start()
+
+        // Create first session
+        let session1 = try await manager.createSession(with: "peer-1")
+        let state1Before = await session1.state
+        XCTAssertEqual(state1Before, .active)
+
+        // Create second session
+        let session2 = try await manager.createSession(with: "peer-2")
+
+        // First session should be disconnected
+        let state1After = await session1.state
+        XCTAssertEqual(state1After, .disconnected)
+
+        // Second session should be active
+        let state2 = await session2.state
+        XCTAssertEqual(state2, .active)
+
+        // Current session should be the second one
+        let current = await manager.currentSession()
+        let currentPeer = await current?.remotePeer
+        XCTAssertEqual(currentPeer, "peer-2")
+
+        await manager.stop()
+    }
+
+    func testDoubleStartIsIdempotent() async throws {
+        let provider = MockChannelProvider()
+        let manager = TunnelManager(provider: provider)
+
+        try await manager.start()
+        try await manager.start() // Should not throw
+
+        let channels = await provider.getRegisteredChannels()
+        XCTAssertTrue(channels.contains("tunnel-handshake"))
+
+        await manager.stop()
+    }
+
+    func testDoubleStopIsIdempotent() async throws {
+        let provider = MockChannelProvider()
+        let manager = TunnelManager(provider: provider)
+
+        try await manager.start()
+        await manager.stop()
+        await manager.stop() // Should not crash
+
+        let channels = await provider.getRegisteredChannels()
+        XCTAssertFalse(channels.contains("tunnel-handshake"))
+    }
 }
 
 final class TunnelSessionTests: XCTestCase {
@@ -279,6 +471,190 @@ final class TunnelSessionTests: XCTestCase {
         // Check packet was sent
         let messages = await provider.getSentMessages()
         XCTAssertTrue(messages.contains { $0.channel == "tunnel-traffic" })
+    }
+
+    // MARK: - Message Receiving Tests
+
+    func testReceiveMessage() async throws {
+        let provider = MockChannelProvider()
+        let session = TunnelSession(
+            remotePeer: "peer-1",
+            provider: provider
+        )
+
+        await session.activate()
+
+        // Get the receive stream
+        let receiveStream = await session.receive()
+
+        // Simulate incoming message
+        await provider.simulateMessage(
+            from: "peer-1",
+            on: "tunnel-data",
+            data: Data([1, 2, 3, 4])
+        )
+
+        // Read from stream with timeout
+        var receivedData: Data?
+        for await data in receiveStream {
+            receivedData = data
+            break // Just get first message
+        }
+
+        XCTAssertEqual(receivedData, Data([1, 2, 3, 4]))
+    }
+
+    func testReceiveFiltersByPeer() async throws {
+        let provider = MockChannelProvider()
+        let session = TunnelSession(
+            remotePeer: "peer-1",
+            provider: provider
+        )
+
+        await session.activate()
+
+        // Simulate message from wrong peer
+        await provider.simulateMessage(
+            from: "wrong-peer",
+            on: "tunnel-data",
+            data: Data([9, 9, 9])
+        )
+
+        // Simulate message from correct peer
+        await provider.simulateMessage(
+            from: "peer-1",
+            on: "tunnel-data",
+            data: Data([1, 2, 3])
+        )
+
+        // Should only receive message from correct peer
+        let receiveStream = await session.receive()
+        var receivedData: Data?
+        for await data in receiveStream {
+            receivedData = data
+            break
+        }
+
+        XCTAssertEqual(receivedData, Data([1, 2, 3]))
+    }
+
+    // MARK: - Traffic Routing Tests
+
+    func testEnableTrafficRoutingAsExit() async throws {
+        let provider = MockChannelProvider()
+        let session = TunnelSession(
+            remotePeer: "peer-1",
+            provider: provider
+        )
+
+        await session.activate()
+
+        // Enable as traffic exit
+        try await session.enableTrafficRouting(asExit: true)
+
+        let role = await session.role
+        XCTAssertEqual(role, .trafficExit)
+    }
+
+    func testDisableTrafficRouting() async throws {
+        let provider = MockChannelProvider()
+        let session = TunnelSession(
+            remotePeer: "peer-1",
+            provider: provider
+        )
+
+        await session.activate()
+        try await session.enableTrafficRouting(asExit: false)
+
+        let roleBefore = await session.role
+        XCTAssertEqual(roleBefore, .trafficSource)
+
+        await session.disableTrafficRouting()
+
+        let roleAfter = await session.role
+        XCTAssertEqual(roleAfter, .peer)
+
+        // Should fail to inject now
+        do {
+            try await session.injectPacket(Data([0x45]))
+            XCTFail("Expected error")
+        } catch {
+            XCTAssertEqual(error as? TunnelError, .trafficRoutingNotEnabled)
+        }
+    }
+
+    func testTrafficRoutingRequiresActiveState() async throws {
+        let provider = MockChannelProvider()
+        let session = TunnelSession(
+            remotePeer: "peer-1",
+            provider: provider
+        )
+
+        // Don't activate - should fail
+        do {
+            try await session.enableTrafficRouting(asExit: false)
+            XCTFail("Expected error")
+        } catch {
+            XCTAssertEqual(error as? TunnelError, .notConnected)
+        }
+    }
+
+    func testInjectPacketAsExit() async throws {
+        let provider = MockChannelProvider()
+        let session = TunnelSession(
+            remotePeer: "peer-1",
+            provider: provider
+        )
+
+        await session.activate()
+        try await session.enableTrafficRouting(asExit: true)
+
+        // Inject a minimal IP packet (will go to netstack)
+        // This shouldn't throw - netstack handles invalid packets gracefully
+        try await session.injectPacket(Data([0x45, 0x00, 0x00, 0x14]))
+
+        // No message sent on channel - packet goes to local netstack
+        let messages = await provider.getSentMessages()
+        XCTAssertFalse(messages.contains { $0.channel == "tunnel-traffic" })
+    }
+
+    // MARK: - Lifecycle Edge Cases
+
+    func testLeaveStopsTrafficRouting() async throws {
+        let provider = MockChannelProvider()
+        let session = TunnelSession(
+            remotePeer: "peer-1",
+            provider: provider
+        )
+
+        await session.activate()
+        try await session.enableTrafficRouting(asExit: false)
+
+        await session.leave()
+
+        let role = await session.role
+        XCTAssertEqual(role, .peer)
+
+        let state = await session.state
+        XCTAssertEqual(state, .disconnected)
+    }
+
+    func testSendAfterLeave() async throws {
+        let provider = MockChannelProvider()
+        let session = TunnelSession(
+            remotePeer: "peer-1",
+            provider: provider
+        )
+
+        await session.activate()
+        await session.leave()
+
+        do {
+            try await session.send(Data([1, 2, 3]))
+            XCTFail("Expected error")
+        } catch {
+            XCTAssertEqual(error as? TunnelError, .notConnected)
+        }
     }
 }
 
