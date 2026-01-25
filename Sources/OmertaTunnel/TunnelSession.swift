@@ -112,6 +112,12 @@ public actor TunnelSession {
                 self.netstackBridge = bridge
                 self.role = .trafficExit
 
+                // Register handler for incoming traffic from remote peer
+                // This receives packets from the source and injects them into netstack
+                try await provider.onChannel(trafficChannel) { [weak self] sender, data in
+                    await self?.handleTrafficPacket(from: sender, data: data)
+                }
+
                 logger.info("Traffic routing enabled (exit point)")
             } catch {
                 throw TunnelError.netstackError(error.localizedDescription)
@@ -176,6 +182,8 @@ public actor TunnelSession {
 
         if role == .trafficSource {
             await provider.offChannel(returnChannel)
+        } else if role == .trafficExit {
+            await provider.offChannel(trafficChannel)
         }
 
         returnPacketContinuation?.finish()
