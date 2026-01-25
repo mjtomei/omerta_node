@@ -52,9 +52,6 @@ public actor MeshNetwork: ChannelProvider {
     private var eventLoopGroup: EventLoopGroup?
     private var ownsEventLoopGroup: Bool = false
 
-    /// Pending message handler (set before start)
-    private var pendingMessageHandler: ((PeerId, Data) async -> Void)?
-
     /// Retry configuration for network operations
     public var retryConfig: RetryConfig = .network
 
@@ -139,11 +136,6 @@ public actor MeshNetwork: ChannelProvider {
 
             // Start the node
             try await node.start(natType: natType)
-
-            // Apply pending message handler if set before start()
-            if let handler = pendingMessageHandler {
-                await applyMessageHandler(to: node, handler: handler)
-            }
 
             // Apply pending channel handlers
             await applyPendingChannelHandlers(to: node)
@@ -330,21 +322,6 @@ public actor MeshNetwork: ChannelProvider {
 
     // MARK: - Messaging
 
-    /// Send data to a peer
-    public func send(_ data: Data, to targetPeerId: PeerId) async throws {
-        guard state == .running, let node = meshNode else {
-            throw MeshError.notStarted
-        }
-
-        do {
-            try await node.sendToPeer(MeshMessage.data(data), peerId: targetPeerId)
-            await connectionTracker.updateLastCommunication(for: targetPeerId)
-        } catch {
-            await eventPublisher.publish(.messageSendFailed(to: targetPeerId, reason: error.localizedDescription))
-            throw MeshError.sendFailed(reason: error.localizedDescription)
-        }
-    }
-
     /// Ping a peer and get detailed gossip results
     /// - Parameters:
     ///   - targetPeerId: The peer to ping
@@ -356,34 +333,6 @@ public actor MeshNetwork: ChannelProvider {
             return nil
         }
         return await node.sendPingWithDetails(to: targetPeerId, timeout: timeout, requestFullList: requestFullList)
-    }
-
-    /// Receive a message handler
-    public func setMessageHandler(_ handler: @escaping (PeerId, Data) async -> Void) async {
-        // Store handler for later if node doesn't exist yet
-        pendingMessageHandler = handler
-
-        // If node exists, apply handler immediately
-        guard let node = meshNode else { return }
-        await applyMessageHandler(to: node, handler: handler)
-    }
-
-    /// Apply message handler to node
-    private func applyMessageHandler(to node: MeshNode, handler: @escaping (PeerId, Data) async -> Void) async {
-        await node.setMessageHandler { [weak self] message, from in
-            guard let self = self else { return }
-
-            if case .data(let data) = message {
-                await self.connectionTracker.updateLastCommunication(for: from)
-                let connection = await self.connectionTracker.getConnection(for: from)
-                await self.eventPublisher.publish(.messageReceived(
-                    from: from,
-                    data: data,
-                    isDirect: connection?.isDirect ?? false
-                ))
-                await handler(from, data)
-            }
-        }
     }
 
     // MARK: - Channel-based Messaging

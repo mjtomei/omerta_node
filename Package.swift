@@ -1,5 +1,9 @@
 // swift-tools-version: 5.9
 import PackageDescription
+import Foundation
+
+// Compute the package directory for linker paths
+let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
 
 let package = Package(
     name: "Omerta",
@@ -65,7 +69,7 @@ let package = Package(
             exclude: ["Netstack"],  // Exclude Go source files
             linkerSettings: [
                 .linkedLibrary("netstack", .when(platforms: [.macOS, .linux])),
-                .unsafeFlags(["-L", "Sources/CNetstack"], .when(platforms: [.macOS, .linux])),
+                .unsafeFlags(["-L\(packageDir)/Sources/CNetstack"], .when(platforms: [.macOS, .linux])),
             ]
         ),
 

@@ -198,34 +198,39 @@ persistent sessions — not VM-specific. Consumer and provider consume this
 utility — they never call Cloister APIs directly.
 
 **Architecture:**
+
+The tunnel utility is **Cloister-agnostic**. It operates on any mesh network
+(ChannelProvider) and assumes a simple two-peer topology. Cloister negotiation
+happens at the Provider/Consumer layer, not in OmertaTunnel.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  Consumer / Provider                                        │
+│  - Uses CloisterClient to negotiate ephemeral network       │
+│  - Creates MeshNetwork with derived network key             │
+│  - Passes MeshNetwork to OmertaTunnel                       │
 │       │                                                     │
 │       ▼                                                     │
 │  ┌─────────────────────────────────────────────────────┐    │
-│  │  OmertaTunnel (NEW UTILITY)                         │    │
-│  │  - TunnelManager: create, join, leave tunnels       │    │
-│  │  - TunnelSession: per-tunnel state and operations   │    │
-│  │  - All new tunnel code lives here                   │    │
+│  │  OmertaTunnel (UTILITY)                             │    │
+│  │  - TunnelManager: session lifecycle                 │    │
+│  │  - TunnelSession: peer messaging + traffic routing  │    │
+│  │  - Operates on ChannelProvider (mesh-agnostic)      │    │
+│  │  - Assumes two endpoints (+ optional relay)         │    │
 │  └──────────────────────┬──────────────────────────────┘    │
-│                         │ (internal use only)               │
+│                         │ uses                              │
 │                         ▼                                   │
 │  ┌─────────────────────────────────────────────────────┐    │
 │  │  OmertaMesh (EXISTING)                              │    │
-│  │  - CloisterClient: negotiate/share network keys     │    │
-│  │  - CloisterHandler: handle incoming requests        │    │
-│  │  - MeshNode: messaging, peer discovery              │    │
+│  │  - ChannelProvider: onChannel, sendOnChannel        │    │
+│  │  - MeshNetwork: implements ChannelProvider          │    │
 │  └─────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Cloister provides:**
-- `CloisterClient.negotiate(with:networkName:)` — X25519 key exchange to create
-  shared network key
-- `CloisterClient.shareInvite(_:with:)` — Share existing network key securely
-- `CloisterHandler` — Handle incoming negotiation/invite requests
-- `CloisterResult` — Contains `networkKey`, `networkId`, `networkName`
+**Key design decision:** OmertaTunnel doesn't know about Cloister. The fact that
+the underlying network was created via Cloister key exchange is incidental.
+This keeps the tunnel utility simple and reusable.
 
 #### Files to Create
 
@@ -247,56 +252,65 @@ utility — they never call Cloister APIs directly.
 #### API Changes
 
 ```swift
-// NEW: OmertaTunnel public API (generic, not VM-specific)
+// OmertaTunnel public API
 //
 // OmertaTunnel provides TWO capabilities:
-// 1. Peer-to-peer messaging via ephemeral mesh networks
-// 2. Internet traffic routing via netstack (traffic exits through one peer's network)
+// 1. Peer-to-peer messaging over any mesh network
+// 2. Internet traffic routing via netstack (traffic exits through one peer)
 //
-// Consumers of this utility don't need to know about netstack internals.
+// The utility is Cloister-agnostic and netstack-agnostic from the caller's
+// perspective. It just takes a ChannelProvider and manages a session.
 
 public actor TunnelManager {
-    private let cloisterClient: CloisterClient
-    private let cloisterHandler: CloisterHandler
+    /// Initialize with any ChannelProvider (e.g., MeshNetwork)
+    init(provider: any ChannelProvider)
 
-    init(meshNode: MeshNode)
+    /// Start the manager (registers handshake channel)
+    func start() async throws
 
-    /// Create a new tunnel by negotiating with a peer
-    func createTunnel(
-        with peer: PeerId,
-        metadata: [String: String] = [:]
-    ) async throws -> TunnelSession
+    /// Stop the manager
+    func stop() async
 
-    /// Share an existing tunnel with a peer (invite them to join)
-    func shareTunnel(
-        _ session: TunnelSession,
-        with peer: PeerId
-    ) async throws
+    /// Create a session with a remote peer
+    func createSession(with peer: PeerId) async throws -> TunnelSession
 
-    /// Join a tunnel via invite (called when receiving invite)
-    func joinTunnel(_ tunnelId: TunnelId) async throws -> TunnelSession
+    /// Get the current session (only one at a time in simple model)
+    func currentSession() -> TunnelSession?
 
-    func activeTunnels() -> [TunnelSession]
+    /// Close the current session
+    func closeSession() async
+
+    /// Set handler for incoming session requests
+    func setSessionRequestHandler(_ handler: @escaping (PeerId) async -> Bool)
+
+    /// Set handler called when session is established
+    func setSessionEstablishedHandler(_ handler: @escaping (TunnelSession) async -> Void)
 }
 
 public actor TunnelSession {
-    let tunnelId: TunnelId
-    let networkKey: Data        // From CloisterResult
-    let metadata: [String: String]
+    /// The remote peer we're connected to
+    let remotePeer: PeerId
+
+    /// Current state
     var state: TunnelState { get }
-    var peers: [PeerId] { get }
+
+    /// Current role in traffic routing
+    var role: TunnelRole { get }
 
     // --- Peer-to-peer messaging ---
-    func send(_ data: Data, to peer: PeerId) async throws
-    func receive() -> AsyncStream<(PeerId, Data)>
+    /// Send data to the remote peer
+    func send(_ data: Data) async throws
+
+    /// Stream of incoming messages from the remote peer
+    func receive() -> AsyncStream<Data>
 
     // --- Internet traffic routing (netstack-backed) ---
-    /// Enable traffic routing: packets sent to this session get forwarded
-    /// to the internet via the exit peer's network.
-    /// - Parameter exitPeer: The peer whose network traffic will exit through
-    func enableTrafficRouting(exitPeer: PeerId) async throws
+    /// Enable traffic routing through this session
+    /// - Parameter asExit: If true, this peer is the exit (runs netstack).
+    ///   If false, this peer forwards traffic to remote for exit.
+    func enableTrafficRouting(asExit: Bool) async throws
 
-    /// Inject a raw IP packet (from VM or other source) for routing
+    /// Inject a raw IP packet for routing
     func injectPacket(_ packet: Data) async throws
 
     /// Stream of return packets (responses from internet)
@@ -309,59 +323,93 @@ public actor TunnelSession {
     func leave() async
 }
 
-// Traffic routing modes:
-public enum TunnelRole: Sendable {
-    case peer           // Just messaging, no traffic routing
-    case trafficSource  // Sends traffic (e.g., VM provider)
-    case trafficExit    // Receives and forwards traffic (e.g., consumer)
+// Session states
+public enum TunnelState: Sendable, Equatable {
+    case connecting
+    case active
+    case disconnected
+    case failed(String)
 }
 
-// INTERNAL: TunnelManager uses CloisterClient/CloisterHandler
+// Traffic routing roles
+public enum TunnelRole: Sendable, Equatable {
+    case peer           // Just messaging, no traffic routing
+    case trafficSource  // Forwards traffic to remote peer for exit
+    case trafficExit    // Receives traffic and exits via netstack
+}
+
 // INTERNAL: Traffic routing uses netstack (Go, compiled as C archive)
-// Consumer/Provider never import Cloister or netstack directly
+// Consumers of the utility don't need to know about netstack
+```
+
+**Usage pattern (Provider/Consumer layer):**
+```swift
+// 1. Use Cloister to negotiate ephemeral network (at Provider/Consumer layer)
+let cloister = CloisterClient(provider: mainMesh)
+let result = try await cloister.negotiate(with: consumerPeerId, networkName: "vm-\(vmId)")
+
+// 2. Create MeshNetwork with derived key
+let ephemeralConfig = MeshConfig(encryptionKey: result.networkKey)
+let ephemeralMesh = MeshNetwork(identity: identity, config: ephemeralConfig)
+try await ephemeralMesh.start()
+
+// 3. Use TunnelManager on that network
+let tunnel = TunnelManager(provider: ephemeralMesh)
+try await tunnel.start()
+let session = try await tunnel.createSession(with: consumerPeerId)
+
+// 4. Enable traffic routing
+try await session.enableTrafficRouting(asExit: false)  // Provider forwards to consumer
+
+// 5. Inject VM packets
+try await session.injectPacket(vmPacket)
 ```
 
 #### Unit Tests
 
 | Test | Description |
 |------|-------------|
-| `testCreateTunnel` | Create tunnel, verify unique ID generated |
-| `testCreateWithMetadata` | Create with metadata, verify preserved |
-| `testJoinTunnel` | Join existing tunnel, verify peer discovery |
-| `testLeaveTunnel` | Leave tunnel, verify cleanup |
-| `testMultipleTunnels` | Join 5 tunnels simultaneously |
-| `testTunnelIsolation` | Messages don't leak between tunnels |
-| `testInvalidTunnelId` | Join non-existent tunnel, verify error |
-| `testSendData` | Send data to peer, verify delivery |
+| `testManagerInitialization` | Create manager, verify no session initially |
+| `testManagerStartStop` | Start/stop manager, verify channel registration |
+| `testCreateSession` | Create session, verify handshake sent |
+| `testSendMessage` | Send data, verify delivered to remote peer |
+| `testLeaveSession` | Leave session, verify cleanup |
+| `testSessionActivation` | Activate session, verify channels registered |
+| `testSendRequiresActiveState` | Send without activation fails |
+| `testTrafficRoutingNotEnabledByDefault` | Inject packet fails without enabling |
+| `testEnableTrafficRoutingAsSource` | Enable as source, verify can inject |
+| `testCloseSession` | Close session, verify handshake sent |
 
 #### Manual Testing
 
+Since OmertaTunnel is Cloister-agnostic, manual testing requires setting up
+the full stack (Cloister negotiation + ephemeral network). This is best done
+via the Provider/Consumer integration.
+
+**Option 1: Unit test verification**
 ```bash
-# Terminal 1: Start first node, create tunnel
-omertad start --port 18002
-omerta tunnel create
-# Output: Created tunnel: abc123...
+# Run the tunnel utility tests
+swift test --filter OmertaTunnelTests
 
-# Terminal 2: Start second node, join tunnel
-omertad start --port 18003 --bootstrap localhost:18002
-omerta tunnel join abc123...
-# Output: Joined tunnel abc123, found 1 peer
-
-# Terminal 1: Verify peer count
-omerta tunnel status abc123...
-# Output: Tunnel abc123: 2 peers
-
-# Test data send
-omerta tunnel send abc123 "Hello from node 1"
-# Terminal 2 should receive: "Hello from node 1"
-
-# Terminal 2: Leave tunnel
-omerta tunnel leave abc123...
-
-# Terminal 1: Verify peer left
-omerta tunnel status abc123...
-# Output: Tunnel abc123: 1 peer
+# Expected output:
+# NetstackBridgeTests: 7 passed
+# TunnelConfigTests: 3 passed
+# TunnelManagerTests: 5 passed
+# TunnelSessionTests: 7 passed
 ```
+
+**Option 2: Integration test with netstack**
+```bash
+# Run Go netstack tests (requires Go)
+cd Sources/OmertaTunnel/Netstack
+go test -v
+
+# Expected: TestEndToEndUDP and TestEndToEndTCP pass
+```
+
+**Option 3: Full stack test (Phase 5)**
+Full manual testing of the tunnel utility happens as part of VM integration
+testing in Phase 5, where Provider and Consumer use the complete stack.
 
 ---
 
@@ -440,10 +488,11 @@ public struct RelayConfig: Codable {
 }
 
 // Relay coordinator (in OmertaTunnel, uses gossiped data)
+// Works at the network level, not session level
 public actor RelayCoordinator {
     func availableRelays() async -> [PeerId]
-    func requestRelay(for tunnelId: TunnelId) async throws -> PeerId
-    func releaseRelay(_ relayPeerId: PeerId, for tunnelId: TunnelId) async
+    func requestRelay(for session: TunnelSession) async throws -> PeerId
+    func releaseRelay(_ relayPeerId: PeerId, for session: TunnelSession) async
 }
 ```
 
@@ -485,15 +534,11 @@ omertad start --port 18002 --bootstrap localhost:18001
 omerta mesh relays
 # Output: Available relays: <bootstrap-id> (10 slots)
 
-# Create tunnel, request relay
-omerta tunnel create --vm-id test-vm --request-relay
-# Output: Created tunnel abc123, relay: <bootstrap-peer-id>
+# The relay is used at the mesh network level when establishing
+# the ephemeral network connection (not at the tunnel session level).
+# If direct connection fails, the mesh falls back to relay automatically.
 
-# Terminal 3: Start consumer, join via relay
-omerta tunnel join abc123
-# Output: Joined via relay <bootstrap-peer-id>
-
-# Verify relay load updated in gossip
+# Verify relay load updated when connection uses relay
 omerta mesh peers --show-metadata
 # Output:
 #   <bootstrap-id>: endpoint=..., relay_capacity=10, current_load=1
@@ -508,101 +553,70 @@ now handles all traffic routing internally — consumers just use the TunnelSess
 API (`injectPacket`, `returnPackets`). Test with dummy data to verify real
 internet connections work.
 
-#### Files to Create
+**Status:** ✅ Implemented in Phase 1-2. Traffic routing is integrated directly
+into TunnelSession via NetstackBridge.
+
+#### Files Created (in Phase 1-2)
 
 | File | Description |
 |------|-------------|
-| `Sources/OmertaTunnel/TrafficRouter.swift` | Internal traffic routing coordinator |
 | `Sources/OmertaTunnel/NetstackBridge.swift` | Swift/Go bridge for netstack |
-| `Sources/OmertaTunnel/TrafficMessages.swift` | Internal ForwardPacket/ReturnPacket |
-| `Tests/OmertaTunnelTests/TrafficRouterTests.swift` | Integration tests |
+| `Sources/OmertaTunnel/TunnelSession.swift` | Traffic routing via channels |
+| `Tests/OmertaTunnelTests/NetstackBridgeTests.swift` | Integration tests |
 
-#### Files to Modify
+#### Implementation Notes
 
-| File | Changes |
-|------|---------|
-| `Sources/OmertaTunnel/TunnelSession.swift` | Wire up traffic routing methods |
-| `Sources/OmertaTunnel/Netstack/exports.go` | Add packet injection/retrieval |
+Traffic routing is built into TunnelSession:
+- `enableTrafficRouting(asExit: true)` — Creates NetstackBridge, processes packets
+- `enableTrafficRouting(asExit: false)` — Forwards packets to remote peer
+- `injectPacket(_:)` — Sends packet via appropriate channel
+- `returnPackets` — Stream of responses
 
-#### API Changes
+The implementation uses three channels:
+- `tunnel-traffic` — Forward packets (source → exit)
+- `tunnel-return` — Return packets (exit → source)
+- `tunnel-data` — General messaging
 
 ```swift
-// Internal messages (not part of public API)
-internal struct ForwardPacket: Codable, Sendable {
-    let tunnelId: TunnelId
-    let packet: Data  // Raw IP packet
-}
-
-internal struct ReturnPacket: Codable, Sendable {
-    let tunnelId: TunnelId
-    let packet: Data
-}
-
-// Internal traffic router (manages netstack instances)
-internal actor TrafficRouter {
-    func createExitPoint(for tunnelId: TunnelId) async throws
-    func handleForwardPacket(_ fwd: ForwardPacket) async
-    func setReturnHandler(
-        for tunnelId: TunnelId,
-        _ handler: @Sendable (Data) async -> Void
-    )
-    func destroyExitPoint(for tunnelId: TunnelId) async
-}
-
-// PUBLIC API (from TunnelSession in Phase 2):
-// - enableTrafficRouting(exitPeer:)  // Sets up this peer as traffic source
-// - injectPacket(_:)                 // Sends packet to exit peer
-// - returnPackets                    // Receives responses
-// - disableTrafficRouting()          // Tears down routing
+// PUBLIC API (from TunnelSession):
+// - enableTrafficRouting(asExit:)  // true=exit point, false=source
+// - injectPacket(_:)               // Sends packet
+// - returnPackets                  // Receives responses
+// - disableTrafficRouting()        // Tears down routing
 
 // Consumer/Provider code ONLY uses TunnelSession public API.
-// They don't see ForwardPacket, ReturnPacket, or TrafficRouter.
+// NetstackBridge is internal to TunnelSession.
 ```
 
 #### Unit Tests
 
 | Test | Description |
 |------|-------------|
-| `testEnableTrafficRouting` | Enable routing, verify exit point created |
-| `testInjectTCPPacket` | Inject SYN, verify real connection |
-| `testInjectUDPPacket` | Inject UDP, verify real socket |
-| `testReturnPacketFlow` | Verify response routed back via stream |
-| `testMultipleTunnels` | Route from 3 tunnel IDs, verify isolation |
-| `testHighThroughput` | Inject 10k packets, measure throughput |
-| `testMalformedPacket` | Inject garbage, verify no crash |
-| `testDisableRouting` | Disable routing, verify cleanup |
+| `testEnableTrafficRoutingAsSource` | Enable as source, verify can inject |
+| `testTrafficRoutingNotEnabledByDefault` | Inject without enable fails |
+| `testNetstackInit` | Create netstack, verify initialization |
+| `testNetstackStartStop` | Start/stop lifecycle |
+| `testReturnCallback` | Verify callback receives packets |
+| `TestEndToEndUDP` (Go) | Full UDP echo through netstack |
+| `TestEndToEndTCP` (Go) | Full TCP/HTTP through netstack |
 
 #### Manual Testing
 
+Traffic routing is tested via the Go netstack tests:
+
 ```bash
-# Terminal 1: Start exit node (will route traffic to internet)
-omertad start --port 18002
+# Run end-to-end netstack tests
+cd Sources/OmertaTunnel/Netstack
+go test -v -run TestEndToEnd
 
-# Terminal 2: Start source node, create tunnel
-omertad start --port 18003 --bootstrap localhost:18002
-omerta tunnel create --peer <exit-peer-id>
-# Output: Created tunnel: abc123...
-
-# Enable traffic routing (source -> exit)
-omerta tunnel enable-routing abc123 --exit-peer <exit-peer-id>
-# Output: Traffic routing enabled, exit: <exit-peer-id>
-
-# Inject a crafted TCP SYN to example.com:80
-omerta tunnel inject-packet abc123 \
-    --src 10.200.1.2:54321 \
-    --dst 93.184.216.34:80 \
-    --tcp-syn
-
-# Terminal 1: Should see: "Opened TCP connection to 93.184.216.34:80"
-# Terminal 2: Should receive SYN-ACK via returnPackets stream
-
-# Inject HTTP GET
-omerta tunnel inject-http abc123 \
-    --host example.com \
-    --path /
-
-# Terminal 2: Should receive HTTP response packets
+# Expected output:
+# === RUN   TestEndToEndUDP
+# --- PASS: TestEndToEndUDP
+# === RUN   TestEndToEndTCP
+# --- PASS: TestEndToEndTCP
 ```
+
+Full stack testing happens in Phase 5 with VM integration.
 
 ---
 
@@ -645,11 +659,20 @@ public protocol PacketSource: Sendable {
 }
 
 // Usage in provider:
-// 1. Create TunnelSession with consumer
-// 2. Enable traffic routing: tunnelSession.enableTrafficRouting(exitPeer: consumerPeerId)
-// 3. Create VMPacketCapture with tunnelSession
-// 4. VMPacketCapture calls tunnelSession.injectPacket() for outbound
-// 5. VMPacketCapture reads tunnelSession.returnPackets for inbound
+// 1. Use Cloister to negotiate ephemeral network with consumer
+// 2. Create MeshNetwork with derived key, start it
+// 3. Create TunnelManager on that network
+// 4. Create session: let session = try await tunnel.createSession(with: consumerPeerId)
+// 5. Enable traffic routing: try await session.enableTrafficRouting(asExit: false)
+// 6. Create VMPacketCapture with session
+// 7. VMPacketCapture calls session.injectPacket() for outbound
+// 8. VMPacketCapture reads session.returnPackets for inbound
+//
+// On consumer side:
+// 1. Accept Cloister negotiation
+// 2. Create MeshNetwork with derived key
+// 3. Create TunnelManager, accept session
+// 4. Enable as exit: try await session.enableTrafficRouting(asExit: true)
 ```
 
 #### Unit Tests

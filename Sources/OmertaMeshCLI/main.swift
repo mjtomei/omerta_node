@@ -190,8 +190,8 @@ struct MeshCLI: AsyncParsableCommand {
         var receivedMessages: [(from: PeerId, data: Data, isDirect: Bool)] = []
         var testPassed = false
 
-        // Set up message handler
-        await mesh.setMessageHandler { from, data in
+        // Set up message handler on default channel
+        try await mesh.onChannel("cli-messages") { from, data in
             if let message = String(data: data, encoding: .utf8) {
                 let connection = await mesh.connection(to: from)
                 let isDirect = connection?.isDirect ?? false
@@ -293,7 +293,7 @@ struct MeshCLI: AsyncParsableCommand {
                         for i in 1...messageCount {
                             let message = "Test message \(i) from \(myPeerId)"
                             let data = message.data(using: .utf8)!
-                            try await mesh.send(data, to: targetPeerId)
+                            try await mesh.sendOnChannel(data, to: targetPeerId, channel: "cli-messages")
                             print("[\(myPeerId)] Sent: \(message)")
                             try await Task.sleep(nanoseconds: 500_000_000)
                         }
