@@ -174,17 +174,19 @@ None — this phase is internal to OmertaTunnel.
 ```bash
 # Build netstack
 cd Sources/OmertaTunnel/Netstack
-go mod download
-go test -v ./...
-make  # produces libnetstack.a
+go mod tidy
+go test -v ./...   # Includes end-to-end UDP and TCP tests
+make               # produces libnetstack.a
+make install       # copies to Sources/CNetstack/
 
-# Verify Swift can link
+# Verify Swift can link and run tests
 swift build --target OmertaTunnel
-
-# Run standalone test binary
-./netstack-test --inject-syn 1.1.1.1:80
-# Expected: Opens real TCP connection, prints response
+swift test --filter OmertaTunnelTests
 ```
+
+The Go tests include:
+- `TestEndToEndUDP`: Injects UDP packet, verifies echo response through netstack
+- `TestEndToEndTCP`: Full TCP handshake + HTTP request/response through netstack
 
 ---
 
