@@ -1369,21 +1369,42 @@ public actor VMManager {
             let gatewayIP = ipOnly.split(separator: ".").dropLast().joined(separator: ".") + ".1"
             lines.append("# Static network configuration for mesh tunnel routing")
             lines.append("write_files:")
-            lines.append("  - path: /etc/netplan/99-static.yaml")
+            // Remove any default netplan configs that might enable DHCP
+            lines.append("  - path: /etc/netplan/00-omerta.yaml")
             lines.append("    permissions: '0600'")
             lines.append("    content: |")
             lines.append("      network:")
             lines.append("        version: 2")
+            lines.append("        renderer: networkd")
             lines.append("        ethernets:")
-            // Configure all likely interface names for VZ and QEMU
-            // VZ typically uses enp0s1, QEMU might use ens3 or similar
+            // Configure multiple interface names that VZ/QEMU might use
             lines.append("          enp0s1:")
+            lines.append("            optional: true")
             lines.append("            dhcp4: false")
             lines.append("            dhcp6: false")
-            lines.append("            addresses:")
-            lines.append("              - \(ipOnly)/24")
+            lines.append("            addresses: [\(ipOnly)/24]")
             lines.append("            routes:")
-            lines.append("              - to: default")
+            lines.append("              - to: 0.0.0.0/0")
+            lines.append("                via: \(gatewayIP)")
+            lines.append("            nameservers:")
+            lines.append("              addresses: [8.8.8.8, 8.8.4.4]")
+            lines.append("          ens3:")
+            lines.append("            optional: true")
+            lines.append("            dhcp4: false")
+            lines.append("            dhcp6: false")
+            lines.append("            addresses: [\(ipOnly)/24]")
+            lines.append("            routes:")
+            lines.append("              - to: 0.0.0.0/0")
+            lines.append("                via: \(gatewayIP)")
+            lines.append("            nameservers:")
+            lines.append("              addresses: [8.8.8.8, 8.8.4.4]")
+            lines.append("          eth0:")
+            lines.append("            optional: true")
+            lines.append("            dhcp4: false")
+            lines.append("            dhcp6: false")
+            lines.append("            addresses: [\(ipOnly)/24]")
+            lines.append("            routes:")
+            lines.append("              - to: 0.0.0.0/0")
             lines.append("                via: \(gatewayIP)")
             lines.append("            nameservers:")
             lines.append("              addresses: [8.8.8.8, 8.8.4.4]")
@@ -1413,18 +1434,23 @@ public actor VMManager {
 
         // Apply static network configuration if provided
         if staticIP != nil {
-            // Disable IPv6 to force IPv4 traffic (netstack handles IPv4)
+            // Remove default cloud-init network config that might interfere
+            lines.append("  - rm -f /etc/netplan/50-cloud-init.yaml || true")
+            lines.append("  - rm -f /etc/netplan/01-netcfg.yaml || true")
+            // Debug: log interface names before netplan
+            lines.append("  - echo 'OMERTA: Configuring network' >> /dev/hvc0 || true")
+            lines.append("  - ip link show >> /dev/hvc0 2>&1 || true")
+            lines.append("  - cat /etc/netplan/00-omerta.yaml >> /dev/hvc0 2>&1 || true")
+            // Disable IPv6 to force IPv4 traffic
             lines.append("  - sysctl -w net.ipv6.conf.all.disable_ipv6=1")
             lines.append("  - sysctl -w net.ipv6.conf.default.disable_ipv6=1")
-            // Debug: log interface names before applying netplan
-            lines.append("  - ip link show > /var/log/interfaces-before.log 2>&1 || true")
-            lines.append("  - ls -la /sys/class/net/ >> /var/log/interfaces-before.log 2>&1 || true")
             // Apply the static network configuration
-            lines.append("  - netplan apply 2>&1 | tee /var/log/netplan-apply.log || true")
+            lines.append("  - netplan apply 2>&1 | tee -a /dev/hvc0 || true")
             lines.append("  - sleep 2")
             // Debug: log interface state after netplan
-            lines.append("  - ip addr show > /var/log/interfaces-after.log 2>&1 || true")
-            lines.append("  - ip route show >> /var/log/interfaces-after.log 2>&1 || true")
+            lines.append("  - echo 'OMERTA: Network configured' >> /dev/hvc0 || true")
+            lines.append("  - ip addr show >> /dev/hvc0 2>&1 || true")
+            lines.append("  - ip route show >> /dev/hvc0 2>&1 || true")
         }
 
         lines.append("  - systemctl enable ssh")
