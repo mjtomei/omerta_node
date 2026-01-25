@@ -1375,11 +1375,9 @@ public actor VMManager {
             lines.append("      network:")
             lines.append("        version: 2")
             lines.append("        ethernets:")
-            // Match any Ethernet interface - VZ uses enp0s1, QEMU may use ens3, etc.
-            // Using name: "en*" to match both enp0s1 and ens* patterns
-            lines.append("          id0:")
-            lines.append("            match:")
-            lines.append("              name: \"en*\"")
+            // Configure all likely interface names for VZ and QEMU
+            // VZ typically uses enp0s1, QEMU might use ens3 or similar
+            lines.append("          enp0s1:")
             lines.append("            dhcp4: false")
             lines.append("            dhcp6: false")
             lines.append("            addresses:")
