@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/checksum"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 )
 
@@ -464,7 +465,7 @@ func createTCPPacket(srcIP string, srcPort uint16, dstIP string, dstPort uint16,
 	// TCP checksum
 	xsum := header.PseudoHeaderChecksum(header.TCPProtocolNumber,
 		tcpipAddrFromString(srcIP), tcpipAddrFromString(dstIP), uint16(tcpLen))
-	xsum = header.Checksum(packet[header.IPv4MinimumSize:], xsum)
+	xsum = checksum.Checksum(packet[header.IPv4MinimumSize:], xsum)
 	tcp.SetChecksum(^xsum)
 
 	return packet
