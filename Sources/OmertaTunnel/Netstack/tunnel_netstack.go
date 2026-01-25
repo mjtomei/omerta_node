@@ -187,7 +187,7 @@ func (s *Stack) Start() {
 	s.stack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpFwd.HandlePacket)
 
 	// Set up UDP forwarder
-	udpFwd := udp.NewForwarder(s.stack, udp.ForwarderHandler(s.handleUDPPacket))
+	udpFwd := udp.NewForwarder(s.stack, s.handleUDPPacket)
 	s.stack.SetTransportProtocolHandler(udp.ProtocolNumber, udpFwd.HandlePacket)
 }
 
@@ -290,54 +290,60 @@ func (s *Stack) handleTCPConnection(r *tcp.ForwarderRequest) {
 }
 
 // handleUDPPacket handles a UDP packet from the virtual network
-func (s *Stack) handleUDPPacket(r *udp.ForwarderRequest) {
+// Returns true if the packet was handled, false otherwise
+func (s *Stack) handleUDPPacket(r *udp.ForwarderRequest) bool {
 	id := r.ID()
 	key := fmt.Sprintf("%s:%d->%s:%d",
 		id.LocalAddress, id.LocalPort,
 		id.RemoteAddress, id.RemotePort)
 
 	s.mu.RLock()
-	fwd, exists := s.udpConns[key]
+	_, exists := s.udpConns[key]
 	s.mu.RUnlock()
 
-	if !exists {
-		// Create new UDP forwarder
-		var wq waiter.Queue
-		ep, err := r.CreateEndpoint(&wq)
-		if err != nil {
-			return
-		}
-
-		// Create real UDP socket
-		dstAddr := fmt.Sprintf("%s:%d", id.LocalAddress.String(), id.LocalPort)
-		realConn, dialErr := net.Dial("udp", dstAddr)
-		if dialErr != nil {
-			ep.Close()
-			return
-		}
-
-		conn := gonet.NewUDPConn(&wq, ep)
-
-		fwd = &udpForwarder{
-			virtual: conn,
-			real:    realConn.(*net.UDPConn),
-			ctx:     s.ctx,
-			timeout: UDPIdleTimeout,
-		}
-
-		s.mu.Lock()
-		s.udpConns[key] = fwd
-		s.mu.Unlock()
-
-		go fwd.Forward()
-
-		go func() {
-			<-fwd.Done()
-			s.mu.Lock()
-			delete(s.udpConns, key)
-			s.mu.Unlock()
-		}()
+	if exists {
+		// Already have a forwarder for this connection
+		return true
 	}
+
+	// Create new UDP forwarder
+	var wq waiter.Queue
+	ep, err := r.CreateEndpoint(&wq)
+	if err != nil {
+		return false
+	}
+
+	// Create real UDP socket
+	dstAddr := fmt.Sprintf("%s:%d", id.LocalAddress.String(), id.LocalPort)
+	realConn, dialErr := net.Dial("udp", dstAddr)
+	if dialErr != nil {
+		ep.Close()
+		return false
+	}
+
+	conn := gonet.NewUDPConn(&wq, ep)
+
+	fwd := &udpForwarder{
+		virtual: conn,
+		real:    realConn.(*net.UDPConn),
+		ctx:     s.ctx,
+		timeout: UDPIdleTimeout,
+	}
+
+	s.mu.Lock()
+	s.udpConns[key] = fwd
+	s.mu.Unlock()
+
+	go fwd.Forward()
+
+	go func() {
+		<-fwd.Done()
+		s.mu.Lock()
+		delete(s.udpConns, key)
+		s.mu.Unlock()
+	}()
+
+	return true
 }
 
 // parseIPAddress parses an IP address string into a tcpip.Address
