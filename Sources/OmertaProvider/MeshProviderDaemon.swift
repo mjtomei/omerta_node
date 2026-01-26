@@ -791,10 +791,16 @@ public actor MeshProviderDaemon: ChannelProvider {
     /// Set up bridging between consumer's tunnel session and their VM.
     /// This allows consumer->VM traffic (e.g., SSH) to flow through the tunnel.
     private func setupConsumerVMBridging(session: TunnelSession, consumerPeerId: String) async {
+        logger.info("setupConsumerVMBridging called", metadata: [
+            "consumer": "\(consumerPeerId.prefix(16))...",
+            "activeVMCount": "\(activeVMs.count)"
+        ])
+
         // Find VM owned by this consumer
         guard let (vmId, _) = activeVMs.first(where: { $0.value.consumerPeerId == consumerPeerId }) else {
-            logger.debug("No active VM for consumer, skipping VM bridging", metadata: [
-                "consumer": "\(consumerPeerId.prefix(16))..."
+            logger.info("No active VM for consumer, skipping VM bridging", metadata: [
+                "consumer": "\(consumerPeerId.prefix(16))...",
+                "availableConsumers": "\(activeVMs.values.map { $0.consumerPeerId.prefix(16) })"
             ])
             return
         }
