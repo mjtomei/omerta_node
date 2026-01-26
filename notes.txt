@@ -14,6 +14,7 @@ TODOs
 CORE
 - work through plan for tunnel between provider and consumer
 - fix IPv6 NAT detection and add contact request message for NAT hole punching that uses relay only for initial message
+- make sure keepalive to bootstrap nodes is working correctly
 - finish working through manual tests
   - make sure we handle a diverse set of cases where inbound traffic isn't allowed for both IPv4 and IPv6
   - make sure we are testing relay functionality with artificial constraints on peer nodes
@@ -37,13 +38,15 @@ CORE
   - add reasonable rate limiting to UDP socket wrapper
 
 ENHANCEMENTS
-- implement nested VMs on provider side to speed up packet forwarding
-  - can have own tunnel utility inside provider VM if that doesn't work
-  - can have VM join mesh and incorporate into proof of availability
-    - gossip system stats, performance counters, and microbenchmark results constantly so they can be monitored, per-peer stats profiles can be compared for similar machines, cycle metrics so it's difficult to fake statistical similarity and has dependence on unknown uarch parameters
-      - goal is to make it so that the cost of faking is accurately simulating the hardware you were supposed to be running anyways
-    - use consumer peer node as relay and exit node, firewall rules on provider guarantee this
+- have VM join mesh and incorporate into proof of availability
+  - gossip system stats, performance counters, and microbenchmark results constantly so they can be monitored, per-peer stats profiles can be compared for similar machines, cycle metrics so it's difficult to fake statistical similarity and has dependence on unknown uarch parameters
+    - goal is to make it so that the cost of faking is accurately simulating the hardware you were supposed to be running anyways
+  - use consumer peer node as relay and exit node, firewall rules on provider guarantee this
+- implement mosh clone ssh client for use with mesh tunnel
 - implement VPN functionality using the Tunnel utility for internet connections and the mesh for LAN connections
+  - support ssh over mesh with our custom ssh client
+    - add support to client for targeting generic interfaces
+- add support for assigning a network interface to VMs when consumer runs with elevated privileges
 - implement kernel accelerated, DPU accelerated, and FPGA accelerated mesh nodes
 - look for common traffic analysis attacks and add padding to reduce data leakage
 - add support for prioritizing VM requests by network
