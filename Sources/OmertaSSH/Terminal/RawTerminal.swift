@@ -178,24 +178,10 @@ public final class RawTerminal: @unchecked Sendable {
         var buffer = [UInt8](repeating: 0, count: maxCount)
 
         if timeoutMs > 0 {
-            // Use select for timeout
-            var readSet = fd_set()
-            #if canImport(Darwin)
-            __darwin_fd_zero(&readSet)
-            let fd = inputFd
-            withUnsafeMutablePointer(to: &readSet) { ptr in
-                __darwin_fd_set(fd, ptr)
-            }
-            #else
-            // Linux
-            FD_ZERO(&readSet)
-            FD_SET(inputFd, &readSet)
-            #endif
-
-            var timeout = timeval(tv_sec: 0, tv_usec: Int(timeoutMs) * 1000)
-            let selectResult = select(inputFd + 1, &readSet, nil, nil, &timeout)
-
-            if selectResult <= 0 {
+            // Use poll for timeout (more portable than select)
+            var pfd = pollfd(fd: Int32(inputFd), events: Int16(POLLIN), revents: 0)
+            let pollResult = poll(&pfd, 1, Int32(timeoutMs))
+            if pollResult <= 0 {
                 return []
             }
         }
