@@ -416,21 +416,15 @@ public actor TunnelSession {
 
     /// Handle return packet in trafficClient mode - inject into local netstack
     private func handleClientReturnPacket(from sender: PeerId, data: Data) async {
-        logger.info("handleClientReturnPacket called", metadata: [
-            "sender": "\(sender.prefix(16))...",
-            "size": "\(data.count)",
-            "role": "\(role)"
-        ])
-
         guard role == .trafficClient else {
-            logger.info("Ignoring client return packet - not client role", metadata: [
+            logger.debug("Ignoring client return packet - not client role", metadata: [
                 "role": "\(role)"
             ])
             return
         }
 
         guard sender == remotePeer else {
-            logger.info("Ignoring client return packet - wrong sender", metadata: [
+            logger.debug("Ignoring client return packet - wrong sender", metadata: [
                 "expected": "\(remotePeer.prefix(16))...",
                 "actual": "\(sender.prefix(16))..."
             ])
@@ -440,7 +434,7 @@ public actor TunnelSession {
         // Inject into local netstack
         do {
             try netstackBridge?.injectPacket(data)
-            logger.info("Injected return packet into local netstack", metadata: ["size": "\(data.count)"])
+            logger.debug("Injected return packet into local netstack", metadata: ["size": "\(data.count)"])
         } catch {
             logger.warning("Failed to inject return packet: \(error)")
         }
