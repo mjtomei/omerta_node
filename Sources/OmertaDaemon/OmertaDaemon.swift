@@ -7,6 +7,7 @@ import OmertaVM
 import OmertaProvider
 import OmertaConsumer
 import OmertaMesh
+import OmertaTunnel
 import Dispatch
 
 #if canImport(Darwin)
@@ -815,6 +816,16 @@ struct Start: AsyncParsableCommand {
                 timeout: timeout,
                 meshServices: meshServices
             )
+
+        // Tunnel service commands
+        case .tunnelDialTest(let vmId, let host, let port):
+            return await handleTunnelDialTest(
+                vmId: vmId,
+                host: host,
+                port: port,
+                daemon: daemon,
+                vmTracker: vmTracker
+            )
         }
     }
 
@@ -1080,6 +1091,119 @@ struct Start: AsyncParsableCommand {
                 success: false,
                 accepted: false,
                 joinedNetworkId: nil,
+                error: error.localizedDescription
+            ))
+        }
+    }
+
+    /// Test TCP dial through tunnel to a VM
+    /// This creates a TunnelSession with trafficClient mode and attempts to dial
+    private func handleTunnelDialTest(
+        vmId: UUID,
+        host: String,
+        port: UInt16,
+        daemon: MeshProviderDaemon,
+        vmTracker: VMTracker
+    ) async -> ControlResponse {
+        var logger = Logger(label: "io.omerta.daemon.tunnel.dial")
+        logger.logLevel = .info
+
+        // Find the VM
+        guard let allVMs = try? await vmTracker.loadPersistedVMs() else {
+            return .tunnelDialTestResult(ControlResponse.TunnelDialTestResultData(
+                success: false,
+                host: host,
+                port: port,
+                bytesReceived: nil,
+                sshBanner: nil,
+                error: "Failed to load VMs"
+            ))
+        }
+
+        guard let vm = allVMs.first(where: { $0.vmId == vmId }) else {
+            return .tunnelDialTestResult(ControlResponse.TunnelDialTestResultData(
+                success: false,
+                host: host,
+                port: port,
+                bytesReceived: nil,
+                sshBanner: nil,
+                error: "VM not found"
+            ))
+        }
+
+        logger.info("Testing tunnel dial", metadata: [
+            "vmId": "\(vmId.uuidString.prefix(8))...",
+            "host": "\(host)",
+            "port": "\(port)",
+            "provider": "\(vm.provider.peerId.prefix(16))..."
+        ])
+
+        do {
+            // Create tunnel session with dial support
+            let mesh = await daemon.mesh
+            let tunnelManager = TunnelManager(provider: mesh)
+            try await tunnelManager.start()
+            let session = try await tunnelManager.createSession(with: vm.provider.peerId)
+
+            // Enable dial support (creates local netstack)
+            try await session.enableDialSupport()
+
+            guard let netstack = await session.netstack else {
+                await session.leave()
+                return .tunnelDialTestResult(ControlResponse.TunnelDialTestResultData(
+                    success: false,
+                    host: host,
+                    port: port,
+                    bytesReceived: nil,
+                    sshBanner: nil,
+                    error: "Failed to initialize netstack"
+                ))
+            }
+
+            logger.info("Netstack initialized, dialing \(host):\(port)...")
+
+            // Try to dial TCP
+            let connection = try netstack.dialTCP(host: host, port: port)
+            defer { connection.close() }
+
+            // Set read timeout
+            connection.setReadDeadline(milliseconds: 5000)
+
+            // Try to read SSH banner (if port 22)
+            var sshBanner: String? = nil
+            var bytesReceived: Int = 0
+
+            if let data = try connection.read(maxLength: 256) {
+                bytesReceived = data.count
+                if let banner = String(data: data, encoding: .utf8) {
+                    sshBanner = banner.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                }
+            }
+
+            await session.leave()
+
+            logger.info("Tunnel dial test successful", metadata: [
+                "bytesReceived": "\(bytesReceived)",
+                "sshBanner": "\(sshBanner ?? "none")"
+            ])
+
+            return .tunnelDialTestResult(ControlResponse.TunnelDialTestResultData(
+                success: true,
+                host: host,
+                port: port,
+                bytesReceived: bytesReceived,
+                sshBanner: sshBanner,
+                error: nil
+            ))
+
+        } catch {
+            logger.error("Tunnel dial test failed", metadata: ["error": "\(error)"])
+            return .tunnelDialTestResult(ControlResponse.TunnelDialTestResultData(
+                success: false,
+                host: host,
+                port: port,
+                bytesReceived: nil,
+                sshBanner: nil,
                 error: error.localizedDescription
             ))
         }

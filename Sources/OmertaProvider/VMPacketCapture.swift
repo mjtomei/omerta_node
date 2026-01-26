@@ -54,6 +54,9 @@ public actor VMPacketCapture {
     private var bytesToTunnel: UInt64 = 0
     private var bytesFromTunnel: UInt64 = 0
 
+    // Consumer session for return traffic (consumer->VM->response flow)
+    private var consumerSession: TunnelSession?
+
     /// Initialize packet capture for a VM
     /// - Parameters:
     ///   - vmId: The VM identifier
@@ -127,6 +130,33 @@ public actor VMPacketCapture {
         )
     }
 
+    /// Set the consumer session for handling consumer->VM traffic.
+    /// When a consumer initiates a tunnel session to send traffic to the VM,
+    /// this session is used to receive packets and send return traffic.
+    /// - Parameter session: The consumer's tunnel session (trafficExit mode)
+    public func setConsumerSession(_ session: TunnelSession) {
+        self.consumerSession = session
+        logger.info("Consumer session set for VM bridging", metadata: ["vmId": "\(vmId)"])
+    }
+
+    /// Inject a packet from the consumer into the VM.
+    /// This is called when the consumer sends traffic to the VM.
+    /// - Parameter packet: The packet to inject
+    public func injectFromConsumer(_ packet: Data) async throws {
+        guard isRunning else {
+            throw PacketCaptureError.notStarted
+        }
+
+        try await packetSource.write(packet)
+        packetsFromTunnel += 1
+        bytesFromTunnel += UInt64(packet.count)
+        logger.info("Injected consumer packet to VM", metadata: [
+            "vmId": "\(vmId)",
+            "size": "\(packet.count)"
+        ])
+    }
+
+
     // MARK: - Private
 
     /// Forward packets from VM to tunnel
@@ -134,6 +164,7 @@ public actor VMPacketCapture {
         for await packet in packetSource.inbound {
             guard !Task.isCancelled else { break }
 
+            // Forward to trafficSource session (for VM->internet via consumer exit)
             do {
                 try await tunnelSession.injectPacket(packet)
                 packetsToTunnel += 1
@@ -143,6 +174,16 @@ public actor VMPacketCapture {
                     "error": "\(error)",
                     "size": "\(packet.count)"
                 ])
+            }
+
+            // Also forward to consumer session via tunnel-return (for SSH/consumer-initiated traffic)
+            if let consumerSession = consumerSession {
+                do {
+                    try await consumerSession.sendReturnPacket(packet)
+                    logger.debug("Sent VM response to consumer via tunnel-return", metadata: ["size": "\(packet.count)"])
+                } catch {
+                    logger.warning("Failed to send return packet to consumer: \(error)")
+                }
             }
         }
     }

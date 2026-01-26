@@ -38,6 +38,9 @@ public enum ControlCommand: Codable {
     // Cloister service commands
     case negotiateNetwork(peerId: String, networkName: String, timeout: Int)
     case shareNetworkInvite(peerId: String, networkKey: Data, networkName: String?, timeout: Int)
+
+    // Tunnel service commands
+    case tunnelDialTest(vmId: UUID, host: String, port: UInt16)
 }
 
 /// Response from the daemon
@@ -61,6 +64,9 @@ public enum ControlResponse: Codable {
     // Cloister service responses
     case negotiateNetworkResult(NegotiateNetworkResultData)
     case shareInviteResult(ShareInviteResultData)
+
+    // Tunnel service responses
+    case tunnelDialTestResult(TunnelDialTestResultData)
 
     public struct PingResultData: Codable {
         public let peerId: String
@@ -250,6 +256,26 @@ public enum ControlResponse: Codable {
             self.success = success
             self.accepted = accepted
             self.joinedNetworkId = joinedNetworkId
+            self.error = error
+        }
+    }
+
+    // MARK: - Tunnel Service Data
+
+    public struct TunnelDialTestResultData: Codable {
+        public let success: Bool
+        public let host: String
+        public let port: UInt16
+        public let bytesReceived: Int?
+        public let sshBanner: String?
+        public let error: String?
+
+        public init(success: Bool, host: String, port: UInt16, bytesReceived: Int?, sshBanner: String?, error: String?) {
+            self.success = success
+            self.host = host
+            self.port = port
+            self.bytesReceived = bytesReceived
+            self.sshBanner = sshBanner
             self.error = error
         }
     }

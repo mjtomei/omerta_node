@@ -22,6 +22,9 @@ let package = Package(
         // Networking
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.60.0"),
 
+        // SSH client library (pure Swift, NIO-based) - for Phase 2
+        // .package(url: "https://github.com/orlandos-nl/Citadel.git", from: "0.7.0"),
+
         // Utilities
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
@@ -74,6 +77,17 @@ let package = Package(
         ),
 
         // OmertaVPN removed - WireGuard replaced by mesh tunnels (OmertaTunnel)
+
+        // SSH client with mosh-like local echo over mesh tunnels
+        .target(
+            name: "OmertaSSH",
+            dependencies: [
+                "OmertaTunnel",
+                "OmertaCore",
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            path: "Sources/OmertaSSH"
+        ),
 
         // VM management (macOS only)
         .target(
@@ -133,6 +147,7 @@ let package = Package(
                 "OmertaCore",
                 "OmertaProvider",
                 "OmertaConsumer",
+                "OmertaSSH",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
             ],

@@ -475,3 +475,65 @@ func (f *udpForwarder) Close() {
 func (f *udpForwarder) Done() <-chan struct{} {
 	return f.done
 }
+
+// TCPConnection represents an outbound TCP connection through the stack
+type TCPConnection struct {
+	conn *gonet.TCPConn
+	wq   waiter.Queue
+	mu   sync.Mutex
+}
+
+// DialTCP creates a new TCP connection to the specified address through the stack.
+// This is used for outbound connections (e.g., SSH to a VM) where the consumer
+// initiates the connection rather than receiving it from the virtual network.
+func (s *Stack) DialTCP(host string, port uint16) (*TCPConnection, error) {
+	// Parse host address
+	dstAddr, err := parseIPAddress(host)
+	if err != nil {
+		return nil, fmt.Errorf("invalid host address: %v", err)
+	}
+
+	// Create full address with port
+	fullAddr := tcpip.FullAddress{
+		Addr: dstAddr,
+		Port: port,
+	}
+
+	// Use gonet to dial - this uses the netstack's routing and generates
+	// proper SYN packets that will be sent out via the NIC callback
+	var wq waiter.Queue
+	conn, err := gonet.DialTCPWithBind(s.ctx, s.stack, tcpip.FullAddress{}, fullAddr, ipv4.ProtocolNumber)
+	if err != nil {
+		return nil, fmt.Errorf("dial failed: %v", err)
+	}
+
+	return &TCPConnection{
+		conn: conn,
+		wq:   wq,
+	}, nil
+}
+
+// Read reads data from the TCP connection
+func (tc *TCPConnection) Read(buf []byte) (int, error) {
+	return tc.conn.Read(buf)
+}
+
+// Write writes data to the TCP connection
+func (tc *TCPConnection) Write(buf []byte) (int, error) {
+	return tc.conn.Write(buf)
+}
+
+// Close closes the TCP connection
+func (tc *TCPConnection) Close() error {
+	return tc.conn.Close()
+}
+
+// SetReadDeadline sets the read deadline
+func (tc *TCPConnection) SetReadDeadline(t time.Time) error {
+	return tc.conn.SetReadDeadline(t)
+}
+
+// SetWriteDeadline sets the write deadline
+func (tc *TCPConnection) SetWriteDeadline(t time.Time) error {
+	return tc.conn.SetWriteDeadline(t)
+}

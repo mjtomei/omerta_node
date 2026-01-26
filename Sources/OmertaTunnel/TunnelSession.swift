@@ -32,6 +32,9 @@ public actor TunnelSession {
     private var returnPacketStream: AsyncStream<Data>?
     private var returnPacketContinuation: AsyncStream<Data>.Continuation?
 
+    // Custom packet forwarding (for VM bridging instead of netstack)
+    private var trafficForwardCallback: ((Data) async throws -> Void)?
+
     // Channel names
     private var messageChannel: String {
         "tunnel-data"
@@ -168,6 +171,10 @@ public actor TunnelSession {
             }
             try bridge.injectPacket(packet)
 
+        case .trafficClient:
+            // Traffic client uses dialTCP through netstack, not raw packet injection
+            throw TunnelError.trafficRoutingNotEnabled
+
         case .peer:
             throw TunnelError.trafficRoutingNotEnabled
         }
@@ -179,6 +186,79 @@ public actor TunnelSession {
         return returnPacketStream ?? AsyncStream { _ in }
     }
 
+    /// Enable dial support for making outbound TCP connections through the tunnel.
+    /// This creates a local netstack that can be used for dialTCP calls.
+    /// Outbound packets go through tunnel-traffic to the remote peer (which should be trafficExit).
+    /// Return packets come back via tunnel-return.
+    public func enableDialSupport() async throws {
+        guard state == .active else {
+            throw TunnelError.notConnected
+        }
+
+        guard role == .peer else {
+            throw TunnelError.alreadyConnected
+        }
+
+        // Create local netstack for dialTCP
+        let config = NetstackBridge.Config(
+            gatewayIP: "10.200.0.1",
+            mtu: 1500
+        )
+
+        do {
+            let bridge = try NetstackBridge(config: config)
+
+            // Wire outbound packets to tunnel-traffic channel
+            bridge.setReturnCallback { [weak self] packet in
+                Task {
+                    await self?.sendTrafficPacket(packet)
+                }
+            }
+
+            try bridge.start()
+            self.netstackBridge = bridge
+            self.role = .trafficClient
+
+            // Register handler for return packets from remote
+            try await provider.onChannel(returnChannel) { [weak self] sender, data in
+                await self?.handleClientReturnPacket(from: sender, data: data)
+            }
+
+            logger.info("Dial support enabled (traffic client)", metadata: [
+                "remotePeer": "\(remotePeer.prefix(16))..."
+            ])
+        } catch {
+            throw TunnelError.netstackError(error.localizedDescription)
+        }
+    }
+
+    /// Get the netstack bridge for dialTCP calls.
+    /// Only valid when dial support is enabled.
+    public var netstack: NetstackBridge? {
+        return netstackBridge
+    }
+
+    /// Set a callback for forwarding incoming traffic packets.
+    /// When set, traffic packets are forwarded to this callback instead of netstack.
+    /// This is used by providers to forward consumer traffic to VMs.
+    /// - Parameter callback: The callback to invoke with each incoming traffic packet
+    public func setTrafficForwardCallback(_ callback: @escaping (Data) async throws -> Void) {
+        self.trafficForwardCallback = callback
+        logger.info("Traffic forward callback set for VM bridging")
+    }
+
+    /// Send a return packet back to the consumer.
+    /// Used for VM bridging when VM responds to consumer-initiated traffic.
+    /// - Parameter packet: The packet to send back
+    public func sendReturnPacket(_ packet: Data) async throws {
+        guard state == .active else {
+            throw TunnelError.notConnected
+        }
+
+        try await provider.sendOnChannel(packet, to: remotePeer, channel: returnChannel)
+        logger.debug("Sent return packet to consumer", metadata: ["size": "\(packet.count)"])
+    }
+
     /// Disable traffic routing
     public func disableTrafficRouting() async {
         if let bridge = netstackBridge {
@@ -186,10 +266,13 @@ public actor TunnelSession {
             netstackBridge = nil
         }
 
-        if role == .trafficSource {
+        switch role {
+        case .trafficSource, .trafficClient:
             await provider.offChannel(returnChannel)
-        } else if role == .trafficExit {
+        case .trafficExit:
             await provider.offChannel(trafficChannel)
+        case .peer:
+            break
         }
 
         returnPacketContinuation?.finish()
@@ -267,12 +350,22 @@ public actor TunnelSession {
             "from": "\(sender.prefix(16))..."
         ])
 
-        // Inject into netstack
-        do {
-            try netstackBridge?.injectPacket(data)
-            logger.debug("Injected packet into netstack", metadata: ["size": "\(data.count)"])
-        } catch {
-            logger.warning("Failed to inject traffic packet: \(error)")
+        // If we have a forward callback (for VM bridging), use that instead of netstack
+        if let callback = trafficForwardCallback {
+            do {
+                try await callback(data)
+                logger.info("Forwarded traffic packet to VM", metadata: ["size": "\(data.count)"])
+            } catch {
+                logger.warning("Failed to forward traffic packet to VM: \(error)")
+            }
+        } else {
+            // No VM callback - inject into netstack for internet forwarding
+            do {
+                try netstackBridge?.injectPacket(data)
+                logger.debug("Injected packet into netstack", metadata: ["size": "\(data.count)"])
+            } catch {
+                logger.warning("Failed to inject traffic packet: \(error)")
+            }
         }
     }
 
@@ -305,5 +398,51 @@ public actor TunnelSession {
             "from": "\(sender.prefix(16))..."
         ])
         returnPacketContinuation?.yield(data)
+    }
+
+    // MARK: - Traffic Client Mode (for dialTCP)
+
+    /// Send traffic packet to remote peer (for trafficClient mode)
+    private func sendTrafficPacket(_ packet: Data) async {
+        guard role == .trafficClient else { return }
+
+        do {
+            try await provider.sendOnChannel(packet, to: remotePeer, channel: trafficChannel)
+            logger.debug("Sent traffic packet", metadata: ["size": "\(packet.count)"])
+        } catch {
+            logger.warning("Failed to send traffic packet: \(error)")
+        }
+    }
+
+    /// Handle return packet in trafficClient mode - inject into local netstack
+    private func handleClientReturnPacket(from sender: PeerId, data: Data) async {
+        logger.info("handleClientReturnPacket called", metadata: [
+            "sender": "\(sender.prefix(16))...",
+            "size": "\(data.count)",
+            "role": "\(role)"
+        ])
+
+        guard role == .trafficClient else {
+            logger.info("Ignoring client return packet - not client role", metadata: [
+                "role": "\(role)"
+            ])
+            return
+        }
+
+        guard sender == remotePeer else {
+            logger.info("Ignoring client return packet - wrong sender", metadata: [
+                "expected": "\(remotePeer.prefix(16))...",
+                "actual": "\(sender.prefix(16))..."
+            ])
+            return
+        }
+
+        // Inject into local netstack
+        do {
+            try netstackBridge?.injectPacket(data)
+            logger.info("Injected return packet into local netstack", metadata: ["size": "\(data.count)"])
+        } catch {
+            logger.warning("Failed to inject return packet: \(error)")
+        }
     }
 }

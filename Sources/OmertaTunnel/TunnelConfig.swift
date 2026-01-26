@@ -14,10 +14,12 @@ public enum TunnelState: Sendable, Equatable {
 public enum TunnelRole: Sendable, Equatable {
     /// Just messaging, no traffic routing
     case peer
-    /// Sends traffic to remote peer for exit
+    /// Sends traffic to remote peer for exit (no local netstack)
     case trafficSource
     /// Receives traffic and forwards to internet via netstack
     case trafficExit
+    /// Local netstack for dialTCP, forwards packets via tunnel (used by SSH client)
+    case trafficClient
 }
 
 /// Errors from tunnel operations

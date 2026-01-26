@@ -122,6 +122,29 @@ extern int NetstackInjectPacket(uint64_t handle, uint8_t* data, size_t len);
 // Writes to the provided pointers.
 extern int NetstackGetStats(uint64_t handle, uint32_t* tcpConns, uint32_t* udpConns);
 
+// NetstackDialTCP creates a TCP connection to the specified host:port through the stack.
+// Returns a connection handle (>0) on success, 0 on failure.
+extern uint64_t NetstackDialTCP(uint64_t stackHandle, char* host, uint16_t port);
+
+// NetstackConnRead reads data from a TCP connection.
+// Returns number of bytes read, 0 on EOF, -1 on error.
+extern int NetstackConnRead(uint64_t connHandle, uint8_t* buf, size_t maxLen);
+
+// NetstackConnWrite writes data to a TCP connection.
+// Returns number of bytes written, -1 on error.
+extern int NetstackConnWrite(uint64_t connHandle, uint8_t* buf, size_t len);
+
+// NetstackConnClose closes a TCP connection.
+extern void NetstackConnClose(uint64_t connHandle);
+
+// NetstackConnSetReadDeadline sets the read deadline in milliseconds from now.
+// Use 0 to clear the deadline.
+extern int NetstackConnSetReadDeadline(uint64_t connHandle, int64_t milliseconds);
+
+// NetstackConnSetWriteDeadline sets the write deadline in milliseconds from now.
+// Use 0 to clear the deadline.
+extern int NetstackConnSetWriteDeadline(uint64_t connHandle, int64_t milliseconds);
+
 #ifdef __cplusplus
 }
 #endif

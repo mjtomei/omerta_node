@@ -226,6 +226,10 @@ public actor MeshProviderDaemon: ChannelProvider {
             do {
                 // We're the exit point - enable netstack to process VM packets
                 try await session.enableTrafficRouting(asExit: true)
+
+                // Check if this consumer has an active VM - if so, bridge traffic to VM
+                await self.setupConsumerVMBridging(session: session, consumerPeerId: remotePeer)
+
                 await self.logIncomingSession(remotePeer: remotePeer, error: nil)
             } catch {
                 await self.logIncomingSession(remotePeer: remotePeer, error: error)
@@ -782,6 +786,40 @@ public actor MeshProviderDaemon: ChannelProvider {
             await session.leave()
             logger.info("Closed tunnel session for VM", metadata: ["vmId": "\(vmId)"])
         }
+    }
+
+    /// Set up bridging between consumer's tunnel session and their VM.
+    /// This allows consumer->VM traffic (e.g., SSH) to flow through the tunnel.
+    private func setupConsumerVMBridging(session: TunnelSession, consumerPeerId: String) async {
+        // Find VM owned by this consumer
+        guard let (vmId, _) = activeVMs.first(where: { $0.value.consumerPeerId == consumerPeerId }) else {
+            logger.debug("No active VM for consumer, skipping VM bridging", metadata: [
+                "consumer": "\(consumerPeerId.prefix(16))..."
+            ])
+            return
+        }
+
+        // Get packet capture for this VM
+        guard let capture = packetCaptures[vmId] else {
+            logger.warning("No packet capture for VM, cannot set up bridging", metadata: [
+                "vmId": "\(vmId)",
+                "consumer": "\(consumerPeerId.prefix(16))..."
+            ])
+            return
+        }
+
+        logger.info("Setting up consumer->VM bridging", metadata: [
+            "vmId": "\(vmId.uuidString.prefix(8))...",
+            "consumer": "\(consumerPeerId.prefix(16))..."
+        ])
+
+        // Set up traffic forward callback to inject packets into VM
+        await session.setTrafficForwardCallback { [capture] packet in
+            try await capture.injectFromConsumer(packet)
+        }
+
+        // Set the consumer session on packet capture for return traffic
+        await capture.setConsumerSession(session)
     }
 
     /// Send response to a consumer on their response channel

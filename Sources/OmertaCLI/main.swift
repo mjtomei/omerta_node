@@ -6,6 +6,8 @@ import OmertaVM
 import OmertaConsumer
 import OmertaProvider
 import OmertaMesh
+import OmertaTunnel
+import OmertaSSH
 import Logging
 import Crypto
 #if canImport(NetworkExtension)
@@ -209,6 +211,7 @@ struct OmertaCLI: AsyncParsableCommand {
             VPN.self,
             VM.self,
             Mesh.self,
+            Tunnel.self,
             NAT.self,
             Status.self,
             CheckDeps.self,
@@ -3020,12 +3023,213 @@ struct Ping: AsyncParsableCommand {
     }
 }
 
+// MARK: - Tunnel Command Group
+
+struct Tunnel: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        abstract: "Tunnel management commands",
+        subcommands: [
+            TunnelProxy.self,
+            TunnelTest.self
+        ]
+    )
+}
+
+struct TunnelProxy: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "proxy",
+        abstract: "Run a TCP proxy through the mesh tunnel (for SSH ProxyCommand)"
+    )
+
+    @Argument(help: "Target host (VM IP, e.g., 10.118.119.2)")
+    var host: String
+
+    @Argument(help: "Target port (default: 22)")
+    var port: UInt16 = 22
+
+    @Option(name: .long, help: "VM ID or prefix (to find the tunnel)")
+    var vm: String?
+
+    mutating func run() async throws {
+        // Find the VM and its tunnel session
+        let tracker = VMTracker()
+        let allVMs = try await tracker.loadPersistedVMs()
+        let vms = allVMs.sorted { $0.createdAt > $1.createdAt }
+
+        guard !vms.isEmpty else {
+            fputs("Error: No active VMs\n", stderr)
+            throw ExitCode.failure
+        }
+
+        let selectedVM: VMConnection
+        if let vmId = vm {
+            let matches = vms.filter {
+                $0.vmId.uuidString.lowercased().hasPrefix(vmId.lowercased())
+            }
+            guard let matched = matches.first else {
+                fputs("Error: VM not found: \(vmId)\n", stderr)
+                throw ExitCode.failure
+            }
+            selectedVM = matched
+        } else {
+            // Find VM by target IP
+            if let match = vms.first(where: { $0.vmIP == host }) {
+                selectedVM = match
+            } else {
+                // Default to most recent VM
+                selectedVM = vms[0]
+            }
+        }
+
+        // Connect to provider via mesh and establish tunnel
+        fputs("Connecting to provider for VM \(selectedVM.vmId.uuidString.prefix(8))...\n", stderr)
+
+        // Load network from store
+        let networkStore = NetworkStore.defaultStore()
+        try await networkStore.load()
+
+        guard let network = await networkStore.network(id: selectedVM.networkId) else {
+            fputs("Error: Network not found for VM. Network ID: \(selectedVM.networkId)\n", stderr)
+            throw ExitCode.failure
+        }
+
+        // Create mesh network for consumer using the network key
+        let meshConfig = MeshConfig(networkKey: network.key)
+
+        let mesh = try MeshNetwork(config: meshConfig)
+        try await mesh.start()
+        defer {
+            Task { try? await mesh.stop() }
+        }
+
+        // Connect to provider
+        let providerId = selectedVM.provider.peerId
+        fputs("Connecting to provider \(providerId.prefix(16))...\n", stderr)
+        try await mesh.connect(to: providerId)
+
+        // Create tunnel session and enable dial support
+        let tunnelManager = TunnelManager(provider: mesh)
+        let session = try await tunnelManager.createSession(with: providerId)
+
+        fputs("Enabling tunnel dial support...\n", stderr)
+        try await session.enableDialSupport()
+
+        guard let netstack = await session.netstack else {
+            fputs("Error: Failed to get netstack from session\n", stderr)
+            throw ExitCode.failure
+        }
+
+        fputs("Connecting to \(host):\(port) through tunnel...\n", stderr)
+
+        // Create SSH proxy and run it
+        let proxy = try SSHProxy.connect(via: netstack, host: host, port: port)
+        fputs("Connected. Proxying...\n", stderr)
+
+        try proxy.run()
+    }
+}
+
+struct TunnelTest: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "test",
+        abstract: "Test TCP dial through the mesh tunnel (via daemon)"
+    )
+
+    @Argument(help: "Target host:port (e.g., 10.118.119.2:22)")
+    var target: String
+
+    @Option(name: .long, help: "VM ID or prefix")
+    var vm: String?
+
+    mutating func run() async throws {
+        // Parse target
+        let parts = target.split(separator: ":")
+        guard parts.count == 2,
+              let port = UInt16(parts[1]) else {
+            print("Error: Invalid target format. Use host:port (e.g., 10.118.119.2:22)")
+            throw ExitCode.failure
+        }
+        let host = String(parts[0])
+
+        print("Testing TCP dial to \(host):\(port)...")
+
+        // Find VM
+        let tracker = VMTracker()
+        let allVMs = try await tracker.loadPersistedVMs()
+        let vms = allVMs.sorted { $0.createdAt > $1.createdAt }
+
+        guard !vms.isEmpty else {
+            print("Error: No active VMs")
+            throw ExitCode.failure
+        }
+
+        let selectedVM: VMConnection
+        if let vmId = vm {
+            let matches = vms.filter {
+                $0.vmId.uuidString.lowercased().hasPrefix(vmId.lowercased())
+            }
+            guard let matched = matches.first else {
+                print("Error: VM not found: \(vmId)")
+                throw ExitCode.failure
+            }
+            selectedVM = matched
+        } else {
+            if let match = vms.first(where: { $0.vmIP == host }) {
+                selectedVM = match
+            } else {
+                selectedVM = vms[0]
+            }
+        }
+
+        print("Using VM \(selectedVM.vmId.uuidString.prefix(8))... (provider: \(selectedVM.provider.peerId.prefix(16))...)")
+        print("Testing dial via daemon...")
+
+        // Use daemon control socket to test dial
+        let controlClient = ControlSocketClient(networkId: selectedVM.networkId)
+
+        guard controlClient.isDaemonRunning() else {
+            print("Error: omertad is not running for network '\(selectedVM.networkId.prefix(16))...'")
+            print("")
+            print("Start the daemon with:")
+            print("  omertad start")
+            throw ExitCode.failure
+        }
+
+        let command = ControlCommand.tunnelDialTest(vmId: selectedVM.vmId, host: host, port: port)
+        let response = try await controlClient.send(command, timeout: 30)
+
+        switch response {
+        case .tunnelDialTestResult(let result):
+            if result.success {
+                print("Success! Connected to \(result.host):\(result.port)")
+                if let bytes = result.bytesReceived {
+                    print("Bytes received: \(bytes)")
+                }
+                if let banner = result.sshBanner {
+                    print("SSH Banner: \(banner)")
+                }
+            } else {
+                print("Failed: \(result.error ?? "Unknown error")")
+                throw ExitCode.failure
+            }
+        case .error(let message):
+            print("Error: \(message)")
+            throw ExitCode.failure
+        default:
+            print("Unexpected response from daemon")
+            throw ExitCode.failure
+        }
+
+        print("Test complete.")
+    }
+}
+
 // MARK: - SSH Command (Top-level alias for vm connect)
 
 struct SSH: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "ssh",
-        abstract: "SSH into a VM (alias for 'omerta vm connect')"
+        abstract: "SSH into a VM"
     )
 
     @Argument(help: "VM ID or prefix. Defaults to most recent if omitted.")
@@ -3034,8 +3238,24 @@ struct SSH: AsyncParsableCommand {
     @Option(name: .long, help: "VM ID or prefix")
     var vm: String?
 
+    @Flag(name: .long, help: "Use mesh tunnel instead of direct connection")
+    var tunnel: Bool = false
+
     mutating func run() async throws {
-        // Delegate to VMConnect implementation
+        if tunnel {
+            // Use mesh tunnel SSH
+            // TODO: Implement full mesh tunnel SSH
+            // For now, guide user to use tunnel proxy with ssh
+            print("Mesh tunnel SSH not yet fully implemented.")
+            print("")
+            print("To SSH through the mesh tunnel, use:")
+            print("  ssh -o 'ProxyCommand=omerta tunnel proxy %h %p' user@vmip")
+            print("")
+            print("Or run 'omerta tunnel test <vmip>:22' to test connectivity.")
+            throw ExitCode.failure
+        }
+
+        // Delegate to VMConnect implementation (direct SSH)
         var vmConnect = VMConnect()
         vmConnect.vmIdArg = vmIdArg
         vmConnect.vm = vm
