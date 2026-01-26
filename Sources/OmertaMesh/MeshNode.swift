@@ -389,11 +389,19 @@ public actor MeshNode {
         logger.debug("MeshNode.start() - current socket port: \(currentPort?.description ?? "nil"), config.port: \(config.port)")
 
         if currentPort == nil {
-            // Detect best local IPv6 address to bind to
-            // This is important on systems with IPv6 privacy extensions (macOS)
-            // where binding to "::" causes outbound to use temporary addresses
-            // instead of the stable address we advertise to peers
-            let bindHost = EndpointUtils.getBestLocalIPv6Address() ?? "::"
+            // Determine bind address based on mode
+            let bindHost: String
+            if config.endpointValidationMode == .allowAll {
+                // Testing mode (allowLocalhost) - use IPv4 to avoid routing issues
+                // with IPv4-mapped IPv6 addresses on loopback
+                bindHost = "0.0.0.0"
+            } else {
+                // Production mode - detect best local IPv6 address to bind to
+                // This is important on systems with IPv6 privacy extensions (macOS)
+                // where binding to "::" causes outbound to use temporary addresses
+                // instead of the stable address we advertise to peers
+                bindHost = EndpointUtils.getBestLocalIPv6Address() ?? "::"
+            }
             logger.debug("MeshNode.start() - binding socket to \(bindHost):\(config.port)")
             try await socket.bind(host: bindHost, port: Int(config.port))
             logger.debug("MeshNode.start() - socket bound successfully")
@@ -1086,6 +1094,11 @@ public actor MeshNode {
     /// Check for local IPv6 addresses and update our endpoint if found
     /// This allows advertising IPv6 without waiting for a peer to report it
     private func detectLocalIPv6Endpoint() async {
+        // Skip IPv6 detection in test mode (using IPv4-only socket)
+        guard config.endpointValidationMode != .allowAll else {
+            return
+        }
+
         guard let ipv6Address = EndpointUtils.getBestLocalIPv6Address() else {
             return
         }
