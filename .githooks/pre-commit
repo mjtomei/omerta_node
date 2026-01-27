@@ -9,18 +9,61 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
 
 # Patterns that indicate sensitive data
 PATTERNS=(
+    # Private keys
     'PRIVATE KEY'
     'BEGIN RSA'
     'BEGIN DSA'
     'BEGIN EC PRIVATE'
     'BEGIN OPENSSH PRIVATE'
+    'BEGIN PGP PRIVATE'
+
+    # Passwords and secrets in code
     'password\s*[:=]\s*["'"'"'][^"'"'"']+'
     'api[_-]?key\s*[:=]\s*["'"'"'][^"'"'"']+'
     'secret[_-]?key\s*[:=]\s*["'"'"'][^"'"'"']+'
+
+    # AWS
     'AWS_ACCESS_KEY_ID\s*[:=]'
     'AWS_SECRET_ACCESS_KEY\s*[:=]'
+
+    # Common API keys
     'ANTHROPIC_API_KEY\s*[:=]'
     'OPENAI_API_KEY\s*[:=]'
+
+    # GitHub tokens
+    'ghp_[A-Za-z0-9]{36}'
+    'gho_[A-Za-z0-9]{36}'
+    'ghu_[A-Za-z0-9]{36}'
+    'ghs_[A-Za-z0-9]{36}'
+    'ghr_[A-Za-z0-9]{36}'
+
+    # Other service tokens
+    'sk_live_[A-Za-z0-9]+'
+    'rk_live_[A-Za-z0-9]+'
+    'xox[baprs]-[A-Za-z0-9-]+'
+    'SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}'
+    'npm_[A-Za-z0-9]{36}'
+    'pypi-[A-Za-z0-9_-]+'
+
+    # Credentials in URLs (any protocol)
+    '://[^/:]+:[^@]+@'
+
+    # Bearer tokens (20+ chars to reduce false positives)
+    '[Bb]earer\s+[A-Za-z0-9_-]{20,}'
+)
+
+# File extensions that should never be committed
+BLOCKED_EXTENSIONS=(
+    '\.pem$'
+    '\.key$'
+    '\.p12$'
+    '\.pfx$'
+    '\.keystore$'
+    '\.jks$'
+    'id_rsa$'
+    'id_dsa$'
+    'id_ecdsa$'
+    'id_ed25519$'
 )
 
 # Get list of staged files
@@ -31,6 +74,19 @@ if [ -z "$STAGED_FILES" ]; then
 fi
 
 FOUND=0
+
+# Check for blocked file extensions
+for file in $STAGED_FILES; do
+    for ext in "${BLOCKED_EXTENSIONS[@]}"; do
+        if [[ "$file" =~ $ext ]]; then
+            echo "ERROR: Potential private key file: $file"
+            echo "  Files with extension matching '$ext' should not be committed."
+            echo "  Add to .gitignore or use a secrets manager."
+            FOUND=1
+        fi
+    done
+done
+
 for file in $STAGED_FILES; do
     # Skip binary files
     if [[ "$file" =~ \.(png|jpg|gif|ico|woff|ttf|eot|pdf|zip|tar|gz|exe|dll|so|dylib)$ ]]; then
