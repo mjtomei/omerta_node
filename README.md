@@ -460,3 +460,9 @@ Contributions are welcome! Please read CONTRIBUTING.md for guidelines.
 - Network discovery via Kademlia DHT
 - VPN tunneling via WireGuard
 - gRPC and Protocol Buffers for serialization
+
+## Testing
+
+```bash
+swift test
+```
