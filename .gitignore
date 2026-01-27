@@ -72,3 +72,20 @@ simulations/transactions/*_generated.py
 CLAUDE.md
 DEPLOYMENT.md
 Sources/CNetstack/libnetstack.a
+
+# Infrastructure documentation with sensitive details
+CLAUDE.md
+DEPLOYMENT.md
+
+# Config files that may contain secrets
+Config/config.json
+Config/networks.json
+Config/identity/
+
+# SSH keys
+*.pem
+
+# Environment files
+.env
+.env.*
+
