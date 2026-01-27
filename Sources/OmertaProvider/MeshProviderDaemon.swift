@@ -218,22 +218,16 @@ public actor MeshProviderDaemon: ChannelProvider {
         // Initialize tunnel manager for VM traffic routing
         tunnelManager = TunnelManager(provider: mesh)
 
-        // Set up handler for incoming tunnel sessions (when we're the consumer/exit point)
-        // This enables traffic routing so VM packets are routed to the internet
+        // Set up handler for incoming tunnel sessions (when consumer initiates connection)
+        // This allows us to bridge consumer traffic to their VM
         await tunnelManager?.setSessionEstablishedHandler { [weak self] session in
             guard let self = self else { return }
-            let remoteMachine = await session.remoteMachine
-            do {
-                // We're the exit point - enable netstack to process VM packets
-                try await session.enableTrafficRouting(asExit: true)
+            let remoteMachine = await session.remoteMachineId
 
-                // Check if this consumer has an active VM - if so, bridge traffic to VM
-                await self.setupConsumerVMBridging(session: session, consumerMachineId: remoteMachine)
+            // Check if this consumer has an active VM - if so, bridge traffic to VM
+            await self.setupConsumerVMBridging(session: session, consumerMachineId: remoteMachine)
 
-                await self.logIncomingSession(remoteMachine: remoteMachine, error: nil)
-            } catch {
-                await self.logIncomingSession(remoteMachine: remoteMachine, error: error)
-            }
+            await self.logIncomingSession(remoteMachine: remoteMachine, error: nil)
         }
 
         try await tunnelManager?.start()
@@ -278,7 +272,7 @@ public actor MeshProviderDaemon: ChannelProvider {
         packetCaptures.removeAll()
 
         for (vmId, session) in tunnelSessions {
-            await session.leave()
+            await session.close()
             logger.info("Closed tunnel session during shutdown", metadata: ["vmId": "\(vmId)"])
         }
         tunnelSessions.removeAll()
@@ -725,9 +719,6 @@ public actor MeshProviderDaemon: ChannelProvider {
             let session = try await tunnelManager.createSession(withMachine: consumerMachineId)
             tunnelSessions[vmId] = session
 
-            // Enable traffic routing - provider is source, consumer is exit
-            try await session.enableTrafficRouting(asExit: false)
-
             logger.info("Tunnel session created for VM", metadata: [
                 "vmId": "\(vmId)",
                 "consumer": "\(consumerMachineId.prefix(16))..."
@@ -788,7 +779,7 @@ public actor MeshProviderDaemon: ChannelProvider {
 
         // Then close tunnel session
         if let session = tunnelSessions.removeValue(forKey: vmId) {
-            await session.leave()
+            await session.close()
             logger.info("Closed tunnel session for VM", metadata: ["vmId": "\(vmId)"])
         }
     }
@@ -824,9 +815,10 @@ public actor MeshProviderDaemon: ChannelProvider {
             "consumer": "\(consumerMachineId.prefix(16))..."
         ])
 
-        // Set up traffic forward callback to inject packets into VM
-        await session.setTrafficForwardCallback { [capture] packet in
-            try await capture.injectFromConsumer(packet)
+        // Set up receive handler to inject consumer packets into VM
+        await session.onReceive { [weak capture] packet in
+            guard let capture = capture else { return }
+            try? await capture.injectFromConsumer(packet)
         }
 
         // Set the consumer session on packet capture for return traffic

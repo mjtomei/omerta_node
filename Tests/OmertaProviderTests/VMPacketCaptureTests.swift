@@ -121,7 +121,7 @@ final class VMPacketCaptureTests: XCTestCase {
         let vmId = UUID()
         let mockSource = MockPacketSource()
         let provider = MockChannelProvider()
-        let session = TunnelSession(remoteMachine: "test-peer", provider: provider)
+        let session = TunnelSession(remoteMachineId: "test-peer", channel: "data", provider: provider)
 
         let capture = VMPacketCapture(vmId: vmId, packetSource: mockSource, tunnelSession: session)
 
@@ -136,11 +136,10 @@ final class VMPacketCaptureTests: XCTestCase {
         let vmId = UUID()
         let mockSource = MockPacketSource()
         let provider = MockChannelProvider()
-        let session = TunnelSession(remoteMachine: "test-peer", provider: provider)
+        let session = TunnelSession(remoteMachineId: "test-peer", channel: "data", provider: provider)
 
         // Activate session first
         await session.activate()
-        try await session.enableTrafficRouting(asExit: false)
 
         let capture = VMPacketCapture(vmId: vmId, packetSource: mockSource, tunnelSession: session)
 
@@ -150,7 +149,7 @@ final class VMPacketCaptureTests: XCTestCase {
         var isRunning = await capture.isRunning
         XCTAssertTrue(isRunning)
 
-        let startCalled = await mockSource.startCalled
+        let startCalled = mockSource.startCalled
         XCTAssertTrue(startCalled)
 
         // Stop capture
@@ -159,7 +158,7 @@ final class VMPacketCaptureTests: XCTestCase {
         isRunning = await capture.isRunning
         XCTAssertFalse(isRunning)
 
-        let stopCalled = await mockSource.stopCalled
+        let stopCalled = mockSource.stopCalled
         XCTAssertTrue(stopCalled)
     }
 
@@ -167,10 +166,9 @@ final class VMPacketCaptureTests: XCTestCase {
         let vmId = UUID()
         let mockSource = MockPacketSource()
         let provider = MockChannelProvider()
-        let session = TunnelSession(remoteMachine: "test-peer", provider: provider)
+        let session = TunnelSession(remoteMachineId: "test-peer", channel: "data", provider: provider)
 
         await session.activate()
-        try await session.enableTrafficRouting(asExit: false)
 
         let capture = VMPacketCapture(vmId: vmId, packetSource: mockSource, tunnelSession: session)
 
@@ -190,27 +188,26 @@ final class VMPacketCaptureTests: XCTestCase {
         let vmId = UUID()
         let mockSource = MockPacketSource()
         let provider = MockChannelProvider()
-        let session = TunnelSession(remoteMachine: "test-peer", provider: provider)
+        let session = TunnelSession(remoteMachineId: "test-peer", channel: "data", provider: provider)
 
-        // Activate session as traffic source
+        // Activate session
         await session.activate()
-        try await session.enableTrafficRouting(asExit: false)
 
         let capture = VMPacketCapture(vmId: vmId, packetSource: mockSource, tunnelSession: session)
         try await capture.start()
 
         // Inject a packet as if from VM
         let testPacket = Data([0x45, 0x00, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00])
-        await mockSource.injectPacket(testPacket)
+        mockSource.injectPacket(testPacket)
 
         // Give time for async forwarding
         try await Task.sleep(nanoseconds: 100_000_000) // 100ms
 
-        // Verify packet was sent through tunnel
+        // Verify packet was sent through tunnel (wire channel is "tunnel:data")
         let sentPackets = await provider.sentPackets
         XCTAssertEqual(sentPackets.count, 1)
         XCTAssertEqual(sentPackets[0].0, testPacket)
-        XCTAssertEqual(sentPackets[0].2, "tunnel-traffic")
+        XCTAssertEqual(sentPackets[0].2, "tunnel:data")
 
         await capture.stop()
     }
@@ -219,24 +216,24 @@ final class VMPacketCaptureTests: XCTestCase {
         let vmId = UUID()
         let mockSource = MockPacketSource()
         let provider = MockChannelProvider()
-        let session = TunnelSession(remoteMachine: "test-peer", provider: provider)
+        let session = TunnelSession(remoteMachineId: "test-peer", channel: "data", provider: provider)
 
-        // Activate session as traffic source (to receive return packets)
+        // Activate session
         await session.activate()
-        try await session.enableTrafficRouting(asExit: false)
 
         let capture = VMPacketCapture(vmId: vmId, packetSource: mockSource, tunnelSession: session)
         try await capture.start()
 
-        // Simulate receiving a return packet from tunnel
+        // Simulate receiving a packet via the session's channel handler
+        // The wire channel is "tunnel:data"
         let returnPacket = Data([0x45, 0x00, 0x00, 0x20, 0x00, 0x02, 0x00, 0x00])
-        await provider.simulateReceive(from: "test-peer", data: returnPacket, channel: "tunnel-return")
+        await provider.simulateReceive(from: "test-peer", data: returnPacket, channel: "tunnel:data")
 
         // Give time for async forwarding
         try await Task.sleep(nanoseconds: 100_000_000) // 100ms
 
         // Verify packet was written to VM
-        let writtenPackets = await mockSource.writtenPackets
+        let writtenPackets = mockSource.writtenPackets
         XCTAssertEqual(writtenPackets.count, 1)
         XCTAssertEqual(writtenPackets[0], returnPacket)
 
@@ -247,17 +244,16 @@ final class VMPacketCaptureTests: XCTestCase {
         let vmId = UUID()
         let mockSource = MockPacketSource()
         let provider = MockChannelProvider()
-        let session = TunnelSession(remoteMachine: "test-peer", provider: provider)
+        let session = TunnelSession(remoteMachineId: "test-peer", channel: "data", provider: provider)
 
         await session.activate()
-        try await session.enableTrafficRouting(asExit: false)
 
         let capture = VMPacketCapture(vmId: vmId, packetSource: mockSource, tunnelSession: session)
         try await capture.start()
 
         // Send packets in both directions
         let outPacket = Data([0x45, 0x00, 0x00, 0x14])
-        await mockSource.injectPacket(outPacket)
+        mockSource.injectPacket(outPacket)
 
         try await Task.sleep(nanoseconds: 100_000_000) // 100ms
 
@@ -272,10 +268,9 @@ final class VMPacketCaptureTests: XCTestCase {
         let vmId = UUID()
         let mockSource = MockPacketSource()
         let provider = MockChannelProvider()
-        let session = TunnelSession(remoteMachine: "test-peer", provider: provider)
+        let session = TunnelSession(remoteMachineId: "test-peer", channel: "data", provider: provider)
 
         await session.activate()
-        try await session.enableTrafficRouting(asExit: false)
 
         let capture = VMPacketCapture(vmId: vmId, packetSource: mockSource, tunnelSession: session)
 
@@ -288,10 +283,10 @@ final class VMPacketCaptureTests: XCTestCase {
         XCTAssertFalse(isRunning)
 
         // Verify source was stopped
-        let stopCalled = await mockSource.stopCalled
+        let stopCalled = mockSource.stopCalled
         XCTAssertTrue(stopCalled)
 
-        let sourceRunning = await mockSource.isRunning
+        let sourceRunning = mockSource.isRunning
         XCTAssertFalse(sourceRunning)
     }
 
@@ -299,14 +294,14 @@ final class VMPacketCaptureTests: XCTestCase {
         let vmId = UUID()
         let mockSource = MockPacketSource()
         let provider = MockChannelProvider()
-        let session = TunnelSession(remoteMachine: "test-peer", provider: provider)
+        let session = TunnelSession(remoteMachineId: "test-peer", channel: "data", provider: provider)
 
         let capture = VMPacketCapture(vmId: vmId, packetSource: mockSource, tunnelSession: session)
 
         // Stop without starting should not crash
         await capture.stop()
 
-        let stopCalled = await mockSource.stopCalled
+        let stopCalled = mockSource.stopCalled
         XCTAssertFalse(stopCalled) // stop() should return early
 
         let isRunning = await capture.isRunning

@@ -1156,89 +1156,18 @@ struct Start: AsyncParsableCommand {
             "provider": "\(vm.provider.peerId.prefix(16))..."
         ])
 
-        do {
-            // Create tunnel session with dial support
-            let mesh = await daemon.mesh
-            let tunnelManager = TunnelManager(provider: mesh)
-            try await tunnelManager.start()
-
-            // Look up the provider's machineId from their peerId
-            guard let registry = await mesh.machinePeerRegistry,
-                  let providerMachineId = await registry.getMostRecentMachine(for: vm.provider.peerId) else {
-                return .tunnelDialTestResult(ControlResponse.TunnelDialTestResultData(
-                    success: false,
-                    host: host,
-                    port: port,
-                    bytesReceived: nil,
-                    sshBanner: nil,
-                    error: "Unknown provider machine for peerId: \(vm.provider.peerId.prefix(16))..."
-                ))
-            }
-
-            let session = try await tunnelManager.createSession(withMachine: providerMachineId)
-
-            // Enable dial support (creates local netstack)
-            try await session.enableDialSupport()
-
-            guard let netstack = await session.netstack else {
-                await session.leave()
-                return .tunnelDialTestResult(ControlResponse.TunnelDialTestResultData(
-                    success: false,
-                    host: host,
-                    port: port,
-                    bytesReceived: nil,
-                    sshBanner: nil,
-                    error: "Failed to initialize netstack"
-                ))
-            }
-
-            logger.info("Netstack initialized, dialing \(host):\(port)...")
-
-            // Try to dial TCP
-            let connection = try netstack.dialTCP(host: host, port: port)
-            defer { connection.close() }
-
-            // Set read timeout
-            connection.setReadDeadline(milliseconds: 5000)
-
-            // Try to read SSH banner (if port 22)
-            var sshBanner: String? = nil
-            var bytesReceived: Int = 0
-
-            if let data = try connection.read(maxLength: 256) {
-                bytesReceived = data.count
-                if let banner = String(data: data, encoding: .utf8) {
-                    sshBanner = banner.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-                }
-            }
-
-            await session.leave()
-
-            logger.info("Tunnel dial test successful", metadata: [
-                "bytesReceived": "\(bytesReceived)",
-                "sshBanner": "\(sshBanner ?? "none")"
-            ])
-
-            return .tunnelDialTestResult(ControlResponse.TunnelDialTestResultData(
-                success: true,
-                host: host,
-                port: port,
-                bytesReceived: bytesReceived,
-                sshBanner: sshBanner,
-                error: nil
-            ))
-
-        } catch {
-            logger.error("Tunnel dial test failed", metadata: ["error": "\(error)"])
-            return .tunnelDialTestResult(ControlResponse.TunnelDialTestResultData(
-                success: false,
-                host: host,
-                port: port,
-                bytesReceived: nil,
-                sshBanner: nil,
-                error: error.localizedDescription
-            ))
-        }
+        // Tunnel dial test is temporarily disabled - netstack dial support
+        // has been moved out of TunnelSession and will be available via OmertaSSH.
+        // Use 'omerta ssh' instead once implemented.
+        logger.warning("Tunnel dial test temporarily disabled - use 'omerta ssh' when available")
+        return .tunnelDialTestResult(ControlResponse.TunnelDialTestResultData(
+            success: false,
+            host: host,
+            port: port,
+            bytesReceived: nil,
+            sshBanner: nil,
+            error: "Tunnel dial test temporarily disabled - netstack dial support is being moved to OmertaSSH"
+        ))
     }
 
     /// Release all consumer VMs during shutdown

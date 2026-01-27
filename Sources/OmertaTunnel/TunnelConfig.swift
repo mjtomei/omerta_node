@@ -1,6 +1,18 @@
 // TunnelConfig.swift - Configuration and types for tunnel sessions
 
 import Foundation
+import OmertaMesh
+
+/// Uniquely identifies a tunnel session by (machineId, channel)
+public struct TunnelSessionKey: Hashable, Sendable {
+    public let remoteMachineId: MachineId
+    public let channel: String
+
+    public init(remoteMachineId: MachineId, channel: String) {
+        self.remoteMachineId = remoteMachineId
+        self.channel = channel
+    }
+}
 
 /// Current state of a tunnel session
 public enum TunnelState: Sendable, Equatable {
@@ -10,25 +22,11 @@ public enum TunnelState: Sendable, Equatable {
     case failed(String)
 }
 
-/// Role in traffic routing
-public enum TunnelRole: Sendable, Equatable {
-    /// Just messaging, no traffic routing
-    case peer
-    /// Sends traffic to remote peer for exit (no local netstack)
-    case trafficSource
-    /// Receives traffic and forwards to internet via netstack
-    case trafficExit
-    /// Local netstack for dialTCP, forwards packets via tunnel (used by SSH client)
-    case trafficClient
-}
-
 /// Errors from tunnel operations
 public enum TunnelError: Error, LocalizedError, Sendable, Equatable {
     case notConnected
     case alreadyConnected
-    case peerNotFound(String)
-    case trafficRoutingNotEnabled
-    case netstackError(String)
+    case machineNotFound(String)
     case timeout
     case sessionRejected
 
@@ -38,16 +36,12 @@ public enum TunnelError: Error, LocalizedError, Sendable, Equatable {
             return "Session not connected"
         case .alreadyConnected:
             return "Session already connected"
-        case .peerNotFound(let peerId):
-            return "Peer not found: \(peerId)"
-        case .trafficRoutingNotEnabled:
-            return "Traffic routing not enabled"
-        case .netstackError(let message):
-            return "Netstack error: \(message)"
+        case .machineNotFound(let machineId):
+            return "Machine not found: \(machineId)"
         case .timeout:
             return "Operation timed out"
         case .sessionRejected:
-            return "Session rejected by peer"
+            return "Session rejected by remote machine"
         }
     }
 }

@@ -104,7 +104,7 @@ final class TunnelIntegrationTests: XCTestCase {
         // Set up session handler on mesh2 to accept
         let sessionEstablished = expectation(description: "Session established on mesh2")
         await tunnel2.setSessionEstablishedHandler { session in
-            let peer = await session.remoteMachine
+            let peer = await session.remoteMachineId
             XCTAssertEqual(peer, identity1.peerId)
             sessionEstablished.fulfill()
         }
@@ -114,7 +114,7 @@ final class TunnelIntegrationTests: XCTestCase {
 
         // Verify session created
         XCTAssertNotNil(session1)
-        let remotePeer = await session1.remoteMachine
+        let remotePeer = await session1.remoteMachineId
         XCTAssertEqual(remotePeer, identity2.peerId)
 
         // Wait for mesh2 to receive and accept session
@@ -181,18 +181,15 @@ final class TunnelIntegrationTests: XCTestCase {
             }
         }
 
-        // Set up receiver on mesh2
+        // Set up receiver on mesh2 using callback-based onReceive
         let messageReceived = expectation(description: "Message received on mesh2")
         var receivedData: Data?
 
         await tunnel2.setSessionEstablishedHandler { session in
-            // Start receiving in background
-            Task {
-                for await data in await session.receive() {
-                    receivedData = data
-                    messageReceived.fulfill()
-                    break
-                }
+            // Set up receive callback
+            await session.onReceive { data in
+                receivedData = data
+                messageReceived.fulfill()
             }
         }
 
@@ -275,34 +272,28 @@ final class TunnelIntegrationTests: XCTestCase {
 
         await tunnel2.setSessionEstablishedHandler { session in
             session2 = session
+            // Set up receive callback to handle message and send reply
+            await session.onReceive { data in
+                if String(data: data, encoding: .utf8) == "Hello from mesh1" {
+                    message1to2Received.fulfill()
+                    // Send reply
+                    try? await session.send(Data("Reply from mesh2".utf8))
+                }
+            }
         }
 
         let session1 = try await tunnel1.createSession(withMachine: identity2.peerId)
         try await Task.sleep(nanoseconds: 300_000_000)
 
-        guard let s2 = session2 else {
+        guard session2 != nil else {
             XCTFail("Session not established on mesh2")
             return
         }
 
-        // Set up receivers
-        Task {
-            for await data in await session1.receive() {
-                if String(data: data, encoding: .utf8) == "Reply from mesh2" {
-                    message2to1Received.fulfill()
-                }
-                break
-            }
-        }
-
-        Task {
-            for await data in await s2.receive() {
-                if String(data: data, encoding: .utf8) == "Hello from mesh1" {
-                    message1to2Received.fulfill()
-                    // Send reply
-                    try? await s2.send(Data("Reply from mesh2".utf8))
-                }
-                break
+        // Set up receive callback on session1 for the reply
+        await session1.onReceive { data in
+            if String(data: data, encoding: .utf8) == "Reply from mesh2" {
+                message2to1Received.fulfill()
             }
         }
 
@@ -395,179 +386,6 @@ final class TunnelIntegrationTests: XCTestCase {
         if let s2 = session2 {
             let state = await s2.state
             XCTAssertEqual(state, .disconnected)
-        }
-    }
-
-    // MARK: - Traffic Routing Tests
-
-    /// Test that traffic routing can be enabled on both ends
-    func testTrafficRoutingSetup() async throws {
-        let identity1 = IdentityKeypair()
-        let identity2 = IdentityKeypair()
-
-        let port1 = basePort + 9
-        let port2 = basePort + 10
-
-        let config1 = MeshConfig(
-            encryptionKey: testEncryptionKey,
-            port: port1,
-            keepaliveInterval: 1,
-            connectionTimeout: 5,
-            allowLocalhost: true
-        )
-
-        let config2 = MeshConfig(
-            encryptionKey: testEncryptionKey,
-            port: port2,
-            keepaliveInterval: 1,
-            connectionTimeout: 5,
-            bootstrapPeers: ["\(identity1.peerId)@127.0.0.1:\(port1)"],
-            allowLocalhost: true
-        )
-
-        let mesh1 = MeshNetwork(identity: identity1, config: config1)
-        let mesh2 = MeshNetwork(identity: identity2, config: config2)
-
-        defer {
-            Task {
-                await mesh1.stop()
-                await mesh2.stop()
-            }
-        }
-
-        try await mesh1.start()
-        try await mesh2.start()
-        try await ensureMeshConnectivity(
-            mesh1: mesh1, mesh2: mesh2,
-            identity1: identity1, identity2: identity2,
-            port1: port1, port2: port2
-        )
-
-        let tunnel1 = TunnelManager(provider: mesh1)
-        let tunnel2 = TunnelManager(provider: mesh2)
-
-        try await tunnel1.start()
-        try await tunnel2.start()
-
-        defer {
-            Task {
-                await tunnel1.stop()
-                await tunnel2.stop()
-            }
-        }
-
-        var session2: TunnelSession?
-        await tunnel2.setSessionEstablishedHandler { session in
-            session2 = session
-            // Enable as exit point
-            try? await session.enableTrafficRouting(asExit: true)
-        }
-
-        let session1 = try await tunnel1.createSession(withMachine: identity2.peerId)
-        try await Task.sleep(nanoseconds: 300_000_000)
-
-        // Enable as source on session1
-        try await session1.enableTrafficRouting(asExit: false)
-
-        // Verify roles
-        let role1 = await session1.role
-        XCTAssertEqual(role1, .trafficSource)
-
-        if let s2 = session2 {
-            let role2 = await s2.role
-            XCTAssertEqual(role2, .trafficExit)
-        } else {
-            XCTFail("Session2 not established")
-        }
-    }
-
-    /// Test that packets injected by source are received by exit
-    func testPacketForwarding() async throws {
-        let identity1 = IdentityKeypair()
-        let identity2 = IdentityKeypair()
-
-        let port1 = basePort + 11
-        let port2 = basePort + 12
-
-        let config1 = MeshConfig(
-            encryptionKey: testEncryptionKey,
-            port: port1,
-            keepaliveInterval: 1,
-            connectionTimeout: 5,
-            allowLocalhost: true
-        )
-
-        let config2 = MeshConfig(
-            encryptionKey: testEncryptionKey,
-            port: port2,
-            keepaliveInterval: 1,
-            connectionTimeout: 5,
-            bootstrapPeers: ["\(identity1.peerId)@127.0.0.1:\(port1)"],
-            allowLocalhost: true
-        )
-
-        let mesh1 = MeshNetwork(identity: identity1, config: config1)
-        let mesh2 = MeshNetwork(identity: identity2, config: config2)
-
-        defer {
-            Task {
-                await mesh1.stop()
-                await mesh2.stop()
-            }
-        }
-
-        try await mesh1.start()
-        try await mesh2.start()
-        try await ensureMeshConnectivity(
-            mesh1: mesh1, mesh2: mesh2,
-            identity1: identity1, identity2: identity2,
-            port1: port1, port2: port2
-        )
-
-        let tunnel1 = TunnelManager(provider: mesh1)
-        let tunnel2 = TunnelManager(provider: mesh2)
-
-        try await tunnel1.start()
-        try await tunnel2.start()
-
-        defer {
-            Task {
-                await tunnel1.stop()
-                await tunnel2.stop()
-            }
-        }
-
-        var session2: TunnelSession?
-        await tunnel2.setSessionEstablishedHandler { session in
-            session2 = session
-            try? await session.enableTrafficRouting(asExit: true)
-        }
-
-        let session1 = try await tunnel1.createSession(withMachine: identity2.peerId)
-        try await Task.sleep(nanoseconds: 300_000_000)
-
-        try await session1.enableTrafficRouting(asExit: false)
-
-        // Create a minimal IPv4 packet (header only, 20 bytes)
-        // Version=4, IHL=5, Total Length=20, rest zeros
-        var packet = Data(count: 20)
-        packet[0] = 0x45  // Version 4, IHL 5
-        packet[2] = 0x00  // Total length high byte
-        packet[3] = 0x14  // Total length low byte (20)
-
-        // Inject packet from source
-        try await session1.injectPacket(packet)
-
-        // The packet should reach netstack on session2
-        // We can't easily verify netstack received it without more instrumentation,
-        // but the fact that injectPacket didn't throw means it was sent successfully
-        // and session2's netstack would process it (though it won't generate a response
-        // for an invalid/incomplete packet)
-
-        // Verify session2 is indeed the exit
-        if let s2 = session2 {
-            let role = await s2.role
-            XCTAssertEqual(role, .trafficExit)
         }
     }
 
@@ -671,13 +489,10 @@ final class TunnelIntegrationTests: XCTestCase {
 
         await tunnel2.setSessionEstablishedHandler { session in
             sessionEstablished.fulfill()
-            // Start receiving
-            Task {
-                for await data in await session.receive() {
-                    receivedData = data
-                    messageReceived.fulfill()
-                    break
-                }
+            // Set up receive callback
+            await session.onReceive { data in
+                receivedData = data
+                messageReceived.fulfill()
             }
         }
 
@@ -697,7 +512,11 @@ final class TunnelIntegrationTests: XCTestCase {
         XCTAssertEqual(receivedData, testMessage)
     }
 
-    // Note: For full NAT behavior simulation (symmetric NAT, port-restricted cone, etc.),
+    // Note: Traffic routing tests (enableTrafficRouting, injectPacket, role)
+    // have been removed. Traffic routing functionality will be moved to
+    // OmertaNetwork in a future phase.
+    //
+    // For full NAT behavior simulation (symmetric NAT, port-restricted cone, etc.),
     // use the VirtualNetwork and SimulatedNAT infrastructure from OmertaMeshTests.
     // Those tests operate at the mesh layer and verify NAT traversal mechanisms.
     // The tunnel layer (this file) tests session/messaging on top of whatever

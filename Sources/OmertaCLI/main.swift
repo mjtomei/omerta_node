@@ -3107,32 +3107,11 @@ struct TunnelProxy: AsyncParsableCommand {
         fputs("Connecting to provider \(providerId.prefix(16))...\n", stderr)
         try await mesh.connect(to: providerId)
 
-        // Look up the provider's machineId from their peerId
-        guard let registry = await mesh.machinePeerRegistry,
-              let providerMachineId = await registry.getMostRecentMachine(for: providerId) else {
-            fputs("Error: Unknown provider machine for peerId: \(providerId.prefix(16))...\n", stderr)
-            throw ExitCode.failure
-        }
-
-        // Create tunnel session and enable dial support
-        let tunnelManager = TunnelManager(provider: mesh)
-        let session = try await tunnelManager.createSession(withMachine: providerMachineId)
-
-        fputs("Enabling tunnel dial support...\n", stderr)
-        try await session.enableDialSupport()
-
-        guard let netstack = await session.netstack else {
-            fputs("Error: Failed to get netstack from session\n", stderr)
-            throw ExitCode.failure
-        }
-
-        fputs("Connecting to \(host):\(port) through tunnel...\n", stderr)
-
-        // Create SSH proxy and run it
-        let proxy = try SSHProxy.connect(via: netstack, host: host, port: port)
-        fputs("Connected. Proxying...\n", stderr)
-
-        try proxy.run()
+        // Tunnel proxy is temporarily disabled - netstack dial support
+        // has been moved out of TunnelSession and will be available via 'omerta ssh'.
+        fputs("Error: Tunnel proxy temporarily disabled - netstack dial support is being moved to OmertaSSH\n", stderr)
+        fputs("Use 'omerta ssh' command when available.\n", stderr)
+        throw ExitCode.failure
     }
 }
 

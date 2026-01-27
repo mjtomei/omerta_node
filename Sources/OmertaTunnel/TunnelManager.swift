@@ -1,6 +1,6 @@
-// TunnelManager.swift - Peer session management for mesh networks
+// TunnelManager.swift - Machine session management for mesh networks
 //
-// This utility manages peer-to-peer sessions over a mesh network.
+// This utility manages machine-to-machine sessions over a mesh network.
 // It is agnostic to how the network was created (Cloister, manual key, etc.)
 // and assumes a simple topology: two endpoints (optionally with relay).
 
@@ -8,7 +8,7 @@ import Foundation
 import OmertaMesh
 import Logging
 
-/// TunnelManager provides session management for peer communication over a mesh.
+/// TunnelManager provides session management for machine communication over a mesh.
 ///
 /// Usage:
 /// ```swift
@@ -23,19 +23,22 @@ import Logging
 /// // Create session with the remote machine
 /// let session = try await manager.createSession(withMachine: remoteMachineId)
 ///
-/// // Send data
-/// try await session.send(data)
-///
-/// // Receive data
-/// for await data in session.receive() {
+/// // Set up receive handler
+/// await session.onReceive { data in
 ///     print("Received \(data.count) bytes")
 /// }
+///
+/// // Send data
+/// try await session.send(data)
 /// ```
 public actor TunnelManager {
     private let provider: any ChannelProvider
     private let logger: Logger
 
-    /// The current session (only one peer expected)
+    /// Default channel for sessions (will be configurable in Phase 2)
+    private let defaultChannel = "data"
+
+    /// The current session (only one machine expected - Phase 2 will add session pool)
     private var session: TunnelSession?
 
     /// Whether the manager is running
@@ -77,7 +80,7 @@ public actor TunnelManager {
         await provider.offChannel(handshakeChannel)
 
         if let session = session {
-            await session.leave()
+            await session.close()
             self.session = nil
         }
 
@@ -106,9 +109,9 @@ public actor TunnelManager {
             throw TunnelError.notConnected
         }
 
-        // Only one session at a time in this simple model
+        // Only one session at a time in this simple model (Phase 2 will add session pool)
         if let existing = session {
-            await existing.leave()
+            await existing.close()
         }
 
         logger.info("Creating session", metadata: ["machine": "\(machine)"])
@@ -120,7 +123,8 @@ public actor TunnelManager {
 
         // Create session (don't wait for ack in simple model)
         let newSession = TunnelSession(
-            remoteMachine: machine,
+            remoteMachineId: machine,
+            channel: defaultChannel,
             provider: provider
         )
 
@@ -142,11 +146,11 @@ public actor TunnelManager {
             // Notify remote machine
             let handshake = SessionHandshake(type: .close)
             if let data = try? JSONEncoder().encode(handshake) {
-                let machine = session.remoteMachine
+                let machine = await session.remoteMachineId
                 try? await provider.sendOnChannel(data, toMachine: machine, channel: handshakeChannel)
             }
 
-            await session.leave()
+            await session.close()
             self.session = nil
             logger.info("Session closed")
         }
@@ -174,12 +178,13 @@ public actor TunnelManager {
             if accept {
                 // Close existing session if any
                 if let existing = session {
-                    await existing.leave()
+                    await existing.close()
                 }
 
                 // Create new session
                 let newSession = TunnelSession(
-                    remoteMachine: machineId,
+                    remoteMachineId: machineId,
+                    channel: defaultChannel,
                     provider: provider
                 )
                 await newSession.activate()
@@ -212,8 +217,8 @@ public actor TunnelManager {
             logger.info("Session rejected by machine", metadata: ["machine": "\(machineId)"])
 
         case .close:
-            if let session = session, session.remoteMachine == machineId {
-                await session.leave()
+            if let session = session, await session.remoteMachineId == machineId {
+                await session.close()
                 self.session = nil
                 logger.info("Session closed by machine", metadata: ["machine": "\(machineId)"])
             }

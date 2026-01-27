@@ -46,7 +46,6 @@ public actor VMPacketCapture {
 
     // Tasks for packet forwarding
     private var outboundTask: Task<Void, Never>?
-    private var inboundTask: Task<Void, Never>?
 
     // Stats
     private var packetsToTunnel: UInt64 = 0
@@ -80,14 +79,14 @@ public actor VMPacketCapture {
         // Start the packet source
         try await packetSource.start()
 
+        // Set up inbound forwarding via callback (Tunnel -> VM)
+        await tunnelSession.onReceive { [weak self] packet in
+            await self?.handleInboundPacket(packet)
+        }
+
         // Start outbound forwarding (VM -> Tunnel)
         outboundTask = Task {
             await forwardOutbound()
-        }
-
-        // Start inbound forwarding (Tunnel -> VM)
-        inboundTask = Task {
-            await forwardInbound()
         }
 
         isRunning = true
@@ -102,9 +101,7 @@ public actor VMPacketCapture {
 
         // Cancel forwarding tasks
         outboundTask?.cancel()
-        inboundTask?.cancel()
         outboundTask = nil
-        inboundTask = nil
 
         // Stop the packet source
         await packetSource.stop()
@@ -133,7 +130,7 @@ public actor VMPacketCapture {
     /// Set the consumer session for handling consumer->VM traffic.
     /// When a consumer initiates a tunnel session to send traffic to the VM,
     /// this session is used to receive packets and send return traffic.
-    /// - Parameter session: The consumer's tunnel session (trafficExit mode)
+    /// - Parameter session: The consumer's tunnel session
     public func setConsumerSession(_ session: TunnelSession) {
         self.consumerSession = session
         logger.info("Consumer session set for VM bridging", metadata: ["vmId": "\(vmId)"])
@@ -156,7 +153,6 @@ public actor VMPacketCapture {
         ])
     }
 
-
     // MARK: - Private
 
     /// Forward packets from VM to tunnel
@@ -164,23 +160,23 @@ public actor VMPacketCapture {
         for await packet in packetSource.inbound {
             guard !Task.isCancelled else { break }
 
-            // Forward to trafficSource session (for VM->internet via consumer exit)
+            // Forward to tunnel session
             do {
-                try await tunnelSession.injectPacket(packet)
+                try await tunnelSession.send(packet)
                 packetsToTunnel += 1
                 bytesToTunnel += UInt64(packet.count)
             } catch {
-                logger.warning("Failed to inject packet to tunnel", metadata: [
+                logger.warning("Failed to send packet to tunnel", metadata: [
                     "error": "\(error)",
                     "size": "\(packet.count)"
                 ])
             }
 
-            // Also forward to consumer session via tunnel-return (for SSH/consumer-initiated traffic)
+            // Also forward to consumer session if set (for SSH/consumer-initiated traffic responses)
             if let consumerSession = consumerSession {
                 do {
-                    try await consumerSession.sendReturnPacket(packet)
-                    logger.debug("Sent VM response to consumer via tunnel-return", metadata: ["size": "\(packet.count)"])
+                    try await consumerSession.send(packet)
+                    logger.debug("Sent VM response to consumer", metadata: ["size": "\(packet.count)"])
                 } catch {
                     logger.warning("Failed to send return packet to consumer: \(error)")
                 }
@@ -188,43 +184,43 @@ public actor VMPacketCapture {
         }
     }
 
-    /// Forward packets from tunnel to VM
-    private func forwardInbound() async {
-        logger.info("Starting inbound forwarding task", metadata: ["vmId": "\(vmId)"])
-        for await packet in await tunnelSession.returnPackets {
-            guard !Task.isCancelled else { break }
+    /// Handle inbound packet from tunnel (callback-based)
+    private func handleInboundPacket(_ packet: Data) async {
+        guard isRunning else { return }
 
-            do {
-                try await packetSource.write(packet)
-                packetsFromTunnel += 1
-                bytesFromTunnel += UInt64(packet.count)
-                logger.info("Wrote return packet to VM", metadata: [
-                    "vmId": "\(vmId)",
-                    "size": "\(packet.count)"
-                ])
-            } catch {
-                logger.warning("Failed to write packet to VM", metadata: [
-                    "error": "\(error)",
-                    "size": "\(packet.count)"
-                ])
-            }
+        do {
+            try await packetSource.write(packet)
+            packetsFromTunnel += 1
+            bytesFromTunnel += UInt64(packet.count)
+            logger.info("Wrote tunnel packet to VM", metadata: [
+                "vmId": "\(vmId)",
+                "size": "\(packet.count)"
+            ])
+        } catch {
+            logger.warning("Failed to write packet to VM", metadata: [
+                "error": "\(error)",
+                "size": "\(packet.count)"
+            ])
         }
-        logger.info("Inbound forwarding task ended", metadata: ["vmId": "\(vmId)"])
     }
 }
 
-/// Statistics for packet capture
+/// Statistics for packet capture operations
 public struct PacketCaptureStats: Sendable {
     public let packetsToTunnel: UInt64
     public let packetsFromTunnel: UInt64
     public let bytesToTunnel: UInt64
     public let bytesFromTunnel: UInt64
 
-    public var totalPackets: UInt64 {
-        packetsToTunnel + packetsFromTunnel
-    }
-
-    public var totalBytes: UInt64 {
-        bytesToTunnel + bytesFromTunnel
+    public init(
+        packetsToTunnel: UInt64,
+        packetsFromTunnel: UInt64,
+        bytesToTunnel: UInt64,
+        bytesFromTunnel: UInt64
+    ) {
+        self.packetsToTunnel = packetsToTunnel
+        self.packetsFromTunnel = packetsFromTunnel
+        self.bytesToTunnel = bytesToTunnel
+        self.bytesFromTunnel = bytesFromTunnel
     }
 }
