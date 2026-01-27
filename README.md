@@ -418,16 +418,14 @@ sudo dnf install qemu-kvm qemu-img
 
 ## Documentation
 
-Detailed technical documentation is available in the [`docs/`](docs/) directory:
+Detailed technical documentation is available in the [`plans/`](plans/) directory:
 
 | Document | Description |
 |----------|-------------|
-| [CLI Architecture](docs/cli-architecture.md) | CLI design and implementation plan |
-| [VM Network Architecture](docs/vm-network-architecture.md) | Network isolation modes and security model |
-| [VM Network Implementation](docs/vm-network-implementation.md) | Phased implementation details |
-| [VM Network Tests](docs/vm-network-tests.md) | Test specifications and performance targets |
-| [Rogue Detection](docs/rogue-detection.md) | Traffic monitoring and violation detection |
-| [Enhancements](docs/enhancements.md) | Future improvements and platform support |
+| [CLI Architecture](plans/cli-architecture.md) | CLI design and implementation plan |
+| [VM Network Architecture](plans/vm-network-architecture.md) | Network isolation modes and security model |
+| [VM Network Implementation](plans/vm-network-implementation.md) | Phased implementation details |
+| [VM Network Tests](plans/vm-network-tests.md) | Test specifications and performance targets |
 
 For testing instructions, see [README_TESTING.md](README_TESTING.md).
 
