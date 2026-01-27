@@ -12,9 +12,15 @@ While there are still legitimate security concerns like VM escapes and malicious
 
 TODOs
 CORE
+- work through virtual network plan
 - work through plan for tunnel between provider and consumer
+- update ssh message on vm request
+- make sure cleanup on omertad kill is cleaning up allocated vms
+- make sure requesting multiple VMs works
+- fix tunnel proxy command
+- fix VM to consumer connection
+- fix bug where restarting omertad on a different port doesn't properly announce new endpoint for IPv6
 - fix IPv6 NAT detection and add contact request message for NAT hole punching that uses relay only for initial message
-- make sure keepalive to bootstrap nodes is working correctly
 - finish working through manual tests
   - make sure we handle a diverse set of cases where inbound traffic isn't allowed for both IPv4 and IPv6
   - make sure we are testing relay functionality with artificial constraints on peer nodes
