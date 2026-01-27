@@ -21,7 +21,8 @@ final class DaemonConfigTests: XCTestCase {
             "timeout",
             "canRelay",
             "canCoordinateHolePunch",
-            "enableEventLogging"
+            "enableEventLogging",
+            "forceRelayOnly"
         ]
 
         // Use Mirror to get actual properties of DaemonConfig

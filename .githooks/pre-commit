@@ -1,0 +1,62 @@
+#!/bin/bash
+# Git pre-commit hook - checks for sensitive data before each commit
+# Setup: git config core.hooksPath .githooks
+
+set -e
+
+# Find the repo root (works in submodules too)
+REPO_ROOT=$(git rev-parse --show-toplevel)
+
+# Patterns that indicate sensitive data
+PATTERNS=(
+    'PRIVATE KEY'
+    'BEGIN RSA'
+    'BEGIN DSA'
+    'BEGIN EC PRIVATE'
+    'BEGIN OPENSSH PRIVATE'
+    'password\s*[:=]\s*["'"'"'][^"'"'"']+'
+    'api[_-]?key\s*[:=]\s*["'"'"'][^"'"'"']+'
+    'secret[_-]?key\s*[:=]\s*["'"'"'][^"'"'"']+'
+    'AWS_ACCESS_KEY_ID\s*[:=]'
+    'AWS_SECRET_ACCESS_KEY\s*[:=]'
+    'ANTHROPIC_API_KEY\s*[:=]'
+    'OPENAI_API_KEY\s*[:=]'
+)
+
+# Get list of staged files
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
+
+if [ -z "$STAGED_FILES" ]; then
+    exit 0
+fi
+
+FOUND=0
+for file in $STAGED_FILES; do
+    # Skip binary files
+    if [[ "$file" =~ \.(png|jpg|gif|ico|woff|ttf|eot|pdf|zip|tar|gz|exe|dll|so|dylib)$ ]]; then
+        continue
+    fi
+
+    # Skip if file doesn't exist (deleted)
+    [ -f "$file" ] || continue
+
+    for pattern in "${PATTERNS[@]}"; do
+        if grep -qiE "$pattern" "$file" 2>/dev/null; then
+            # Exclude common false positives
+            if ! grep -iE "$pattern" "$file" | grep -qiE 'example|placeholder|<your|YOUR_|TODO|template|CHANGE_ME'; then
+                echo "ERROR: Potential sensitive data in $file"
+                echo "  Pattern: $pattern"
+                grep -niE "$pattern" "$file" | head -3 | sed 's/^/  /'
+                FOUND=1
+            fi
+        fi
+    done
+done
+
+if [ $FOUND -eq 1 ]; then
+    echo ""
+    echo "Commit blocked. Remove sensitive data or use: git commit --no-verify"
+    exit 1
+fi
+
+exit 0
