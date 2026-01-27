@@ -2,9 +2,6 @@
 import PackageDescription
 import Foundation
 
-// Compute the package directory for linker paths
-let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
-
 let package = Package(
     name: "Omerta",
     // macOS 14+ required for Virtualization.framework
@@ -13,17 +10,14 @@ let package = Package(
     products: [
         .executable(name: "omerta", targets: ["OmertaCLI"]),
         .executable(name: "omertad", targets: ["OmertaDaemon"]),
-        .executable(name: "omerta-mesh", targets: ["OmertaMeshCLI"]),
         .library(name: "OmertaCore", targets: ["OmertaCore"]),
-        .library(name: "OmertaMesh", targets: ["OmertaMesh"]),
-        // OmertaVPN removed - WireGuard replaced by mesh tunnels (OmertaTunnel)
     ],
     dependencies: [
+        // Mesh networking (extracted to standalone package)
+        .package(path: "../omerta_mesh"),
+
         // Networking
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.60.0"),
-
-        // SSH client library (pure Swift, NIO-based) - for Phase 2
-        // .package(url: "https://github.com/orlandos-nl/Citadel.git", from: "0.7.0"),
 
         // Utilities
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
@@ -39,54 +33,6 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
             path: "Sources/OmertaCore"
-        ),
-
-        // Mesh relay network (decentralized P2P overlay)
-        .target(
-            name: "OmertaMesh",
-            dependencies: [
-                "OmertaCore",
-                .product(name: "NIOCore", package: "swift-nio"),
-                .product(name: "NIOPosix", package: "swift-nio"),
-                .product(name: "Logging", package: "swift-log"),
-                .product(name: "Crypto", package: "swift-crypto"),
-            ],
-            path: "Sources/OmertaMesh"
-        ),
-
-        // C library for netstack (Go compiled as C archive)
-        .systemLibrary(
-            name: "CNetstack",
-            path: "Sources/CNetstack"
-        ),
-
-        // Tunnel utility (persistent sessions + traffic routing via netstack)
-        .target(
-            name: "OmertaTunnel",
-            dependencies: [
-                "OmertaMesh",
-                "CNetstack",
-                .product(name: "Logging", package: "swift-log"),
-            ],
-            path: "Sources/OmertaTunnel",
-            exclude: ["Netstack"],  // Exclude Go source files
-            linkerSettings: [
-                .linkedLibrary("netstack", .when(platforms: [.macOS, .linux])),
-                .unsafeFlags(["-L\(packageDir)/Sources/CNetstack"], .when(platforms: [.macOS, .linux])),
-            ]
-        ),
-
-        // OmertaVPN removed - WireGuard replaced by mesh tunnels (OmertaTunnel)
-
-        // SSH client with mosh-like local echo over mesh tunnels
-        .target(
-            name: "OmertaSSH",
-            dependencies: [
-                "OmertaTunnel",
-                "OmertaCore",
-                .product(name: "Logging", package: "swift-log"),
-            ],
-            path: "Sources/OmertaSSH"
         ),
 
         // VM management (macOS only)
@@ -106,8 +52,8 @@ let package = Package(
                 "OmertaCore",
                 "OmertaVM",
                 "OmertaConsumer",
-                "OmertaMesh",
-                "OmertaTunnel",
+                .product(name: "OmertaMesh", package: "omerta_mesh"),
+                .product(name: "OmertaTunnel", package: "omerta_mesh"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "Logging", package: "swift-log"),
@@ -131,7 +77,7 @@ let package = Package(
             name: "OmertaConsumer",
             dependencies: [
                 "OmertaCore",
-                "OmertaMesh",
+                .product(name: "OmertaMesh", package: "omerta_mesh"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "Logging", package: "swift-log"),
@@ -147,24 +93,11 @@ let package = Package(
                 "OmertaCore",
                 "OmertaProvider",
                 "OmertaConsumer",
-                "OmertaSSH",
+                .product(name: "OmertaSSH", package: "omerta_mesh"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/OmertaCLI"
-        ),
-
-        // Mesh node CLI for E2E testing
-        .executableTarget(
-            name: "OmertaMeshCLI",
-            dependencies: [
-                "OmertaMesh",
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
-                .product(name: "Logging", package: "swift-log"),
-                .product(name: "NIOCore", package: "swift-nio"),
-                .product(name: "NIOPosix", package: "swift-nio"),
-            ],
-            path: "Sources/OmertaMeshCLI"
         ),
 
         // Tests
@@ -178,10 +111,15 @@ let package = Package(
             dependencies: ["OmertaVM"],
             path: "Tests/OmertaVMTests"
         ),
-        // OmertaVPNTests removed - WireGuard replaced by mesh tunnels
         .testTarget(
             name: "OmertaProviderTests",
-            dependencies: ["OmertaProvider", "OmertaConsumer", "OmertaCore", "OmertaTunnel", "OmertaMesh"],
+            dependencies: [
+                "OmertaProvider",
+                "OmertaConsumer",
+                "OmertaCore",
+                .product(name: "OmertaTunnel", package: "omerta_mesh"),
+                .product(name: "OmertaMesh", package: "omerta_mesh"),
+            ],
             path: "Tests/OmertaProviderTests"
         ),
         .testTarget(
@@ -190,24 +128,9 @@ let package = Package(
             path: "Tests/OmertaConsumerTests"
         ),
         .testTarget(
-            name: "OmertaMeshTests",
-            dependencies: [
-                "OmertaMesh",
-                "OmertaCore",
-                .product(name: "NIOCore", package: "swift-nio"),
-                .product(name: "NIOPosix", package: "swift-nio"),
-            ],
-            path: "Tests/OmertaMeshTests"
-        ),
-        .testTarget(
             name: "OmertaDaemonTests",
             dependencies: ["OmertaDaemon", "OmertaCore"],
             path: "Tests/OmertaDaemonTests"
-        ),
-        .testTarget(
-            name: "OmertaTunnelTests",
-            dependencies: ["OmertaTunnel", "OmertaMesh"],
-            path: "Tests/OmertaTunnelTests"
         ),
     ]
 )

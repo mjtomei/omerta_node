@@ -1,5 +1,0 @@
-module CNetstack {
-    header "libnetstack.h"
-    link "netstack"
-    export *
-}
