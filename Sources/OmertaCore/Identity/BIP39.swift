@@ -1,3 +1,11 @@
+// BIP39.swift - BIP-39 mnemonic phrase implementation
+//
+// The English wordlist is from BIP-39 (Bitcoin Improvement Proposal 39):
+// https://github.com/bitcoin/bips/blob/master/bip-0039.mediawiki
+// https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt
+//
+// BIP-39 is licensed under the BSD 2-Clause License.
+
 import Foundation
 import Crypto
 
