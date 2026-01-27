@@ -3107,9 +3107,16 @@ struct TunnelProxy: AsyncParsableCommand {
         fputs("Connecting to provider \(providerId.prefix(16))...\n", stderr)
         try await mesh.connect(to: providerId)
 
+        // Look up the provider's machineId from their peerId
+        guard let registry = await mesh.machinePeerRegistry,
+              let providerMachineId = await registry.getMostRecentMachine(for: providerId) else {
+            fputs("Error: Unknown provider machine for peerId: \(providerId.prefix(16))...\n", stderr)
+            throw ExitCode.failure
+        }
+
         // Create tunnel session and enable dial support
         let tunnelManager = TunnelManager(provider: mesh)
-        let session = try await tunnelManager.createSession(with: providerId)
+        let session = try await tunnelManager.createSession(withMachine: providerMachineId)
 
         fputs("Enabling tunnel dial support...\n", stderr)
         try await session.enableDialSupport()

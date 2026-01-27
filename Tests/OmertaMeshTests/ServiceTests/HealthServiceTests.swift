@@ -70,7 +70,7 @@ final class HealthServiceTests: XCTestCase {
         XCTAssertEqual(sentMessages.count, 1)
 
         let sent = sentMessages[0]
-        XCTAssertEqual(sent.peerId, "requester-peer")
+        XCTAssertEqual(sent.target, "requester-peer")
         XCTAssertEqual(sent.channel, HealthChannels.response(for: "requester-peer"))
 
         // Decode and verify response

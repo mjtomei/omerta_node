@@ -210,12 +210,16 @@ public actor MeshNode {
 
     /// Registered channel handlers
     /// Key is channel hash (UInt16) for O(1) lookup matching wire format, value is (channelName, handler)
-    private var channelHandlers: [UInt16: (name: String, handler: @Sendable (PeerId, Data) async -> Void)] = [:]
+    /// Handler receives (fromMachineId, data). Use machinePeerRegistry to look up peerId if needed.
+    private var channelHandlers: [UInt16: (name: String, handler: @Sendable (MachineId, Data) async -> Void)] = [:]
 
     /// Queued messages for channels without handlers
     /// Key is channel hash (UInt16) for consistent lookup with wire format
     /// Messages are queued until a handler registers, then delivered immediately
-    private var channelQueues: [UInt16: [(from: PeerId, data: Data, channelHash: UInt16, timestamp: Date)]] = [:]
+    private var channelQueues: [UInt16: [(from: MachineId, data: Data, channelHash: UInt16, timestamp: Date)]] = [:]
+
+    /// Registry tracking machine-to-peer mappings with recency
+    public let machinePeerRegistry: MachinePeerRegistry
 
     /// Maximum messages to queue per channel (prevents memory exhaustion)
     private let maxQueuedMessagesPerChannel = 100
@@ -290,6 +294,7 @@ public actor MeshNode {
             config: ConnectionKeepalive.Config(interval: config.keepaliveInterval)
         )
         self.natPredictor = NATPredictor()
+        self.machinePeerRegistry = MachinePeerRegistry()
     }
 
     /// Set up the hole punch manager callbacks
@@ -561,6 +566,9 @@ public actor MeshNode {
             endpoint: endpointString
         )
 
+        // Record machine-peer association in registry
+        await machinePeerRegistry.setMachine(envelope.machineId, peer: envelope.fromPeerId)
+
         // Record direct contact for first-hand tracking
         // This machine has sent us a message directly, so we have first-hand knowledge of it
         directContacts.insert(envelope.machineId)
@@ -604,7 +612,7 @@ public actor MeshNode {
                 try? await send(response, to: endpointString)
             }
         } else {
-            await handleDefaultMessage(envelope.payload, from: envelope.fromPeerId, endpoint: endpointString, channel: envelope.channel, channelHash: channelHash, hopCount: envelope.hopCount)
+            await handleDefaultMessage(envelope.payload, from: envelope.fromPeerId, machineId: envelope.machineId, endpoint: endpointString, channel: envelope.channel, channelHash: channelHash, hopCount: envelope.hopCount)
         }
 
         // Check if we should attempt direct connection (Phase 8: Direct connection on relayed message)
@@ -620,11 +628,12 @@ public actor MeshNode {
     /// - Parameters:
     ///   - message: The message payload
     ///   - peerId: Sender's peer ID
+    ///   - machineId: Sender's machine ID
     ///   - endpoint: Sender's endpoint
     ///   - channel: Channel string (original name for v1, hash string for v2)
     ///   - channelHash: Raw channel hash from v2 format (nil for v1, uses string-based lookup)
     ///   - hopCount: Current hop count
-    private func handleDefaultMessage(_ message: MeshMessage, from peerId: PeerId, endpoint: String, channel: String = "", channelHash: UInt16? = nil, hopCount: Int = 0) async {
+    private func handleDefaultMessage(_ message: MeshMessage, from peerId: PeerId, machineId: MachineId, endpoint: String, channel: String = "", channelHash: UInt16? = nil, hopCount: Int = 0) async {
         switch message {
         case .ping(let recentPeers, let theirNATType, let requestFullList):
             // Check if this is a NEW or RECONNECTING peer BEFORE recording
@@ -835,12 +844,12 @@ public actor MeshNode {
             // Route based on channel
             if let hash = channelHash, hash != 0 {
                 // v2 format: use channel hash directly for O(1) routing
-                logger.info("Routing .data(\(payload.count) bytes) to channel hash \(hash) from \(peerId.prefix(16))...")
-                await handleChannelMessageByHash(from: peerId, channelHash: hash, data: payload)
+                logger.info("Routing .data(\(payload.count) bytes) to channel hash \(hash) from machine \(machineId.prefix(16))...")
+                await handleChannelMessageByHash(from: machineId, channelHash: hash, data: payload)
             } else if !channel.isEmpty {
                 // v1 format: compute hash from channel string
-                logger.info("Routing .data(\(payload.count) bytes) to channel '\(channel)' from \(peerId.prefix(16))...")
-                await handleChannelMessage(from: peerId, channel: channel, data: payload)
+                logger.info("Routing .data(\(payload.count) bytes) to channel '\(channel)' from machine \(machineId.prefix(16))...")
+                await handleChannelMessage(from: machineId, channel: channel, data: payload)
             } else if let handler = applicationMessageHandler {
                 // Legacy application handler (for internal mesh messages)
                 logger.info("Passing .data(\(payload.count) bytes) to application handler from \(peerId.prefix(16))...")
@@ -2082,9 +2091,9 @@ extension MeshNode: MeshNodeServices {
     /// Any queued messages for this channel will be delivered immediately
     /// - Parameters:
     ///   - channel: Channel name to listen on (max 64 chars, alphanumeric/-/_)
-    ///   - handler: Async handler that receives (fromPeerId, data)
+    ///   - handler: Async handler that receives (fromMachineId, data). Use machinePeerRegistry to look up peerId if needed.
     /// - Throws: MeshNodeError.invalidChannel if channel name is invalid or hash collides with existing channel
-    public func onChannel(_ channel: String, handler: @escaping @Sendable (PeerId, Data) async -> Void) async throws {
+    public func onChannel(_ channel: String, handler: @escaping @Sendable (MachineId, Data) async -> Void) async throws {
         guard ChannelUtils.isValid(channel) else {
             throw MeshNodeError.invalidChannel(channel)
         }
@@ -2128,6 +2137,7 @@ extension MeshNode: MeshNodeServices {
 
     /// Send data on a channel to a peer
     /// Uses auto-routing (IPv6 > direct > relay fallback)
+    /// When a peer has multiple machines, this sends to all of them.
     /// - Parameters:
     ///   - data: Data to send
     ///   - peerId: Target peer ID
@@ -2141,28 +2151,55 @@ extension MeshNode: MeshNodeServices {
         try await sendWithAutoRouting(message, to: peerId, channel: channel)
     }
 
+    /// Send data on a channel to a specific machine
+    /// Uses the endpoints known for that specific machine.
+    /// - Parameters:
+    ///   - data: Data to send
+    ///   - machineId: Target machine ID
+    ///   - channel: Channel name
+    /// - Throws: MeshNodeError.invalidChannel if channel name is invalid, MeshNodeError.peerNotFound if no endpoints known
+    public func sendOnChannel(_ data: Data, toMachine machineId: MachineId, channel: String) async throws {
+        guard ChannelUtils.isValid(channel) else {
+            throw MeshNodeError.invalidChannel(channel)
+        }
+
+        // Look up the peer for this machine
+        guard let peerId = await machinePeerRegistry.getMostRecentPeer(for: machineId) else {
+            throw MeshNodeError.peerNotFound
+        }
+
+        // Get endpoints specifically for this machine
+        let endpoints = await endpointManager.getEndpoints(peerId: peerId, machineId: machineId)
+        guard let endpoint = EndpointUtils.preferredEndpoint(from: endpoints) else {
+            throw MeshNodeError.peerNotFound
+        }
+
+        let message = MeshMessage.data(data)
+        try await send(message, to: endpoint, channel: channel)
+    }
+
     /// Handle incoming message on a channel (string-based, for v1 compatibility)
     /// Called by handleIncomingData when a message arrives with a non-empty channel
     /// Uses hash-based lookup for O(1) routing with collision verification
-    internal func handleChannelMessage(from peerId: PeerId, channel: String, data: Data) async {
+    internal func handleChannelMessage(from machineId: MachineId, channel: String, data: Data) async {
         let hash = ChannelHash.hash(channel)
-        await handleChannelMessageByHash(from: peerId, channelHash: hash, data: data)
+        await handleChannelMessageByHash(from: machineId, channelHash: hash, data: data)
     }
 
     /// Handle incoming message on a channel by hash (for v2 wire format)
     /// Used directly when decoding v2 envelopes which only contain the hash
-    internal func handleChannelMessageByHash(from peerId: PeerId, channelHash: UInt16, data: Data) async {
+    internal func handleChannelMessageByHash(from machineId: MachineId, channelHash: UInt16, data: Data) async {
         if let entry = channelHandlers[channelHash] {
             // Handler registered - deliver immediately
-            await entry.handler(peerId, data)
+            await entry.handler(machineId, data)
         } else {
             // No handler - queue the message
-            queueChannelMessage(from: peerId, channelHash: channelHash, data: data)
+            queueChannelMessage(from: machineId, channelHash: channelHash, data: data)
         }
     }
 
     /// Queue a message for a channel that doesn't have a handler registered yet
-    private func queueChannelMessage(from peerId: PeerId, channelHash: UInt16, data: Data) {
+    private func queueChannelMessage(from machineId: MachineId, channelHash: UInt16, data: Data) {
         var queue = channelQueues[channelHash] ?? []
 
         // Enforce queue size limit
@@ -2172,7 +2209,7 @@ extension MeshNode: MeshNodeServices {
             logger.warning("Channel queue overflow for hash \(channelHash), dropping oldest message")
         }
 
-        queue.append((from: peerId, data: data, channelHash: channelHash, timestamp: Date()))
+        queue.append((from: machineId, data: data, channelHash: channelHash, timestamp: Date()))
         channelQueues[channelHash] = queue
 
         logger.debug("Queued message for channel hash \(channelHash) (queue size: \(queue.count))")

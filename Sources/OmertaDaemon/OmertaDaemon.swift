@@ -411,6 +411,24 @@ struct Start: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
+        // Update bootstrap peers that reference our own peerId to use the current port
+        // This handles the case where the network was created on a different port
+        let updatedBootstrapPeers = bootstrapPeers.map { peer -> String in
+            let parts = peer.split(separator: "@", maxSplits: 1)
+            guard parts.count == 2 else { return peer }
+            let peerId = String(parts[0])
+            let endpoint = String(parts[1])
+
+            // If this is our own peerId, update the port to the current port
+            if peerId == identity.peerId {
+                // Parse host:port from endpoint
+                if let colonIndex = endpoint.lastIndex(of: ":") {
+                    let host = String(endpoint[..<colonIndex])
+                    return "\(peerId)@\(host):\(effectivePort)"
+                }
+            }
+            return peer
+        }
 
         // Create shutdown coordinator
         let shutdownCoordinator = ShutdownCoordinator()
@@ -420,7 +438,7 @@ struct Start: AsyncParsableCommand {
             networkId: storedNetwork.id,
             identity: identity,
             keyData: keyData,
-            bootstrapPeers: bootstrapPeers,
+            bootstrapPeers: updatedBootstrapPeers,
             port: effectivePort,
             noProvider: effectiveNoProvider,
             dryRun: effectiveDryRun,
@@ -482,9 +500,9 @@ struct Start: AsyncParsableCommand {
 
         do {
             // Set up heartbeat channel handler for incoming heartbeats when acting as consumer BEFORE starting
-            try await daemon.onChannel(VMChannels.heartbeat) { [daemon, vmTracker] peerId, data in
+            try await daemon.onChannel(VMChannels.heartbeat) { [daemon, vmTracker] machineId, data in
                 await self.handleConsumerMessage(
-                    from: peerId,
+                    from: machineId,
                     data: data,
                     daemon: daemon,
                     vmTracker: vmTracker
@@ -1143,7 +1161,21 @@ struct Start: AsyncParsableCommand {
             let mesh = await daemon.mesh
             let tunnelManager = TunnelManager(provider: mesh)
             try await tunnelManager.start()
-            let session = try await tunnelManager.createSession(with: vm.provider.peerId)
+
+            // Look up the provider's machineId from their peerId
+            guard let registry = await mesh.machinePeerRegistry,
+                  let providerMachineId = await registry.getMostRecentMachine(for: vm.provider.peerId) else {
+                return .tunnelDialTestResult(ControlResponse.TunnelDialTestResultData(
+                    success: false,
+                    host: host,
+                    port: port,
+                    bytesReceived: nil,
+                    sshBanner: nil,
+                    error: "Unknown provider machine for peerId: \(vm.provider.peerId.prefix(16))..."
+                ))
+            }
+
+            let session = try await tunnelManager.createSession(withMachine: providerMachineId)
 
             // Enable dial support (creates local netstack)
             try await session.enableDialSupport()
@@ -1246,7 +1278,7 @@ struct Start: AsyncParsableCommand {
     // MARK: - Consumer Message Handling
 
     private func handleConsumerMessage(
-        from providerPeerId: String,
+        from providerMachineId: String,
         data: Data,
         daemon: MeshProviderDaemon,
         vmTracker: VMTracker
@@ -1255,7 +1287,7 @@ struct Start: AsyncParsableCommand {
         if let notification = try? JSONDecoder().decode(MeshProviderShutdownNotification.self, from: data),
            notification.type == "provider_shutdown" {
             await handleProviderShutdown(
-                from: providerPeerId,
+                from: providerMachineId,
                 notification: notification,
                 vmTracker: vmTracker
             )
@@ -1273,8 +1305,12 @@ struct Start: AsyncParsableCommand {
         var logger = Logger(label: "io.omerta.consumer.heartbeat")
         logger.logLevel = .info
 
+        // Use peerId from message for identifying VMs, machineId for routing response
+        let providerPeerId = heartbeat.providerPeerId
+
         logger.debug("Received heartbeat from provider", metadata: [
-            "provider": "\(providerPeerId.prefix(16))...",
+            "providerPeerId": "\(providerPeerId.prefix(16))...",
+            "providerMachine": "\(providerMachineId.prefix(16))...",
             "vmCount": "\(heartbeat.vmIds.count)"
         ])
 
@@ -1284,12 +1320,12 @@ struct Start: AsyncParsableCommand {
             // Still respond with empty list
             let response = MeshVMHeartbeatResponse(activeVmIds: [])
             if let responseData = try? JSONEncoder().encode(response) {
-                try? await daemon.sendOnChannel(responseData, to: providerPeerId, channel: VMChannels.heartbeat)
+                try? await daemon.sendOnChannel(responseData, toMachine: providerMachineId, channel: VMChannels.heartbeat)
             }
             return
         }
 
-        // Filter to VMs from THIS specific provider only
+        // Filter to VMs from THIS specific provider only (by peer identity)
         // Critical: VMs from other providers must NOT be affected
         let vmsFromProvider = allVMs.filter { $0.provider.peerId == providerPeerId }
         let trackedIds = Set(vmsFromProvider.map { $0.vmId })
@@ -1301,7 +1337,7 @@ struct Start: AsyncParsableCommand {
 
         if let responseData = try? JSONEncoder().encode(response) {
             do {
-                try await daemon.sendOnChannel(responseData, to: providerPeerId, channel: VMChannels.heartbeat)
+                try await daemon.sendOnChannel(responseData, toMachine: providerMachineId, channel: VMChannels.heartbeat)
                 logger.debug("Sent heartbeat response", metadata: [
                     "provider": "\(providerPeerId.prefix(16))...",
                     "activeVMs": "\(activeIds.count)"
@@ -1337,20 +1373,24 @@ struct Start: AsyncParsableCommand {
     /// Handle provider shutdown notification
     /// Cleans up VPN tunnels for VMs from the shutting-down provider
     private func handleProviderShutdown(
-        from providerPeerId: String,
+        from providerMachineId: String,
         notification: MeshProviderShutdownNotification,
         vmTracker: VMTracker
     ) async {
         var logger = Logger(label: "io.omerta.consumer.shutdown")
         logger.logLevel = .info
 
+        // Use peerId from notification for identifying VMs
+        let providerPeerId = notification.providerPeerId
+
         logger.info("Provider shutting down", metadata: [
-            "provider": "\(providerPeerId.prefix(16))...",
+            "providerPeerId": "\(providerPeerId.prefix(16))...",
+            "providerMachine": "\(providerMachineId.prefix(16))...",
             "vmCount": "\(notification.vmIds.count)",
             "reason": "\(notification.reason)"
         ])
 
-        // Get VMs we're tracking from this provider
+        // Get VMs we're tracking from this provider (by peer identity)
         guard let allVMs = try? await vmTracker.loadPersistedVMs() else {
             logger.warning("Failed to load VMs from tracker")
             return

@@ -95,11 +95,13 @@ public struct MeshVMReleaseResponse: Codable, Sendable {
 /// Sent every 60 seconds for each consumer with active VMs
 public struct MeshVMHeartbeat: Codable, Sendable {
     public let type: String
-    public let vmIds: [UUID]           // VMs provider thinks consumer owns
+    public let providerPeerId: String   // Provider's peer identity for VM filtering
+    public let vmIds: [UUID]            // VMs provider thinks consumer owns
     public let timestamp: Date
 
-    public init(vmIds: [UUID]) {
+    public init(providerPeerId: String, vmIds: [UUID]) {
         self.type = "vm_heartbeat"
+        self.providerPeerId = providerPeerId
         self.vmIds = vmIds
         self.timestamp = Date()
     }
@@ -141,11 +143,13 @@ public struct MeshVMAck: Codable, Sendable {
 /// Consumer should clean up VPN tunnels for listed VMs
 public struct MeshProviderShutdownNotification: Codable, Sendable {
     public let type: String
-    public let vmIds: [UUID]  // VMs being released due to shutdown
+    public let providerPeerId: String  // Provider's peer identity for VM filtering
+    public let vmIds: [UUID]           // VMs being released due to shutdown
     public let reason: String
 
-    public init(vmIds: [UUID], reason: String = "provider_shutdown") {
+    public init(providerPeerId: String, vmIds: [UUID], reason: String = "provider_shutdown") {
         self.type = "provider_shutdown"
+        self.providerPeerId = providerPeerId
         self.vmIds = vmIds
         self.reason = reason
     }

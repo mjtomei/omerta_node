@@ -7,11 +7,12 @@ import XCTest
 // Mock ChannelProvider for testing
 actor MockChannelProvider: ChannelProvider {
     let peerId: PeerId = "test-peer-\(UUID().uuidString.prefix(8))"
+    let machineId: MachineId = "test-machine-\(UUID().uuidString.prefix(8))"
 
-    private var handlers: [String: @Sendable (PeerId, Data) async -> Void] = [:]
-    private var sentMessages: [(to: PeerId, channel: String, data: Data)] = []
+    private var handlers: [String: @Sendable (MachineId, Data) async -> Void] = [:]
+    private var sentMessages: [(to: String, channel: String, data: Data)] = []
 
-    func onChannel(_ channel: String, handler: @escaping @Sendable (PeerId, Data) async -> Void) async throws {
+    func onChannel(_ channel: String, handler: @escaping @Sendable (MachineId, Data) async -> Void) async throws {
         handlers[channel] = handler
     }
 
@@ -23,12 +24,16 @@ actor MockChannelProvider: ChannelProvider {
         sentMessages.append((to: peerId, channel: channel, data: data))
     }
 
+    func sendOnChannel(_ data: Data, toMachine machineId: MachineId, channel: String) async throws {
+        sentMessages.append((to: machineId, channel: channel, data: data))
+    }
+
     // Test helpers
     func getRegisteredChannels() -> [String] {
         Array(handlers.keys)
     }
 
-    func getSentMessages() -> [(to: PeerId, channel: String, data: Data)] {
+    func getSentMessages() -> [(to: String, channel: String, data: Data)] {
         sentMessages
     }
 
@@ -36,7 +41,7 @@ actor MockChannelProvider: ChannelProvider {
         sentMessages.removeAll()
     }
 
-    func simulateMessage(from sender: PeerId, on channel: String, data: Data) async {
+    func simulateMessage(from sender: MachineId, on channel: String, data: Data) async {
         if let handler = handlers[channel] {
             await handler(sender, data)
         }
@@ -80,12 +85,12 @@ final class TunnelManagerTests: XCTestCase {
         try await manager.start()
 
         // Create session with a peer
-        let session = try await manager.createSession(with: "remote-peer-123")
+        let session = try await manager.createSession(withMachine: "remote-peer-123")
 
         // Verify session was created
         XCTAssertNotNil(session)
-        let remotePeer = await session.remotePeer
-        XCTAssertEqual(remotePeer, "remote-peer-123")
+        let remoteMachine = await session.remoteMachine
+        XCTAssertEqual(remoteMachine, "remote-peer-123")
 
         // Verify handshake was sent
         let messages = await provider.getSentMessages()
@@ -119,7 +124,7 @@ final class TunnelManagerTests: XCTestCase {
 
         try await manager.start()
 
-        let session = try await manager.createSession(with: "remote-peer-123")
+        let session = try await manager.createSession(withMachine: "remote-peer-123")
         XCTAssertNotNil(session)
 
         await provider.clearSentMessages()
@@ -172,8 +177,8 @@ final class TunnelManagerTests: XCTestCase {
 
         // Session should be established
         XCTAssertNotNil(establishedSession)
-        let remotePeer = await establishedSession?.remotePeer
-        XCTAssertEqual(remotePeer, "remote-initiator")
+        let remoteMachine = await establishedSession?.remoteMachine
+        XCTAssertEqual(remoteMachine, "remote-initiator")
 
         // Ack should have been sent
         let messages = await provider.getSentMessages()
@@ -224,7 +229,7 @@ final class TunnelManagerTests: XCTestCase {
         try await manager.start()
 
         // Create a session
-        let session = try await manager.createSession(with: "remote-peer")
+        let session = try await manager.createSession(withMachine: "remote-peer")
         XCTAssertNotNil(session)
 
         // Simulate remote closing the session
@@ -269,7 +274,7 @@ final class TunnelManagerTests: XCTestCase {
 
         // Try to create session before starting
         do {
-            _ = try await manager.createSession(with: "peer")
+            _ = try await manager.createSession(withMachine: "peer")
             XCTFail("Expected error")
         } catch {
             XCTAssertEqual(error as? TunnelError, .notConnected)
@@ -283,12 +288,12 @@ final class TunnelManagerTests: XCTestCase {
         try await manager.start()
 
         // Create first session
-        let session1 = try await manager.createSession(with: "peer-1")
+        let session1 = try await manager.createSession(withMachine: "peer-1")
         let state1Before = await session1.state
         XCTAssertEqual(state1Before, .active)
 
         // Create second session
-        let session2 = try await manager.createSession(with: "peer-2")
+        let session2 = try await manager.createSession(withMachine: "peer-2")
 
         // First session should be disconnected
         let state1After = await session1.state
@@ -300,7 +305,7 @@ final class TunnelManagerTests: XCTestCase {
 
         // Current session should be the second one
         let current = await manager.currentSession()
-        let currentPeer = await current?.remotePeer
+        let currentPeer = await current?.remoteMachine
         XCTAssertEqual(currentPeer, "peer-2")
 
         await manager.stop()
@@ -338,7 +343,7 @@ final class TunnelSessionTests: XCTestCase {
         let provider = MockChannelProvider()
 
         let session = TunnelSession(
-            remotePeer: "peer-123",
+            remoteMachine: "peer-123",
             provider: provider
         )
 
@@ -349,15 +354,15 @@ final class TunnelSessionTests: XCTestCase {
         let role = await session.role
         XCTAssertEqual(role, .peer)
 
-        let remotePeer = await session.remotePeer
-        XCTAssertEqual(remotePeer, "peer-123")
+        let remoteMachine = await session.remoteMachine
+        XCTAssertEqual(remoteMachine, "peer-123")
     }
 
     func testSessionActivation() async throws {
         let provider = MockChannelProvider()
 
         let session = TunnelSession(
-            remotePeer: "peer-123",
+            remoteMachine: "peer-123",
             provider: provider
         )
 
@@ -377,7 +382,7 @@ final class TunnelSessionTests: XCTestCase {
     func testSendRequiresActiveState() async throws {
         let provider = MockChannelProvider()
         let session = TunnelSession(
-            remotePeer: "peer-1",
+            remoteMachine: "peer-1",
             provider: provider
         )
 
@@ -393,7 +398,7 @@ final class TunnelSessionTests: XCTestCase {
     func testSendMessage() async throws {
         let provider = MockChannelProvider()
         let session = TunnelSession(
-            remotePeer: "peer-1",
+            remoteMachine: "peer-1",
             provider: provider
         )
 
@@ -413,7 +418,7 @@ final class TunnelSessionTests: XCTestCase {
     func testLeaveSession() async throws {
         let provider = MockChannelProvider()
         let session = TunnelSession(
-            remotePeer: "peer-1",
+            remoteMachine: "peer-1",
             provider: provider
         )
 
@@ -435,7 +440,7 @@ final class TunnelSessionTests: XCTestCase {
     func testTrafficRoutingNotEnabledByDefault() async throws {
         let provider = MockChannelProvider()
         let session = TunnelSession(
-            remotePeer: "peer-1",
+            remoteMachine: "peer-1",
             provider: provider
         )
 
@@ -453,7 +458,7 @@ final class TunnelSessionTests: XCTestCase {
     func testEnableTrafficRoutingAsSource() async throws {
         let provider = MockChannelProvider()
         let session = TunnelSession(
-            remotePeer: "peer-1",
+            remoteMachine: "peer-1",
             provider: provider
         )
 
@@ -478,7 +483,7 @@ final class TunnelSessionTests: XCTestCase {
     func testReceiveMessage() async throws {
         let provider = MockChannelProvider()
         let session = TunnelSession(
-            remotePeer: "peer-1",
+            remoteMachine: "peer-1",
             provider: provider
         )
 
@@ -507,7 +512,7 @@ final class TunnelSessionTests: XCTestCase {
     func testReceiveFiltersByPeer() async throws {
         let provider = MockChannelProvider()
         let session = TunnelSession(
-            remotePeer: "peer-1",
+            remoteMachine: "peer-1",
             provider: provider
         )
 
@@ -543,7 +548,7 @@ final class TunnelSessionTests: XCTestCase {
     func testEnableTrafficRoutingAsExit() async throws {
         let provider = MockChannelProvider()
         let session = TunnelSession(
-            remotePeer: "peer-1",
+            remoteMachine: "peer-1",
             provider: provider
         )
 
@@ -559,7 +564,7 @@ final class TunnelSessionTests: XCTestCase {
     func testDisableTrafficRouting() async throws {
         let provider = MockChannelProvider()
         let session = TunnelSession(
-            remotePeer: "peer-1",
+            remoteMachine: "peer-1",
             provider: provider
         )
 
@@ -586,7 +591,7 @@ final class TunnelSessionTests: XCTestCase {
     func testTrafficRoutingRequiresActiveState() async throws {
         let provider = MockChannelProvider()
         let session = TunnelSession(
-            remotePeer: "peer-1",
+            remoteMachine: "peer-1",
             provider: provider
         )
 
@@ -602,7 +607,7 @@ final class TunnelSessionTests: XCTestCase {
     func testInjectPacketAsExit() async throws {
         let provider = MockChannelProvider()
         let session = TunnelSession(
-            remotePeer: "peer-1",
+            remoteMachine: "peer-1",
             provider: provider
         )
 
@@ -623,7 +628,7 @@ final class TunnelSessionTests: XCTestCase {
     func testLeaveStopsTrafficRouting() async throws {
         let provider = MockChannelProvider()
         let session = TunnelSession(
-            remotePeer: "peer-1",
+            remoteMachine: "peer-1",
             provider: provider
         )
 
@@ -642,7 +647,7 @@ final class TunnelSessionTests: XCTestCase {
     func testSendAfterLeave() async throws {
         let provider = MockChannelProvider()
         let session = TunnelSession(
-            remotePeer: "peer-1",
+            remoteMachine: "peer-1",
             provider: provider
         )
 

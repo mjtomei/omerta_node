@@ -392,14 +392,14 @@ public struct CloisterResult: Sendable {
     /// Network name
     public let networkName: String
 
-    /// The peer we negotiated with
-    public let sharedWith: PeerId
+    /// The machine we negotiated with
+    public let sharedWith: MachineId
 
     public init(
         networkKey: Data,
         networkId: String,
         networkName: String,
-        sharedWith: PeerId
+        sharedWith: MachineId
     ) {
         self.networkKey = networkKey
         self.networkId = networkId

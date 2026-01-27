@@ -1,17 +1,17 @@
-// TunnelSession.swift - Peer-to-peer session over mesh network
+// TunnelSession.swift - Machine-to-machine session over mesh network
 //
-// Manages communication with a single remote peer, including
+// Manages communication with a single remote machine, including
 // data messaging and optional IP traffic routing via netstack.
 
 import Foundation
 import OmertaMesh
 import Logging
 
-/// A session with a remote peer over the mesh network.
-/// Provides peer-to-peer messaging and optional internet traffic routing.
+/// A session with a remote machine over the mesh network.
+/// Provides machine-to-machine messaging and optional internet traffic routing.
 public actor TunnelSession {
-    /// The remote peer we're connected to
-    public let remotePeer: PeerId
+    /// The remote machine we're connected to
+    public let remoteMachine: MachineId
 
     /// Current state
     public private(set) var state: TunnelState = .connecting
@@ -49,8 +49,8 @@ public actor TunnelSession {
     }
 
     /// Initialize a new tunnel session
-    init(remotePeer: PeerId, provider: any ChannelProvider) {
-        self.remotePeer = remotePeer
+    init(remoteMachine: MachineId, provider: any ChannelProvider) {
+        self.remoteMachine = remoteMachine
         self.provider = provider
         self.logger = Logger(label: "io.omerta.tunnel.session")
 
@@ -63,7 +63,7 @@ public actor TunnelSession {
     /// Mark the session as active
     func activate() async {
         state = .active
-        logger.info("Session activated", metadata: ["peer": "\(remotePeer)"])
+        logger.info("Session activated", metadata: ["machine": "\(remoteMachine)"])
 
         // Register message handlers
         await registerHandlers()
@@ -77,7 +77,7 @@ public actor TunnelSession {
             throw TunnelError.notConnected
         }
 
-        try await provider.sendOnChannel(data, to: remotePeer, channel: messageChannel)
+        try await provider.sendOnChannel(data, toMachine: remoteMachine, channel: messageChannel)
 
         logger.debug("Sent message", metadata: ["size": "\(data.count)"])
     }
@@ -119,10 +119,10 @@ public actor TunnelSession {
                 // This receives packets from the source and injects them into netstack
                 logger.info("Registering traffic channel handler", metadata: [
                     "channel": "\(trafficChannel)",
-                    "remotePeer": "\(remotePeer.prefix(16))..."
+                    "remoteMachine": "\(remoteMachine.prefix(16))..."
                 ])
-                try await provider.onChannel(trafficChannel) { [weak self] sender, data in
-                    await self?.handleTrafficPacket(from: sender, data: data)
+                try await provider.onChannel(trafficChannel) { [weak self] senderMachine, data in
+                    await self?.handleTrafficPacket(from: senderMachine, data: data)
                 }
 
                 logger.info("Traffic routing enabled (exit point)", metadata: [
@@ -140,8 +140,8 @@ public actor TunnelSession {
 
             // Register return packet handler
             do {
-                try await provider.onChannel(returnChannel) { [weak self] sender, data in
-                    await self?.handleReturnData(from: sender, data: data)
+                try await provider.onChannel(returnChannel) { [weak self] senderMachine, data in
+                    await self?.handleReturnData(from: senderMachine, data: data)
                 }
             } catch {
                 logger.warning("Failed to register return handler: \(error)")
@@ -161,8 +161,8 @@ public actor TunnelSession {
 
         switch role {
         case .trafficSource:
-            // Send packet to exit peer via mesh
-            try await provider.sendOnChannel(packet, to: remotePeer, channel: trafficChannel)
+            // Send packet to exit machine via mesh
+            try await provider.sendOnChannel(packet, toMachine: remoteMachine, channel: trafficChannel)
 
         case .trafficExit:
             // Inject directly into netstack
@@ -220,12 +220,12 @@ public actor TunnelSession {
             self.role = .trafficClient
 
             // Register handler for return packets from remote
-            try await provider.onChannel(returnChannel) { [weak self] sender, data in
-                await self?.handleClientReturnPacket(from: sender, data: data)
+            try await provider.onChannel(returnChannel) { [weak self] senderMachine, data in
+                await self?.handleClientReturnPacket(from: senderMachine, data: data)
             }
 
             logger.info("Dial support enabled (traffic client)", metadata: [
-                "remotePeer": "\(remotePeer.prefix(16))..."
+                "remoteMachine": "\(remoteMachine.prefix(16))..."
             ])
         } catch {
             throw TunnelError.netstackError(error.localizedDescription)
@@ -255,7 +255,7 @@ public actor TunnelSession {
             throw TunnelError.notConnected
         }
 
-        try await provider.sendOnChannel(packet, to: remotePeer, channel: returnChannel)
+        try await provider.sendOnChannel(packet, toMachine: remoteMachine, channel: returnChannel)
         logger.debug("Sent return packet to consumer", metadata: ["size": "\(packet.count)"])
     }
 
@@ -306,8 +306,8 @@ public actor TunnelSession {
     private func registerHandlers() async {
         // Register handler for incoming messages
         do {
-            try await provider.onChannel(messageChannel) { [weak self] sender, data in
-                await self?.handleMessageData(from: sender, data: data)
+            try await provider.onChannel(messageChannel) { [weak self] senderMachine, data in
+                await self?.handleMessageData(from: senderMachine, data: data)
             }
         } catch {
             logger.warning("Failed to register message handler: \(error)")
@@ -315,8 +315,8 @@ public actor TunnelSession {
 
         // Register handler for traffic packets (if we're exit point)
         do {
-            try await provider.onChannel(trafficChannel) { [weak self] sender, data in
-                await self?.handleTrafficPacket(from: sender, data: data)
+            try await provider.onChannel(trafficChannel) { [weak self] senderMachine, data in
+                await self?.handleTrafficPacket(from: senderMachine, data: data)
             }
         } catch {
             logger.warning("Failed to register traffic handler: \(error)")
@@ -328,26 +328,26 @@ public actor TunnelSession {
         await provider.offChannel(trafficChannel)
     }
 
-    private func handleTrafficPacket(from sender: PeerId, data: Data) async {
+    private func handleTrafficPacket(from senderMachine: MachineId, data: Data) async {
         guard role == .trafficExit else {
             logger.debug("Ignoring traffic packet - not exit role", metadata: [
                 "role": "\(role)",
-                "sender": "\(sender.prefix(16))..."
+                "senderMachine": "\(senderMachine.prefix(16))..."
             ])
             return
         }
 
-        guard sender == remotePeer else {
+        guard senderMachine == remoteMachine else {
             logger.debug("Ignoring traffic packet - wrong sender", metadata: [
-                "expected": "\(remotePeer.prefix(16))...",
-                "actual": "\(sender.prefix(16))..."
+                "expected": "\(remoteMachine.prefix(16))...",
+                "actual": "\(senderMachine.prefix(16))..."
             ])
             return
         }
 
         logger.info("Received traffic packet", metadata: [
             "size": "\(data.count)",
-            "from": "\(sender.prefix(16))..."
+            "from": "\(senderMachine.prefix(16))..."
         ])
 
         // If we have a forward callback (for VM bridging), use that instead of netstack
@@ -373,41 +373,41 @@ public actor TunnelSession {
         // If we're exit point, send return packet back to source
         if role == .trafficExit {
             do {
-                try await provider.sendOnChannel(packet, to: remotePeer, channel: returnChannel)
+                try await provider.sendOnChannel(packet, toMachine: remoteMachine, channel: returnChannel)
             } catch {
                 logger.warning("Failed to send return packet: \(error)")
             }
         }
     }
 
-    private func handleMessageData(from sender: PeerId, data: Data) {
-        guard sender == remotePeer else { return }
+    private func handleMessageData(from senderMachine: MachineId, data: Data) {
+        guard senderMachine == remoteMachine else { return }
         messageContinuation?.yield(data)
     }
 
-    private func handleReturnData(from sender: PeerId, data: Data) {
-        guard sender == remotePeer else {
+    private func handleReturnData(from senderMachine: MachineId, data: Data) {
+        guard senderMachine == remoteMachine else {
             logger.debug("Ignoring return packet - wrong sender", metadata: [
-                "expected": "\(remotePeer.prefix(16))...",
-                "actual": "\(sender.prefix(16))..."
+                "expected": "\(remoteMachine.prefix(16))...",
+                "actual": "\(senderMachine.prefix(16))..."
             ])
             return
         }
         logger.info("Received return packet", metadata: [
             "size": "\(data.count)",
-            "from": "\(sender.prefix(16))..."
+            "from": "\(senderMachine.prefix(16))..."
         ])
         returnPacketContinuation?.yield(data)
     }
 
     // MARK: - Traffic Client Mode (for dialTCP)
 
-    /// Send traffic packet to remote peer (for trafficClient mode)
+    /// Send traffic packet to remote machine (for trafficClient mode)
     private func sendTrafficPacket(_ packet: Data) async {
         guard role == .trafficClient else { return }
 
         do {
-            try await provider.sendOnChannel(packet, to: remotePeer, channel: trafficChannel)
+            try await provider.sendOnChannel(packet, toMachine: remoteMachine, channel: trafficChannel)
             logger.debug("Sent traffic packet", metadata: ["size": "\(packet.count)"])
         } catch {
             logger.warning("Failed to send traffic packet: \(error)")
@@ -415,7 +415,7 @@ public actor TunnelSession {
     }
 
     /// Handle return packet in trafficClient mode - inject into local netstack
-    private func handleClientReturnPacket(from sender: PeerId, data: Data) async {
+    private func handleClientReturnPacket(from senderMachine: MachineId, data: Data) async {
         guard role == .trafficClient else {
             logger.debug("Ignoring client return packet - not client role", metadata: [
                 "role": "\(role)"
@@ -423,10 +423,10 @@ public actor TunnelSession {
             return
         }
 
-        guard sender == remotePeer else {
+        guard senderMachine == remoteMachine else {
             logger.debug("Ignoring client return packet - wrong sender", metadata: [
-                "expected": "\(remotePeer.prefix(16))...",
-                "actual": "\(sender.prefix(16))..."
+                "expected": "\(remoteMachine.prefix(16))...",
+                "actual": "\(senderMachine.prefix(16))..."
             ])
             return
         }

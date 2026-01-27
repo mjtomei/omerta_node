@@ -38,8 +38,8 @@ public actor HealthHandler {
         startTime = Date()
 
         do {
-            try await provider.onChannel(HealthChannels.request) { [weak self] fromPeerId, data in
-                await self?.handleRequest(data, from: fromPeerId)
+            try await provider.onChannel(HealthChannels.request) { [weak self] fromMachineId, data in
+                await self?.handleRequest(data, from: fromMachineId)
             }
             isRunning = true
             logger.info("Health handler started")
@@ -65,13 +65,13 @@ public actor HealthHandler {
 
     // MARK: - Internal
 
-    private func handleRequest(_ data: Data, from peerId: PeerId) async {
+    private func handleRequest(_ data: Data, from machineId: MachineId) async {
         guard let request = try? JSONCoding.decoder.decode(HealthRequest.self, from: data) else {
-            logger.warning("Failed to decode health request from \(peerId.prefix(8))...")
+            logger.warning("Failed to decode health request from machine \(machineId.prefix(8))...")
             return
         }
 
-        logger.debug("Received health request from \(peerId.prefix(8))..., includeMetrics: \(request.includeMetrics)")
+        logger.debug("Received health request from machine \(machineId.prefix(8))..., includeMetrics: \(request.includeMetrics)")
 
         // Build response
         let response: HealthResponse
@@ -91,14 +91,15 @@ public actor HealthHandler {
             )
         }
 
-        // Send response to requester's response channel
+        // Send response directly to the requesting machine
         do {
             let responseData = try JSONCoding.encoder.encode(response)
-            let responseChannel = HealthChannels.response(for: peerId)
-            try await provider.sendOnChannel(responseData, to: peerId, channel: responseChannel)
-            logger.debug("Sent health response to \(peerId.prefix(8))... on \(responseChannel)")
+            let myPeerId = await provider.peerId
+            let responseChannel = HealthChannels.response(for: myPeerId)
+            try await provider.sendOnChannel(responseData, toMachine: machineId, channel: responseChannel)
+            logger.debug("Sent health response to machine \(machineId.prefix(8))... on \(responseChannel)")
         } catch {
-            logger.error("Failed to send health response to \(peerId.prefix(8))...: \(error)")
+            logger.error("Failed to send health response to machine \(machineId.prefix(8))...: \(error)")
         }
     }
 

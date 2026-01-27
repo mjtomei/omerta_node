@@ -104,8 +104,8 @@ public actor HealthClient {
         let responseChannel = HealthChannels.response(for: myPeerId)
 
         do {
-            try await provider.onChannel(responseChannel) { [weak self] fromPeerId, data in
-                await self?.handleResponse(data, from: fromPeerId)
+            try await provider.onChannel(responseChannel) { [weak self] fromMachineId, data in
+                await self?.handleResponse(data, from: fromMachineId)
             }
             isRegistered = true
             logger.debug("Registered health response handler on \(responseChannel)")
@@ -114,9 +114,9 @@ public actor HealthClient {
         }
     }
 
-    private func handleResponse(_ data: Data, from peerId: PeerId) async {
+    private func handleResponse(_ data: Data, from machineId: MachineId) async {
         guard let response = try? JSONCoding.decoder.decode(HealthResponse.self, from: data) else {
-            logger.warning("Failed to decode health response from \(peerId.prefix(8))...")
+            logger.warning("Failed to decode health response from machine \(machineId.prefix(8))...")
             return
         }
 

@@ -317,7 +317,7 @@ final class MeshProviderDaemonTests: XCTestCase {
 
         let vmInfo = MeshVMInfo(
             vmId: UUID(),
-            consumerPeerId: "consumer-123",
+            consumerMachineId: "consumer-123",
             vmIP: "10.99.0.2",
             createdAt: fiveMinutesAgo,
             uptimeSeconds: 300

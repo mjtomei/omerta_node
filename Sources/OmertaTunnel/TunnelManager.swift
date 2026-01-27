@@ -20,8 +20,8 @@ import Logging
 /// let manager = TunnelManager(provider: mesh)
 /// try await manager.start()
 ///
-/// // Create session with the remote peer
-/// let session = try await manager.createSession(with: remotePeerId)
+/// // Create session with the remote machine
+/// let session = try await manager.createSession(withMachine: remoteMachineId)
 ///
 /// // Send data
 /// try await session.send(data)
@@ -41,8 +41,8 @@ public actor TunnelManager {
     /// Whether the manager is running
     private var isRunning: Bool = false
 
-    /// Callback when remote peer initiates a session
-    private var sessionRequestHandler: ((PeerId) async -> Bool)?
+    /// Callback when remote machine initiates a session
+    private var sessionRequestHandler: ((MachineId) async -> Bool)?
 
     /// Callback when session is established
     private var sessionEstablishedHandler: ((TunnelSession) async -> Void)?
@@ -62,8 +62,8 @@ public actor TunnelManager {
         guard !isRunning else { return }
 
         // Register handshake handler for incoming session requests
-        try await provider.onChannel(handshakeChannel) { [weak self] peerId, data in
-            await self?.handleHandshake(from: peerId, data: data)
+        try await provider.onChannel(handshakeChannel) { [weak self] machineId, data in
+            await self?.handleHandshake(from: machineId, data: data)
         }
 
         isRunning = true
@@ -86,8 +86,8 @@ public actor TunnelManager {
     }
 
     /// Set handler for incoming session requests
-    /// - Parameter handler: Callback that returns true to accept, false to reject
-    public func setSessionRequestHandler(_ handler: @escaping (PeerId) async -> Bool) {
+    /// - Parameter handler: Callback that returns true to accept, false to reject (receives machineId)
+    public func setSessionRequestHandler(_ handler: @escaping (MachineId) async -> Bool) {
         self.sessionRequestHandler = handler
     }
 
@@ -98,10 +98,10 @@ public actor TunnelManager {
 
     // MARK: - Session Management
 
-    /// Create a session with a remote peer
-    /// - Parameter peer: The peer to create the session with
+    /// Create a session with a remote machine
+    /// - Parameter machine: The machine to create the session with
     /// - Returns: The tunnel session
-    public func createSession(with peer: PeerId) async throws -> TunnelSession {
+    public func createSession(withMachine machine: MachineId) async throws -> TunnelSession {
         guard isRunning else {
             throw TunnelError.notConnected
         }
@@ -111,23 +111,23 @@ public actor TunnelManager {
             await existing.leave()
         }
 
-        logger.info("Creating session", metadata: ["peer": "\(peer)"])
+        logger.info("Creating session", metadata: ["machine": "\(machine)"])
 
-        // Send handshake to peer
+        // Send handshake to machine
         let handshake = SessionHandshake(type: .request)
         let data = try JSONEncoder().encode(handshake)
-        try await provider.sendOnChannel(data, to: peer, channel: handshakeChannel)
+        try await provider.sendOnChannel(data, toMachine: machine, channel: handshakeChannel)
 
         // Create session (don't wait for ack in simple model)
         let newSession = TunnelSession(
-            remotePeer: peer,
+            remoteMachine: machine,
             provider: provider
         )
 
         await newSession.activate()
         self.session = newSession
 
-        logger.info("Session created", metadata: ["peer": "\(peer)"])
+        logger.info("Session created", metadata: ["machine": "\(machine)"])
         return newSession
     }
 
@@ -139,11 +139,11 @@ public actor TunnelManager {
     /// Close the current session
     public func closeSession() async {
         if let session = session {
-            // Notify peer
+            // Notify remote machine
             let handshake = SessionHandshake(type: .close)
             if let data = try? JSONEncoder().encode(handshake) {
-                let peer = session.remotePeer
-                try? await provider.sendOnChannel(data, to: peer, channel: handshakeChannel)
+                let machine = session.remoteMachine
+                try? await provider.sendOnChannel(data, toMachine: machine, channel: handshakeChannel)
             }
 
             await session.leave()
@@ -154,18 +154,18 @@ public actor TunnelManager {
 
     // MARK: - Private
 
-    private func handleHandshake(from peerId: PeerId, data: Data) async {
+    private func handleHandshake(from machineId: MachineId, data: Data) async {
         guard let handshake = try? JSONDecoder().decode(SessionHandshake.self, from: data) else {
-            logger.warning("Invalid handshake from \(peerId.prefix(8))...")
+            logger.warning("Invalid handshake from machine \(machineId.prefix(8))...")
             return
         }
 
         switch handshake.type {
         case .request:
-            // Remote peer wants to start a session
+            // Remote machine wants to start a session
             let accept: Bool
             if let handler = sessionRequestHandler {
-                accept = await handler(peerId)
+                accept = await handler(machineId)
             } else {
                 // Accept by default
                 accept = true
@@ -179,19 +179,19 @@ public actor TunnelManager {
 
                 // Create new session
                 let newSession = TunnelSession(
-                    remotePeer: peerId,
+                    remoteMachine: machineId,
                     provider: provider
                 )
                 await newSession.activate()
                 self.session = newSession
 
-                // Send ack
+                // Send ack to the machine
                 let ack = SessionHandshake(type: .ack)
                 if let ackData = try? JSONEncoder().encode(ack) {
-                    try? await provider.sendOnChannel(ackData, to: peerId, channel: handshakeChannel)
+                    try? await provider.sendOnChannel(ackData, toMachine: machineId, channel: handshakeChannel)
                 }
 
-                logger.info("Session accepted", metadata: ["peer": "\(peerId)"])
+                logger.info("Session accepted", metadata: ["machine": "\(machineId)"])
 
                 if let handler = sessionEstablishedHandler {
                     await handler(newSession)
@@ -200,22 +200,22 @@ public actor TunnelManager {
                 // Send reject
                 let reject = SessionHandshake(type: .reject)
                 if let rejectData = try? JSONEncoder().encode(reject) {
-                    try? await provider.sendOnChannel(rejectData, to: peerId, channel: handshakeChannel)
+                    try? await provider.sendOnChannel(rejectData, toMachine: machineId, channel: handshakeChannel)
                 }
-                logger.info("Session rejected", metadata: ["peer": "\(peerId)"])
+                logger.info("Session rejected", metadata: ["machine": "\(machineId)"])
             }
 
         case .ack:
-            logger.debug("Session ack received", metadata: ["peer": "\(peerId)"])
+            logger.debug("Session ack received", metadata: ["machine": "\(machineId)"])
 
         case .reject:
-            logger.info("Session rejected by peer", metadata: ["peer": "\(peerId)"])
+            logger.info("Session rejected by machine", metadata: ["machine": "\(machineId)"])
 
         case .close:
-            if let session = session, session.remotePeer == peerId {
+            if let session = session, session.remoteMachine == machineId {
                 await session.leave()
                 self.session = nil
-                logger.info("Session closed by peer", metadata: ["peer": "\(peerId)"])
+                logger.info("Session closed by machine", metadata: ["machine": "\(machineId)"])
             }
         }
     }

@@ -13,7 +13,7 @@ private enum ProviderChannels {
     /// Channel for VM requests (consumer -> provider)
     static let request = "vm-request"
     /// Channel for VM responses (provider -> consumer)
-    /// Format: "vm-response-{consumerPeerId}"
+    /// Format: "vm-response-{consumerMachineId}"
     static func response(for peerId: PeerId) -> String {
         "vm-response-\(peerId)"
     }
@@ -126,7 +126,7 @@ public actor MeshProviderDaemon: ChannelProvider {
     /// Struct to track active VMs
     private struct MeshActiveVM: Sendable {
         let vmId: UUID
-        let consumerPeerId: String
+        let consumerMachineId: String
         let vmIP: String
         let createdAt: Date
         let maxHeartbeatFailures: Int  // From timeoutMinutes (1 failure per minute)
@@ -146,12 +146,12 @@ public actor MeshProviderDaemon: ChannelProvider {
     // MARK: - Heartbeat State
 
     /// Track consecutive heartbeat failures per consumer
-    private var heartbeatFailures: [String: Int] = [:]  // consumerPeerId -> failure count
+    private var heartbeatFailures: [String: Int] = [:]  // consumerMachineId -> failure count
 
     /// Heartbeat loop task
     private var heartbeatTask: Task<Void, Never>?
 
-    /// Pending heartbeats waiting for response (consumerPeerId -> timestamp sent)
+    /// Pending heartbeats waiting for response (consumerMachineId -> timestamp sent)
     private var pendingHeartbeats: [String: Date] = [:]
 
     /// Pending ACKs waiting for response (vmId -> continuation)
@@ -222,17 +222,17 @@ public actor MeshProviderDaemon: ChannelProvider {
         // This enables traffic routing so VM packets are routed to the internet
         await tunnelManager?.setSessionEstablishedHandler { [weak self] session in
             guard let self = self else { return }
-            let remotePeer = await session.remotePeer
+            let remoteMachine = await session.remoteMachine
             do {
                 // We're the exit point - enable netstack to process VM packets
                 try await session.enableTrafficRouting(asExit: true)
 
                 // Check if this consumer has an active VM - if so, bridge traffic to VM
-                await self.setupConsumerVMBridging(session: session, consumerPeerId: remotePeer)
+                await self.setupConsumerVMBridging(session: session, consumerMachineId: remoteMachine)
 
-                await self.logIncomingSession(remotePeer: remotePeer, error: nil)
+                await self.logIncomingSession(remoteMachine: remoteMachine, error: nil)
             } catch {
-                await self.logIncomingSession(remotePeer: remotePeer, error: error)
+                await self.logIncomingSession(remoteMachine: remoteMachine, error: error)
             }
         }
 
@@ -315,7 +315,7 @@ public actor MeshProviderDaemon: ChannelProvider {
         // Group VMs by consumer
         var vmsByConsumer: [String: [UUID]] = [:]
         for (vmId, vmInfo) in activeVMs {
-            vmsByConsumer[vmInfo.consumerPeerId, default: []].append(vmId)
+            vmsByConsumer[vmInfo.consumerMachineId, default: []].append(vmId)
         }
 
         guard !vmsByConsumer.isEmpty else {
@@ -325,9 +325,12 @@ public actor MeshProviderDaemon: ChannelProvider {
 
         logger.info("Notifying \(vmsByConsumer.count) consumer(s) of shutdown")
 
+        // Get our peer ID to include in notifications
+        let myPeerId = await mesh.peerId
+
         // Send notification to each consumer on the shutdown channel
-        for (consumerPeerId, vmIds) in vmsByConsumer {
-            let notification = MeshProviderShutdownNotification(vmIds: vmIds)
+        for (consumerMachineId, vmIds) in vmsByConsumer {
+            let notification = MeshProviderShutdownNotification(providerPeerId: myPeerId, vmIds: vmIds)
 
             guard let notificationData = try? JSONEncoder().encode(notification) else {
                 logger.error("Failed to encode shutdown notification")
@@ -335,14 +338,14 @@ public actor MeshProviderDaemon: ChannelProvider {
             }
 
             do {
-                try await mesh.sendOnChannel(notificationData, to: consumerPeerId, channel: ProviderChannels.shutdown)
+                try await mesh.sendOnChannel(notificationData, toMachine: consumerMachineId, channel: ProviderChannels.shutdown)
                 logger.info("Sent shutdown notification", metadata: [
-                    "consumer": "\(consumerPeerId.prefix(16))...",
+                    "consumer": "\(consumerMachineId.prefix(16))...",
                     "vmCount": "\(vmIds.count)"
                 ])
             } catch {
                 logger.warning("Failed to send shutdown notification", metadata: [
-                    "consumer": "\(consumerPeerId.prefix(16))...",
+                    "consumer": "\(consumerMachineId.prefix(16))...",
                     "error": "\(error)"
                 ])
             }
@@ -357,27 +360,27 @@ public actor MeshProviderDaemon: ChannelProvider {
     /// Register handlers for all VM-related channels
     private func registerChannelHandlers() async throws {
         // Handler for VM requests (consumer -> provider)
-        try await mesh.onChannel(ProviderChannels.request) { [weak self] peerId, data in
+        try await mesh.onChannel(ProviderChannels.request) { [weak self] machineId, data in
             guard let self = self else { return }
-            await self.handleVMRequestChannel(from: peerId, data: data)
+            await self.handleVMRequestChannel(from: machineId, data: data)
         }
 
         // Handler for VM release requests (consumer -> provider)
-        try await mesh.onChannel(ProviderChannels.release) { [weak self] peerId, data in
+        try await mesh.onChannel(ProviderChannels.release) { [weak self] machineId, data in
             guard let self = self else { return }
-            await self.handleVMReleaseChannel(from: peerId, data: data)
+            await self.handleVMReleaseChannel(from: machineId, data: data)
         }
 
         // Handler for VM ACKs (consumer -> provider)
-        try await mesh.onChannel(ProviderChannels.ack) { [weak self] peerId, data in
+        try await mesh.onChannel(ProviderChannels.ack) { [weak self] machineId, data in
             guard let self = self else { return }
-            await self.handleVMAckChannel(from: peerId, data: data)
+            await self.handleVMAckChannel(from: machineId, data: data)
         }
 
         // Handler for heartbeat responses (consumer -> provider)
-        try await mesh.onChannel(ProviderChannels.heartbeat) { [weak self] peerId, data in
+        try await mesh.onChannel(ProviderChannels.heartbeat) { [weak self] machineId, data in
             guard let self = self else { return }
-            await self.handleHeartbeatChannel(from: peerId, data: data)
+            await self.handleHeartbeatChannel(from: machineId, data: data)
         }
 
         logger.info("Registered channel handlers", metadata: [
@@ -388,15 +391,15 @@ public actor MeshProviderDaemon: ChannelProvider {
     // MARK: - Incoming Session Handling
 
     /// Log incoming session establishment (called from session handler)
-    private func logIncomingSession(remotePeer: PeerId, error: Error?) {
+    private func logIncomingSession(remoteMachine: MachineId, error: Error?) {
         if let error = error {
             logger.error("Failed to enable traffic routing for incoming session", metadata: [
-                "peer": "\(remotePeer.prefix(16))...",
+                "machine": "\(remoteMachine.prefix(16))...",
                 "error": "\(error)"
             ])
         } else {
             logger.info("Traffic routing enabled for incoming session (exit point)", metadata: [
-                "peer": "\(remotePeer.prefix(16))..."
+                "machine": "\(remoteMachine.prefix(16))..."
             ])
         }
     }
@@ -404,61 +407,63 @@ public actor MeshProviderDaemon: ChannelProvider {
     // MARK: - Channel Handlers
 
     /// Handle VM request from channel
-    private func handleVMRequestChannel(from peerId: PeerId, data: Data) async {
+    private func handleVMRequestChannel(from machineId: MachineId, data: Data) async {
         guard let request = try? JSONDecoder().decode(MeshVMRequest.self, from: data) else {
-            logger.warning("Failed to decode VM request", metadata: ["from": "\(peerId.prefix(16))..."])
+            logger.warning("Failed to decode VM request", metadata: ["from": "\(machineId.prefix(16))..."])
             return
         }
-        await handleVMRequest(request, from: peerId)
+        // Note: Using machineId as consumerMachineId for now - they're both String type aliases
+        await handleVMRequest(request, from: machineId)
     }
 
     /// Handle VM release request from channel
-    private func handleVMReleaseChannel(from peerId: PeerId, data: Data) async {
+    private func handleVMReleaseChannel(from machineId: MachineId, data: Data) async {
         guard let request = try? JSONDecoder().decode(MeshVMReleaseRequest.self, from: data) else {
-            logger.warning("Failed to decode VM release request", metadata: ["from": "\(peerId.prefix(16))..."])
+            logger.warning("Failed to decode VM release request", metadata: ["from": "\(machineId.prefix(16))..."])
             return
         }
-        await handleVMRelease(request, from: peerId)
+        await handleVMRelease(request, from: machineId)
     }
 
     /// Handle VM ACK from channel
-    private func handleVMAckChannel(from peerId: PeerId, data: Data) async {
+    private func handleVMAckChannel(from machineId: MachineId, data: Data) async {
         guard let ack = try? JSONDecoder().decode(MeshVMAck.self, from: data) else {
-            logger.warning("Failed to decode VM ACK", metadata: ["from": "\(peerId.prefix(16))..."])
+            logger.warning("Failed to decode VM ACK", metadata: ["from": "\(machineId.prefix(16))..."])
             return
         }
         handleVMAck(ack)
     }
 
     /// Handle heartbeat response from channel
-    private func handleHeartbeatChannel(from peerId: PeerId, data: Data) async {
+    private func handleHeartbeatChannel(from machineId: MachineId, data: Data) async {
         guard let response = try? JSONDecoder().decode(MeshVMHeartbeatResponse.self, from: data) else {
-            logger.warning("Failed to decode heartbeat response", metadata: ["from": "\(peerId.prefix(16))..."])
+            logger.warning("Failed to decode heartbeat response", metadata: ["from": "\(machineId.prefix(16))..."])
             return
         }
 
         // Remove from pending and get the VMs we asked about
-        if pendingHeartbeats.removeValue(forKey: peerId) != nil {
-            let consumerVMs = activeVMs.filter { $0.value.consumerPeerId == peerId }
+        // Note: Using machineId to look up - pendingHeartbeats and activeVMs may need migration to machineId
+        if pendingHeartbeats.removeValue(forKey: machineId) != nil {
+            let consumerVMs = activeVMs.filter { $0.value.consumerMachineId == machineId }
             let requestedVmIds = consumerVMs.map { $0.key }
-            await handleHeartbeatResponse(response, from: peerId, requestedVmIds: requestedVmIds)
+            await handleHeartbeatResponse(response, from: machineId, requestedVmIds: requestedVmIds)
         }
     }
 
     /// Handle VM request
-    private func handleVMRequest(_ request: MeshVMRequest, from consumerPeerId: String) async {
+    private func handleVMRequest(_ request: MeshVMRequest, from consumerMachineId: String) async {
         totalVMRequests += 1
 
         logger.info("Handling VM request", metadata: [
             "vmId": "\(request.vmId)",
-            "from": "\(consumerPeerId.prefix(16))..."
+            "from": "\(consumerMachineId.prefix(16))..."
         ])
 
         // Reject self-requests (consumer trying to request VM from itself)
-        guard consumerPeerId != config.identity.peerId else {
+        guard consumerMachineId != config.identity.peerId else {
             logger.warning("Rejecting self-request (consumer and provider are same peer)", metadata: [
                 "vmId": "\(request.vmId)",
-                "peerId": "\(consumerPeerId.prefix(16))..."
+                "peerId": "\(consumerMachineId.prefix(16))..."
             ])
 
             let response = MeshVMResponse(
@@ -468,7 +473,7 @@ public actor MeshProviderDaemon: ChannelProvider {
                 providerPublicKey: nil,
                 error: "Cannot request VM from self"
             )
-            try? await sendResponse(response, to: consumerPeerId)
+            try? await sendResponse(response, to: consumerMachineId)
             return
         }
 
@@ -485,14 +490,14 @@ public actor MeshProviderDaemon: ChannelProvider {
                 providerPublicKey: nil,
                 error: "This node is not accepting VM requests"
             )
-            try? await sendResponse(response, to: consumerPeerId)
+            try? await sendResponse(response, to: consumerMachineId)
             return
         }
 
         // Log VM request
         await eventLogger?.recordVMRequest(
             vmId: request.vmId,
-            consumerPeerId: consumerPeerId,
+            consumerMachineId: consumerMachineId,
             cpuCores: Int(request.requirements.cpuCores ?? 1),
             memoryMB: Int(request.requirements.memoryMB ?? 1024),
             diskGB: Int((request.requirements.storageMB ?? 10240) / 1024) // Convert MB to GB
@@ -520,7 +525,7 @@ public actor MeshProviderDaemon: ChannelProvider {
             let maxFailures = request.timeoutMinutes ?? 10
             let activeVM = MeshActiveVM(
                 vmId: request.vmId,
-                consumerPeerId: consumerPeerId,
+                consumerMachineId: consumerMachineId,
                 vmIP: vmResult.vmIP,
                 createdAt: Date(),
                 maxHeartbeatFailures: maxFailures
@@ -539,12 +544,12 @@ public actor MeshProviderDaemon: ChannelProvider {
             ])
 
             // Set up tunnel for VM traffic routing
-            await setupVMTunnel(vmId: request.vmId, consumerPeerId: consumerPeerId)
+            await setupVMTunnel(vmId: request.vmId, consumerMachineId: consumerMachineId)
 
             // Log VM creation success
             await eventLogger?.recordVMCreated(
                 vmId: request.vmId,
-                consumerPeerId: consumerPeerId,
+                consumerMachineId: consumerMachineId,
                 success: true,
                 error: nil,
                 durationMs: Int(Date().timeIntervalSince(activeVM.createdAt) * 1000)
@@ -560,7 +565,7 @@ public actor MeshProviderDaemon: ChannelProvider {
                 error: nil
             )
 
-            await sendVMResponseWithAck(response, to: consumerPeerId)
+            await sendVMResponseWithAck(response, to: consumerMachineId)
 
         } catch {
             logger.error("VM creation failed", metadata: [
@@ -571,7 +576,7 @@ public actor MeshProviderDaemon: ChannelProvider {
             // Log VM creation failure
             await eventLogger?.recordVMCreated(
                 vmId: request.vmId,
-                consumerPeerId: consumerPeerId,
+                consumerMachineId: consumerMachineId,
                 success: false,
                 error: error.localizedDescription,
                 durationMs: nil
@@ -584,7 +589,7 @@ public actor MeshProviderDaemon: ChannelProvider {
                 errorType: "vm_creation_failed",
                 errorMessage: error.localizedDescription,
                 vmId: request.vmId,
-                consumerPeerId: consumerPeerId
+                consumerMachineId: consumerMachineId
             )
 
             // Send error response (no ACK needed for errors)
@@ -596,15 +601,15 @@ public actor MeshProviderDaemon: ChannelProvider {
                 error: error.localizedDescription
             )
 
-            try? await sendResponse(response, to: consumerPeerId)
+            try? await sendResponse(response, to: consumerMachineId)
         }
     }
 
     /// Handle VM release request
-    private func handleVMRelease(_ request: MeshVMReleaseRequest, from consumerPeerId: String) async {
+    private func handleVMRelease(_ request: MeshVMReleaseRequest, from consumerMachineId: String) async {
         logger.info("Handling VM release", metadata: [
             "vmId": "\(request.vmId)",
-            "from": "\(consumerPeerId.prefix(16))..."
+            "from": "\(consumerMachineId.prefix(16))..."
         ])
 
         // Verify the consumer owns this VM
@@ -616,22 +621,22 @@ public actor MeshProviderDaemon: ChannelProvider {
                 vmId: request.vmId,
                 error: nil
             )
-            try? await sendResponse(response, to: consumerPeerId)
+            try? await sendResponse(response, to: consumerMachineId)
             return
         }
 
-        guard activeVM.consumerPeerId == consumerPeerId else {
+        guard activeVM.consumerMachineId == consumerMachineId else {
             logger.warning("Consumer does not own this VM", metadata: [
                 "vmId": "\(request.vmId)",
-                "owner": "\(activeVM.consumerPeerId.prefix(16))...",
-                "requester": "\(consumerPeerId.prefix(16))..."
+                "owner": "\(activeVM.consumerMachineId.prefix(16))...",
+                "requester": "\(consumerMachineId.prefix(16))..."
             ])
             let response = MeshVMReleaseResponse(
                 type: "vm_error",
                 vmId: request.vmId,
                 error: "Not authorized to release this VM"
             )
-            try? await sendResponse(response, to: consumerPeerId)
+            try? await sendResponse(response, to: consumerMachineId)
             return
         }
 
@@ -651,7 +656,7 @@ public actor MeshProviderDaemon: ChannelProvider {
             // Log VM release
             await eventLogger?.recordVMReleased(
                 vmId: request.vmId,
-                consumerPeerId: consumerPeerId,
+                consumerMachineId: consumerMachineId,
                 reason: "user_requested",
                 durationMs: durationMs
             )
@@ -661,7 +666,7 @@ public actor MeshProviderDaemon: ChannelProvider {
                 vmId: request.vmId,
                 error: nil
             )
-            try? await sendResponse(response, to: consumerPeerId)
+            try? await sendResponse(response, to: consumerMachineId)
 
         } catch {
             logger.error("VM release failed", metadata: [
@@ -676,7 +681,7 @@ public actor MeshProviderDaemon: ChannelProvider {
                 errorType: "vm_release_failed",
                 errorMessage: error.localizedDescription,
                 vmId: request.vmId,
-                consumerPeerId: consumerPeerId
+                consumerMachineId: consumerMachineId
             )
 
             let response = MeshVMReleaseResponse(
@@ -684,7 +689,7 @@ public actor MeshProviderDaemon: ChannelProvider {
                 vmId: request.vmId,
                 error: error.localizedDescription
             )
-            try? await sendResponse(response, to: consumerPeerId)
+            try? await sendResponse(response, to: consumerMachineId)
         }
     }
 
@@ -707,7 +712,7 @@ public actor MeshProviderDaemon: ChannelProvider {
 
     /// Set up tunnel for VM traffic routing
     /// Provider acts as traffic source, consumer as traffic exit (via netstack)
-    private func setupVMTunnel(vmId: UUID, consumerPeerId: String) async {
+    private func setupVMTunnel(vmId: UUID, consumerMachineId: String) async {
         guard let tunnelManager = tunnelManager else {
             logger.warning("Tunnel manager not initialized, skipping tunnel setup", metadata: [
                 "vmId": "\(vmId)"
@@ -717,7 +722,7 @@ public actor MeshProviderDaemon: ChannelProvider {
 
         do {
             // Create tunnel session with consumer
-            let session = try await tunnelManager.createSession(with: consumerPeerId)
+            let session = try await tunnelManager.createSession(withMachine: consumerMachineId)
             tunnelSessions[vmId] = session
 
             // Enable traffic routing - provider is source, consumer is exit
@@ -725,7 +730,7 @@ public actor MeshProviderDaemon: ChannelProvider {
 
             logger.info("Tunnel session created for VM", metadata: [
                 "vmId": "\(vmId)",
-                "consumer": "\(consumerPeerId.prefix(16))..."
+                "consumer": "\(consumerMachineId.prefix(16))..."
             ])
 
             // Set up VMPacketCapture to bridge VM network to tunnel
@@ -790,17 +795,17 @@ public actor MeshProviderDaemon: ChannelProvider {
 
     /// Set up bridging between consumer's tunnel session and their VM.
     /// This allows consumer->VM traffic (e.g., SSH) to flow through the tunnel.
-    private func setupConsumerVMBridging(session: TunnelSession, consumerPeerId: String) async {
+    private func setupConsumerVMBridging(session: TunnelSession, consumerMachineId: String) async {
         logger.info("setupConsumerVMBridging called", metadata: [
-            "consumer": "\(consumerPeerId.prefix(16))...",
+            "consumer": "\(consumerMachineId.prefix(16))...",
             "activeVMCount": "\(activeVMs.count)"
         ])
 
         // Find VM owned by this consumer
-        guard let (vmId, _) = activeVMs.first(where: { $0.value.consumerPeerId == consumerPeerId }) else {
+        guard let (vmId, _) = activeVMs.first(where: { $0.value.consumerMachineId == consumerMachineId }) else {
             logger.info("No active VM for consumer, skipping VM bridging", metadata: [
-                "consumer": "\(consumerPeerId.prefix(16))...",
-                "availableConsumers": "\(activeVMs.values.map { $0.consumerPeerId.prefix(16) })"
+                "consumer": "\(consumerMachineId.prefix(16))...",
+                "availableConsumers": "\(activeVMs.values.map { $0.consumerMachineId.prefix(16) })"
             ])
             return
         }
@@ -809,14 +814,14 @@ public actor MeshProviderDaemon: ChannelProvider {
         guard let capture = packetCaptures[vmId] else {
             logger.warning("No packet capture for VM, cannot set up bridging", metadata: [
                 "vmId": "\(vmId)",
-                "consumer": "\(consumerPeerId.prefix(16))..."
+                "consumer": "\(consumerMachineId.prefix(16))..."
             ])
             return
         }
 
         logger.info("Setting up consumer->VM bridging", metadata: [
             "vmId": "\(vmId.uuidString.prefix(8))...",
-            "consumer": "\(consumerPeerId.prefix(16))..."
+            "consumer": "\(consumerMachineId.prefix(16))..."
         ])
 
         // Set up traffic forward callback to inject packets into VM
@@ -829,25 +834,25 @@ public actor MeshProviderDaemon: ChannelProvider {
     }
 
     /// Send response to a consumer on their response channel
-    private func sendResponse<T: Encodable>(_ response: T, to consumerPeerId: PeerId) async throws {
+    private func sendResponse<T: Encodable>(_ response: T, to consumerMachineId: MachineId) async throws {
         let data = try JSONEncoder().encode(response)
-        let responseChannel = ProviderChannels.response(for: consumerPeerId)
-        try await mesh.sendOnChannel(data, to: consumerPeerId, channel: responseChannel)
+        let responseChannel = ProviderChannels.response(for: consumerMachineId)
+        try await mesh.sendOnChannel(data, toMachine: consumerMachineId, channel: responseChannel)
     }
 
     /// Send VM response and wait for ACK
     /// If ACK not received within timeout, logs warning but doesn't fail
     private func sendVMResponseWithAck(
         _ response: MeshVMResponse,
-        to consumerPeerId: PeerId,
+        to consumerMachineId: MachineId,
         timeout: TimeInterval = 5.0
     ) async {
         do {
             let data = try JSONEncoder().encode(response)
-            let responseChannel = ProviderChannels.response(for: consumerPeerId)
+            let responseChannel = ProviderChannels.response(for: consumerMachineId)
 
             // Send the response on the consumer's response channel
-            try await mesh.sendOnChannel(data, to: consumerPeerId, channel: responseChannel)
+            try await mesh.sendOnChannel(data, toMachine: consumerMachineId, channel: responseChannel)
 
             // Wait for ACK with timeout
             do {
@@ -873,7 +878,7 @@ public actor MeshProviderDaemon: ChannelProvider {
             } catch is MeshProviderError {
                 logger.warning("No ACK received for VM response (timeout)", metadata: [
                     "vmId": "\(response.vmId.uuidString.prefix(8))...",
-                    "consumer": "\(consumerPeerId.prefix(16))..."
+                    "consumer": "\(consumerMachineId.prefix(16))..."
                 ])
             }
 
@@ -912,7 +917,7 @@ public actor MeshProviderDaemon: ChannelProvider {
         activeVMs.values.map { vm in
             MeshVMInfo(
                 vmId: vm.vmId,
-                consumerPeerId: vm.consumerPeerId,
+                consumerMachineId: vm.consumerMachineId,
                 vmIP: vm.vmIP,
                 createdAt: vm.createdAt,
                 uptimeSeconds: Int(Date().timeIntervalSince(vm.createdAt))
@@ -975,8 +980,19 @@ public actor MeshProviderDaemon: ChannelProvider {
         try await mesh.sendOnChannel(data, to: peerId, channel: channel)
     }
 
+    public func sendOnChannel(_ data: Data, toMachine machineId: MachineId, channel: String) async throws {
+        try await mesh.sendOnChannel(data, toMachine: machineId, channel: channel)
+    }
+
+    /// Registry for looking up peer identities from machine IDs
+    public var machinePeerRegistry: MachinePeerRegistry? {
+        get async {
+            await mesh.machinePeerRegistry
+        }
+    }
+
     /// Register a handler for a custom channel
-    public func onChannel(_ channel: String, handler: @escaping @Sendable (PeerId, Data) async -> Void) async throws {
+    public func onChannel(_ channel: String, handler: @escaping @Sendable (MachineId, Data) async -> Void) async throws {
         try await mesh.onChannel(channel, handler: handler)
     }
 
@@ -1009,35 +1025,36 @@ public actor MeshProviderDaemon: ChannelProvider {
 
         // First, check for timed-out pending heartbeats (>30 seconds without response)
         let now = Date()
-        for (consumerPeerId, sentAt) in pendingHeartbeats {
+        for (consumerMachineId, sentAt) in pendingHeartbeats {
             if now.timeIntervalSince(sentAt) > 30 {
                 logger.warning("Heartbeat timeout (no response)", metadata: [
-                    "consumer": "\(consumerPeerId.prefix(16))..."
+                    "consumer": "\(consumerMachineId.prefix(16))..."
                 ])
-                pendingHeartbeats.removeValue(forKey: consumerPeerId)
-                await handleHeartbeatFailure(consumerPeerId)
+                pendingHeartbeats.removeValue(forKey: consumerMachineId)
+                await handleHeartbeatFailure(consumerMachineId)
             }
         }
 
         // Group VMs by consumer
         var vmsByConsumer: [String: [UUID]] = [:]
         for (vmId, vm) in activeVMs {
-            vmsByConsumer[vm.consumerPeerId, default: []].append(vmId)
+            vmsByConsumer[vm.consumerMachineId, default: []].append(vmId)
         }
 
         logger.debug("Sending heartbeats to \(vmsByConsumer.count) consumer(s)")
 
         // Send heartbeat to each consumer (skip if already pending)
-        for (consumerPeerId, vmIds) in vmsByConsumer {
-            if pendingHeartbeats[consumerPeerId] == nil {
-                await sendHeartbeatToConsumer(consumerPeerId, vmIds: vmIds)
+        for (consumerMachineId, vmIds) in vmsByConsumer {
+            if pendingHeartbeats[consumerMachineId] == nil {
+                await sendHeartbeatToConsumer(consumerMachineId, vmIds: vmIds)
             }
         }
     }
 
     /// Send heartbeat to a specific consumer
-    private func sendHeartbeatToConsumer(_ consumerPeerId: PeerId, vmIds: [UUID]) async {
-        let heartbeat = MeshVMHeartbeat(vmIds: vmIds)
+    private func sendHeartbeatToConsumer(_ consumerMachineId: PeerId, vmIds: [UUID]) async {
+        let myPeerId = await mesh.peerId
+        let heartbeat = MeshVMHeartbeat(providerPeerId: myPeerId, vmIds: vmIds)
 
         guard let heartbeatData = try? JSONEncoder().encode(heartbeat) else {
             logger.error("Failed to encode heartbeat")
@@ -1045,31 +1062,31 @@ public actor MeshProviderDaemon: ChannelProvider {
         }
 
         logger.debug("Sending heartbeat to consumer", metadata: [
-            "consumer": "\(consumerPeerId.prefix(16))...",
+            "consumer": "\(consumerMachineId.prefix(16))...",
             "vmCount": "\(vmIds.count)"
         ])
 
         do {
             // Track as pending before sending
-            pendingHeartbeats[consumerPeerId] = Date()
+            pendingHeartbeats[consumerMachineId] = Date()
 
             // Send heartbeat on heartbeat channel (response will arrive on same channel)
-            try await mesh.sendOnChannel(heartbeatData, to: consumerPeerId, channel: ProviderChannels.heartbeat)
+            try await mesh.sendOnChannel(heartbeatData, toMachine: consumerMachineId, channel: ProviderChannels.heartbeat)
 
         } catch {
             logger.warning("Heartbeat send failed", metadata: [
-                "consumer": "\(consumerPeerId.prefix(16))...",
+                "consumer": "\(consumerMachineId.prefix(16))...",
                 "error": "\(error)"
             ])
-            pendingHeartbeats.removeValue(forKey: consumerPeerId)
-            await handleHeartbeatFailure(consumerPeerId)
+            pendingHeartbeats.removeValue(forKey: consumerMachineId)
+            await handleHeartbeatFailure(consumerMachineId)
         }
     }
 
     /// Handle successful heartbeat response
-    private func handleHeartbeatResponse(_ response: MeshVMHeartbeatResponse, from consumerPeerId: String, requestedVmIds: [UUID]) async {
+    private func handleHeartbeatResponse(_ response: MeshVMHeartbeatResponse, from consumerMachineId: String, requestedVmIds: [UUID]) async {
         // Reset failure count for this consumer
-        heartbeatFailures[consumerPeerId] = 0
+        heartbeatFailures[consumerMachineId] = 0
 
         let activeSet = Set(response.activeVmIds)
         let requestedSet = Set(requestedVmIds)
@@ -1079,7 +1096,7 @@ public actor MeshProviderDaemon: ChannelProvider {
 
         if !abandonedIds.isEmpty {
             logger.info("Consumer no longer tracking VMs", metadata: [
-                "consumer": "\(consumerPeerId.prefix(16))...",
+                "consumer": "\(consumerMachineId.prefix(16))...",
                 "abandonedVMs": "\(abandonedIds.map { $0.uuidString.prefix(8) })"
             ])
 
@@ -1090,17 +1107,17 @@ public actor MeshProviderDaemon: ChannelProvider {
     }
 
     /// Handle heartbeat failure (timeout or invalid response)
-    private func handleHeartbeatFailure(_ consumerPeerId: String) async {
-        heartbeatFailures[consumerPeerId, default: 0] += 1
-        let failures = heartbeatFailures[consumerPeerId]!
+    private func handleHeartbeatFailure(_ consumerMachineId: String) async {
+        heartbeatFailures[consumerMachineId, default: 0] += 1
+        let failures = heartbeatFailures[consumerMachineId]!
 
         logger.warning("Heartbeat failure", metadata: [
-            "consumer": "\(consumerPeerId.prefix(16))...",
+            "consumer": "\(consumerMachineId.prefix(16))...",
             "consecutiveFailures": "\(failures)"
         ])
 
         // Check each VM's timeout threshold
-        let consumerVMs = activeVMs.filter { $0.value.consumerPeerId == consumerPeerId }
+        let consumerVMs = activeVMs.filter { $0.value.consumerMachineId == consumerMachineId }
         for (vmId, vm) in consumerVMs {
             if failures >= vm.maxHeartbeatFailures {
                 logger.warning("VM heartbeat timeout exceeded", metadata: [
@@ -1137,9 +1154,9 @@ public actor MeshProviderDaemon: ChannelProvider {
         }
 
         // Clean up failure tracking if no more VMs from this consumer
-        let remainingVMs = activeVMs.filter { $0.value.consumerPeerId == vm.consumerPeerId }
+        let remainingVMs = activeVMs.filter { $0.value.consumerMachineId == vm.consumerMachineId }
         if remainingVMs.isEmpty {
-            heartbeatFailures.removeValue(forKey: vm.consumerPeerId)
+            heartbeatFailures.removeValue(forKey: vm.consumerMachineId)
         }
     }
 }
@@ -1168,7 +1185,7 @@ public struct MeshDaemonStatus: Sendable {
 /// Info about an active VM
 public struct MeshVMInfo: Sendable {
     public let vmId: UUID
-    public let consumerPeerId: String
+    public let consumerMachineId: String
     public let vmIP: String
     public let createdAt: Date
     public let uptimeSeconds: Int

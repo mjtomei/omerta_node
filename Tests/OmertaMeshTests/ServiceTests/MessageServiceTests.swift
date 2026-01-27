@@ -83,7 +83,7 @@ final class MessageServiceTests: XCTestCase {
         XCTAssertEqual(sentMessages.count, 1)
 
         let sent = sentMessages[0]
-        XCTAssertEqual(sent.peerId, "sender-peer")
+        XCTAssertEqual(sent.target, "sender-peer")
         XCTAssertEqual(sent.channel, MessageChannels.receipt(for: "sender-peer"))
 
         // Decode and verify receipt
@@ -113,7 +113,7 @@ final class MessageServiceTests: XCTestCase {
         XCTAssertEqual(sentMessages.count, 1)
 
         let sent = sentMessages[0]
-        XCTAssertEqual(sent.peerId, "recipient-peer")
+        XCTAssertEqual(sent.target, "recipient-peer")
         XCTAssertEqual(sent.channel, MessageChannels.inbox(for: "recipient-peer"))
 
         // Decode and verify

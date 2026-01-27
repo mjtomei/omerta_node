@@ -12,10 +12,10 @@ public actor CloisterHandler {
     private let provider: any ChannelProvider
 
     /// Request handler (decides whether to accept negotiation)
-    private var requestHandler: (@Sendable (PeerId, String) async -> Bool)?
+    private var requestHandler: (@Sendable (MachineId, String) async -> Bool)?
 
     /// Invite handler (decides whether to accept shared invites)
-    private var inviteHandler: (@Sendable (PeerId, String?) async -> Bool)?
+    private var inviteHandler: (@Sendable (MachineId, String?) async -> Bool)?
 
     /// Callback when a new network key is derived
     private var networkKeyCallback: (@Sendable (CloisterResult) async -> Void)?
@@ -32,7 +32,7 @@ public actor CloisterHandler {
     /// State for pending invite sessions
     private struct PendingInviteSession {
         let session: KeyExchangeSession
-        let fromPeerId: PeerId
+        let fromMachineId: MachineId
         let networkNameHint: String?
         let expiresAt: Date
     }
@@ -53,19 +53,19 @@ public actor CloisterHandler {
         let myPeerId = await provider.peerId
 
         // Register negotiation request handler
-        try await provider.onChannel(CloisterChannels.negotiate) { [weak self] fromPeerId, data in
-            await self?.handleNegotiationRequest(data, from: fromPeerId)
+        try await provider.onChannel(CloisterChannels.negotiate) { [weak self] fromMachineId, data in
+            await self?.handleNegotiationRequest(data, from: fromMachineId)
         }
 
         // Register invite key exchange handler (round 1)
-        try await provider.onChannel(CloisterChannels.inviteKeyExchange) { [weak self] fromPeerId, data in
-            await self?.handleInviteKeyExchange(data, from: fromPeerId)
+        try await provider.onChannel(CloisterChannels.inviteKeyExchange) { [weak self] fromMachineId, data in
+            await self?.handleInviteKeyExchange(data, from: fromMachineId)
         }
 
         // Register invite payload handler (round 2)
         let payloadChannel = CloisterChannels.invitePayload(for: myPeerId)
-        try await provider.onChannel(payloadChannel) { [weak self] fromPeerId, data in
-            await self?.handleInvitePayload(data, from: fromPeerId)
+        try await provider.onChannel(payloadChannel) { [weak self] fromMachineId, data in
+            await self?.handleInvitePayload(data, from: fromMachineId)
         }
 
         isRunning = true
@@ -87,15 +87,15 @@ public actor CloisterHandler {
 
     /// Set the request handler for negotiation requests
     /// - Parameter handler: Async closure that decides whether to accept
-    ///   Parameters: (fromPeerId, networkName) -> accept?
-    public func setRequestHandler(_ handler: @escaping @Sendable (PeerId, String) async -> Bool) {
+    ///   Parameters: (fromMachineId, networkName) -> accept?
+    public func setRequestHandler(_ handler: @escaping @Sendable (MachineId, String) async -> Bool) {
         requestHandler = handler
     }
 
     /// Set the invite handler for shared invites
     /// - Parameter handler: Async closure that decides whether to accept
-    ///   Parameters: (fromPeerId, networkNameHint) -> accept?
-    public func setInviteHandler(_ handler: @escaping @Sendable (PeerId, String?) async -> Bool) {
+    ///   Parameters: (fromMachineId, networkNameHint) -> accept?
+    public func setInviteHandler(_ handler: @escaping @Sendable (MachineId, String?) async -> Bool) {
         inviteHandler = handler
     }
 
@@ -107,28 +107,28 @@ public actor CloisterHandler {
 
     // MARK: - Internal
 
-    private func handleNegotiationRequest(_ data: Data, from peerId: PeerId) async {
+    private func handleNegotiationRequest(_ data: Data, from machineId: MachineId) async {
         guard let request = try? JSONCoding.decoder.decode(CloisterRequest.self, from: data) else {
-            logger.warning("Failed to decode cloister request from \(peerId.prefix(8))...")
+            logger.warning("Failed to decode cloister request from machine \(machineId.prefix(8))...")
             return
         }
 
-        logger.debug("Received cloister request from \(peerId.prefix(8))..., networkName: \(request.networkName)")
+        logger.debug("Received cloister request from machine \(machineId.prefix(8))..., networkName: \(request.networkName)")
 
         // Check if we should accept
         let accepted: Bool
         if let handler = requestHandler {
-            accepted = await handler(peerId, request.networkName)
+            accepted = await handler(machineId, request.networkName)
         } else {
             // Default: reject if no handler
             accepted = false
-            logger.warning("No cloister request handler set, rejecting request from \(peerId.prefix(8))...")
+            logger.warning("No cloister request handler set, rejecting request from machine \(machineId.prefix(8))...")
         }
 
         if !accepted {
             await sendNegotiationResponse(
                 requestId: request.requestId,
-                to: peerId,
+                to: machineId,
                 accepted: false,
                 rejectReason: "Request not accepted"
             )
@@ -168,7 +168,7 @@ public actor CloisterHandler {
             // Send response with our public key
             await sendNegotiationResponse(
                 requestId: request.requestId,
-                to: peerId,
+                to: machineId,
                 accepted: true,
                 publicKey: publicKeyData,
                 confirmation: confirmationData
@@ -179,20 +179,20 @@ public actor CloisterHandler {
                 networkKey: networkKeyData,
                 networkId: networkId,
                 networkName: request.networkName,
-                sharedWith: peerId
+                sharedWith: machineId
             )
 
             if let callback = networkKeyCallback {
                 await callback(result)
             }
 
-            logger.info("Successfully negotiated network key with \(peerId.prefix(8))..., networkId: \(networkId)")
+            logger.info("Successfully negotiated network key with machine \(machineId.prefix(8))..., networkId: \(networkId)")
 
         } catch {
-            logger.error("Key exchange failed with \(peerId.prefix(8))...: \(error)")
+            logger.error("Key exchange failed with machine \(machineId.prefix(8))...: \(error)")
             await sendNegotiationResponse(
                 requestId: request.requestId,
-                to: peerId,
+                to: machineId,
                 accepted: false,
                 rejectReason: "Key exchange failed"
             )
@@ -201,7 +201,7 @@ public actor CloisterHandler {
 
     private func sendNegotiationResponse(
         requestId: UUID,
-        to peerId: PeerId,
+        to machineId: MachineId,
         accepted: Bool,
         publicKey: Data? = nil,
         confirmation: Data? = nil,
@@ -217,30 +217,31 @@ public actor CloisterHandler {
 
         do {
             let responseData = try JSONCoding.encoder.encode(response)
-            let responseChannel = CloisterChannels.response(for: peerId)
-            try await provider.sendOnChannel(responseData, to: peerId, channel: responseChannel)
+            let myPeerId = await provider.peerId
+            let responseChannel = CloisterChannels.response(for: myPeerId)
+            try await provider.sendOnChannel(responseData, toMachine: machineId, channel: responseChannel)
         } catch {
-            logger.error("Failed to send cloister response to \(peerId.prefix(8))...: \(error)")
+            logger.error("Failed to send cloister response to machine \(machineId.prefix(8))...: \(error)")
         }
     }
 
     /// Handle invite key exchange request (round 1)
     /// Creates session and sends back our public key
-    private func handleInviteKeyExchange(_ data: Data, from peerId: PeerId) async {
+    private func handleInviteKeyExchange(_ data: Data, from machineId: MachineId) async {
         guard let request = try? JSONCoding.decoder.decode(InviteKeyExchangeRequest.self, from: data) else {
-            logger.warning("Failed to decode invite key exchange request from \(peerId.prefix(8))...")
+            logger.warning("Failed to decode invite key exchange request from machine \(machineId.prefix(8))...")
             return
         }
 
-        logger.debug("Received invite key exchange from \(peerId.prefix(8))..., hint: \(request.networkNameHint ?? "none")")
+        logger.debug("Received invite key exchange from machine \(machineId.prefix(8))..., hint: \(request.networkNameHint ?? "none")")
 
         // Check if we should accept
         let accepted: Bool
         if let handler = inviteHandler {
-            accepted = await handler(peerId, request.networkNameHint)
+            accepted = await handler(machineId, request.networkNameHint)
         } else {
             accepted = false
-            logger.warning("No invite handler set, rejecting invite from \(peerId.prefix(8))...")
+            logger.warning("No invite handler set, rejecting invite from machine \(machineId.prefix(8))...")
         }
 
         // Create our key exchange session
@@ -250,7 +251,7 @@ public actor CloisterHandler {
         if !accepted {
             await sendInviteKeyExchangeResponse(
                 requestId: request.requestId,
-                to: peerId,
+                to: machineId,
                 publicKey: ourPublicKey,
                 accepted: false,
                 rejectReason: "Invite not accepted"
@@ -266,7 +267,7 @@ public actor CloisterHandler {
             let expiresAt = Date().addingTimeInterval(60) // 60 second timeout
             pendingInviteSessions[request.requestId] = PendingInviteSession(
                 session: session,
-                fromPeerId: peerId,
+                fromMachineId: machineId,
                 networkNameHint: request.networkNameHint,
                 expiresAt: expiresAt
             )
@@ -274,18 +275,18 @@ public actor CloisterHandler {
             // Send our public key back
             await sendInviteKeyExchangeResponse(
                 requestId: request.requestId,
-                to: peerId,
+                to: machineId,
                 publicKey: ourPublicKey,
                 accepted: true
             )
 
-            logger.debug("Sent invite key exchange response to \(peerId.prefix(8))..., awaiting payload")
+            logger.debug("Sent invite key exchange response to machine \(machineId.prefix(8))..., awaiting payload")
 
         } catch {
-            logger.error("Key exchange failed with \(peerId.prefix(8))...: \(error)")
+            logger.error("Key exchange failed with machine \(machineId.prefix(8))...: \(error)")
             await sendInviteKeyExchangeResponse(
                 requestId: request.requestId,
-                to: peerId,
+                to: machineId,
                 publicKey: ourPublicKey,
                 accepted: false,
                 rejectReason: "Key exchange failed"
@@ -296,7 +297,7 @@ public actor CloisterHandler {
     /// Send invite key exchange response (round 1)
     private func sendInviteKeyExchangeResponse(
         requestId: UUID,
-        to peerId: PeerId,
+        to machineId: MachineId,
         publicKey: Data,
         accepted: Bool,
         rejectReason: String? = nil
@@ -310,18 +311,19 @@ public actor CloisterHandler {
 
         do {
             let responseData = try JSONCoding.encoder.encode(response)
-            let responseChannel = CloisterChannels.inviteKeyExchangeResponse(for: peerId)
-            try await provider.sendOnChannel(responseData, to: peerId, channel: responseChannel)
+            let myPeerId = await provider.peerId
+            let responseChannel = CloisterChannels.inviteKeyExchangeResponse(for: myPeerId)
+            try await provider.sendOnChannel(responseData, toMachine: machineId, channel: responseChannel)
         } catch {
-            logger.error("Failed to send invite key exchange response to \(peerId.prefix(8))...: \(error)")
+            logger.error("Failed to send invite key exchange response to machine \(machineId.prefix(8))...: \(error)")
         }
     }
 
     /// Handle invite payload (round 2)
     /// Decrypts the network key and joins the network
-    private func handleInvitePayload(_ data: Data, from peerId: PeerId) async {
+    private func handleInvitePayload(_ data: Data, from machineId: MachineId) async {
         guard let payload = try? JSONCoding.decoder.decode(InvitePayload.self, from: data) else {
-            logger.warning("Failed to decode invite payload from \(peerId.prefix(8))...")
+            logger.warning("Failed to decode invite payload from machine \(machineId.prefix(8))...")
             return
         }
 
@@ -330,7 +332,7 @@ public actor CloisterHandler {
             logger.warning("Received invite payload for unknown request: \(payload.requestId)")
             await sendInviteFinalAck(
                 requestId: payload.requestId,
-                to: peerId,
+                to: machineId,
                 success: false,
                 error: "No pending session found"
             )
@@ -342,21 +344,21 @@ public actor CloisterHandler {
             logger.warning("Invite session expired for request: \(payload.requestId)")
             await sendInviteFinalAck(
                 requestId: payload.requestId,
-                to: peerId,
+                to: machineId,
                 success: false,
                 error: "Session expired"
             )
             return
         }
 
-        // Verify the peer ID matches
-        guard sessionData.fromPeerId == peerId else {
-            logger.warning("Invite payload from wrong peer: expected \(sessionData.fromPeerId.prefix(8))..., got \(peerId.prefix(8))...")
+        // Verify the machine ID matches
+        guard sessionData.fromMachineId == machineId else {
+            logger.warning("Invite payload from wrong machine: expected \(sessionData.fromMachineId.prefix(8))..., got \(machineId.prefix(8))...")
             await sendInviteFinalAck(
                 requestId: payload.requestId,
-                to: peerId,
+                to: machineId,
                 success: false,
-                error: "Peer ID mismatch"
+                error: "Machine ID mismatch"
             )
             return
         }
@@ -384,7 +386,7 @@ public actor CloisterHandler {
             // Send success ack
             await sendInviteFinalAck(
                 requestId: payload.requestId,
-                to: peerId,
+                to: machineId,
                 success: true,
                 joinedNetworkId: networkId
             )
@@ -394,20 +396,20 @@ public actor CloisterHandler {
                 networkKey: networkKey,
                 networkId: networkId,
                 networkName: networkName,
-                sharedWith: peerId
+                sharedWith: machineId
             )
 
             if let callback = networkKeyCallback {
                 await callback(result)
             }
 
-            logger.info("Successfully received invite from \(peerId.prefix(8))..., networkId: \(networkId)")
+            logger.info("Successfully received invite from machine \(machineId.prefix(8))..., networkId: \(networkId)")
 
         } catch {
-            logger.error("Failed to process invite payload from \(peerId.prefix(8))...: \(error)")
+            logger.error("Failed to process invite payload from machine \(machineId.prefix(8))...: \(error)")
             await sendInviteFinalAck(
                 requestId: payload.requestId,
-                to: peerId,
+                to: machineId,
                 success: false,
                 error: "Failed to decrypt invite: \(error.localizedDescription)"
             )
@@ -417,7 +419,7 @@ public actor CloisterHandler {
     /// Send final invite acknowledgment (round 2)
     private func sendInviteFinalAck(
         requestId: UUID,
-        to peerId: PeerId,
+        to machineId: MachineId,
         success: Bool,
         joinedNetworkId: String? = nil,
         error: String? = nil
@@ -431,10 +433,11 @@ public actor CloisterHandler {
 
         do {
             let ackData = try JSONCoding.encoder.encode(ack)
-            let ackChannel = CloisterChannels.inviteFinalAck(for: peerId)
-            try await provider.sendOnChannel(ackData, to: peerId, channel: ackChannel)
+            let myPeerId = await provider.peerId
+            let ackChannel = CloisterChannels.inviteFinalAck(for: myPeerId)
+            try await provider.sendOnChannel(ackData, toMachine: machineId, channel: ackChannel)
         } catch {
-            logger.error("Failed to send invite final ack to \(peerId.prefix(8))...: \(error)")
+            logger.error("Failed to send invite final ack to machine \(machineId.prefix(8))...: \(error)")
         }
     }
 }

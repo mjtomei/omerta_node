@@ -132,8 +132,8 @@ public actor MessageClient {
         let receiptChannel = MessageChannels.receipt(for: myPeerId)
 
         do {
-            try await provider.onChannel(receiptChannel) { [weak self] fromPeerId, data in
-                await self?.handleReceipt(data, from: fromPeerId)
+            try await provider.onChannel(receiptChannel) { [weak self] fromMachineId, data in
+                await self?.handleReceipt(data, from: fromMachineId)
             }
             isRegistered = true
             logger.debug("Registered message receipt handler on \(receiptChannel)")
@@ -142,9 +142,9 @@ public actor MessageClient {
         }
     }
 
-    private func handleReceipt(_ data: Data, from peerId: PeerId) async {
+    private func handleReceipt(_ data: Data, from machineId: MachineId) async {
         guard let receipt = try? JSONCoding.decoder.decode(MessageReceipt.self, from: data) else {
-            logger.warning("Failed to decode message receipt from \(peerId.prefix(8))...")
+            logger.warning("Failed to decode message receipt from machine \(machineId.prefix(8))...")
             return
         }
 

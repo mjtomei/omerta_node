@@ -176,10 +176,12 @@ final class MeshConsumerClientTests: XCTestCase {
     func testMeshProviderShutdownNotificationEncoding() throws {
         let vmId1 = UUID()
         let vmId2 = UUID()
-        let notification = MeshProviderShutdownNotification(vmIds: [vmId1, vmId2])
+        let providerPeerId = "test-provider-peer-id"
+        let notification = MeshProviderShutdownNotification(providerPeerId: providerPeerId, vmIds: [vmId1, vmId2])
 
         XCTAssertEqual(notification.type, "provider_shutdown")
         XCTAssertEqual(notification.reason, "provider_shutdown")
+        XCTAssertEqual(notification.providerPeerId, providerPeerId)
         XCTAssertEqual(notification.vmIds.count, 2)
 
         // Test encoding/decoding
@@ -191,6 +193,7 @@ final class MeshConsumerClientTests: XCTestCase {
 
         XCTAssertEqual(decoded.type, "provider_shutdown")
         XCTAssertEqual(decoded.reason, "provider_shutdown")
+        XCTAssertEqual(decoded.providerPeerId, providerPeerId)
         XCTAssertEqual(decoded.vmIds.count, 2)
         XCTAssertTrue(decoded.vmIds.contains(vmId1))
         XCTAssertTrue(decoded.vmIds.contains(vmId2))
@@ -198,7 +201,8 @@ final class MeshConsumerClientTests: XCTestCase {
 
     func testMeshProviderShutdownNotificationCustomReason() throws {
         let vmId = UUID()
-        let notification = MeshProviderShutdownNotification(vmIds: [vmId], reason: "maintenance")
+        let providerPeerId = "test-provider-peer-id"
+        let notification = MeshProviderShutdownNotification(providerPeerId: providerPeerId, vmIds: [vmId], reason: "maintenance")
 
         XCTAssertEqual(notification.type, "provider_shutdown")
         XCTAssertEqual(notification.reason, "maintenance")
@@ -215,9 +219,11 @@ final class MeshConsumerClientTests: XCTestCase {
     func testMeshVMHeartbeatEncoding() throws {
         let vmId1 = UUID()
         let vmId2 = UUID()
-        let heartbeat = MeshVMHeartbeat(vmIds: [vmId1, vmId2])
+        let providerPeerId = "test-provider-peer-id"
+        let heartbeat = MeshVMHeartbeat(providerPeerId: providerPeerId, vmIds: [vmId1, vmId2])
 
         XCTAssertEqual(heartbeat.type, "vm_heartbeat")
+        XCTAssertEqual(heartbeat.providerPeerId, providerPeerId)
         XCTAssertEqual(heartbeat.vmIds.count, 2)
 
         let encoder = JSONEncoder()
@@ -227,6 +233,7 @@ final class MeshConsumerClientTests: XCTestCase {
         let decoded = try decoder.decode(MeshVMHeartbeat.self, from: data)
 
         XCTAssertEqual(decoded.type, "vm_heartbeat")
+        XCTAssertEqual(decoded.providerPeerId, providerPeerId)
         XCTAssertTrue(decoded.vmIds.contains(vmId1))
         XCTAssertTrue(decoded.vmIds.contains(vmId2))
     }

@@ -93,7 +93,7 @@ public actor ProviderEventLogger {
     /// Log VM creation request
     public func recordVMRequest(
         vmId: UUID,
-        consumerPeerId: String,
+        consumerMachineId: String,
         cpuCores: Int,
         memoryMB: Int,
         diskGB: Int
@@ -101,7 +101,7 @@ public actor ProviderEventLogger {
         let event = VMRequestEvent(
             timestamp: Date(),
             vmId: vmId.uuidString,
-            consumerPeerId: consumerPeerId,
+            consumerMachineId: consumerMachineId,
             cpuCores: cpuCores,
             memoryMB: memoryMB,
             diskGB: diskGB
@@ -112,7 +112,7 @@ public actor ProviderEventLogger {
     /// Log VM creation result
     public func recordVMCreated(
         vmId: UUID,
-        consumerPeerId: String,
+        consumerMachineId: String,
         success: Bool,
         error: String? = nil,
         durationMs: Int? = nil
@@ -120,7 +120,7 @@ public actor ProviderEventLogger {
         let event = VMCreatedEvent(
             timestamp: Date(),
             vmId: vmId.uuidString,
-            consumerPeerId: consumerPeerId,
+            consumerMachineId: consumerMachineId,
             success: success,
             error: error,
             durationMs: durationMs
@@ -131,14 +131,14 @@ public actor ProviderEventLogger {
     /// Log VM release
     public func recordVMReleased(
         vmId: UUID,
-        consumerPeerId: String,
+        consumerMachineId: String,
         reason: String,
         durationMs: Int? = nil
     ) async {
         let event = VMReleasedEvent(
             timestamp: Date(),
             vmId: vmId.uuidString,
-            consumerPeerId: consumerPeerId,
+            consumerMachineId: consumerMachineId,
             reason: reason,
             durationMs: durationMs
         )
@@ -148,13 +148,13 @@ public actor ProviderEventLogger {
     /// Log VM timeout (heartbeat failure)
     public func recordVMTimeout(
         vmId: UUID,
-        consumerPeerId: String,
+        consumerMachineId: String,
         lastHeartbeat: Date
     ) async {
         let event = VMTimeoutEvent(
             timestamp: Date(),
             vmId: vmId.uuidString,
-            consumerPeerId: consumerPeerId,
+            consumerMachineId: consumerMachineId,
             lastHeartbeat: lastHeartbeat,
             secondsSinceHeartbeat: Int(Date().timeIntervalSince(lastHeartbeat))
         )
@@ -165,13 +165,13 @@ public actor ProviderEventLogger {
 
     /// Log heartbeat received
     public func recordHeartbeat(
-        consumerPeerId: String,
+        consumerMachineId: String,
         vmIds: [UUID],
         activeVmIds: [UUID]
     ) async {
         let event = HeartbeatEvent(
             timestamp: Date(),
-            consumerPeerId: consumerPeerId,
+            consumerMachineId: consumerMachineId,
             requestedVmIds: vmIds.map { $0.uuidString },
             confirmedVmIds: activeVmIds.map { $0.uuidString }
         )
@@ -180,12 +180,12 @@ public actor ProviderEventLogger {
 
     /// Log heartbeat timeout (no response)
     public func recordHeartbeatTimeout(
-        consumerPeerId: String,
+        consumerMachineId: String,
         vmIds: [UUID]
     ) async {
         let event = HeartbeatTimeoutEvent(
             timestamp: Date(),
-            consumerPeerId: consumerPeerId,
+            consumerMachineId: consumerMachineId,
             vmIds: vmIds.map { $0.uuidString }
         )
         appendEvent(event, to: "heartbeats")
@@ -314,7 +314,7 @@ public actor ProviderEventLogger {
         errorType: String,
         errorMessage: String,
         vmId: UUID? = nil,
-        consumerPeerId: String? = nil
+        consumerMachineId: String? = nil
     ) async {
         let event = ProviderErrorEvent(
             timestamp: Date(),
@@ -323,7 +323,7 @@ public actor ProviderEventLogger {
             errorType: errorType,
             errorMessage: errorMessage,
             vmId: vmId?.uuidString,
-            consumerPeerId: consumerPeerId
+            consumerMachineId: consumerMachineId
         )
         appendEvent(event, to: "errors")
     }
@@ -334,7 +334,7 @@ public actor ProviderEventLogger {
 private struct VMRequestEvent: Codable {
     let timestamp: Date
     let vmId: String
-    let consumerPeerId: String
+    let consumerMachineId: String
     let cpuCores: Int
     let memoryMB: Int
     let diskGB: Int
@@ -343,7 +343,7 @@ private struct VMRequestEvent: Codable {
 private struct VMCreatedEvent: Codable {
     let timestamp: Date
     let vmId: String
-    let consumerPeerId: String
+    let consumerMachineId: String
     let success: Bool
     let error: String?
     let durationMs: Int?
@@ -352,7 +352,7 @@ private struct VMCreatedEvent: Codable {
 private struct VMReleasedEvent: Codable {
     let timestamp: Date
     let vmId: String
-    let consumerPeerId: String
+    let consumerMachineId: String
     let reason: String
     let durationMs: Int?
 }
@@ -360,21 +360,21 @@ private struct VMReleasedEvent: Codable {
 private struct VMTimeoutEvent: Codable {
     let timestamp: Date
     let vmId: String
-    let consumerPeerId: String
+    let consumerMachineId: String
     let lastHeartbeat: Date
     let secondsSinceHeartbeat: Int
 }
 
 private struct HeartbeatEvent: Codable {
     let timestamp: Date
-    let consumerPeerId: String
+    let consumerMachineId: String
     let requestedVmIds: [String]
     let confirmedVmIds: [String]
 }
 
 private struct HeartbeatTimeoutEvent: Codable {
     let timestamp: Date
-    let consumerPeerId: String
+    let consumerMachineId: String
     let vmIds: [String]
 }
 
@@ -414,5 +414,5 @@ private struct ProviderErrorEvent: Codable {
     let errorType: String
     let errorMessage: String
     let vmId: String?
-    let consumerPeerId: String?
+    let consumerMachineId: String?
 }

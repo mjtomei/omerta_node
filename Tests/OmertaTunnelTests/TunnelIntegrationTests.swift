@@ -104,17 +104,17 @@ final class TunnelIntegrationTests: XCTestCase {
         // Set up session handler on mesh2 to accept
         let sessionEstablished = expectation(description: "Session established on mesh2")
         await tunnel2.setSessionEstablishedHandler { session in
-            let peer = await session.remotePeer
+            let peer = await session.remoteMachine
             XCTAssertEqual(peer, identity1.peerId)
             sessionEstablished.fulfill()
         }
 
         // mesh1 initiates session to mesh2
-        let session1 = try await tunnel1.createSession(with: identity2.peerId)
+        let session1 = try await tunnel1.createSession(withMachine: identity2.peerId)
 
         // Verify session created
         XCTAssertNotNil(session1)
-        let remotePeer = await session1.remotePeer
+        let remotePeer = await session1.remoteMachine
         XCTAssertEqual(remotePeer, identity2.peerId)
 
         // Wait for mesh2 to receive and accept session
@@ -197,7 +197,7 @@ final class TunnelIntegrationTests: XCTestCase {
         }
 
         // Create session and send message
-        let session1 = try await tunnel1.createSession(with: identity2.peerId)
+        let session1 = try await tunnel1.createSession(withMachine: identity2.peerId)
 
         // Wait briefly for session to establish on both sides
         try await Task.sleep(nanoseconds: 200_000_000)
@@ -277,7 +277,7 @@ final class TunnelIntegrationTests: XCTestCase {
             session2 = session
         }
 
-        let session1 = try await tunnel1.createSession(with: identity2.peerId)
+        let session1 = try await tunnel1.createSession(withMachine: identity2.peerId)
         try await Task.sleep(nanoseconds: 300_000_000)
 
         guard let s2 = session2 else {
@@ -373,7 +373,7 @@ final class TunnelIntegrationTests: XCTestCase {
             session2 = session
         }
 
-        _ = try await tunnel1.createSession(with: identity2.peerId)
+        _ = try await tunnel1.createSession(withMachine: identity2.peerId)
         try await Task.sleep(nanoseconds: 300_000_000)
 
         // Verify both have sessions
@@ -463,7 +463,7 @@ final class TunnelIntegrationTests: XCTestCase {
             try? await session.enableTrafficRouting(asExit: true)
         }
 
-        let session1 = try await tunnel1.createSession(with: identity2.peerId)
+        let session1 = try await tunnel1.createSession(withMachine: identity2.peerId)
         try await Task.sleep(nanoseconds: 300_000_000)
 
         // Enable as source on session1
@@ -543,7 +543,7 @@ final class TunnelIntegrationTests: XCTestCase {
             try? await session.enableTrafficRouting(asExit: true)
         }
 
-        let session1 = try await tunnel1.createSession(with: identity2.peerId)
+        let session1 = try await tunnel1.createSession(withMachine: identity2.peerId)
         try await Task.sleep(nanoseconds: 300_000_000)
 
         try await session1.enableTrafficRouting(asExit: false)
@@ -682,7 +682,7 @@ final class TunnelIntegrationTests: XCTestCase {
         }
 
         // Create session - should work via relay
-        let session1 = try await tunnel1.createSession(with: identity2.peerId)
+        let session1 = try await tunnel1.createSession(withMachine: identity2.peerId)
 
         // Wait for session
         await fulfillment(of: [sessionEstablished], timeout: 10.0)

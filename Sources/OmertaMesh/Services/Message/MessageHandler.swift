@@ -10,8 +10,8 @@ public actor MessageHandler {
     /// The channel provider for receiving messages and sending receipts
     private let provider: any ChannelProvider
 
-    /// Application message handler
-    private var messageHandler: (@Sendable (PeerId, PeerMessage) async -> Void)?
+    /// Application message handler (receives machineId of sender)
+    private var messageHandler: (@Sendable (MachineId, PeerMessage) async -> Void)?
 
     /// Logger
     private let logger = Logger(label: "io.omerta.mesh.services.message.handler")
@@ -36,8 +36,8 @@ public actor MessageHandler {
         let inboxChannel = MessageChannels.inbox(for: myPeerId)
 
         do {
-            try await provider.onChannel(inboxChannel) { [weak self] fromPeerId, data in
-                await self?.handleIncomingMessage(data, from: fromPeerId)
+            try await provider.onChannel(inboxChannel) { [weak self] fromMachineId, data in
+                await self?.handleIncomingMessage(data, from: fromMachineId)
             }
             isRunning = true
             logger.info("Message handler started, listening on \(inboxChannel)")
@@ -57,35 +57,35 @@ public actor MessageHandler {
     // MARK: - Configuration
 
     /// Set the message handler
-    /// - Parameter handler: Async closure called when messages are received
-    public func setMessageHandler(_ handler: @escaping @Sendable (PeerId, PeerMessage) async -> Void) {
+    /// - Parameter handler: Async closure called when messages are received (receives machineId of sender)
+    public func setMessageHandler(_ handler: @escaping @Sendable (MachineId, PeerMessage) async -> Void) {
         messageHandler = handler
     }
 
     // MARK: - Internal
 
-    private func handleIncomingMessage(_ data: Data, from peerId: PeerId) async {
+    private func handleIncomingMessage(_ data: Data, from machineId: MachineId) async {
         guard let message = try? JSONCoding.decoder.decode(PeerMessage.self, from: data) else {
-            logger.warning("Failed to decode message from \(peerId.prefix(8))...")
+            logger.warning("Failed to decode message from machine \(machineId.prefix(8))...")
             return
         }
 
-        logger.debug("Received message \(message.messageId) from \(peerId.prefix(8))..., type: \(message.messageType ?? "none")")
+        logger.debug("Received message \(message.messageId) from machine \(machineId.prefix(8))..., type: \(message.messageType ?? "none")")
 
         // Send receipt if requested
         if message.requestReceipt {
-            await sendReceipt(for: message, to: peerId, status: .delivered)
+            await sendReceipt(for: message, to: machineId, status: .delivered)
         }
 
         // Forward to application handler
         if let handler = messageHandler {
-            await handler(peerId, message)
+            await handler(machineId, message)
         } else {
             logger.warning("No message handler set, dropping message \(message.messageId)")
         }
     }
 
-    private func sendReceipt(for message: PeerMessage, to peerId: PeerId, status: MessageStatus) async {
+    private func sendReceipt(for message: PeerMessage, to machineId: MachineId, status: MessageStatus) async {
         let receipt = MessageReceipt(
             messageId: message.messageId,
             status: status
@@ -93,11 +93,14 @@ public actor MessageHandler {
 
         do {
             let receiptData = try JSONCoding.encoder.encode(receipt)
-            let receiptChannel = MessageChannels.receipt(for: peerId)
-            try await provider.sendOnChannel(receiptData, to: peerId, channel: receiptChannel)
-            logger.debug("Sent receipt for \(message.messageId) to \(peerId.prefix(8))...")
+            // Use a standard receipt channel - the sender knows their own peerId for the channel name
+            // but we send to their machine directly
+            let myPeerId = await provider.peerId
+            let receiptChannel = MessageChannels.receipt(for: myPeerId)
+            try await provider.sendOnChannel(receiptData, toMachine: machineId, channel: receiptChannel)
+            logger.debug("Sent receipt for \(message.messageId) to machine \(machineId.prefix(8))...")
         } catch {
-            logger.error("Failed to send receipt for \(message.messageId) to \(peerId.prefix(8))...: \(error)")
+            logger.error("Failed to send receipt for \(message.messageId) to machine \(machineId.prefix(8))...: \(error)")
         }
     }
 }

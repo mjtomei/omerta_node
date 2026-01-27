@@ -339,15 +339,15 @@ public actor MeshNetwork: ChannelProvider {
     // MARK: - Channel-based Messaging
 
     /// Pending channel handlers (registered before node is started)
-    private var pendingChannelHandlers: [String: @Sendable (PeerId, Data) async -> Void] = [:]
+    private var pendingChannelHandlers: [String: @Sendable (MachineId, Data) async -> Void] = [:]
 
     /// Register a handler for a channel
     /// Messages arriving before handler registration are queued and delivered when handler is registered
     /// - Parameters:
     ///   - channel: Channel name (max 64 chars, alphanumeric/-/_ only)
-    ///   - handler: Async handler that receives (fromPeerId, data)
+    ///   - handler: Async handler that receives (fromMachineId, data). Use machinePeerRegistry to look up peerId if needed.
     /// - Throws: MeshError if channel name is invalid
-    public func onChannel(_ channel: String, handler: @escaping @Sendable (PeerId, Data) async -> Void) async throws {
+    public func onChannel(_ channel: String, handler: @escaping @Sendable (MachineId, Data) async -> Void) async throws {
         // Validate channel name
         guard ChannelUtils.isValid(channel) else {
             throw MeshError.sendFailed(reason: "Invalid channel '\(channel)': must be max 64 chars, alphanumeric/-/_ only")
@@ -373,6 +373,7 @@ public actor MeshNetwork: ChannelProvider {
 
     /// Send data on a channel to a peer
     /// Uses automatic NAT-aware routing (IPv6 > direct > relay fallback)
+    /// When a peer has multiple machines, this sends to all of them.
     /// - Parameters:
     ///   - data: Data to send
     ///   - peerId: Target peer ID
@@ -383,6 +384,28 @@ public actor MeshNetwork: ChannelProvider {
             throw MeshError.notStarted
         }
         try await node.sendOnChannel(data, to: peerId, channel: channel)
+    }
+
+    /// Send data on a channel to a specific machine
+    /// Use this when you need to target a specific machine (e.g., responding to a request).
+    /// - Parameters:
+    ///   - data: Data to send
+    ///   - machineId: Target machine ID
+    ///   - channel: Channel name
+    /// - Throws: MeshError if not started, channel invalid, or send fails
+    public func sendOnChannel(_ data: Data, toMachine machineId: MachineId, channel: String) async throws {
+        guard state == .running, let node = meshNode else {
+            throw MeshError.notStarted
+        }
+        try await node.sendOnChannel(data, toMachine: machineId, channel: channel)
+    }
+
+    /// Access the machine-peer registry for looking up peer identities from machine IDs
+    /// Returns nil if the network is not started.
+    public var machinePeerRegistry: MachinePeerRegistry? {
+        get async {
+            meshNode?.machinePeerRegistry
+        }
     }
 
     /// Apply pending channel handlers when node starts

@@ -31,7 +31,7 @@ final class ProviderEventLoggerTests: XCTestCase {
 
         await logger.recordVMRequest(
             vmId: vmId,
-            consumerPeerId: "consumer-123",
+            consumerMachineId: "consumer-123",
             cpuCores: 2,
             memoryMB: 4096,
             diskGB: 50
@@ -54,7 +54,7 @@ final class ProviderEventLoggerTests: XCTestCase {
 
         await logger.recordVMCreated(
             vmId: vmId,
-            consumerPeerId: "consumer-456",
+            consumerMachineId: "consumer-456",
             success: true,
             error: nil,
             durationMs: 5000
@@ -73,7 +73,7 @@ final class ProviderEventLoggerTests: XCTestCase {
 
         await logger.recordVMCreated(
             vmId: vmId,
-            consumerPeerId: "consumer-789",
+            consumerMachineId: "consumer-789",
             success: false,
             error: "Insufficient resources",
             durationMs: 100
@@ -91,7 +91,7 @@ final class ProviderEventLoggerTests: XCTestCase {
 
         await logger.recordVMReleased(
             vmId: vmId,
-            consumerPeerId: "consumer-abc",
+            consumerMachineId: "consumer-abc",
             reason: "user_requested",
             durationMs: 3600000
         )
@@ -109,7 +109,7 @@ final class ProviderEventLoggerTests: XCTestCase {
 
         await logger.recordVMTimeout(
             vmId: vmId,
-            consumerPeerId: "dead-consumer",
+            consumerMachineId: "dead-consumer",
             lastHeartbeat: lastHeartbeat
         )
 
@@ -127,7 +127,7 @@ final class ProviderEventLoggerTests: XCTestCase {
         let activeIds = [vmIds[0]]
 
         await logger.recordHeartbeat(
-            consumerPeerId: "heartbeat-consumer",
+            consumerMachineId: "heartbeat-consumer",
             vmIds: vmIds,
             activeVmIds: activeIds
         )
@@ -144,7 +144,7 @@ final class ProviderEventLoggerTests: XCTestCase {
         let vmIds = [UUID(), UUID(), UUID()]
 
         await logger.recordHeartbeatTimeout(
-            consumerPeerId: "timeout-consumer",
+            consumerMachineId: "timeout-consumer",
             vmIds: vmIds
         )
 
@@ -272,7 +272,7 @@ final class ProviderEventLoggerTests: XCTestCase {
             errorType: "resource_exhaustion",
             errorMessage: "No available CPU cores",
             vmId: vmId,
-            consumerPeerId: "consumer-xyz"
+            consumerMachineId: "consumer-xyz"
         )
 
         await logger.stop()
@@ -307,9 +307,9 @@ final class ProviderEventLoggerTests: XCTestCase {
         let vmId2 = UUID()
         let vmId3 = UUID()
 
-        await logger.recordVMRequest(vmId: vmId1, consumerPeerId: "c1", cpuCores: 1, memoryMB: 1024, diskGB: 10)
-        await logger.recordVMRequest(vmId: vmId2, consumerPeerId: "c2", cpuCores: 2, memoryMB: 2048, diskGB: 20)
-        await logger.recordVMRequest(vmId: vmId3, consumerPeerId: "c3", cpuCores: 4, memoryMB: 4096, diskGB: 40)
+        await logger.recordVMRequest(vmId: vmId1, consumerMachineId: "c1", cpuCores: 1, memoryMB: 1024, diskGB: 10)
+        await logger.recordVMRequest(vmId: vmId2, consumerMachineId: "c2", cpuCores: 2, memoryMB: 2048, diskGB: 20)
+        await logger.recordVMRequest(vmId: vmId3, consumerMachineId: "c3", cpuCores: 4, memoryMB: 4096, diskGB: 40)
 
         await logger.stop()
 

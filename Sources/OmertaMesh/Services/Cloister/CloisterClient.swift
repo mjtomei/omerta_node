@@ -174,29 +174,29 @@ public actor CloisterClient {
 
         // Register negotiation response handler
         let negotiateResponseChannel = CloisterChannels.response(for: myPeerId)
-        try await provider.onChannel(negotiateResponseChannel) { [weak self] fromPeerId, data in
-            await self?.handleNegotiationResponse(data, from: fromPeerId)
+        try await provider.onChannel(negotiateResponseChannel) { [weak self] fromMachineId, data in
+            await self?.handleNegotiationResponse(data, from: fromMachineId)
         }
 
         // Register invite key exchange response handler (round 1 response)
         let inviteKeyExchangeResponseChannel = CloisterChannels.inviteKeyExchangeResponse(for: myPeerId)
-        try await provider.onChannel(inviteKeyExchangeResponseChannel) { [weak self] fromPeerId, data in
-            await self?.handleInviteKeyExchangeResponse(data, from: fromPeerId)
+        try await provider.onChannel(inviteKeyExchangeResponseChannel) { [weak self] fromMachineId, data in
+            await self?.handleInviteKeyExchangeResponse(data, from: fromMachineId)
         }
 
         // Register final invite ack handler (round 2 response)
         let inviteFinalAckChannel = CloisterChannels.inviteFinalAck(for: myPeerId)
-        try await provider.onChannel(inviteFinalAckChannel) { [weak self] fromPeerId, data in
-            await self?.handleInviteFinalAck(data, from: fromPeerId)
+        try await provider.onChannel(inviteFinalAckChannel) { [weak self] fromMachineId, data in
+            await self?.handleInviteFinalAck(data, from: fromMachineId)
         }
 
         isRegistered = true
         logger.debug("Registered cloister response handlers")
     }
 
-    private func handleNegotiationResponse(_ data: Data, from peerId: PeerId) async {
+    private func handleNegotiationResponse(_ data: Data, from machineId: MachineId) async {
         guard let response = try? JSONCoding.decoder.decode(CloisterResponse.self, from: data) else {
-            logger.warning("Failed to decode cloister response from \(peerId.prefix(8))...")
+            logger.warning("Failed to decode cloister response from machine \(machineId.prefix(8))...")
             return
         }
 
@@ -243,11 +243,11 @@ public actor CloisterClient {
                 networkKey: networkKeyData,
                 networkId: networkId,
                 networkName: state.networkName,
-                sharedWith: peerId
+                sharedWith: machineId
             )
 
             state.continuation.resume(returning: result)
-            logger.info("Successfully negotiated network key with \(peerId.prefix(8))..., networkId: \(networkId)")
+            logger.info("Successfully negotiated network key with machine \(machineId.prefix(8))..., networkId: \(networkId)")
 
         } catch {
             state.continuation.resume(throwing: ServiceError.keyExchangeFailed(error.localizedDescription))
@@ -256,9 +256,9 @@ public actor CloisterClient {
 
     /// Handle invite key exchange response (round 1)
     /// If accepted, complete key exchange and send encrypted invite
-    private func handleInviteKeyExchangeResponse(_ data: Data, from peerId: PeerId) async {
+    private func handleInviteKeyExchangeResponse(_ data: Data, from machineId: MachineId) async {
         guard let response = try? JSONCoding.decoder.decode(InviteKeyExchangeResponse.self, from: data) else {
-            logger.warning("Failed to decode invite key exchange response from \(peerId.prefix(8))...")
+            logger.warning("Failed to decode invite key exchange response from machine \(machineId.prefix(8))...")
             return
         }
 
@@ -293,7 +293,7 @@ public actor CloisterClient {
                 encryptedNetworkName = try ChaChaPoly.seal(Data(name.utf8), using: inviteKey).combined
             }
 
-            // Round 2: Send encrypted invite payload
+            // Round 2: Send encrypted invite payload to the responding machine
             let payload = InvitePayload(
                 requestId: response.requestId,
                 encryptedNetworkKey: encryptedNetworkKey,
@@ -301,9 +301,10 @@ public actor CloisterClient {
             )
 
             let payloadData = try JSONCoding.encoder.encode(payload)
-            let payloadChannel = CloisterChannels.invitePayload(for: peerId)
-            try await provider.sendOnChannel(payloadData, to: peerId, channel: payloadChannel)
-            logger.debug("Sent encrypted invite payload to \(peerId.prefix(8))...")
+            let myPeerId = await provider.peerId
+            let payloadChannel = CloisterChannels.invitePayload(for: myPeerId)
+            try await provider.sendOnChannel(payloadData, toMachine: machineId, channel: payloadChannel)
+            logger.debug("Sent encrypted invite payload to machine \(machineId.prefix(8))...")
 
             // Keep state for final ack (don't remove from pendingInvites yet)
 
@@ -315,9 +316,9 @@ public actor CloisterClient {
     }
 
     /// Handle final invite ack (round 2)
-    private func handleInviteFinalAck(_ data: Data, from peerId: PeerId) async {
+    private func handleInviteFinalAck(_ data: Data, from machineId: MachineId) async {
         guard let ack = try? JSONCoding.decoder.decode(InviteFinalAck.self, from: data) else {
-            logger.warning("Failed to decode invite final ack from \(peerId.prefix(8))...")
+            logger.warning("Failed to decode invite final ack from machine \(machineId.prefix(8))...")
             return
         }
 
@@ -335,9 +336,9 @@ public actor CloisterClient {
         )
 
         if ack.success {
-            logger.info("Successfully shared invite with \(peerId.prefix(8))..., networkId: \(ack.joinedNetworkId ?? "unknown")")
+            logger.info("Successfully shared invite with machine \(machineId.prefix(8))..., networkId: \(ack.joinedNetworkId ?? "unknown")")
         } else {
-            logger.warning("Invite sharing failed with \(peerId.prefix(8))...: \(ack.error ?? "unknown error")")
+            logger.warning("Invite sharing failed with machine \(machineId.prefix(8))...: \(ack.error ?? "unknown error")")
         }
 
         state.continuation.resume(returning: result)

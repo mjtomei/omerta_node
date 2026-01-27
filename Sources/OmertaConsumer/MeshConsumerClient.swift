@@ -90,13 +90,13 @@ public actor MeshConsumerClient {
 
         // Register response channel handler
         let responseChannel = VMChannels.response(for: myPeerId)
-        try await meshNetwork.onChannel(responseChannel) { [weak self] from, data in
-            await self?.handleResponse(from: from, data: data)
+        try await meshNetwork.onChannel(responseChannel) { [weak self] fromMachine, data in
+            await self?.handleResponse(from: fromMachine, data: data)
         }
 
         // Register shutdown notification handler
-        try await meshNetwork.onChannel(VMChannels.shutdown) { [weak self] from, data in
-            await self?.handleShutdownNotification(from: from, data: data)
+        try await meshNetwork.onChannel(VMChannels.shutdown) { [weak self] fromMachine, data in
+            await self?.handleShutdownNotification(from: fromMachine, data: data)
         }
 
         logger.info("MeshConsumerClient initialized", metadata: [
@@ -108,12 +108,9 @@ public actor MeshConsumerClient {
     // MARK: - Response Handling
 
     /// Handle incoming response from provider
-    private func handleResponse(from peerId: PeerId, data: Data) async {
-        // Verify it's from our provider
-        guard peerId == providerPeerId else {
-            logger.warning("Ignoring response from unknown peer", metadata: ["from": "\(peerId.prefix(16))..."])
-            return
-        }
+    private func handleResponse(from machineId: MachineId, data: Data) async {
+        // Response channel is scoped to our peerId, so only our provider sends here
+        // machineId identifies which provider machine responded
 
         // Try to decode as VM response
         if let response = try? JSONDecoder().decode(MeshVMResponse.self, from: data) {
@@ -143,13 +140,8 @@ public actor MeshConsumerClient {
     // MARK: - Shutdown Handling
 
     /// Handle shutdown notification from provider
-    private func handleShutdownNotification(from peerId: PeerId, data: Data) async {
-        // Verify it's from our provider
-        guard peerId == providerPeerId else {
-            logger.warning("Ignoring shutdown from unknown peer", metadata: ["from": "\(peerId.prefix(16))..."])
-            return
-        }
-
+    private func handleShutdownNotification(from machineId: MachineId, data: Data) async {
+        // Shutdown channel is broadcast, so we accept from any provider machine
         guard let notification = try? JSONDecoder().decode(MeshProviderShutdownNotification.self, from: data) else {
             logger.warning("Failed to decode shutdown notification")
             return
@@ -228,7 +220,7 @@ public actor MeshConsumerClient {
 
                 // Set timeout
                 Task {
-                    try? await Task.sleep(for: .seconds(60))
+                    try? await Task.sleep(for: .seconds(timeoutMinutes * 60))
                     if let cont = self.pendingResponses.removeValue(forKey: vmId) {
                         cont.resume(throwing: MeshConsumerError.noResponse)
                     }

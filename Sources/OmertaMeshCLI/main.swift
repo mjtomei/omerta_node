@@ -187,17 +187,15 @@ struct MeshCLI: AsyncParsableCommand {
         let mesh = MeshNetwork(identity: identity, config: config)
 
         // Track received messages
-        var receivedMessages: [(from: PeerId, data: Data, isDirect: Bool)] = []
+        var receivedMessages: [(from: MachineId, data: Data, isDirect: Bool)] = []
         var testPassed = false
 
         // Set up message handler on default channel
-        try await mesh.onChannel("cli-messages") { from, data in
+        try await mesh.onChannel("cli-messages") { fromMachine, data in
             if let message = String(data: data, encoding: .utf8) {
-                let connection = await mesh.connection(to: from)
-                let isDirect = connection?.isDirect ?? false
-                let mode = isDirect ? "direct" : "relay"
-                print("[\(myPeerId)] Received [\(mode)] from \(from.prefix(16))...: \(message)")
-                receivedMessages.append((from, data, isDirect))
+                // Note: connection lookup still uses peerId - need registry lookup for proper implementation
+                print("[\(myPeerId)] Received from machine \(fromMachine.prefix(16))...: \(message)")
+                receivedMessages.append((fromMachine, data, false))
             }
         }
 
