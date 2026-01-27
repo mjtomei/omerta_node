@@ -395,12 +395,12 @@ This test verifies the full VM provisioning flow over the mesh network between t
 **Create shared network (one-time setup):**
 ```bash
 # On provider (macOS)
-cd /Users/matt/omerta
+cd ~/omerta
 .build/debug/omerta network create --name "test" --endpoint "<provider-ip>:9999"
 # Note the network ID and invite link
 
 # On consumer (Linux)
-cd ${OMERTA_DIR}
+cd ~/omerta
 .build/debug/omerta network join "<invite-link>"
 ```
 
@@ -408,14 +408,14 @@ cd ${OMERTA_DIR}
 
 **Step 1: Start provider daemon (macOS)**
 ```bash
-cd /Users/matt/omerta
+cd ~/omerta
 .build/debug/omertad start --network <network-id>
 # Note the Peer ID printed (e.g., 75af67f14ec0f9ba)
 ```
 
 **Step 2: Start consumer daemon (Linux)**
 ```bash
-cd ${OMERTA_DIR}
+cd ~/omerta
 .build/debug/omertad start --network <network-id>
 ```
 

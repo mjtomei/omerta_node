@@ -37,7 +37,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OMERTA_DIR="${OMERTA_DIR}"
+OMERTA_DIR="${OMERTA_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 MESH_BIN="$OMERTA_DIR/.build/debug/omerta-mesh"
 RENDEZVOUS_BIN="$OMERTA_DIR/.build/debug/omerta-rendezvous"
 

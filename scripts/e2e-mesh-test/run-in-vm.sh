@@ -17,7 +17,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OMERTA_DIR="${OMERTA_DIR}"
+OMERTA_DIR="${OMERTA_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 VM_DIR="$OMERTA_DIR/.vm-test"
 CLOUD_IMAGE="$VM_DIR/ubuntu-cloud.img"
 VM_IMAGE="$VM_DIR/test-vm.qcow2"
@@ -292,7 +292,7 @@ chmod +x /home/ubuntu/mesh-test/*
 cd /home/ubuntu/mesh-test
 
 # Patch run-nat-test.sh to use local paths and set library path
-sed -i 's|OMERTA_DIR="${OMERTA_DIR}"|OMERTA_DIR="/home/ubuntu/mesh-test"|' run-nat-test.sh
+sed -i 's|OMERTA_DIR="${OMERTA_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"|OMERTA_DIR="/home/ubuntu/mesh-test"|' run-nat-test.sh
 sed -i 's|MESH_BIN="$OMERTA_DIR/.build/debug/omerta-mesh"|MESH_BIN="/home/ubuntu/mesh-test/omerta-mesh"\nexport LD_LIBRARY_PATH=/home/ubuntu/mesh-test/lib:\$LD_LIBRARY_PATH|' run-nat-test.sh
 
 # Patch nat-simulation.sh for VM environment

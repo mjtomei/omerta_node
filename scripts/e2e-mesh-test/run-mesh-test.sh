@@ -7,9 +7,9 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OMERTA_DIR="${OMERTA_DIR}"
-MAC_HOST="user@mac.local"
-MAC_OMERTA_DIR="~/omerta"
+OMERTA_DIR="${OMERTA_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+MAC_HOST="${MAC_HOST:-user@mac.local}"
+MAC_OMERTA_DIR="${MAC_OMERTA_DIR:-~/omerta}"
 
 # Get IPs
 LINUX_HOST_IP=$(hostname -I | awk '{print $1}')

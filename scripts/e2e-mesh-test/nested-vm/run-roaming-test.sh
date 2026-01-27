@@ -30,7 +30,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/vm-utils.sh"
 
-OMERTA_DIR="${OMERTA_DIR}"
+OMERTA_DIR="${OMERTA_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 IMAGES_DIR="$SCRIPT_DIR/images"
 
 # Network configuration
