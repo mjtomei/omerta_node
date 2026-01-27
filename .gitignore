@@ -46,9 +46,12 @@ __pycache__/
 # Protocol Buffer generated files
 Sources/OmertaNetwork/Protocol/Generated/
 
-# VM Images (too large)
+# VM Images and test VMs (too large)
 VMImages/*.ipsw
 VMImages/*.img
+.vm-test/
+*.qcow2
+*.fd
 
 # Test outputs
 *.profraw
@@ -69,9 +72,6 @@ logs/
 # Generated transaction files
 docs/protocol/transactions/*.md
 simulations/transactions/*_generated.py
-CLAUDE.md
-DEPLOYMENT.md
-Sources/CNetstack/libnetstack.a
 
 # Infrastructure documentation with sensitive details
 CLAUDE.md
