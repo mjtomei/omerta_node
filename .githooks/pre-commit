@@ -42,8 +42,8 @@ for file in $STAGED_FILES; do
 
     for pattern in "${PATTERNS[@]}"; do
         if grep -qiE "$pattern" "$file" 2>/dev/null; then
-            # Exclude common false positives
-            if ! grep -iE "$pattern" "$file" | grep -qiE 'example|placeholder|<your|YOUR_|TODO|template|CHANGE_ME'; then
+            # Exclude common false positives (but not if pattern appears in the value itself like AKIAEXAMPLE)
+            if ! grep -iE "$pattern" "$file" | grep -qiE '^\s*#|//.*example|placeholder|<your|YOUR_KEY|TODO|template|CHANGE_ME|your[_-]'; then
                 echo "ERROR: Potential sensitive data in $file"
                 echo "  Pattern: $pattern"
                 grep -niE "$pattern" "$file" | head -3 | sed 's/^/  /'
