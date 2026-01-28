@@ -35,7 +35,7 @@ Omerta allows you to share compute resources (CPU and GPU) with others in a secu
 - **Consumer**: Submits jobs to providers
 - **Provider**: Executes jobs in isolated VMs
 - **VPN**: All VM traffic routes through requester's VPN (provider's internet not used)
-- **Network Discovery**: Kademlia DHT for decentralized peer discovery
+- **Network Discovery**: Gossip-based decentralized peer discovery
 
 ## Requirements
 
@@ -81,7 +81,7 @@ Use the installation script (works on macOS and Linux):
 
 ```bash
 # Clone the repository
-git clone https://github.com/omerta/omerta.git
+git clone https://github.com/mjtomei/omerta.git
 cd omerta
 
 # Run install script
@@ -429,6 +429,34 @@ Detailed technical documentation is available in the [`plans/`](plans/) director
 
 For testing instructions, see [README_TESTING.md](README_TESTING.md).
 
+## Development Status
+
+See [plans/notes.txt](../plans/notes.txt) for the latest human-managed TODO list.
+
+### Accomplished
+
+- [x] Core VM management with Virtualization.framework (macOS) and QEMU/KVM (Linux)
+- [x] VPN routing and network isolation for VMs
+- [x] Provider daemon with local request processing
+- [x] Network discovery via gossip protocol and multi-network support
+- [x] WireGuard-based traffic routing through requester's VPN
+- [x] Ephemeral VM lifecycle (create, run, destroy)
+- [x] Hardware-level isolation via hypervisor
+
+### TODO
+
+- [ ] Consumer client and end-to-end flow (Phase 5)
+- [ ] Fix tunnel proxy command and VM-to-consumer connection
+- [ ] Ensure cleanup on omertad kill is cleaning up allocated VMs
+- [ ] Support for requesting multiple VMs simultaneously
+- [ ] Implement compute capability and utilization monitoring
+- [ ] macOS GUI with energy consumption monitoring
+- [ ] GPU support (Metal passthrough on macOS)
+- [ ] Usermode consumer for Linux and macOS
+- [ ] Checkpoint and restart support for VMs
+- [ ] Advanced filtering by peer ID, IP, reputation
+- [ ] Production hardening and security audit
+
 ## Roadmap
 
 - [x] Phase 0: Project bootstrap
@@ -455,7 +483,7 @@ Contributions are welcome! Please read CONTRIBUTING.md for guidelines.
 
 - Built with Swift
 - VM isolation via Apple Virtualization.framework (macOS) and QEMU/KVM (Linux)
-- Network discovery via Kademlia DHT
+- Network discovery via gossip protocol
 - VPN tunneling via WireGuard
 - gRPC and Protocol Buffers for serialization
 
