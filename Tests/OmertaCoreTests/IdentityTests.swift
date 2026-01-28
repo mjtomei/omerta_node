@@ -271,6 +271,19 @@ final class IdentityTests: XCTestCase {
         }
     }
 
+    /// Check if iCloud keychain (synchronizable) access is available
+    private func skipIfICloudKeychainUnavailable() throws {
+        let provider = ICloudKeychainProvider(service: "io.omerta.test.icloud.probe")
+        let probeKey = "icloud-entitlement-probe"
+        defer { try? provider.delete(key: probeKey) }
+
+        do {
+            try provider.save(key: probeKey, data: Data([0x42]))
+        } catch {
+            throw XCTSkip("iCloud Keychain unavailable: \(error)")
+        }
+    }
+
     func testKeychainSaveLoadDelete() throws {
         try skipIfKeychainUnavailable()
 
@@ -352,7 +365,7 @@ final class IdentityTests: XCTestCase {
     }
 
     func testICloudKeychainProviderBasicOperations() throws {
-        try skipIfKeychainUnavailable()
+        try skipIfICloudKeychainUnavailable()
 
         let provider = ICloudKeychainProvider(service: "io.omerta.test.icloud.\(UUID().uuidString)")
         let testKey = "icloud-test-key"

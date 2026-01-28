@@ -145,19 +145,7 @@ final class MacOSPacketCaptureIntegrationTests: XCTestCase {
         let socketPair = try UnixDatagramSocketPair.create()
         defer { socketPair.close() }
 
-        // Simulate packets from VM
-        var capturedPackets: [Data] = []
-        let captureTask = Task {
-            let hostFileHandle = FileHandle(fileDescriptor: socketPair.hostSocket, closeOnDealloc: false)
-            for _ in 0..<3 {
-                let data = hostFileHandle.availableData
-                if !data.isEmpty {
-                    capturedPackets.append(data)
-                }
-            }
-        }
-
-        // Simulate VM sending packets
+        // Simulate VM sending packets first so data is available before reading
         let packets: [Data] = [
             Data([0x45, 0x00, 0x00, 0x14]), // Packet 1
             Data([0x45, 0x00, 0x00, 0x28]), // Packet 2
@@ -168,7 +156,18 @@ final class MacOSPacketCaptureIntegrationTests: XCTestCase {
             try socketPair.sendFromVM(packet)
         }
 
-        await captureTask.value
+        // Brief delay to ensure socket buffers are populated
+        try await Task.sleep(nanoseconds: 50_000_000) // 50ms
+
+        // Read packets from host side
+        let hostFileHandle = FileHandle(fileDescriptor: socketPair.hostSocket, closeOnDealloc: false)
+        var capturedPackets: [Data] = []
+        for _ in 0..<3 {
+            let data = hostFileHandle.availableData
+            if !data.isEmpty {
+                capturedPackets.append(data)
+            }
+        }
 
         XCTAssertEqual(capturedPackets.count, 3, "Should capture all packets")
         for (index, packet) in packets.enumerated() {
