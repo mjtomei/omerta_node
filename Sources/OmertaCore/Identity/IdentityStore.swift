@@ -201,21 +201,29 @@ public actor IdentityStore {
     private func saveToKeychain(_ keypair: IdentityKeypair, synchronizable: Bool) async throws {
         let data = try JSONEncoder().encode(keypair)
 
-        var query: [String: Any] = [
+        // Delete ALL existing identities for this service first (not just matching account)
+        // This ensures "save" acts as an overwrite, not an append
+        var deleteQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+        ]
+        if synchronizable {
+            deleteQuery[kSecAttrSynchronizable as String] = true
+        }
+        SecItemDelete(deleteQuery as CFDictionary)
+
+        // Now add the new identity
+        var addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
             kSecAttrAccount as String: keypair.identity.peerId,
             kSecValueData as String: data,
         ]
-
         if synchronizable {
-            query[kSecAttrSynchronizable as String] = true
+            addQuery[kSecAttrSynchronizable as String] = true
         }
 
-        // Delete existing item first
-        SecItemDelete(query as CFDictionary)
-
-        let status = SecItemAdd(query as CFDictionary, nil)
+        let status = SecItemAdd(addQuery as CFDictionary, nil)
         guard status == errSecSuccess else {
             throw IdentityError.keychainError("Failed to save: \(status)")
         }
