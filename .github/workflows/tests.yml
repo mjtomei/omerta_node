@@ -1,0 +1,167 @@
+name: Tests
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  test-macos:
+    name: macOS
+    runs-on: macos-latest
+
+    steps:
+      # Checkout omerta_node
+      - uses: actions/checkout@v4
+        with:
+          path: omerta_node
+
+      # Checkout omerta_mesh dependency (required by Package.swift)
+      - uses: actions/checkout@v4
+        with:
+          repository: mjtomei/omerta_mesh
+          path: omerta_mesh
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build libnetstack (required by omerta_mesh)
+        working-directory: omerta_mesh/Sources/OmertaTunnel/Netstack
+        run: make install
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Build and test with coverage
+        working-directory: omerta_node
+        run: swift test --enable-code-coverage
+
+      - name: Generate coverage report
+        run: |
+          LLVM_COV=$(xcrun --find llvm-cov)
+          PROFDATA=$(find omerta_node/.build -name "default.profdata" 2>/dev/null | head -1)
+          if [ -n "$PROFDATA" ]; then
+            TEST_BIN=$(find omerta_node/.build -type f -name "*.xctest" -o -name "*PackageTests" 2>/dev/null | head -1)
+            if [ -n "$TEST_BIN" ]; then
+              $LLVM_COV export -format=lcov "$TEST_BIN" -instr-profile="$PROFDATA" > coverage.lcov 2>/dev/null || true
+            fi
+          fi
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.lcov
+          flags: omerta-node-macos
+          fail_ci_if_error: false
+
+  test-ubuntu:
+    name: Ubuntu
+    runs-on: ubuntu-24.04
+    container: swift:6.0-noble
+
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y git golang-go make
+
+      # Checkout omerta_node
+      - uses: actions/checkout@v4
+        with:
+          path: omerta_node
+
+      # Checkout omerta_mesh dependency
+      - uses: actions/checkout@v4
+        with:
+          repository: mjtomei/omerta_mesh
+          path: omerta_mesh
+
+      - name: Configure git safe directory
+        run: |
+          git config --global --add safe.directory $GITHUB_WORKSPACE/omerta_node
+          git config --global --add safe.directory $GITHUB_WORKSPACE/omerta_mesh
+
+      - name: Build libnetstack
+        working-directory: omerta_mesh/Sources/OmertaTunnel/Netstack
+        run: make install
+
+      - name: Build and test with coverage
+        working-directory: omerta_node
+        run: swift test --enable-code-coverage
+
+      - name: Generate coverage report
+        run: |
+          PROFDATA=$(find omerta_node/.build -name "default.profdata" 2>/dev/null | head -1)
+          if [ -n "$PROFDATA" ]; then
+            TEST_BIN=$(find omerta_node/.build -type f -perm /111 -name "*PackageTests" 2>/dev/null | head -1)
+            if [ -n "$TEST_BIN" ]; then
+              llvm-cov export -format=lcov "$TEST_BIN" -instr-profile="$PROFDATA" > coverage.lcov 2>/dev/null || true
+            fi
+          fi
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.lcov
+          flags: omerta-node-ubuntu
+          fail_ci_if_error: false
+
+  test-amazonlinux:
+    name: Amazon Linux
+    runs-on: ubuntu-24.04
+    container: amazonlinux:2023
+
+    steps:
+      - name: Install dependencies
+        run: |
+          dnf install -y git make tar gzip which
+          dnf install -y swiftlang
+          curl -LO https://go.dev/dl/go1.25.5.linux-amd64.tar.gz
+          tar -C /usr/local -xzf go1.25.5.linux-amd64.tar.gz
+          echo "/usr/local/go/bin" >> $GITHUB_PATH
+
+      # Checkout omerta_node
+      - uses: actions/checkout@v4
+        with:
+          path: omerta_node
+
+      # Checkout omerta_mesh dependency
+      - uses: actions/checkout@v4
+        with:
+          repository: mjtomei/omerta_mesh
+          path: omerta_mesh
+
+      - name: Configure git safe directory
+        run: |
+          git config --global --add safe.directory $GITHUB_WORKSPACE/omerta_node
+          git config --global --add safe.directory $GITHUB_WORKSPACE/omerta_mesh
+
+      - name: Build libnetstack
+        working-directory: omerta_mesh/Sources/OmertaTunnel/Netstack
+        run: |
+          export PATH=/usr/local/go/bin:$PATH
+          make install
+
+      - name: Build and test with coverage
+        working-directory: omerta_node
+        run: swift test --enable-code-coverage
+
+      - name: Generate coverage report
+        run: |
+          PROFDATA=$(find omerta_node/.build -name "default.profdata" 2>/dev/null | head -1)
+          if [ -n "$PROFDATA" ]; then
+            TEST_BIN=$(find omerta_node/.build -type f -perm /111 -name "*PackageTests" 2>/dev/null | head -1)
+            if [ -n "$TEST_BIN" ]; then
+              llvm-cov export -format=lcov "$TEST_BIN" -instr-profile="$PROFDATA" > coverage.lcov 2>/dev/null || true
+            fi
+          fi
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.lcov
+          flags: omerta-node-amazonlinux
+          fail_ci_if_error: false
