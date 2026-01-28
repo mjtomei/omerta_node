@@ -208,6 +208,18 @@ looks up the specific machine's endpoints via
 | `testPingByMachineIdWhenMultipleMachinesSamePeer` | Two machines with same PeerId, ping each individually |
 | `testPingByMachineIdUnknownMachine` | Unknown MachineId returns nil |
 | `testPingByPeerIdStillWorks` | Existing PeerId ping is unchanged |
+| `testPingByMachineIdTimeout` | Machine exists in registry but unreachable, verify timeout/nil |
+| `testPingByMachineIdReturnsCorrectLatency` | Verify RTT in PingResult matches the targeted machine |
+| `testPingByMachineIdUsesCorrectEndpoint` | Verify the machine-specific endpoint is used, not another machine's |
+| `testPingByMachineIdRegistryStale` | Machine in registry but peerId no longer valid, returns nil |
+| `testPingByPeerIdWithSingleMachine` | PeerId ping with one machine behaves identically to machineId ping |
+
+### Integration Tests
+
+| Test | Description |
+|------|-------------|
+| `testPingMachineRoundTrip` | Two nodes sharing a PeerId, ping each by machineId, verify distinct responses |
+| `testPingMachineAfterEndpointChange` | Machine changes endpoint, verify ping still reaches it after registry update |
 
 ---
 
@@ -475,15 +487,35 @@ extension MeshProviderDaemon {
 | `testRequestContainsNoSensitiveData` | Verify VMRequest has no identity, subnet, or keys |
 | `testAcceptanceOnMainMesh` | Verify acceptance response on main mesh |
 | `testRejectionOnMainMesh` | Verify rejection when at capacity |
+| `testRejectionContainsReason` | Verify rejection message includes a reason string |
 | `testCloisterCreatedAfterAcceptance` | Verify cloister negotiated only after acceptance |
 | `testConsumerGeneratesVMIdentity` | Verify consumer generates a new IdentityKeypair for the VM |
 | `testVMIdentityIsDistinctFromConsumer` | Verify VM PeerId differs from consumer PeerId |
+| `testEachVMGetsUniqueIdentity` | Request two VMs, verify distinct PeerIds |
 | `testProvisioningDataSentOverCloister` | Verify identity + subnet sent over cloister only |
 | `testProvisioningContainsCloisterKey` | Verify cloister network key included |
 | `testProviderDoesNotGenerateIdentity` | Verify no keypair generation on provider side |
 | `testConsumerDetectsVMViaPing` | Consumer pings VM's PeerId after bootstrap |
 | `testNoProvisioningWithoutAcceptance` | Consumer does not create cloister if rejected |
 | `testVMBootstrapsToConsumer` | VM's bootstrap peer is the consumer, not the provider |
+| `testAcceptanceTimeout` | Provider doesn't respond, verify consumer times out |
+| `testProvisionAckTimeout` | Provider accepts but doesn't ack provisioning, verify timeout |
+| `testMeshJoinTimeout` | VM never bootstraps, verify consumer times out after polling |
+| `testProvisioningForWrongVmId` | Provider receives provisioning with unknown vmId, verify error |
+| `testProviderCleansUpPendingOnTimeout` | Pending VM not provisioned within timeout, verify provider cleans up |
+| `testCloisterNegotiationFailure` | Cloister negotiation fails, verify consumer surfaces error |
+| `testDuplicateRequestId` | Two requests with same requestId, verify provider handles correctly |
+| `testVMRequestEncodesAsValidJSON` | Verify VMRequest/VMAcceptance/VMProvisioningData round-trip through Codable |
+
+### Integration Tests
+
+| Test | Description |
+|------|-------------|
+| `testFullRequestToBootstrapFlow` | Consumer → request → accept → cloister → provision → VM boots → ping succeeds |
+| `testRejectionDoesNotCreateCloister` | Full flow with rejection, verify no cloister negotiation occurs |
+| `testMultipleVMsSequential` | Request 3 VMs sequentially, verify all get distinct identities and bootstrap |
+| `testProviderRestartsAfterAcceptance` | Provider crashes between acceptance and provisioning, verify consumer handles gracefully |
+| `testConsumerDisconnectsDuringProvisioning` | Consumer loses mesh connectivity mid-flow, verify provider cleans up pending state |
 
 ---
 
@@ -612,12 +644,33 @@ extension CloudInitGenerator {
 |------|-------------|
 | `testMeshCloudInitGeneration` | Generate cloud-init, verify YAML is valid |
 | `testCloudInitContainsVMIdentity` | Verify VM's own identity is included |
+| `testCloudInitIdentityIsNotConsumers` | Verify identity in cloud-init is the VM's, not the consumer's |
 | `testCloudInitContainsCloisterKey` | Verify cloister network key is included |
 | `testCloudInitConsumerAsBootstrap` | Verify consumer is the bootstrap peer |
 | `testCloudInitContainsSubnet` | Verify consumer-provided subnet is included |
 | `testCloudInitNoDownloadStep` | Verify runcmd does NOT download omertad |
 | `testCloudInitContainsSystemdUnit` | Verify omertad.service is written |
+| `testCloudInitSystemdUnitAfterNetwork` | Verify systemd unit has After=network-online.target |
+| `testCloudInitSystemdUnitRestartsOnFailure` | Verify Restart=always in systemd unit |
+| `testCloudInitFilePermissions` | Verify mesh.json and identity.json have 0600 permissions |
+| `testCloudInitContainsSSHKeys` | Verify SSH authorized keys are present |
+| `testCloudInitSSHKeyBasedAuthOnly` | Verify password auth is disabled |
 | `testOmertadBinaryWrittenToOverlay` | Verify binary exists on disk image before boot |
+| `testOmertadBinaryIsExecutable` | Verify binary has executable permissions on overlay |
+| `testOverlayDiskCreatedFromBase` | Verify overlay is a COW copy, base image is unchanged |
+| `testSeedISOContainsUserData` | Verify cloud-init ISO has user-data file |
+| `testSeedISOContainsMetaData` | Verify cloud-init ISO has meta-data with instance-id |
+| `testSeedISOContainsNetworkConfig` | Verify cloud-init ISO has network-config |
+| `testCloudInitNoSensitiveDataInLogs` | Verify private key is not echoed in runcmd or logs |
+
+### Integration Tests
+
+| Test | Description |
+|------|-------------|
+| `testVMBootsWithCloudInit` | Boot VM with generated cloud-init, verify omertad service starts |
+| `testVMOmertadLoadsIdentity` | Boot VM, verify omertad loads the VM identity from /etc/omerta/identity.json |
+| `testVMOmertadJoinsCloister` | Boot VM, verify omertad uses cloister network key from mesh.json |
+| `testVMSSHAccessible` | Boot VM, verify SSH login works with provided authorized key |
 
 ---
 
@@ -770,14 +823,33 @@ eth0 (provider-allocated TAP /30) — mesh UDP only
 | Test | Description |
 |------|-------------|
 | `testTAPSubnetAllocation` | Verify unique /30 per VM, no collisions |
+| `testTAPSubnetAllocationExhaustion` | Allocate all 64 slots, verify error on 65th |
 | `testTAPSubnetRelease` | Verify released subnets can be reused |
+| `testTAPSubnetReleaseAndReallocate` | Release slot 3, allocate again, verify slot 3 reused |
 | `testTAPDeviceCreated` | Verify TAP device exists after VM create |
 | `testTAPDeviceCleanedUp` | Verify TAP device removed after VM destroy |
+| `testTAPDeviceNameUnique` | Each VM gets a distinct TAP device name |
 | `testDefaultRouteIsOmerta0` | Verify 0.0.0.0/0 routes through omerta0 (consumer gateway) |
 | `testEgressFilterAllowsOmertaProtocol` | Valid omerta packet with correct network ID passes |
 | `testEgressFilterBlocksNonOmerta` | Non-omerta packet on eth0 is dropped |
 | `testEgressFilterBlocksWrongNetworkId` | Omerta packet with wrong cloister network ID is dropped |
+| `testEgressFilterBlocksEmptyPacket` | Empty/truncated packet is dropped |
+| `testEgressFilterBlocksMalformedOmerta` | Packet with omerta magic bytes but invalid structure is dropped |
+| `testEgressFilterAllowsRegardlessOfEndpoint` | Same packet to different destination IPs passes if protocol and network ID match |
+| `testNATMasqueradeConfigured` | Verify iptables MASQUERADE rule exists for TAP subnet |
+| `testNATMasqueradeCleanedUp` | After VM destroy, verify MASQUERADE rule removed |
+
+### Integration Tests
+
+| Test | Description |
+|------|-------------|
 | `testVMCanReachConsumerViaProvider` | VM mesh UDP reaches consumer through provider's NAT |
+| `testVMCannotReachArbitraryInternet` | VM eth0 cannot reach arbitrary internet hosts directly |
+| `testVMInternetViaConsumerGateway` | VM app traffic exits via omerta0 → consumer → internet |
+| `testConsumerEndpointChangesVMStillConnected` | Consumer roams to new endpoint, VM maintains mesh connectivity |
+| `testVMBootstrapToConsumerFullPath` | VM boots, contacts consumer via provider TAP+NAT, joins cloister, ping succeeds |
+| `testMultipleVMsDistinctTAPSubnets` | Launch 3 VMs, verify each has a unique /30 TAP link |
+| `testVMDestroyReleasesAllResources` | Destroy VM, verify TAP device, NAT rule, overlay disk, and subnet all cleaned up |
 
 ---
 
