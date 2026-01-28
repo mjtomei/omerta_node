@@ -381,11 +381,12 @@ final class IdentityTests: XCTestCase {
         let store = IdentityStore(provider: .system)
         let (keypair, _) = IdentityKeypair.generate()
 
-        defer {
-            Task {
-                try? await store.delete()
-            }
-        }
+        // Clean up any stale data from previous test runs BEFORE starting
+        try? await store.delete()
+
+        // Verify we start clean
+        let initial = try await store.load()
+        XCTAssertNil(initial, "Keychain should be empty at start of test")
 
         // Save identity to system keychain
         try await store.save(keypair)
@@ -395,6 +396,9 @@ final class IdentityTests: XCTestCase {
         XCTAssertNotNil(loaded)
         XCTAssertEqual(loaded?.identity.peerId, keypair.identity.peerId)
         XCTAssertEqual(loaded?.privateKey, keypair.privateKey)
+
+        // Clean up after test (synchronously)
+        try? await store.delete()
     }
 
     func testIdentityStoreOverwrite() async throws {
@@ -404,11 +408,8 @@ final class IdentityTests: XCTestCase {
         let (keypair1, _) = IdentityKeypair.generate()
         let (keypair2, _) = IdentityKeypair.generate()
 
-        defer {
-            Task {
-                try? await store.delete()
-            }
-        }
+        // Clean up any stale data from previous test runs BEFORE starting
+        try? await store.delete()
 
         // Save first identity
         try await store.save(keypair1)
@@ -419,6 +420,9 @@ final class IdentityTests: XCTestCase {
         try await store.save(keypair2)
         let loaded2 = try await store.load()
         XCTAssertEqual(loaded2?.identity.peerId, keypair2.identity.peerId)
+
+        // Clean up after test (synchronously)
+        try? await store.delete()
     }
     #endif
 }
