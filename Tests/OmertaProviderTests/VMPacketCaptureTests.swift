@@ -203,11 +203,11 @@ final class VMPacketCaptureTests: XCTestCase {
         // Give time for async forwarding
         try await Task.sleep(nanoseconds: 100_000_000) // 100ms
 
-        // Verify packet was sent through tunnel (wire channel is "tunnel:data")
+        // Verify packet was sent through tunnel (wire channel is "tunnel-data")
         let sentPackets = await provider.sentPackets
         XCTAssertEqual(sentPackets.count, 1)
         XCTAssertEqual(sentPackets[0].0, testPacket)
-        XCTAssertEqual(sentPackets[0].2, "tunnel:data")
+        XCTAssertEqual(sentPackets[0].2, "tunnel-data")
 
         await capture.stop()
     }
@@ -225,9 +225,9 @@ final class VMPacketCaptureTests: XCTestCase {
         try await capture.start()
 
         // Simulate receiving a packet via the session's channel handler
-        // The wire channel is "tunnel:data"
+        // The wire channel is "tunnel-data"
         let returnPacket = Data([0x45, 0x00, 0x00, 0x20, 0x00, 0x02, 0x00, 0x00])
-        await provider.simulateReceive(from: "test-peer", data: returnPacket, channel: "tunnel:data")
+        await provider.simulateReceive(from: "test-peer", data: returnPacket, channel: "tunnel-data")
 
         // Give time for async forwarding
         try await Task.sleep(nanoseconds: 100_000_000) // 100ms
