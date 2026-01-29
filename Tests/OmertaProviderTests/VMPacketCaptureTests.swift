@@ -224,10 +224,9 @@ final class VMPacketCaptureTests: XCTestCase {
         let capture = VMPacketCapture(vmId: vmId, packetSource: mockSource, tunnelSession: session)
         try await capture.start()
 
-        // Simulate receiving a packet via the session's channel handler
-        // The wire channel is "tunnel-data"
+        // Deliver a packet to the session (as TunnelManager would via dispatch)
         let returnPacket = Data([0x45, 0x00, 0x00, 0x20, 0x00, 0x02, 0x00, 0x00])
-        await provider.simulateReceive(from: "test-peer", data: returnPacket, channel: "tunnel-data")
+        await session.deliverIncoming(returnPacket)
 
         // Give time for async forwarding
         try await Task.sleep(nanoseconds: 100_000_000) // 100ms
