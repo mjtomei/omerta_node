@@ -132,5 +132,12 @@ let package = Package(
             dependencies: ["OmertaDaemon", "OmertaCore"],
             path: "Tests/OmertaDaemonTests"
         ),
+        .plugin(
+            name: "SetupHooks",
+            capability: .command(
+                intent: .custom(verb: "setup-hooks", description: "Configure git hooks path to .githooks"),
+                permissions: []
+            )
+        ),
     ]
 )
