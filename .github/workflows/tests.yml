@@ -184,3 +184,31 @@ jobs:
           files: coverage.lcov
           flags: omerta-node-amazonlinux
           fail_ci_if_error: false
+
+  notify-parent:
+    name: Update Parent Repo
+    needs: [test-macos, test-ubuntu, test-amazonlinux]
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if commit is master HEAD
+        id: check
+        run: |
+          REMOTE_SHA=$(git ls-remote https://github.com/mjtomei/omerta_node refs/heads/master | cut -f1)
+          if [ "${{ github.sha }}" = "$REMOTE_SHA" ]; then
+            echo "is_head=true" >> $GITHUB_OUTPUT
+          else
+            echo "Commit ${{ github.sha }} is not master HEAD ($REMOTE_SHA) — skipping"
+            echo "is_head=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Dispatch to parent repo
+        if: steps.check.outputs.is_head == 'true'
+        env:
+          TOKEN: ${{ secrets.PARENT_REPO_TOKEN }}
+        run: |
+          curl -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $TOKEN" \
+            https://api.github.com/repos/mjtomei/omerta/dispatches \
+            -d '{"event_type":"subrepo-updated","client_payload":{"module":"omerta_node","sha":"${{ github.sha }}"}}'
