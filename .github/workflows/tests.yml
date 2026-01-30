@@ -3,22 +3,8 @@ name: Tests
 on:
   push:
     branches: [master, main]
-    paths-ignore:
-      - '**.md'
-      - '**.txt'
-      - 'LICENSE'
-      - 'licenses/**'
-      - 'plans/**'
-      - '.gitignore'
   pull_request:
     branches: [master, main]
-    paths-ignore:
-      - '**.md'
-      - '**.txt'
-      - 'LICENSE'
-      - 'licenses/**'
-      - 'plans/**'
-      - '.gitignore'
   workflow_dispatch:
 
 concurrency:
@@ -26,8 +12,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      src: ${{ steps.filter.outputs.src }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            src:
+              - '**'
+              - '!**.md'
+              - '!**.txt'
+              - '!LICENSE'
+              - '!licenses/**'
+              - '!plans/**'
+              - '!.gitignore'
+
   test-macos:
     name: macOS
+    needs: [changes]
+    if: needs.changes.outputs.src == 'true'
     runs-on: macos-latest
 
     steps:
@@ -78,6 +86,8 @@ jobs:
 
   test-ubuntu:
     name: Ubuntu
+    needs: [changes]
+    if: needs.changes.outputs.src == 'true'
     runs-on: ubuntu-24.04
     container: swift:6.0-noble
 
@@ -130,6 +140,8 @@ jobs:
 
   test-amazonlinux:
     name: Amazon Linux
+    needs: [changes]
+    if: needs.changes.outputs.src == 'true'
     runs-on: ubuntu-24.04
     container: amazonlinux:2023
 
