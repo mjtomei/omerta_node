@@ -1,5 +1,7 @@
 # Omerta Node
 
+[![codecov](https://codecov.io/gh/mjtomei/omerta_node/graph/badge.svg)](https://codecov.io/gh/mjtomei/omerta_node)
+
 Provider and consumer node implementation for the Omerta compute platform.
 
 ## Overview
